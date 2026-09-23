@@ -18,6 +18,10 @@ export async function query<TResult, TVariables>(
 		body: JSON.stringify({ query: document.toString(), variables }),
 		signal
 	});
+	// A proxy in front of the API (502, 504) answers with an HTML page, not JSON.
+	if (!response.headers.get('content-type')?.includes('json')) {
+		throw toApiError(undefined, response.status);
+	}
 	const body: GraphQLResult<TResult> = await response.json();
 	if (!response.ok) throw toApiError(body, response.status);
 	if (body.errors?.length || !body.data) {
