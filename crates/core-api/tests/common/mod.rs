@@ -4,7 +4,7 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use core_api::{AppState, router};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
 use tower::ServiceExt;
@@ -60,4 +60,28 @@ impl TestApp {
         let body = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap() };
         TestResponse { status, headers, body }
     }
+
+    /// Signs up a new owner and returns their session cookie (`name=value`).
+    pub async fn signup_owner(&self, email: &str, tenant_name: &str) -> String {
+        let response = self
+            .send(
+                Method::POST,
+                "/api/v1/auth/signup",
+                None,
+                Some(json!({
+                    "email": email,
+                    "password": "a long enough password",
+                    "display_name": "Owner",
+                    "tenant_name": tenant_name,
+                })),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::CREATED, "{:?}", response.body);
+        session_cookie(&response.headers)
+    }
+}
+
+pub fn session_cookie(headers: &HeaderMap) -> String {
+    let set_cookie = headers.get(header::SET_COOKIE).expect("Set-Cookie header").to_str().unwrap();
+    set_cookie.split(';').next().unwrap().to_owned()
 }

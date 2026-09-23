@@ -1,0 +1,121 @@
+mod common;
+
+use axum::http::{Method, StatusCode, header};
+use common::{TestApp, session_cookie};
+use serde_json::json;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn signup_sets_a_secure_session_cookie_and_returns_the_profile(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+
+    let response = app
+        .send(
+            Method::POST,
+            "/api/v1/auth/signup",
+            None,
+            Some(json!({"email": "owner@example.com", "password": "a long enough password",
+                        "display_name": "Owner", "tenant_name": "Lagoon Hotels"})),
+        )
+        .await;
+
+    assert_eq!(response.status, StatusCode::CREATED);
+    let cookie = response.headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+    assert!(cookie.starts_with("gf_session="));
+    assert!(cookie.contains("HttpOnly"));
+    assert!(cookie.contains("SameSite=Lax"));
+    assert_eq!(response.body["email"], "owner@example.com");
+    assert_eq!(response.body["tenants"][0]["name"], "Lagoon Hotels");
+    assert_eq!(response.body["grants"][0]["role"], "owner");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn signup_rejects_short_passwords_and_duplicate_emails(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    app.signup_owner("owner@example.com", "A").await;
+
+    let short = app
+        .send(
+            Method::POST,
+            "/api/v1/auth/signup",
+            None,
+            Some(json!({"email": "new@example.com", "password": "short", "display_name": "N", "tenant_name": "B"})),
+        )
+        .await;
+    let duplicate = app
+        .send(
+            Method::POST,
+            "/api/v1/auth/signup",
+            None,
+            Some(json!({"email": "OWNER@example.com", "password": "a long enough password",
+                        "display_name": "N", "tenant_name": "B"})),
+        )
+        .await;
+
+    assert_eq!(short.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(short.headers.get(header::CONTENT_TYPE).unwrap(), "application/problem+json");
+    assert_eq!(duplicate.status, StatusCode::CONFLICT);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn login_me_and_logout(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    app.signup_owner("owner@example.com", "A").await;
+
+    let wrong = app
+        .send(
+            Method::POST,
+            "/api/v1/auth/login",
+            None,
+            Some(json!({"email": "owner@example.com", "password": "not the password"})),
+        )
+        .await;
+    let login = app
+        .send(
+            Method::POST,
+            "/api/v1/auth/login",
+            None,
+            Some(json!({"email": "owner@example.com", "password": "a long enough password"})),
+        )
+        .await;
+    let cookie = session_cookie(&login.headers);
+    let me = app.send(Method::GET, "/api/v1/me", Some(&cookie), None).await;
+    let logout = app.send(Method::POST, "/api/v1/auth/logout", Some(&cookie), None).await;
+    let after = app.send(Method::GET, "/api/v1/me", Some(&cookie), None).await;
+
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(login.status, StatusCode::OK);
+    assert_eq!(me.body["email"], "owner@example.com");
+    assert_eq!(logout.status, StatusCode::NO_CONTENT);
+    assert_eq!(after.status, StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn state_changing_requests_need_the_csrf_header(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+
+    let response = app
+        .send_with(
+            Method::POST,
+            "/api/v1/auth/login",
+            None,
+            Some(json!({"email": "a@example.com", "password": "x"})),
+            &[],
+        )
+        .await;
+
+    assert_eq!(response.status, StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_user_cannot_switch_into_a_tenant_they_do_not_belong_to(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    let alice = app.signup_owner("alice@example.com", "Alice Hotels").await;
+    let bob = app.signup_owner("bob@example.com", "Bob Hotels").await;
+    let bobs_tenant = app.send(Method::GET, "/api/v1/me", Some(&bob), None).await.body["current_tenant"].clone();
+
+    let response =
+        app.send(Method::PUT, "/api/v1/session/tenant", Some(&alice), Some(json!({"tenant_id": bobs_tenant}))).await;
+
+    assert_eq!(response.status, StatusCode::FORBIDDEN);
+}

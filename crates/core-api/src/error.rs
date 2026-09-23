@@ -81,3 +81,8 @@ impl IntoResponse for ApiError {
         response
     }
 }
+
+/// Validates a request DTO, turning the report into a 422.
+pub fn validate<T: garde::Validate<Context = ()>>(value: &T) -> Result<(), ApiError> {
+    value.validate().map_err(|report| ApiError::unprocessable(report.to_string()))
+}
