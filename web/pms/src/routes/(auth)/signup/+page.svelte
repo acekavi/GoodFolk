@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { rest } from '$lib/api/rest';
-	import { toApiError } from '$lib/api/problem';
+	import { errorMessage, toApiError } from '$lib/api/problem';
 
 	const client = useQueryClient();
 	let form = $state({ email: '', password: '', display_name: '', tenant_name: '' });
@@ -14,20 +14,25 @@
 		event.preventDefault();
 		busy = true;
 		error = '';
-		const {
-			data,
-			error: problem,
-			response
-		} = await rest.POST('/api/v1/auth/signup', {
-			body: form
-		});
-		busy = false;
-		if (!data) {
-			error = toApiError(problem, response.status).message;
-			return;
+		try {
+			const {
+				data,
+				error: problem,
+				response
+			} = await rest.POST('/api/v1/auth/signup', {
+				body: form
+			});
+			if (!data) {
+				error = toApiError(problem, response.status).message;
+				return;
+			}
+			client.setQueryData(['me'], data);
+			await goto(resolve('/'));
+		} catch (err) {
+			error = errorMessage(err);
+		} finally {
+			busy = false;
 		}
-		client.setQueryData(['me'], data);
-		await goto(resolve('/'));
 	}
 </script>
 

@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { idempotencyKey, rest } from '$lib/api/rest';
-	import { toApiError } from '$lib/api/problem';
+	import { errorMessage, toApiError } from '$lib/api/problem';
 	import { propertiesKey } from '$lib/properties';
 
 	const client = useQueryClient();
@@ -27,21 +27,26 @@
 		const serialized = JSON.stringify(body);
 		if (lastBody && serialized !== lastBody) key = idempotencyKey();
 		lastBody = serialized;
-		const {
-			data,
-			error: problem,
-			response
-		} = await rest.POST('/api/v1/properties', {
-			body,
-			params: { header: { 'Idempotency-Key': key } }
-		});
-		busy = false;
-		if (!data) {
-			error = toApiError(problem, response.status).message;
-			return;
+		try {
+			const {
+				data,
+				error: problem,
+				response
+			} = await rest.POST('/api/v1/properties', {
+				body,
+				params: { header: { 'Idempotency-Key': key } }
+			});
+			if (!data) {
+				error = toApiError(problem, response.status).message;
+				return;
+			}
+			await client.invalidateQueries({ queryKey: propertiesKey });
+			await goto(resolve('/(app)/p/[property]', { property: data.id }));
+		} catch (err) {
+			error = errorMessage(err);
+		} finally {
+			busy = false;
 		}
-		await client.invalidateQueries({ queryKey: propertiesKey });
-		await goto(resolve('/(app)/p/[property]', { property: data.id }));
 	}
 </script>
 

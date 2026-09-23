@@ -7,7 +7,8 @@
 	const me = createQuery(() => ({ queryKey: ['me'], queryFn: fetchMe }));
 	const properties = createQuery(() => ({
 		queryKey: propertiesKey,
-		queryFn: ({ signal }) => fetchProperties(signal)
+		queryFn: ({ signal }) => fetchProperties(signal),
+		enabled: !!me.data?.current_tenant
 	}));
 </script>
 

@@ -31,3 +31,10 @@ export function toApiError(body: unknown, status: number): ApiError {
 		isProblem(body) ? body : { type: 'about:blank', title: 'Request failed', status }
 	);
 }
+
+export const NETWORK_ERROR = 'Network error — check your connection and try again.';
+
+/** A message for any error a request can throw: the API's problem, or a network failure. */
+export function errorMessage(error: unknown): string {
+	return error instanceof ApiError ? error.message : NETWORK_ERROR;
+}

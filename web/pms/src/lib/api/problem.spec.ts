@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { toApiError } from './problem';
+import { errorMessage, NETWORK_ERROR, toApiError } from './problem';
 
 describe('toApiError', () => {
 	it('uses the problem detail as the message', () => {
@@ -17,5 +17,17 @@ describe('toApiError', () => {
 
 		expect(error.message).toBe('Request failed');
 		expect(error.status).toBe(502);
+	});
+});
+
+describe('errorMessage', () => {
+	it('shows an API error as its message', () => {
+		expect(
+			errorMessage(toApiError({ type: 'about:blank', title: 'Forbidden', status: 403 }, 403))
+		).toBe('Forbidden');
+	});
+
+	it('shows anything else, such as a failed fetch, as a network error', () => {
+		expect(errorMessage(new TypeError('Failed to fetch'))).toBe(NETWORK_ERROR);
 	});
 });
