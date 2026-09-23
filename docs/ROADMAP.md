@@ -1,0 +1,116 @@
+# GoodFolk PMS — Delivery Plan
+
+Companion to [ARCHITECTURE.md](ARCHITECTURE.md). Each phase ends in something that runs end to end and has been verified (tests, lint, type checks, and a performance check where noted). Phases build on each other. Within a phase, the backend and frontend of one feature ship together.
+
+## Planning documents
+
+| Document | Purpose |
+|---|---|
+| [design/data-model.md](design/data-model.md) | Every table, all phases, and the rules each must follow |
+| [design/api-conventions.md](design/api-conventions.md) | Auth, CSRF, errors, idempotency, concurrency, events, GraphQL and REST shapes |
+| [superpowers/plans/2026-09-23-phase-0-foundations.md](superpowers/plans/2026-09-23-phase-0-foundations.md) | **Phase 0 implementation plan**: 15 test-first tasks with complete code, run in order on a clean repository before the plan was written |
+| [specs/](specs/) | Phases 1–9: scope, data, API, UI, rules, required tests and performance gates |
+
+Each later phase gets its step-by-step implementation plan at the start of that phase, written and verified against the code as it stands then (the same method as Phase 0). Writing code-level plans for Phase 7 now would mean guessing at code that Phases 1–6 have not written yet.
+
+## Phase 0 — Foundations ([plan](superpowers/plans/2026-09-23-phase-0-foundations.md))
+
+- Cargo workspace (`crates/*` services and infrastructure, `modules/*` domains), `core-api` skeleton (axum, tracing, config, graceful shutdown, health and readiness checks), mimalloc, release profile.
+- `docker compose` Postgres 17 with the `goodfolk_app` / `goodfolk_api` roles.
+- Foundation migration: `tenant`, `app_user`, `membership`, `role_grant`, `session`, `property`, `audit_log`, `idempotency_key`, with forced row-level security. A schema guard test fails if any `tenant_id` table lacks it.
+- `db::begin(pool, scope)` (transaction-local tenant context) and the **cross-tenant isolation suite** that every later table must join.
+- Auth: sign-up, login, logout, tenant switching, argon2id, cookie sessions, RBAC extractors, CSRF header.
+- REST conventions (problem+json, validation, idempotency keys), read-only GraphQL with depth and complexity limits, SSE live updates over Postgres `LISTEN/NOTIFY`, OpenAPI document and schema export.
+- SvelteKit SPA: sign-up, sign-in, tenant switcher, property list and create, typed REST and GraphQL clients (codegen), live cache invalidation.
+- Container image, CI (fmt, clippy, tests, cargo-deny, generated-type drift, lint, svelte-check, web tests, build).
+
+**Done when:** a user signs up, creates two properties and switches between them, another tenant sees none of them, a change in one tab appears in another, and CI is green.
+
+Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub, `/proto`, MinIO (Phase 6); `If-Match`, login throttling, Playwright (Phase 1); persisted GraphQL queries (Phase 4); staff invitations (Phase 8).
+
+## Phase 1 — Rooms, room types, inventory base ([spec](specs/phase-1-rooms-inventory.md))
+
+- Room types, rooms, floors and sections. CRUD over REST, lists over GraphQL.
+- `inventory_day` counters and the room block model (out of order / out of service, reason codes).
+- Inventory calendar screen (room types × dates, windowed by month).
+- Block dates for rooms, with conflict detection.
+- From Phase 0: `If-Match` optimistic concurrency, login throttling, Playwright end-to-end tests.
+
+## Phase 2 — Rates and meal plans ([spec](specs/phase-2-rates-meal-plans.md))
+
+- Rate plans: standard, derived and custom, with segment tags (FIT-F, FIT-L, OTA, TA, IBE) (FIT-F = non-resident, FIT-L = resident; residency enforcement; resident prices set by hand; derivation only within the same currency).
+- `rate_day` with occupancy pricing and restrictions. Transactional recomputation of derived plans, depth limit, cycle prevention.
+- Meal plans RO/BB/HB/FB as per-person supplements, and which meal plans each rate plan allows.
+- Rate grid screen with bulk edit.
+- Property-based tests for price derivation (rounding, chains, edge dates).
+
+## Phase 3 — Reservations ([spec](specs/phase-3-reservations.md))
+
+- Reservation, reservation_room (daterange + exclusion constraint), guests.
+- Availability and price quote service (shared later by the IBE).
+- REST commands: create, modify, cancel, assign/unassign room, check-in, check-out, with the state machine in `domain`.
+- Reservation grid (GraphQL, cursor pagination, virtualized rows), and a detail modal routed at `/reservations/:id` with prefetch on hover or focus.
+- New reservation flow.
+
+## Phase 4 — Front desk tape chart ([spec](specs/phase-4-tape-chart.md))
+
+- `tapeTile` GraphQL query (GiST-indexed range scan), tile keys, availability header.
+- 2D virtualized chart: aligned 14-day tiles, directional overscan, abort, LRU cache, sticky rail and header, CSS-gradient grid.
+- Drag to move, extend or reassign, with optimistic update and conflict rollback.
+- SSE tile invalidation, so other users' changes appear live.
+- Persisted-query allowlist for GraphQL.
+- **Performance gate:** a 500-room seeded property (well above the largest expected property, to leave headroom), continuous horizontal scroll at 60 fps on a mid-range laptop, tile p95 under 10 ms server-side, DOM node count bounded.
+
+## Phase 5 — Housekeeping ([spec](specs/phase-5-housekeeping.md))
+
+- Room condition state machine, and automation on check-out and check-in.
+- Housekeeping board, assignments, and the housekeeper PWA (my rooms, offline queue).
+- Issue reports with photos (needs the Phase 6 upload path; a stub is acceptable until then).
+- Laundry: hotel linen (par levels, stock by location, sent/received batches, write-offs) and guest laundry orders that post charges to the folio.
+
+## Phase 6 — Media engine ([spec](specs/phase-6-media.md))
+
+- First internal service, so it also brings: `/proto` + `proto` crate, tonic health, service-to-service auth, the transactional outbox → Pub/Sub relay (`EventBus` trait), and MinIO + the Pub/Sub emulator in compose.
+
+- `media-svc` (tonic): presigned multipart uploads, BLAKE3 dedup, type sniffing, EXIF stripping.
+- Image pipeline: JXL archive + AVIF/WebP responsive renditions (libvips).
+- Video/audio pipeline: SVT-AV1 + H.264 CMAF/HLS, Opus, FLAC archive (ffmpeg workers).
+- Quality gate in CI: SSIMULACRA2 / VMAF thresholds on a fixture set.
+- Room-type galleries, issue photos, and guest documents (private, signed URLs).
+
+## Phase 7 — Folio and night audit ([spec](specs/phase-7-folio-audit.md))
+
+- Folio: charges (room, meal plan, laundry, POS, manual), payments, routing, reversals, multi-currency lines with base-currency equivalents.
+- Tax and service-charge rules engine: effective-dated, ordered, configurable bases, on-bill or absorbed, conditional (VAT registration, residency, currency), inclusive-price back-calculation. Sri Lanka preset (SC, TDL, SSCL, VAT) in order A (cascade). Golden tests on the worked examples in ARCHITECTURE.md §7.6.2.
+- Liability reports: TDL quarterly (SLTDA), SSCL monthly and quarterly, VAT per period, service charge collected.
+- IRD-format tax invoice: LKR values without cents, total in words, TIN, gapless serial per property; USD folios converted at the locked rate.
+- Exchange rate table, daily import of the Central Bank TT selling rate (with alert on failure), and manual override.
+- `PostPosBill` contract (gRPC + REST), so a future POS can post bills.
+- Payments: `PaymentProvider` trait. `manual` provider for the card terminal, cash and bank transfer (approval code, last 4 digits, currency). **CyberSource** for LKR and foreign currency (Unified Checkout, TMS tokens, authorize/capture, 3-D Secure, JWT auth, encrypted webhooks). **Mastercard Gateway (MPGS)**: Hosted Checkout, tokens, authorize/capture, 3-D Secure, per-property gateway host, webhook secret check plus order re-fetch. payments.lk optional (LKR only). Per-property merchant credentials in Secret Manager, and routing rules.
+- `docs/guides/payments/`: common technical guides (CyberSource, MPGS) plus one page per bank (ComBank, HNB, Sampath, BOC, People's, Seylan, NTB, and NDB/DFCC once confirmed). Written from current bank merchant documentation and checked with each bank.
+- Night audit review screen: expected arrivals not checked in (mark no-show / extend / cancel), departures, the day's POS bills, booking bills, and payments by method and currency.
+- `jobs-svc`: checkpointed, idempotent close (room/meal postings, exchange-rate lock, statistics snapshot, reports, business-date roll), triggered by Cloud Scheduler or manually.
+- Daily statistics and core reports (occupancy, ADR, RevPAR, arrivals and departures, in-house).
+
+## Phase 8 — Settings completeness and channels ([spec](specs/phase-8-settings-channels.md))
+
+- Property settings, policies, reason codes, users and roles UI, staff invitations.
+- `channel-svc` with Channex: connect a property, import and map room types, ARI push (debounced and batched), webhook booking ingestion.
+
+## Phase 9 — IBE ([spec outline](specs/phase-9-ibe.md))
+
+- Detailed design workshop first (still being planned).
+- SvelteKit SSR app, edge-cached availability search, hold → pay → confirm, payment tokenization.
+
+## Cross-cutting, every phase
+
+- Load tests (k6 or oha) on new hot endpoints, and EXPLAIN plans reviewed for new queries at seeded scale.
+- Every new table is added to the tenant isolation suite.
+- Audit log entries for sensitive mutations.
+- Docs updated alongside behavior changes.
+
+## First step
+
+Execute the Phase 0 plan. Nothing blocks development. The remaining items in ARCHITECTURE.md §14 are settings values to confirm with an accountant before Phase 7.
+
+Free-tier accounts to create before the first deployment, all set to Singapore where a region is chosen: GCP project (Cloud Run, Pub/Sub, Secret Manager, Scheduler in `asia-southeast1`), Neon (`aws-ap-southeast-1`), Cloudflare (R2 + DNS). Before Phase 7: a CyberSource sandbox (Business Center test account), an MPGS test merchant (through a partner bank), and a payments.lk sandbox. Before Phase 8: a Channex sandbox.
