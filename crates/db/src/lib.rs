@@ -1,10 +1,12 @@
 //! Database access shared by every module: pool setup, migrations, tenant-scoped
 //! transactions and change notifications.
 
+mod events;
 mod scope;
 #[cfg(feature = "testing")]
 pub mod testing;
 
+pub use events::{CHANNEL, Event, notify};
 pub use scope::{Scope, TenantId, Tx, UserId, begin};
 
 use sqlx::postgres::{PgPool, PgPoolOptions};
