@@ -17,6 +17,12 @@ use tower_http::trace::TraceLayer;
 pub use auth::{LoginRequest, SignupRequest, SwitchTenantRequest};
 pub use properties::CreatePropertyRequest;
 
+/// Longest a request may run before it is answered with 504.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// An unfinished idempotency claim this old belongs to a request that can no longer finish
+/// (the request timeout plus margin), so the next request with its key takes it over.
+pub const ABANDONED_CLAIM_AFTER: Duration = Duration::from_secs(60);
+
 pub fn router(state: AppState) -> Router {
     let commands = Router::new()
         .route("/api/v1/properties", post(properties::create))
@@ -30,7 +36,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/session/tenant", put(auth::switch_tenant))
         .route("/graphql", post(graphql::handler))
         .merge(commands)
-        .layer(TimeoutLayer::with_status_code(StatusCode::GATEWAY_TIMEOUT, Duration::from_secs(15)));
+        .layer(TimeoutLayer::with_status_code(StatusCode::GATEWAY_TIMEOUT, REQUEST_TIMEOUT));
 
     // Long-lived, so kept outside the request timeout.
     let streams = Router::new().route("/api/v1/events", get(events::stream));
