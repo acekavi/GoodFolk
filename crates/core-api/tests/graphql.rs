@@ -1,6 +1,6 @@
 mod common;
 
-use axum::http::{Method, StatusCode};
+use axum::http::{Method, StatusCode, header};
 use common::TestApp;
 use core_api::graphql::build_schema;
 use serde_json::{Value, json};
@@ -60,6 +60,17 @@ async fn graphql_requires_a_session(_: PgPoolOptions, opts: PgConnectOptions) {
     let response = app.send(Method::POST, "/graphql", None, Some(json!({"query": "{ properties { code } }"}))).await;
 
     assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_malformed_graphql_request_is_a_400_problem(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+
+    let response = app.send_raw(Method::POST, "/graphql", Some(&owner), Some("application/json"), "{\"query\":").await;
+
+    assert_eq!(response.status, StatusCode::BAD_REQUEST, "{:?}", response.body);
+    assert_eq!(response.headers.get(header::CONTENT_TYPE).unwrap(), "application/problem+json");
 }
 
 #[tokio::test]

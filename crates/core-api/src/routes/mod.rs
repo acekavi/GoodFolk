@@ -2,16 +2,17 @@ pub(crate) mod auth;
 mod health;
 pub(crate) mod properties;
 
+use crate::error::ApiError;
 use crate::state::AppState;
 use crate::{csrf, events, graphql, idempotency};
 use axum::Router;
-use axum::http::StatusCode;
-use axum::middleware::{from_fn, from_fn_with_state};
+use axum::extract::Request;
+use axum::middleware::{Next, from_fn, from_fn_with_state};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use std::time::Duration;
 use tower_http::compression::CompressionLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
-use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 pub use auth::{LoginRequest, SignupRequest, SwitchTenantRequest};
@@ -36,7 +37,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/session/tenant", put(auth::switch_tenant))
         .route("/graphql", post(graphql::handler))
         .merge(commands)
-        .layer(TimeoutLayer::with_status_code(StatusCode::GATEWAY_TIMEOUT, REQUEST_TIMEOUT));
+        .layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)));
 
     // Long-lived, so kept outside the request timeout.
     let streams = Router::new().route("/api/v1/events", get(events::stream));
@@ -52,4 +53,36 @@ pub fn router(state: AppState) -> Router {
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .with_state(state)
+}
+
+/// Answers 504 if the rest of the stack takes longer than `limit`. The handler is dropped (cancelled).
+async fn deadline(limit: Duration, request: Request, next: Next) -> Response {
+    match tokio::time::timeout(limit, next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => ApiError::gateway_timeout().into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::deadline;
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use axum::middleware::from_fn;
+    use axum::routing::get;
+    use std::time::Duration;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn a_slow_handler_is_answered_with_a_504_problem() {
+        let app = Router::new()
+            .route("/slow", get(|| tokio::time::sleep(Duration::from_secs(5))))
+            .layer(from_fn(|request, next| deadline(Duration::from_millis(10), request, next)));
+
+        let response = app.oneshot(Request::get("/slow").body(Body::empty()).unwrap()).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/problem+json");
+    }
 }

@@ -1,5 +1,6 @@
 use crate::auth::{Authenticated, removal_cookie, session_cookie};
 use crate::error::{ApiError, validate};
+use crate::extract::ApiJson;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
@@ -40,7 +41,7 @@ pub struct SwitchTenantRequest {
 pub async fn signup(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(body): Json<SignupRequest>,
+    ApiJson(body): ApiJson<SignupRequest>,
 ) -> Result<(StatusCode, CookieJar, Json<Profile>), ApiError> {
     validate(&body)?;
     let input = SignupInput {
@@ -63,7 +64,7 @@ pub async fn signup(
 pub async fn login(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(body): Json<LoginRequest>,
+    ApiJson(body): ApiJson<LoginRequest>,
 ) -> Result<(CookieJar, Json<Profile>), ApiError> {
     let user = identity::authenticate(&state.pool, &body.email, &body.password)
         .await?
@@ -94,7 +95,7 @@ pub async fn me(State(state): State<AppState>, auth: Authenticated) -> Result<Js
 pub async fn switch_tenant(
     State(state): State<AppState>,
     auth: Authenticated,
-    Json(body): Json<SwitchTenantRequest>,
+    ApiJson(body): ApiJson<SwitchTenantRequest>,
 ) -> Result<Json<Profile>, ApiError> {
     let tenant = TenantId(body.tenant_id);
     if !identity::switch_tenant(&state.pool, &auth.session, tenant).await? {

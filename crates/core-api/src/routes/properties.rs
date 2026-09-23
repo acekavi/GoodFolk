@@ -1,5 +1,6 @@
 use crate::auth::TenantContext;
 use crate::error::{ApiError, validate};
+use crate::extract::ApiJson;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
@@ -32,7 +33,7 @@ pub struct CreatePropertyRequest {
 pub async fn create(
     State(state): State<AppState>,
     ctx: TenantContext,
-    Json(body): Json<CreatePropertyRequest>,
+    ApiJson(body): ApiJson<CreatePropertyRequest>,
 ) -> Result<(StatusCode, Json<Property>), ApiError> {
     ctx.require(Permission::PropertiesCreate, None)?;
     validate(&body)?;

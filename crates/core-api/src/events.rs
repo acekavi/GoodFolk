@@ -1,6 +1,7 @@
 use crate::auth::TenantContext;
+use crate::extract::ApiQuery;
 use crate::state::AppState;
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use db::Event;
 use futures::Stream;
@@ -48,7 +49,7 @@ pub struct EventsQuery {
 pub async fn stream(
     State(state): State<AppState>,
     ctx: TenantContext,
-    Query(query): Query<EventsQuery>,
+    ApiQuery(query): ApiQuery<EventsQuery>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let tenant = ctx.tenant;
     let ready = tokio_stream::once(Ok(SseEvent::default().event("ready").data("{}")));

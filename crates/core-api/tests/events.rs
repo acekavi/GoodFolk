@@ -1,7 +1,7 @@
 mod common;
 
 use axum::body::Body;
-use axum::http::{Method, Request, header};
+use axum::http::{Method, Request, StatusCode, header};
 use common::TestApp;
 use core_api::events::spawn_listener;
 use http_body_util::BodyExt;
@@ -37,4 +37,15 @@ async fn creating_a_property_pushes_an_invalidation_to_the_tenants_stream(_: PgP
     let frame = tokio::time::timeout(Duration::from_secs(5), body.frame()).await.unwrap().unwrap().unwrap();
     let text = String::from_utf8(frame.into_data().unwrap().to_vec()).unwrap();
     assert_eq!(text, "event: invalidate\ndata: [\"properties\"]\n\n");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_malformed_query_is_a_400_problem(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+
+    let response = app.send(Method::GET, "/api/v1/events?property=not-a-uuid", Some(&owner), None).await;
+
+    assert_eq!(response.status, StatusCode::BAD_REQUEST, "{:?}", response.body);
+    assert_eq!(response.headers.get(header::CONTENT_TYPE).unwrap(), "application/problem+json");
 }

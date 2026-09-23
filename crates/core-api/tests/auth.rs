@@ -119,3 +119,31 @@ async fn a_user_cannot_switch_into_a_tenant_they_do_not_belong_to(_: PgPoolOptio
 
     assert_eq!(response.status, StatusCode::FORBIDDEN);
 }
+
+fn is_problem_json(response: &common::TestResponse) -> bool {
+    response.headers.get(header::CONTENT_TYPE).is_some_and(|v| v == "application/problem+json")
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn malformed_json_is_a_400_problem(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+
+    let syntax = app.send_raw(Method::POST, "/api/v1/auth/login", None, Some("application/json"), "{\"email\":").await;
+    let no_content_type = app.send_raw(Method::POST, "/api/v1/auth/login", None, None, "{}").await;
+
+    assert_eq!(syntax.status, StatusCode::BAD_REQUEST, "{:?}", syntax.body);
+    assert!(is_problem_json(&syntax), "{:?}", syntax.headers);
+    assert_eq!(no_content_type.status, StatusCode::BAD_REQUEST, "{:?}", no_content_type.body);
+    assert!(is_problem_json(&no_content_type), "{:?}", no_content_type.headers);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_body_missing_a_field_is_a_422_problem(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+
+    let response = app.send(Method::POST, "/api/v1/auth/login", None, Some(json!({"email": "a@example.com"}))).await;
+
+    assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", response.body);
+    assert!(is_problem_json(&response), "{:?}", response.headers);
+    assert!(response.body["detail"].as_str().unwrap().contains("password"), "{:?}", response.body);
+}

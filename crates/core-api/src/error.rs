@@ -50,6 +50,10 @@ impl ApiError {
         Self::new(StatusCode::UNPROCESSABLE_ENTITY, "Invalid request", Some(detail.into()))
     }
 
+    pub fn gateway_timeout() -> Self {
+        Self::new(StatusCode::GATEWAY_TIMEOUT, "Request timed out", None)
+    }
+
     pub fn internal() -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "Internal error", None)
     }

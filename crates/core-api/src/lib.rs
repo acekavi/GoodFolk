@@ -5,6 +5,7 @@ pub mod config;
 pub mod csrf;
 pub mod error;
 pub mod events;
+pub mod extract;
 pub mod graphql;
 pub mod idempotency;
 pub mod openapi;

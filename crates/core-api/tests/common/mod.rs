@@ -53,11 +53,39 @@ impl TestApp {
             None => builder.body(Body::empty()),
         }
         .unwrap();
+        self.call(request).await
+    }
+
+    /// Sends a raw body, e.g. one that is not valid JSON, with the CSRF header.
+    pub async fn send_raw(
+        &self,
+        method: Method,
+        path: &str,
+        cookie: Option<&str>,
+        content_type: Option<&str>,
+        body: &str,
+    ) -> TestResponse {
+        let mut builder = Request::builder().method(method).uri(path).header("x-goodfolk-csrf", "1");
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        if let Some(content_type) = content_type {
+            builder = builder.header(header::CONTENT_TYPE, content_type);
+        }
+        self.call(builder.body(Body::from(body.to_owned())).unwrap()).await
+    }
+
+    /// A body that is not JSON comes back as a JSON string, so a test can show what it was.
+    async fn call(&self, request: Request<Body>) -> TestResponse {
         let response = self.router.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let headers = response.headers().clone();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let body = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap() };
+        let body = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into()))
+        };
         TestResponse { status, headers, body }
     }
 

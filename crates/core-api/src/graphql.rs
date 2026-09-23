@@ -1,8 +1,10 @@
 //! Read-only GraphQL API. All writes go through REST commands.
 
 use crate::auth::TenantContext;
+use crate::error::ApiError;
 use crate::state::AppState;
 use async_graphql::{Context, EmptyMutation, EmptySubscription, Object, Schema, SimpleObject};
+use async_graphql_axum::rejection::GraphQLRejection;
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::extract::State;
 use db::Scope;
@@ -16,8 +18,13 @@ pub fn build_schema(production: bool) -> GqlSchema {
     if production { builder.disable_introspection().finish() } else { builder.finish() }
 }
 
-pub async fn handler(State(state): State<AppState>, ctx: TenantContext, request: GraphQLRequest) -> GraphQLResponse {
-    state.schema.execute(request.into_inner().data(state.pool.clone()).data(ctx)).await.into()
+pub async fn handler(
+    State(state): State<AppState>,
+    ctx: TenantContext,
+    request: Result<GraphQLRequest, GraphQLRejection>,
+) -> Result<GraphQLResponse, ApiError> {
+    let request = request.map_err(|rejection| ApiError::bad_request(rejection.0.to_string()))?;
+    Ok(state.schema.execute(request.into_inner().data(state.pool.clone()).data(ctx)).await.into())
 }
 
 /// Logs a database error and hides it from the client, like `ApiError` does for REST.
