@@ -44,13 +44,15 @@ pub async fn idempotent(State(state): State<AppState>, request: Request, next: N
     .rows_affected()
         == 1;
     if !claimed {
-        let (stored_hash, status, body): (Vec<u8>, Option<i16>, Option<Vec<u8>>) = sqlx::query_as(
-            "select request_hash, status_code, response_body from idempotency_key where tenant_id = $1 and key = $2",
-        )
-        .bind(ctx.tenant.0)
-        .bind(&key)
-        .fetch_one(&mut *tx)
-        .await?;
+        let (stored_hash, status, content_type, body): (Vec<u8>, Option<i16>, Option<String>, Option<Vec<u8>>) =
+            sqlx::query_as(
+                "select request_hash, status_code, content_type, response_body
+                 from idempotency_key where tenant_id = $1 and key = $2",
+            )
+            .bind(ctx.tenant.0)
+            .bind(&key)
+            .fetch_one(&mut *tx)
+            .await?;
         tx.commit().await?;
         if stored_hash != request_hash {
             return Err(ApiError::unprocessable("Idempotency-Key was already used for a different request"));
@@ -60,7 +62,11 @@ pub async fn idempotent(State(state): State<AppState>, request: Request, next: N
         };
         let status =
             u16::try_from(status).ok().and_then(|s| StatusCode::from_u16(s).ok()).ok_or_else(ApiError::internal)?;
-        return Ok((status, [(header::CONTENT_TYPE, "application/json")], body).into_response());
+        let mut replay = (status, body).into_response();
+        if let Some(content_type) = content_type.and_then(|v| header::HeaderValue::from_str(&v).ok()) {
+            replay.headers_mut().insert(header::CONTENT_TYPE, content_type);
+        }
+        return Ok(replay);
     }
     tx.commit().await?;
 
@@ -77,11 +83,12 @@ pub async fn idempotent(State(state): State<AppState>, request: Request, next: N
             .await?;
     } else {
         sqlx::query(
-            "update idempotency_key set status_code = $3, response_body = $4 where tenant_id = $1 and key = $2",
+            "update idempotency_key set status_code = $3, content_type = $4, response_body = $5 where tenant_id = $1 and key = $2",
         )
         .bind(ctx.tenant.0)
         .bind(&key)
         .bind(i16::try_from(response_parts.status.as_u16()).map_err(|_| ApiError::internal())?)
+        .bind(response_parts.headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()))
         .bind(body.to_vec())
         .execute(&mut *tx)
         .await?;

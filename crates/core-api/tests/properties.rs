@@ -1,6 +1,6 @@
 mod common;
 
-use axum::http::{Method, StatusCode};
+use axum::http::{Method, StatusCode, header};
 use common::{TestApp, TestResponse};
 use serde_json::{Value, json};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -75,4 +75,19 @@ async fn creating_requires_an_idempotency_key_and_valid_fields(_: PgPoolOptions,
     assert_eq!(no_key.status, StatusCode::BAD_REQUEST);
     assert_eq!(bad_code.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(bad_zone.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_replayed_error_keeps_its_problem_json_content_type(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    let bad_zone = json!({"code": "GAL", "name": "G", "timezone": "Mars/Base", "base_currency": "LKR"});
+
+    let first = create(&app, &owner, "key-00000001", bad_zone.clone()).await;
+    let retry = create(&app, &owner, "key-00000001", bad_zone).await;
+
+    assert_eq!(first.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(retry.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(retry.headers.get(header::CONTENT_TYPE).unwrap(), "application/problem+json");
+    assert_eq!(retry.body, first.body);
 }
