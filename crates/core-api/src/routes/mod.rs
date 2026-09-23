@@ -3,7 +3,7 @@ mod health;
 pub(crate) mod properties;
 
 use crate::state::AppState;
-use crate::{csrf, graphql, idempotency};
+use crate::{csrf, events, graphql, idempotency};
 use axum::Router;
 use axum::http::StatusCode;
 use axum::middleware::{from_fn, from_fn_with_state};
@@ -32,8 +32,12 @@ pub fn router(state: AppState) -> Router {
         .merge(commands)
         .layer(TimeoutLayer::with_status_code(StatusCode::GATEWAY_TIMEOUT, Duration::from_secs(15)));
 
+    // Long-lived, so kept outside the request timeout.
+    let streams = Router::new().route("/api/v1/events", get(events::stream));
+
     Router::new()
         .merge(requests)
+        .merge(streams)
         .layer(from_fn(csrf::require_csrf_header))
         .route("/healthz", get(health::live))
         .route("/readyz", get(health::ready))

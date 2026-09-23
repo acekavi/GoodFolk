@@ -1,6 +1,7 @@
 use anyhow::{Context, bail};
 use core_api::config::Config;
-use core_api::{AppState, router};
+use core_api::{AppState, events, router};
+use sqlx::postgres::PgListener;
 use tracing_subscriber::EnvFilter;
 
 #[global_allocator]
@@ -20,6 +21,10 @@ async fn serve() -> anyhow::Result<()> {
     init_tracing(config.production);
     let pool = db::connect(&config.database_url, config.database_max_connections).await?;
     let state = AppState::new(pool, config.production);
+    let listener = PgListener::connect(&config.database_listen_url).await?;
+    let mut listener = listener;
+    listener.listen(db::CHANNEL).await?;
+    events::spawn_listener(listener, state.events.clone());
 
     let tcp = tokio::net::TcpListener::bind(config.bind_addr).await?;
     tracing::info!(addr = %config.bind_addr, "listening");
