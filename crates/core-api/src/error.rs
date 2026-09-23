@@ -1,0 +1,83 @@
+use axum::Json;
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use serde::Serialize;
+
+/// An RFC 9457 `application/problem+json` error.
+#[derive(Debug)]
+pub struct ApiError {
+    status: StatusCode,
+    title: &'static str,
+    detail: Option<String>,
+}
+
+#[derive(Serialize)]
+struct Problem<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    title: &'a str,
+    status: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<&'a str>,
+}
+
+impl ApiError {
+    fn new(status: StatusCode, title: &'static str, detail: Option<String>) -> Self {
+        Self { status, title, detail }
+    }
+
+    pub fn bad_request(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, "Bad request", Some(detail.into()))
+    }
+
+    pub fn unauthenticated() -> Self {
+        Self::new(StatusCode::UNAUTHORIZED, "Not signed in", None)
+    }
+
+    pub fn invalid_credentials() -> Self {
+        Self::new(StatusCode::UNAUTHORIZED, "Invalid email or password", None)
+    }
+
+    pub fn forbidden(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, "Forbidden", Some(detail.into()))
+    }
+
+    pub fn conflict(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, "Conflict", Some(detail.into()))
+    }
+
+    pub fn unprocessable(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::UNPROCESSABLE_ENTITY, "Invalid request", Some(detail.into()))
+    }
+
+    pub fn internal() -> Self {
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, "Internal error", None)
+    }
+
+    pub fn status(&self) -> StatusCode {
+        self.status
+    }
+}
+
+impl From<sqlx::Error> for ApiError {
+    fn from(err: sqlx::Error) -> Self {
+        tracing::error!(error = %err, "database error");
+        Self::internal()
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let body = Problem {
+            kind: "about:blank",
+            title: self.title,
+            status: self.status.as_u16(),
+            detail: self.detail.as_deref(),
+        };
+        let mut response = (self.status, Json(body)).into_response();
+        response
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/problem+json"));
+        response
+    }
+}

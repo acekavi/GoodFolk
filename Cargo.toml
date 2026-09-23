@@ -8,6 +8,7 @@ rust-version = "1.97"
 publish = false
 
 [workspace.dependencies]
+core_api = { path = "crates/core-api" }
 db = { path = "crates/db" }
 identity = { path = "modules/identity" }
 property = { path = "modules/property" }
