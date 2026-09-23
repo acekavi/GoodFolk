@@ -2,11 +2,13 @@
 //! transactions and change notifications.
 
 mod events;
+mod guard;
 mod scope;
 #[cfg(feature = "testing")]
 pub mod testing;
 
 pub use events::{CHANNEL, Event, notify};
+pub use guard::{RlsBypassed, assert_rls_applies};
 pub use scope::{Scope, TenantId, Tx, UserId, begin};
 
 use sqlx::postgres::{PgPool, PgPoolOptions};

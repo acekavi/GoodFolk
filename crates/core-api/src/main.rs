@@ -20,9 +20,9 @@ async fn serve() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     init_tracing(config.production);
     let pool = db::connect(&config.database_url, config.database_max_connections).await?;
+    db::assert_rls_applies(&pool).await?;
     let state = AppState::new(pool, config.production);
-    let listener = PgListener::connect(&config.database_listen_url).await?;
-    let mut listener = listener;
+    let mut listener = PgListener::connect(&config.database_listen_url).await?;
     listener.listen(db::CHANNEL).await?;
     events::spawn_listener(listener, state.events.clone());
 
