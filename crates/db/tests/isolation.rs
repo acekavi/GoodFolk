@@ -138,3 +138,78 @@ async fn audit_log_is_append_only(_: PgPoolOptions, opts: PgConnectOptions) {
 
     assert!(delete.is_err());
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn role_grants_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts, 1).await;
+    let a = seed_tenant(&pool, "A").await;
+    let b = seed_tenant(&pool, "B").await;
+    let user = UserId(Uuid::now_v7());
+    let mut tx = begin(&pool, Scope::tenant(a)).await.unwrap();
+    sqlx::query("insert into app_user (id, email, password_hash, display_name) values ($1, 'u@example.com', 'x', 'U')")
+        .bind(user.0)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("insert into membership (tenant_id, user_id) values ($1, $2)")
+        .bind(a.0)
+        .bind(user.0)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("insert into role_grant (id, tenant_id, user_id, property_id, role) values ($1, $2, $3, $4, $5)")
+        .bind(Uuid::now_v7())
+        .bind(a.0)
+        .bind(user.0)
+        .bind::<Option<Uuid>>(None)
+        .bind("owner")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = begin(&pool, Scope::tenant(b)).await.unwrap();
+    let count: i64 = sqlx::query_scalar("select count(*) from role_grant").fetch_one(&mut *tx).await.unwrap();
+    let result =
+        sqlx::query("insert into role_grant (id, tenant_id, user_id, property_id, role) values ($1, $2, $3, $4, $5)")
+            .bind(Uuid::now_v7())
+            .bind(a.0)
+            .bind(user.0)
+            .bind::<Option<Uuid>>(None)
+            .bind("owner")
+            .execute(&mut *tx)
+            .await;
+
+    assert_eq!(count, 0);
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("row-level security"), "unexpected error: {err}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn idempotency_keys_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts, 1).await;
+    let a = seed_tenant(&pool, "A").await;
+    let b = seed_tenant(&pool, "B").await;
+    let mut tx = begin(&pool, Scope::tenant(a)).await.unwrap();
+    sqlx::query("insert into idempotency_key (tenant_id, key, request_hash) values ($1, $2, $3)")
+        .bind(a.0)
+        .bind("key-00000001")
+        .bind(vec![1u8])
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = begin(&pool, Scope::tenant(b)).await.unwrap();
+    let count: i64 = sqlx::query_scalar("select count(*) from idempotency_key").fetch_one(&mut *tx).await.unwrap();
+    let result = sqlx::query("insert into idempotency_key (tenant_id, key, request_hash) values ($1, $2, $3)")
+        .bind(a.0)
+        .bind("key-00000002")
+        .bind(vec![2u8])
+        .execute(&mut *tx)
+        .await;
+
+    assert_eq!(count, 0);
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("row-level security"), "unexpected error: {err}");
+}
