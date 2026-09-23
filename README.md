@@ -42,3 +42,17 @@ cd web/pms
 bun run api:schemas && bun run codegen   # after any API change; commit the result
 bun run lint && bun run check && bun run test && bun run build
 ```
+
+### Configuration
+
+The API (`core-api serve`) reads:
+
+| Variable | Meaning |
+|---|---|
+| `DATABASE_URL` | Pooled connection string, as the `goodfolk_api` role (required). The API refuses to start as a role that bypasses row-level security. |
+| `DATABASE_LISTEN_URL` | Direct, unpooled connection string used for `LISTEN` (transaction-mode poolers cannot listen). Required when `APP_ENV=production`; otherwise defaults to `DATABASE_URL`. |
+| `DATABASE_MAX_CONNECTIONS` | Pool size (default 10). |
+| `PORT` | Listen port (default 8080). |
+| `APP_ENV` | `production` sets `Secure` cookies, disables GraphQL introspection and requires `DATABASE_LISTEN_URL`. |
+
+`core-api migrate` reads `DATABASE_OWNER_URL` (the schema owner) instead.

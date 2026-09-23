@@ -63,12 +63,18 @@ impl TenantContext {
         }
     }
 
-    /// `None` if the user may see every property, otherwise the properties they hold grants for.
+    /// `None` if the user may see every property, otherwise the properties they hold a viewing grant for.
     pub fn visible_properties(&self) -> Option<Vec<Uuid>> {
         if allows(&self.grants, Permission::PropertiesView, None) {
             None
         } else {
-            Some(self.grants.iter().filter_map(|g| g.property_id).collect())
+            Some(
+                self.grants
+                    .iter()
+                    .filter(|g| allows(&[**g], Permission::PropertiesView, g.property_id))
+                    .filter_map(|g| g.property_id)
+                    .collect(),
+            )
         }
     }
 }
