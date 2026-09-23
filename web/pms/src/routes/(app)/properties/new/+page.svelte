@@ -7,8 +7,10 @@
 	import { propertiesKey } from '$lib/properties';
 
 	const client = useQueryClient();
-	// One key per form: a double-click or network retry cannot create two properties.
-	const key = idempotencyKey();
+	// A double-click or network retry resends the same body with the same key, so it cannot create
+	// two properties. An edited resubmission is a different request and gets a new key.
+	let key = idempotencyKey();
+	let lastBody = '';
 	let form = $state({ code: '', name: '', timezone: 'Asia/Colombo', base_currency: 'LKR' });
 	let error = $state('');
 	let busy = $state(false);
@@ -17,16 +19,20 @@
 		event.preventDefault();
 		busy = true;
 		error = '';
+		const body = {
+			...form,
+			code: form.code.toUpperCase(),
+			base_currency: form.base_currency.toUpperCase()
+		};
+		const serialized = JSON.stringify(body);
+		if (lastBody && serialized !== lastBody) key = idempotencyKey();
+		lastBody = serialized;
 		const {
 			data,
 			error: problem,
 			response
 		} = await rest.POST('/api/v1/properties', {
-			body: {
-				...form,
-				code: form.code.toUpperCase(),
-				base_currency: form.base_currency.toUpperCase()
-			},
+			body,
 			params: { header: { 'Idempotency-Key': key } }
 		});
 		busy = false;

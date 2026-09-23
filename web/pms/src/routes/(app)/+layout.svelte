@@ -4,7 +4,7 @@
 	import { page } from '$app/state';
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { rest } from '$lib/api/rest';
-	import { ApiError } from '$lib/api/problem';
+	import { ApiError, toApiError } from '$lib/api/problem';
 	import { connectEvents } from '$lib/events';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
 	import { fetchMe } from '$lib/session';
@@ -27,14 +27,26 @@
 		if (me.data) return connectEvents(client);
 	});
 
+	let tenantError = $state('');
+
 	async function switchTenant(event: Event) {
-		const tenant_id = (event.currentTarget as HTMLSelectElement).value;
-		const { data } = await rest.PUT('/api/v1/session/tenant', { body: { tenant_id } });
-		if (data) {
-			client.setQueryData(['me'], data);
-			await client.invalidateQueries();
-			await goto(resolve('/'));
+		const select = event.currentTarget as HTMLSelectElement;
+		tenantError = '';
+		const {
+			data,
+			error: problem,
+			response
+		} = await rest.PUT('/api/v1/session/tenant', {
+			body: { tenant_id: select.value }
+		});
+		if (!data) {
+			select.value = me.data?.current_tenant ?? '';
+			tenantError = toApiError(problem, response.status).message;
+			return;
 		}
+		client.setQueryData(['me'], data);
+		await client.invalidateQueries();
+		await goto(resolve('/'));
 	}
 
 	async function logout() {
@@ -55,6 +67,7 @@
 		{:else}
 			<strong>{me.data.tenants[0]?.name}</strong>
 		{/if}
+		{#if tenantError}<span class="error" role="alert">{tenantError}</span>{/if}
 		<nav aria-label="Properties">
 			{#each properties.data ?? [] as property (property.id)}
 				<a
