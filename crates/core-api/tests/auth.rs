@@ -147,3 +147,17 @@ async fn a_body_missing_a_field_is_a_422_problem(_: PgPoolOptions, opts: PgConne
     assert!(is_problem_json(&response), "{:?}", response.headers);
     assert!(response.body["detail"].as_str().unwrap().contains("password"), "{:?}", response.body);
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_session_whose_tenant_membership_was_removed_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = sqlx::PgPool::connect_with(opts).await.unwrap();
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+
+    sqlx::query("delete from membership").execute(&superuser).await.unwrap();
+    let response =
+        app.send(Method::POST, "/graphql", Some(&owner), Some(json!({"query": "{ properties { code } }"}))).await;
+
+    assert_eq!(response.status, StatusCode::FORBIDDEN, "{:?}", response.body);
+    assert_eq!(response.body["detail"], "no tenant selected");
+}

@@ -83,6 +83,16 @@ impl FromRequestParts<AppState> for TenantContext {
         let auth = Authenticated::from_request_parts(parts, state).await?;
         let tenant = auth.session.tenant.ok_or_else(|| ApiError::forbidden("no tenant selected"))?;
         let mut tx = db::begin(&state.pool, Scope::tenant(tenant)).await?;
+        // The session's tenant was chosen when the user was a member; they may have been removed since.
+        let member: bool =
+            sqlx::query_scalar("select exists (select 1 from membership where tenant_id = $1 and user_id = $2)")
+                .bind(tenant.0)
+                .bind(auth.session.user.0)
+                .fetch_one(&mut *tx)
+                .await?;
+        if !member {
+            return Err(ApiError::forbidden("no tenant selected"));
+        }
         let grants = load_grants(&mut tx, auth.session.user).await?;
         tx.commit().await?;
         let found = TenantContext { user: auth.session.user, tenant, grants };
