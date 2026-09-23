@@ -6,9 +6,15 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+serde.workspace = true
 sqlx.workspace = true
+uuid.workspace = true
+
+[features]
+testing = []
 
 [dev-dependencies]
+db = { workspace = true, features = ["testing"] }
 tokio.workspace = true
 
 [lints]

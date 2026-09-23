@@ -1,6 +1,12 @@
 //! Database access shared by every module: pool setup, migrations, tenant-scoped
 //! transactions and change notifications.
 
+mod scope;
+#[cfg(feature = "testing")]
+pub mod testing;
+
+pub use scope::{Scope, TenantId, Tx, UserId, begin};
+
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::time::Duration;
 
