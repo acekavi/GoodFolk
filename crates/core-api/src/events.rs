@@ -15,23 +15,41 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use uuid::Uuid;
 
+/// What this instance tells its open streams.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LiveEvent {
+    /// A committed change; clients invalidate the event's keys.
+    Invalidate(Event),
+    /// Changes may have been missed (the database connection was lost); clients refetch everything on screen.
+    Resync,
+}
+
 /// Forwards every `NOTIFY gf_events` from Postgres to this instance's subscribers.
 /// Every instance runs one, so every connected client hears about every change.
-pub fn spawn_listener(mut listener: PgListener, events: broadcast::Sender<Event>) -> tokio::task::JoinHandle<()> {
+///
+/// Notifications sent while the connection is down are lost, so every stream is told to resync when it drops.
+pub fn spawn_listener(mut listener: PgListener, events: broadcast::Sender<LiveEvent>) -> tokio::task::JoinHandle<()> {
+    // Sending with no subscribers is normal, so send results are ignored.
     tokio::spawn(async move {
         loop {
-            match listener.recv().await {
-                Ok(notification) => match serde_json::from_str::<Event>(notification.payload()) {
+            match listener.try_recv().await {
+                Ok(Some(notification)) => match serde_json::from_str::<Event>(notification.payload()) {
                     Ok(event) => {
-                        // No subscribers is normal; nothing to do.
-                        let _ = events.send(event);
+                        let _ = events.send(LiveEvent::Invalidate(event));
                     }
                     Err(err) => tracing::warn!(error = %err, "ignoring malformed event payload"),
                 },
+                Ok(None) => {
+                    // The listener has already reconnected and listens again.
+                    tracing::warn!("event listener connection lost; streams will resync");
+                    let _ = events.send(LiveEvent::Resync);
+                }
                 Err(err) => {
-                    // PgListener reconnects on the next recv; back off briefly.
-                    tracing::warn!(error = %err, "event listener error");
+                    // The connection may be gone; the next try_recv reconnects. Back off briefly, then
+                    // resync, since notifications may have been missed.
+                    tracing::warn!(error = %err, "event listener error; streams will resync");
                     tokio::time::sleep(Duration::from_secs(1)).await;
+                    let _ = events.send(LiveEvent::Resync);
                 }
             }
         }
@@ -54,13 +72,15 @@ pub async fn stream(
     let tenant = ctx.tenant;
     let ready = tokio_stream::once(Ok(SseEvent::default().event("ready").data("{}")));
     let updates = BroadcastStream::new(state.events.subscribe()).filter_map(move |item| match item {
-        Ok(event) => {
+        Ok(LiveEvent::Invalidate(event)) => {
             let relevant = event.tenant_id == tenant
                 && (event.property_id.is_none() || query.property.is_none() || event.property_id == query.property);
             relevant
                 .then(|| Ok(SseEvent::default().event("invalidate").json_data(&event.keys).expect("keys serialize")))
         }
-        Err(BroadcastStreamRecvError::Lagged(_)) => Some(Ok(SseEvent::default().event("resync").data("{}"))),
+        Ok(LiveEvent::Resync) | Err(BroadcastStreamRecvError::Lagged(_)) => {
+            Some(Ok(SseEvent::default().event("resync").data("{}")))
+        }
     });
     Sse::new(ready.chain(updates)).keep_alive(KeepAlive::default())
 }

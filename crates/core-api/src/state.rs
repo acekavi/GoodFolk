@@ -1,5 +1,5 @@
+use crate::events::LiveEvent;
 use crate::graphql::{GqlSchema, build_schema};
-use db::Event;
 use sqlx::PgPool;
 use tokio::sync::broadcast;
 
@@ -8,7 +8,7 @@ pub struct AppState {
     pub pool: PgPool,
     pub schema: GqlSchema,
     /// Fan-out of database change events to this instance's SSE subscribers.
-    pub events: broadcast::Sender<Event>,
+    pub events: broadcast::Sender<LiveEvent>,
     /// Production sets `Secure` cookies and disables GraphQL introspection.
     pub production: bool,
 }
