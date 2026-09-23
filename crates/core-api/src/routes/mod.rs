@@ -3,7 +3,7 @@ mod health;
 pub(crate) mod properties;
 
 use crate::state::AppState;
-use crate::{csrf, idempotency};
+use crate::{csrf, graphql, idempotency};
 use axum::Router;
 use axum::http::StatusCode;
 use axum::middleware::{from_fn, from_fn_with_state};
@@ -28,6 +28,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/me", get(auth::me))
         .route("/api/v1/session/tenant", put(auth::switch_tenant))
+        .route("/graphql", post(graphql::handler))
         .merge(commands)
         .layer(TimeoutLayer::with_status_code(StatusCode::GATEWAY_TIMEOUT, Duration::from_secs(15)));
 

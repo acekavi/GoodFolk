@@ -8,6 +8,8 @@ default-run = "core-api"
 
 [dependencies]
 anyhow.workspace = true
+async-graphql.workspace = true
+async-graphql-axum.workspace = true
 axum.workspace = true
 axum-extra.workspace = true
 db.workspace = true

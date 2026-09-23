@@ -62,6 +62,15 @@ impl TenantContext {
             Err(ApiError::forbidden("you do not have permission for this action"))
         }
     }
+
+    /// `None` if the user may see every property, otherwise the properties they hold grants for.
+    pub fn visible_properties(&self) -> Option<Vec<Uuid>> {
+        if allows(&self.grants, Permission::PropertiesView, None) {
+            None
+        } else {
+            Some(self.grants.iter().filter_map(|g| g.property_id).collect())
+        }
+    }
 }
 
 impl FromRequestParts<AppState> for TenantContext {
