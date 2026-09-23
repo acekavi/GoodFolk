@@ -35,6 +35,17 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
 - Inventory calendar screen (room types × dates, windowed by month).
 - Block dates for rooms, with conflict detection.
 - From Phase 0: `If-Match` optimistic concurrency, login throttling, Playwright end-to-end tests.
+- Carried over from the Phase 0 reviews:
+  - A router fallback and a method-not-allowed fallback that return problem+json. Unmatched routes currently return an empty 404 or 405.
+  - The SSE listener must send a second `resync` once a delayed reconnect succeeds (track a "connection lost" flag).
+  - Tests still to add:
+    - `/readyz` returning 503;
+    - GraphQL depth and complexity limits;
+    - an HTTP-level tenant switch followed by a create;
+    - the `property.created` audit row.
+  - Log a warning when `load_grants` skips a role it doesn't recognise.
+  - Check the SSE `?property=` filter against the user's grants once property-scoped roles exist.
+  - A purge job for expired sessions and old idempotency keys (runs in `jobs-svc`, Phase 7).
 
 ## Phase 2 — Rates and meal plans ([spec](specs/phase-2-rates-meal-plans.md))
 
