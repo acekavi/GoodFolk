@@ -81,13 +81,16 @@ pub async fn authenticate(pool: &PgPool, email: &str, password: &str) -> Result<
         .fetch_optional(pool)
         .await?;
     let password = password.to_owned();
-    let (user, hash) = match row {
-        Some((id, hash)) => (Some(UserId(id)), hash),
-        None => (None, DUMMY_HASH.clone()),
+    let (user, stored_hash) = match row {
+        Some((id, hash)) => (Some(UserId(id)), Some(hash)),
+        None => (None, None),
     };
-    let valid = tokio::task::spawn_blocking(move || verify_password(&password, &hash))
-        .await
-        .expect("verification task does not panic");
+    // DUMMY_HASH is computed on first use, so it is only touched on the blocking pool.
+    let valid = tokio::task::spawn_blocking(move || {
+        verify_password(&password, stored_hash.as_deref().unwrap_or(DUMMY_HASH.as_str()))
+    })
+    .await
+    .expect("verification task does not panic");
     Ok(user.filter(|_| valid))
 }
 
