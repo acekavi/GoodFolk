@@ -7,6 +7,7 @@ pub mod error;
 pub mod events;
 pub mod graphql;
 pub mod idempotency;
+pub mod openapi;
 pub mod routes;
 pub mod state;
 
