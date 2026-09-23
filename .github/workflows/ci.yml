@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: goodfolk_owner
+          POSTGRES_PASSWORD: goodfolk_owner_dev
+          POSTGRES_DB: goodfolk
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U goodfolk_owner"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      # Tests create throwaway databases, so they connect as the owner (superuser).
+      DATABASE_URL: postgres://goodfolk_owner:goodfolk_owner_dev@localhost:5432/goodfolk
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Create database roles
+        run: psql "$DATABASE_URL" -f deploy/dev/postgres-init.sql
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web/pms
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Generated API types match the backend
+        run: |
+          bun run api:schemas
+          bun run codegen
+          git diff --exit-code -- src/lib/api
+      - run: bun run lint
+      - run: bun run check
+      - run: bun run test
+      - run: bun run build
