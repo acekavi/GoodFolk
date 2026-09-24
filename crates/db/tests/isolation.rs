@@ -2,8 +2,8 @@
 
 use db::testing::app_pool;
 use db::{Scope, TenantId, UserId, begin};
-use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::{AssertSqlSafe, PgPool};
 use uuid::Uuid;
 
 async fn seed_tenant(pool: &PgPool, name: &str) -> TenantId {
@@ -16,8 +16,8 @@ async fn seed_tenant(pool: &PgPool, name: &str) -> TenantId {
         .await
         .unwrap();
     sqlx::query(
-        "insert into property (id, tenant_id, code, name, timezone, base_currency)
-         values ($1, $2, 'MAIN', $3, 'Asia/Colombo', 'LKR')",
+        "insert into property (id, tenant_id, code, name, timezone, base_currency, business_date)
+         values ($1, $2, 'MAIN', $3, 'Asia/Colombo', 'LKR', current_date)",
     )
     .bind(Uuid::now_v7())
     .bind(tenant.0)
@@ -63,8 +63,8 @@ async fn writing_into_another_tenant_is_rejected(_: PgPoolOptions, opts: PgConne
 
     let mut tx = begin(&pool, Scope::tenant(a)).await.unwrap();
     let result = sqlx::query(
-        "insert into property (id, tenant_id, code, name, timezone, base_currency)
-         values ($1, $2, 'X1', 'Intruder', 'Asia/Colombo', 'LKR')",
+        "insert into property (id, tenant_id, code, name, timezone, base_currency, business_date)
+         values ($1, $2, 'X1', 'Intruder', 'Asia/Colombo', 'LKR', current_date)",
     )
     .bind(Uuid::now_v7())
     .bind(b.0)
@@ -211,5 +211,240 @@ async fn idempotency_keys_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConne
 
     assert_eq!(count, 0);
     let err = result.unwrap_err().to_string();
+    assert!(err.contains("row-level security"), "unexpected error: {err}");
+}
+
+/// One row in every Phase 1 table, for tenant `a`'s property.
+struct RoomsSeed {
+    property: Uuid,
+    room_type: Uuid,
+    section: Uuid,
+    room: Uuid,
+    reason: Uuid,
+}
+
+async fn seed_rooms(pool: &PgPool, tenant: TenantId) -> RoomsSeed {
+    let mut tx = begin(pool, Scope::tenant(tenant)).await.unwrap();
+    let property: Uuid = sqlx::query_scalar("select id from property").fetch_one(&mut *tx).await.unwrap();
+    let seed = RoomsSeed {
+        property,
+        room_type: Uuid::now_v7(),
+        section: Uuid::now_v7(),
+        room: Uuid::now_v7(),
+        reason: Uuid::now_v7(),
+    };
+    sqlx::query(
+        "insert into room_type (id, tenant_id, property_id, code, name, base_occupancy, max_adults, max_children, max_occupancy)
+         values ($1, $2, $3, 'DLX', 'Deluxe', 2, 2, 1, 3)",
+    )
+    .bind(seed.room_type)
+    .bind(tenant.0)
+    .bind(property)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query("insert into housekeeping_section (id, tenant_id, property_id, name) values ($1, $2, $3, 'East')")
+        .bind(seed.section)
+        .bind(tenant.0)
+        .bind(property)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into room (id, tenant_id, property_id, room_type_id, number, section_id) values ($1, $2, $3, $4, '101', $5)",
+    )
+    .bind(seed.room)
+    .bind(tenant.0)
+    .bind(property)
+    .bind(seed.room_type)
+    .bind(seed.section)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into block_reason (id, tenant_id, property_id, code, label, default_kind)
+         values ($1, $2, $3, 'LEAK', 'Leak', 'out_of_order')",
+    )
+    .bind(seed.reason)
+    .bind(tenant.0)
+    .bind(property)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into room_block (id, tenant_id, property_id, room_id, period, kind, reason_id)
+         values ($1, $2, $3, $4, daterange(current_date, current_date + 3), 'out_of_order', $5)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(tenant.0)
+    .bind(property)
+    .bind(seed.room)
+    .bind(seed.reason)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into inventory_day (tenant_id, property_id, room_type_id, date, physical) values ($1, $2, $3, current_date, 1)",
+    )
+    .bind(tenant.0)
+    .bind(property)
+    .bind(seed.room_type)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    seed
+}
+
+/// How many rows of `table` tenant `viewer` can see.
+async fn visible_rows(pool: &PgPool, viewer: TenantId, table: &str) -> i64 {
+    let mut tx = begin(pool, Scope::tenant(viewer)).await.unwrap();
+    sqlx::query_scalar(AssertSqlSafe(format!("select count(*) from {table}"))).fetch_one(&mut *tx).await.unwrap()
+}
+
+/// Runs `insert` (with `$1` bound to the owning tenant) as tenant `writer`, and returns the error message.
+async fn foreign_insert_error(pool: &PgPool, writer: TenantId, owner: TenantId, insert: &'static str) -> String {
+    let mut tx = begin(pool, Scope::tenant(writer)).await.unwrap();
+    sqlx::query(insert).bind(owner.0).execute(&mut *tx).await.unwrap_err().to_string()
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn room_types_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts, 1).await;
+    let a = seed_tenant(&pool, "A").await;
+    let b = seed_tenant(&pool, "B").await;
+    seed_rooms(&pool, a).await;
+
+    let seen = visible_rows(&pool, b, "room_type").await;
+    let err = foreign_insert_error(
+        &pool,
+        b,
+        a,
+        "insert into room_type (id, tenant_id, property_id, code, name, base_occupancy, max_adults, max_children, max_occupancy)
+         select gen_random_uuid(), $1, id, 'STD', 'Standard', 1, 1, 0, 1 from property limit 1",
+    )
+    .await;
+
+    assert_eq!(visible_rows(&pool, a, "room_type").await, 1);
+    assert_eq!(seen, 0);
+    assert!(err.contains("row-level security"), "unexpected error: {err}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn housekeeping_sections_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts, 1).await;
+    let a = seed_tenant(&pool, "A").await;
+    let b = seed_tenant(&pool, "B").await;
+    seed_rooms(&pool, a).await;
+
+    let seen = visible_rows(&pool, b, "housekeeping_section").await;
+    let err = foreign_insert_error(
+        &pool,
+        b,
+        a,
+        "insert into housekeeping_section (id, tenant_id, property_id, name)
+         select gen_random_uuid(), $1, id, 'West' from property limit 1",
+    )
+    .await;
+
+    assert_eq!(visible_rows(&pool, a, "housekeeping_section").await, 1);
+    assert_eq!(seen, 0);
+    assert!(err.contains("row-level security"), "unexpected error: {err}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn rooms_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts, 1).await;
+    let a = seed_tenant(&pool, "A").await;
+    let b = seed_tenant(&pool, "B").await;
+    seed_rooms(&pool, a).await;
+    let theirs = seed_rooms(&pool, b).await;
+
+    let seen = visible_rows(&pool, b, "room").await;
+    let mut tx = begin(&pool, Scope::tenant(b)).await.unwrap();
+    let err = sqlx::query(
+        "insert into room (id, tenant_id, property_id, room_type_id, number) values (gen_random_uuid(), $1, $2, $3, '102')",
+    )
+    .bind(a.0)
+    .bind(theirs.property)
+    .bind(theirs.room_type)
+    .execute(&mut *tx)
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert_eq!(seen, 1, "B sees only its own room");
+    assert!(err.contains("row-level security"), "unexpected error: {err}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn block_reasons_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts, 1).await;
+    let a = seed_tenant(&pool, "A").await;
+    let b = seed_tenant(&pool, "B").await;
+    seed_rooms(&pool, a).await;
+
+    let seen = visible_rows(&pool, b, "block_reason").await;
+    let err = foreign_insert_error(
+        &pool,
+        b,
+        a,
+        "insert into block_reason (id, tenant_id, property_id, code, label, default_kind)
+         select gen_random_uuid(), $1, id, 'PAINT', 'Painting', 'out_of_order' from property limit 1",
+    )
+    .await;
+
+    assert_eq!(seen, 0);
+    assert!(err.contains("row-level security"), "unexpected error: {err}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn room_blocks_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts, 1).await;
+    let a = seed_tenant(&pool, "A").await;
+    let b = seed_tenant(&pool, "B").await;
+    seed_rooms(&pool, a).await;
+    let theirs = seed_rooms(&pool, b).await;
+
+    let seen = visible_rows(&pool, b, "room_block").await;
+    let mut tx = begin(&pool, Scope::tenant(b)).await.unwrap();
+    let err = sqlx::query(
+        "insert into room_block (id, tenant_id, property_id, room_id, period, kind, reason_id)
+         values (gen_random_uuid(), $1, $2, $3, daterange(current_date + 10, current_date + 12), 'out_of_order', $4)",
+    )
+    .bind(a.0)
+    .bind(theirs.property)
+    .bind(theirs.room)
+    .bind(theirs.reason)
+    .execute(&mut *tx)
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert_eq!(seen, 1, "B sees only its own block");
+    assert!(err.contains("row-level security"), "unexpected error: {err}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn inventory_days_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts, 1).await;
+    let a = seed_tenant(&pool, "A").await;
+    let b = seed_tenant(&pool, "B").await;
+    let ours = seed_rooms(&pool, a).await;
+
+    let seen = visible_rows(&pool, b, "inventory_day").await;
+    let mut tx = begin(&pool, Scope::tenant(b)).await.unwrap();
+    let err = sqlx::query(
+        "insert into inventory_day (tenant_id, property_id, room_type_id, date) values ($1, $2, $3, current_date + 1)",
+    )
+    .bind(a.0)
+    .bind(ours.property)
+    .bind(ours.room_type)
+    .execute(&mut *tx)
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert_eq!(seen, 0);
     assert!(err.contains("row-level security"), "unexpected error: {err}");
 }

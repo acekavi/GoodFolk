@@ -49,8 +49,8 @@ pub async fn create_property(
         return Err(PropertyError::UnknownTimezone);
     }
     let inserted = sqlx::query_as::<_, Property>(
-        "insert into property (id, tenant_id, code, name, timezone, base_currency)
-         values ($1, $2, $3, $4, $5, $6)
+        "insert into property (id, tenant_id, code, name, timezone, base_currency, business_date)
+         values ($1, $2, $3, $4, $5, $6, (now() at time zone $5)::date)
          returning id, code, name, timezone, base_currency, version",
     )
     .bind(Uuid::now_v7())
