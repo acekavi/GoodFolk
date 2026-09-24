@@ -9,6 +9,7 @@ use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::extract::State;
 use db::Scope;
 use sqlx::PgPool;
+use time::Date;
 use uuid::Uuid;
 
 pub type GqlSchema = Schema<Query, EmptyMutation, EmptySubscription>;
@@ -41,6 +42,13 @@ pub struct PropertyNode {
     pub name: String,
     pub timezone: String,
     pub base_currency: String,
+    /// `HH:MM`, local time.
+    pub check_in_time: String,
+    /// `HH:MM`, local time.
+    pub check_out_time: String,
+    pub business_date: Date,
+    /// Send as `If-Match: "<version>"` when updating.
+    pub version: i32,
 }
 
 pub struct Query;
@@ -63,6 +71,10 @@ impl Query {
                 name: p.name,
                 timezone: p.timezone,
                 base_currency: p.base_currency,
+                check_in_time: p.check_in_time,
+                check_out_time: p.check_out_time,
+                business_date: p.business_date,
+                version: p.version,
             })
             .collect())
     }

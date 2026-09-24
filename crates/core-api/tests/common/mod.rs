@@ -112,6 +112,40 @@ impl TestApp {
     }
 }
 
+impl TestApp {
+    /// Signs up `email` and makes them `role` in the tenant of `owner_cookie`, with their session switched to it.
+    /// Staff invitations arrive in Phase 8; until then the membership is written directly as `superuser`.
+    pub async fn staff(&self, superuser: &PgPool, owner_cookie: &str, email: &str, role: &str) -> String {
+        let cookie = self.signup_owner(email, "Own tenant").await;
+        let user = self.send(Method::GET, "/api/v1/me", Some(&cookie), None).await.body["user_id"].clone();
+        let tenant =
+            self.send(Method::GET, "/api/v1/me", Some(owner_cookie), None).await.body["current_tenant"].clone();
+        let (user, tenant) = (uuid(&user), uuid(&tenant));
+        sqlx::query("insert into membership (tenant_id, user_id) values ($1, $2)")
+            .bind(tenant)
+            .bind(user)
+            .execute(superuser)
+            .await
+            .unwrap();
+        sqlx::query("insert into role_grant (id, tenant_id, user_id, role) values ($1, $2, $3, $4)")
+            .bind(uuid::Uuid::now_v7())
+            .bind(tenant)
+            .bind(user)
+            .bind(role)
+            .execute(superuser)
+            .await
+            .unwrap();
+        let switched =
+            self.send(Method::PUT, "/api/v1/session/tenant", Some(&cookie), Some(json!({"tenant_id": tenant}))).await;
+        assert_eq!(switched.status, StatusCode::OK, "{:?}", switched.body);
+        cookie
+    }
+}
+
+pub fn uuid(value: &Value) -> uuid::Uuid {
+    uuid::Uuid::parse_str(value.as_str().expect("a UUID string")).unwrap()
+}
+
 pub fn session_cookie(headers: &HeaderMap) -> String {
     let set_cookie = headers.get(header::SET_COOKIE).expect("Set-Cookie header").to_str().unwrap();
     set_cookie.split(';').next().unwrap().to_owned()

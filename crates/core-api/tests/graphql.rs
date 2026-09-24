@@ -102,3 +102,19 @@ async fn queries_more_complex_than_500_are_rejected() {
 
     assert_eq!(response.errors[0].message, "Query is too complex.");
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn properties_include_their_settings(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    create(&app, &owner, "GAL").await;
+
+    let query = json!({"query": "{ properties { checkInTime checkOutTime businessDate version } }"});
+    let response = app.send(Method::POST, "/graphql", Some(&owner), Some(query)).await;
+
+    let property = &response.body["data"]["properties"][0];
+    assert_eq!(property["checkInTime"], "14:00", "{:?}", response.body);
+    assert_eq!(property["checkOutTime"], "12:00");
+    assert_eq!(property["businessDate"].as_str().unwrap().len(), "2026-09-24".len());
+    assert_eq!(property["version"], 1);
+}

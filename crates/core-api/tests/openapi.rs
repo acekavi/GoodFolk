@@ -14,6 +14,7 @@ fn the_openapi_document_lists_every_rest_route() {
             "/api/v1/auth/signup",
             "/api/v1/me",
             "/api/v1/properties",
+            "/api/v1/properties/{property}",
             "/api/v1/session/tenant",
         ]
     );

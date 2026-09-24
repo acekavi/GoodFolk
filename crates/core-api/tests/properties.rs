@@ -152,3 +152,85 @@ async fn after_switching_tenant_a_create_lands_in_the_new_tenant(_: PgPoolOption
         sqlx::query_scalar("select tenant_id from property where code = 'GAL'").fetch_one(&superuser).await.unwrap();
     assert_eq!(owner, bobs_tenant);
 }
+
+async fn patch(app: &TestApp, cookie: &str, path: &str, if_match: Option<&str>, body: Value) -> TestResponse {
+    let mut headers = vec![("x-goodfolk-csrf", "1")];
+    if let Some(version) = if_match {
+        headers.push(("if-match", version));
+    }
+    app.send_with(Method::PATCH, path, Some(cookie), Some(body), &headers).await
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn property_settings_are_updated_with_if_match(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    let created = create(&app, &owner, "key-00000001", galle()).await;
+    let path = format!("/api/v1/properties/{}", created.body["id"].as_str().unwrap());
+
+    let updated =
+        patch(&app, &owner, &path, Some("\"1\""), json!({"check_in_time": "15:00", "name": "Galle Fort"})).await;
+
+    assert_eq!(created.headers[header::ETAG], "\"1\"");
+    assert_eq!(created.body["check_in_time"], "14:00");
+    assert_eq!(created.body["check_out_time"], "12:00");
+    assert_eq!(created.body["business_date"].as_str().unwrap().len(), "2026-09-24".len());
+    assert_eq!(updated.status, StatusCode::OK, "{:?}", updated.body);
+    assert_eq!(updated.headers[header::ETAG], "\"2\"");
+    assert_eq!(updated.body["version"], 2);
+    assert_eq!(updated.body["check_in_time"], "15:00");
+    assert_eq!(updated.body["check_out_time"], "12:00");
+    assert_eq!(updated.body["name"], "Galle Fort");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_stale_version_is_412_and_a_missing_one_428(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    let created = create(&app, &owner, "key-00000001", galle()).await;
+    let path = format!("/api/v1/properties/{}", created.body["id"].as_str().unwrap());
+    patch(&app, &owner, &path, Some("\"1\""), json!({"name": "First edit"})).await;
+
+    let stale = patch(&app, &owner, &path, Some("\"1\""), json!({"name": "Second edit"})).await;
+    let missing = patch(&app, &owner, &path, None, json!({"name": "Third edit"})).await;
+    let malformed = patch(&app, &owner, &path, Some("2"), json!({"name": "Fourth edit"})).await;
+    let unknown =
+        patch(&app, &owner, &format!("/api/v1/properties/{}", Uuid::now_v7()), Some("\"1\""), json!({})).await;
+
+    assert_eq!(stale.status, StatusCode::PRECONDITION_FAILED, "{:?}", stale.body);
+    assert_eq!(stale.headers[header::CONTENT_TYPE], "application/problem+json");
+    assert_eq!(missing.status, StatusCode::PRECONDITION_REQUIRED, "{:?}", missing.body);
+    assert_eq!(malformed.status, StatusCode::BAD_REQUEST, "{:?}", malformed.body);
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{:?}", unknown.body);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn property_settings_are_validated(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    let created = create(&app, &owner, "key-00000001", galle()).await;
+    let path = format!("/api/v1/properties/{}", created.body["id"].as_str().unwrap());
+
+    let bad_time = patch(&app, &owner, &path, Some("\"1\""), json!({"check_in_time": "25:00"})).await;
+    let empty_name = patch(&app, &owner, &path, Some("\"1\""), json!({"name": ""})).await;
+
+    assert_eq!(bad_time.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", bad_time.body);
+    assert_eq!(empty_name.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", empty_name.body);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn only_owners_and_managers_change_property_settings(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    let created = create(&app, &owner, "key-00000001", galle()).await;
+    let path = format!("/api/v1/properties/{}", created.body["id"].as_str().unwrap());
+    let manager = app.staff(&superuser, &owner, "manager@example.com", "manager").await;
+    let front_desk = app.staff(&superuser, &owner, "desk@example.com", "front_desk").await;
+
+    let by_desk = patch(&app, &front_desk, &path, Some("\"1\""), json!({"check_out_time": "11:00"})).await;
+    let by_manager = patch(&app, &manager, &path, Some("\"1\""), json!({"check_out_time": "11:00"})).await;
+
+    assert_eq!(by_desk.status, StatusCode::FORBIDDEN);
+    assert_eq!(by_manager.status, StatusCode::OK, "{:?}", by_manager.body);
+}

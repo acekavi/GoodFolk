@@ -54,6 +54,18 @@ impl ApiError {
         Self::new(StatusCode::CONFLICT, "Conflict", Some(detail.into()))
     }
 
+    pub fn precondition_failed(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::PRECONDITION_FAILED, "Precondition failed", Some(detail.into()))
+    }
+
+    pub fn precondition_required() -> Self {
+        Self::new(
+            StatusCode::PRECONDITION_REQUIRED,
+            "Precondition required",
+            Some("send If-Match with the version you edited, e.g. If-Match: \"3\"".into()),
+        )
+    }
+
     pub fn unprocessable(detail: impl Into<String>) -> Self {
         Self::new(StatusCode::UNPROCESSABLE_ENTITY, "Invalid request", Some(detail.into()))
     }

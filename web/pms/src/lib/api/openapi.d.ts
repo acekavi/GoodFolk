@@ -13,6 +13,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /**
+         * After 5 failed attempts for one email within 15 minutes, further attempts for that email are answered
+         *     with 429 until the window passes, whether or not the account exists. A successful sign-in clears them.
+         */
         post: operations["login"];
         delete?: never;
         options?: never;
@@ -84,6 +88,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/properties/{property}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Changes a property's settings. The business date is not editable: night audit moves it. */
+        patch: operations["update"];
+        trace?: never;
+    };
     "/api/v1/session/tenant": {
         parameters: {
             query?: never;
@@ -135,6 +156,15 @@ export interface components {
         };
         Property: {
             base_currency: string;
+            /**
+             * Format: date
+             * @description The property's current trading day. Set to its local today when created; moved only by night audit.
+             */
+            business_date: string;
+            /** @description Local time guests may check in from, `HH:MM`. */
+            check_in_time: string;
+            /** @description Local time guests check out by, `HH:MM`. */
+            check_out_time: string;
             code: string;
             /** Format: uuid */
             id: string;
@@ -159,6 +189,13 @@ export interface components {
             /** Format: uuid */
             id: string;
             name: string;
+        };
+        UpdatePropertyRequest: {
+            /** @description `HH:MM` (24-hour), local time. */
+            check_in_time?: string | null;
+            /** @description `HH:MM` (24-hour), local time. */
+            check_out_time?: string | null;
+            name?: string | null;
         };
     };
     responses: never;
@@ -191,6 +228,12 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -317,6 +360,64 @@ export interface operations {
                 content?: never;
             };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description the version edited, e.g. "3" */
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdatePropertyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Property"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };

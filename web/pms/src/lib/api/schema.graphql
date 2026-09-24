@@ -1,9 +1,33 @@
+"""
+ISO 8601 calendar date without timezone.
+Format: %Y-%m-%d
+
+# Examples
+
+* `1994-11-13`
+* `2000-02-24`
+"""
+scalar Date
+
 type PropertyNode {
 	id: UUID!
 	code: String!
 	name: String!
 	timezone: String!
 	baseCurrency: String!
+	"""
+	`HH:MM`, local time.
+	"""
+	checkInTime: String!
+	"""
+	`HH:MM`, local time.
+	"""
+	checkOutTime: String!
+	businessDate: Date!
+	"""
+	Send as `If-Match: "<version>"` when updating.
+	"""
+	version: Int!
 }
 
 type Query {

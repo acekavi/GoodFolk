@@ -9,14 +9,14 @@ use axum::Router;
 use axum::extract::Request;
 use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use std::time::Duration;
 use tower_http::compression::CompressionLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
 
 pub use auth::{LoginRequest, SignupRequest, SwitchTenantRequest};
-pub use properties::CreatePropertyRequest;
+pub use properties::{CreatePropertyRequest, UpdatePropertyRequest};
 
 /// Longest a request may run before it is answered with 504.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -35,6 +35,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/me", get(auth::me))
         .route("/api/v1/session/tenant", put(auth::switch_tenant))
+        .route("/api/v1/properties/{property}", patch(properties::update))
         .route("/graphql", post(graphql::handler))
         .merge(commands)
         .layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)));

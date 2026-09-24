@@ -1,4 +1,4 @@
-use crate::routes::{CreatePropertyRequest, LoginRequest, SignupRequest, SwitchTenantRequest};
+use crate::routes::{CreatePropertyRequest, LoginRequest, SignupRequest, SwitchTenantRequest, UpdatePropertyRequest};
 use utoipa::OpenApi;
 
 #[derive(OpenApi)]
@@ -11,12 +11,14 @@ use utoipa::OpenApi;
         crate::routes::auth::me,
         crate::routes::auth::switch_tenant,
         crate::routes::properties::create,
+        crate::routes::properties::update,
     ),
     components(schemas(
         SignupRequest,
         LoginRequest,
         SwitchTenantRequest,
         CreatePropertyRequest,
+        UpdatePropertyRequest,
         identity::Profile,
         identity::TenantSummary,
         identity::Grant,

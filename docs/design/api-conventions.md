@@ -43,7 +43,7 @@ Every non-GET/HEAD/OPTIONS request must send `x-goodfolk-csrf: 1` (`crates/core-
 { "type": "about:blank", "title": "Conflict", "status": 409, "detail": "a property with this code already exists" }
 ```
 
-`Content-Type: application/problem+json`, for every error the API returns, including malformed bodies and query strings, GraphQL request parse failures and timeouts. Construct errors with `ApiError::{bad_request, unauthenticated, invalid_credentials, forbidden, not_found, method_not_allowed, conflict, unprocessable, too_many_requests, gateway_timeout, internal}`. Database errors are logged and become a bare 500, and internal details never reach the client.
+`Content-Type: application/problem+json`, for every error the API returns, including malformed bodies and query strings, GraphQL request parse failures and timeouts. Construct errors with `ApiError::{bad_request, unauthenticated, invalid_credentials, forbidden, not_found, method_not_allowed, conflict, precondition_failed, precondition_required, unprocessable, too_many_requests, gateway_timeout, internal}`. Database errors are logged and become a bare 500, and internal details never reach the client.
 
 | Status | When |
 |---|---|
@@ -53,8 +53,9 @@ Every non-GET/HEAD/OPTIONS request must send `x-goodfolk-csrf: 1` (`crates/core-
 | 404 | Not found **or not visible to this tenant** (never reveal existence), or no such route (the router's fallback) |
 | 405 | The route exists but not for this method (the router's method-not-allowed fallback) |
 | 409 | Uniqueness conflict, double booking (exclusion violation), idempotent request still running |
-| 412 | `If-Match` version mismatch (from Phase 1) |
+| 412 | `If-Match` version mismatch |
 | 422 | Body of the wrong shape (missing or mistyped field), validation failed (`garde`), business rule violated, idempotency key reused for a different request |
+| 428 | An update without `If-Match` |
 | 429 | Sign-in throttled: 5 failed attempts for one email within 15 minutes (the same answer whether or not the account exists) |
 | 504 | Handler exceeded the 15 s request timeout (`routes::REQUEST_TIMEOUT`) |
 
@@ -72,16 +73,17 @@ Request DTOs derive `garde::Validate` and are checked with `error::validate(&bod
 
 ## Patterns to copy
 
-- **Request extractors:** take bodies as `ApiJson<T>` and query strings as `ApiQuery<T>` (`crates/core-api/src/extract.rs`), never `axum::Json` / `Query`, so rejections are problem details (400 malformed, 422 wrong shape). `axum::Json` is still fine for responses.
+- **Request extractors:** take bodies as `ApiJson<T>`, path parameters as `ApiPath<T>` and query strings as `ApiQuery<T>` (`crates/core-api/src/extract.rs`), never `axum::Json` / `Query`, so rejections are problem details (400 malformed, 422 wrong shape). `axum::Json` is still fine for responses.
 - **Resolver errors:** in GraphQL resolvers, map every database call with `.map_err(internal)?` (`graphql.rs`), which logs the error and returns a bare `Internal error`. Never let `?` put `sqlx::Error` text into a GraphQL response.
 - **Idempotency claim lifetime:** an unfinished claim is abandoned after 60 s (`ABANDONED_CLAIM_AFTER`) and taken over by the next request with its key; finalizing and releasing touch only the request's own claim (matched on `created_at`).
 - **Live events:** the broadcast channel carries `events::LiveEvent` (`Invalidate(db::Event)` | `Resync`). The listener (`events::spawn_listener`, given a pool on the direct listen URL) sends `Resync` whenever its database connection drops, and again once it has reconnected if the first reconnect attempt failed, since changes committed in between were missed. Streams send it as a `resync` event, as they do when a subscriber lags.
 - **Startup RLS guard:** `serve` calls `db::assert_rls_applies(&pool)` and refuses to start as a superuser, a `BYPASSRLS` role or a role that owns (directly or through membership) a table in `public`.
 
-## Optimistic concurrency (from Phase 1)
+## Optimistic concurrency
 
-- Editable resources return `version` in their body and an `ETag: "<version>"` header.
-- Updates must send `If-Match: "<version>"`. The SQL `update … where id = $1 and version = $2` returns no row on mismatch, which maps to 412, and the client refetches and shows what changed.
+- Editable resources return `version` in their body and an `ETag: "<version>"` header: handlers return `concurrency::Versioned::{ok, created}(version, body)` (`crates/core-api/src/concurrency.rs`). GraphQL nodes expose `version` too, which is where the SPA reads it.
+- Updates take the `concurrency::IfMatch` extractor, so they must send `If-Match: "<version>"`: missing is 428, not a quoted number is 400. The module's `update … where id = $1 and version = $2 … returning` finds no row on mismatch; it then checks whether the row exists and returns a version-mismatch error (412) or not-found (404). The client refetches and shows what changed.
+- Reordering (`PUT …/order`) is not a concurrent edit of one resource: it takes no `If-Match` and does not bump versions.
 
 ## Change events
 
