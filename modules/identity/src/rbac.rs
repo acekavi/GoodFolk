@@ -29,13 +29,17 @@ impl Role {
             .find(|role| role.as_str() == value)
     }
 
+    /// Anything not listed is denied, so a new permission is granted only where it is added.
     fn permits(self, permission: Permission) -> bool {
         use Permission::*;
         match self {
             Role::Owner => true,
-            Role::Manager | Role::FrontDesk | Role::Housekeeping | Role::Accountant => {
-                matches!(permission, PropertiesView)
-            }
+            Role::Manager => matches!(
+                permission,
+                PropertiesView | PropertiesManage | RoomsView | RoomsManage | InventoryView | InventoryBlock
+            ),
+            Role::FrontDesk => matches!(permission, PropertiesView | RoomsView | InventoryView | InventoryBlock),
+            Role::Housekeeping | Role::Accountant => matches!(permission, PropertiesView | RoomsView | InventoryView),
         }
     }
 }
@@ -45,6 +49,16 @@ impl Role {
 pub enum Permission {
     PropertiesView,
     PropertiesCreate,
+    /// Change a property's settings (name, check-in and check-out times).
+    PropertiesManage,
+    /// See room types, rooms, sections and block reasons.
+    RoomsView,
+    /// Create, change, deactivate and reorder room types, rooms, sections and block reasons.
+    RoomsManage,
+    /// See inventory counts and room blocks.
+    InventoryView,
+    /// Block rooms and release or shorten blocks.
+    InventoryBlock,
 }
 
 /// A role held tenant-wide (`property_id: None`) or for one property.
@@ -71,6 +85,12 @@ pub async fn load_grants(tx: &mut Tx, user: UserId) -> Result<Vec<Grant>, sqlx::
             .await?;
     Ok(rows
         .into_iter()
-        .filter_map(|(property_id, role)| Role::parse(&role).map(|role| Grant { property_id, role }))
+        .filter_map(|(property_id, role)| match Role::parse(&role) {
+            Some(role) => Some(Grant { property_id, role }),
+            None => {
+                tracing::warn!(role, user = %user.0, "skipping a role grant with a role this build does not know");
+                None
+            }
+        })
         .collect())
 }

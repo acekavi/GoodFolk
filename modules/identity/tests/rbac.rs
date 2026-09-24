@@ -35,3 +35,28 @@ fn roles_round_trip_through_their_database_names() {
     }
     assert_eq!(Role::parse("root"), None);
 }
+
+#[test]
+fn each_role_has_exactly_its_permissions() {
+    use Permission::*;
+    let all =
+        [PropertiesView, PropertiesCreate, PropertiesManage, RoomsView, RoomsManage, InventoryView, InventoryBlock];
+    let expected: [(Role, &[Permission]); 5] = [
+        (Role::Owner, &all),
+        (Role::Manager, &[PropertiesView, PropertiesManage, RoomsView, RoomsManage, InventoryView, InventoryBlock]),
+        (Role::FrontDesk, &[PropertiesView, RoomsView, InventoryView, InventoryBlock]),
+        (Role::Housekeeping, &[PropertiesView, RoomsView, InventoryView]),
+        (Role::Accountant, &[PropertiesView, RoomsView, InventoryView]),
+    ];
+
+    for (role, permitted) in expected {
+        let grants = [Grant { property_id: Some(HOTEL), role }];
+        for permission in all {
+            assert_eq!(
+                allows(&grants, permission, Some(HOTEL)),
+                permitted.contains(&permission),
+                "{role:?} and {permission:?}"
+            );
+        }
+    }
+}

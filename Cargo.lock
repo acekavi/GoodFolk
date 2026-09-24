@@ -1250,6 +1250,8 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "utoipa",
  "uuid",
 ]

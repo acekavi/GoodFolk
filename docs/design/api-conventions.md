@@ -23,7 +23,14 @@ Simple single-object reads that bootstrap the app (`GET /api/v1/me`) may be REST
   - `Authenticated`: any signed-in user (401 otherwise).
   - `TenantContext`: signed-in user with a selected tenant, grants loaded (403 `no tenant selected` otherwise). Use this for every tenant-scoped endpoint.
   - Both are resolved once per request and cached in request extensions.
-- Authorisation: `ctx.require(Permission::X, Some(property_id))?` at the top of every handler. Add new actions to `identity::Permission` and to each role's `permits`, with a test.
+- Authorisation: `ctx.require(Permission::X, Some(property_id))?` at the top of every handler. Add new actions to `identity::Permission` and to each role's `permits`, with a test (`modules/identity/tests/rbac.rs` pins the whole matrix). A grant with a role this build does not know is skipped with a warning.
+
+  | Permission | Owner | Manager | Front desk | Housekeeping | Accountant |
+  |---|---|---|---|---|---|
+  | `PropertiesView`, `RoomsView`, `InventoryView` | ✓ | ✓ | ✓ | ✓ | ✓ |
+  | `PropertiesCreate` | ✓ | | | | |
+  | `PropertiesManage` (property settings), `RoomsManage` (room types, rooms, sections, block reasons) | ✓ | ✓ | | | |
+  | `InventoryBlock` (block and release rooms) | ✓ | ✓ | ✓ | | |
 - Data access: `db::begin(&state.pool, Scope::tenant(ctx.tenant))` and never anything else. RLS is the safety net, but queries still filter by `property_id` explicitly.
 
 ## CSRF

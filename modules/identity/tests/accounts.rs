@@ -1,9 +1,14 @@
 use db::testing::app_pool;
+use db::{Scope, begin};
 use identity::{
-    Permission, SignupError, SignupInput, allows, authenticate, create_session, default_tenant, delete_session,
-    load_profile, resolve_session, signup, switch_tenant,
+    Grant, Permission, Role, SignupError, SignupInput, allows, authenticate, create_session, default_tenant,
+    delete_session, load_grants, load_profile, resolve_session, signup, switch_tenant,
 };
+use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use std::sync::{Arc, Mutex};
+use tracing_subscriber::fmt::MakeWriter;
+use uuid::Uuid;
 
 fn input(email: &str, tenant: &str) -> SignupInput {
     SignupInput {
@@ -74,4 +79,58 @@ async fn a_session_can_switch_only_to_tenants_the_user_belongs_to(_: PgPoolOptio
     assert!(!switch_tenant(&pool, &session, stranger_tenant).await.unwrap());
     assert!(switch_tenant(&pool, &session, tenant).await.unwrap());
     assert_eq!(resolve_session(&pool, &token).await.unwrap().unwrap().tenant, Some(tenant));
+}
+
+/// Collects log output so a test can check what was logged.
+#[derive(Clone, Default)]
+struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
+
+impl CapturedLogs {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+impl std::io::Write for CapturedLogs {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for CapturedLogs {
+    type Writer = CapturedLogs;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_grant_with_an_unknown_role_is_skipped_with_a_warning(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts.clone(), 1).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let (user, tenant) = signup(&pool, input("owner@example.com", "A")).await.unwrap();
+    // A role written by a newer release (or by hand) that this build does not know.
+    sqlx::query("alter table role_grant drop constraint role_grant_role_check").execute(&superuser).await.unwrap();
+    sqlx::query("insert into role_grant (id, tenant_id, user_id, role) values ($1, $2, $3, 'night_auditor')")
+        .bind(Uuid::now_v7())
+        .bind(tenant.0)
+        .bind(user.0)
+        .execute(&superuser)
+        .await
+        .unwrap();
+    let logs = CapturedLogs::default();
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::fmt().with_writer(logs.clone()).finish());
+
+    let mut tx = begin(&pool, Scope::tenant(tenant)).await.unwrap();
+    let grants = load_grants(&mut tx, user).await.unwrap();
+
+    assert_eq!(grants, vec![Grant { property_id: None, role: Role::Owner }]);
+    let logged = logs.text();
+    assert!(logged.contains("WARN") && logged.contains("night_auditor"), "logged: {logged}");
 }
