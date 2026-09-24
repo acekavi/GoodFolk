@@ -23,7 +23,10 @@ pub struct TestResponse {
 
 impl TestApp {
     pub async fn new(opts: PgConnectOptions) -> Self {
-        let pool = db::testing::app_pool(opts, 5).await;
+        Self::with_pool(db::testing::app_pool(opts, 5).await)
+    }
+
+    pub fn with_pool(pool: PgPool) -> Self {
         let state = AppState::new(pool.clone(), false);
         Self { router: router(state.clone()), state, pool }
     }

@@ -42,6 +42,14 @@ impl ApiError {
         Self::new(StatusCode::FORBIDDEN, "Forbidden", Some(detail.into()))
     }
 
+    pub fn not_found(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::NOT_FOUND, "Not found", Some(detail.into()))
+    }
+
+    pub fn method_not_allowed() -> Self {
+        Self::new(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed", None)
+    }
+
     pub fn conflict(detail: impl Into<String>) -> Self {
         Self::new(StatusCode::CONFLICT, "Conflict", Some(detail.into()))
     }

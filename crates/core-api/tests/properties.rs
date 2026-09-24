@@ -3,7 +3,9 @@ mod common;
 use axum::http::{Method, StatusCode, header};
 use common::{TestApp, TestResponse};
 use serde_json::{Value, json};
+use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use uuid::Uuid;
 
 fn galle() -> Value {
     json!({"code": "GAL", "name": "Galle Fort Hotel", "timezone": "Asia/Colombo", "base_currency": "LKR"})
@@ -90,4 +92,63 @@ async fn a_replayed_error_keeps_its_problem_json_content_type(_: PgPoolOptions, 
     assert_eq!(retry.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(retry.headers.get(header::CONTENT_TYPE).unwrap(), "application/problem+json");
     assert_eq!(retry.body, first.body);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn creating_a_property_writes_an_audit_row(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    let me = app.send(Method::GET, "/api/v1/me", Some(&owner), None).await.body;
+
+    let created = create(&app, &owner, "key-00000001", galle()).await;
+
+    let id = Uuid::parse_str(created.body["id"].as_str().unwrap()).unwrap();
+    let (action, entity, actor, data): (String, String, Uuid, Value) = sqlx::query_as(
+        "select action, entity, actor_user_id, data from audit_log where entity_id = $1 and action <> 'tenant.created'",
+    )
+    .bind(id)
+    .fetch_one(&superuser)
+    .await
+    .unwrap();
+    assert_eq!(action, "property.created");
+    assert_eq!(entity, "property");
+    assert_eq!(actor.to_string(), me["user_id"].as_str().unwrap());
+    assert_eq!(data, json!({"code": "GAL", "name": "Galle Fort Hotel"}));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn after_switching_tenant_a_create_lands_in_the_new_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let alice = app.signup_owner("alice@example.com", "Alice Hotels").await;
+    let bob = app.signup_owner("bob@example.com", "Bob Hotels").await;
+    let alice_id = app.send(Method::GET, "/api/v1/me", Some(&alice), None).await.body["user_id"].clone();
+    let bobs_tenant = app.send(Method::GET, "/api/v1/me", Some(&bob), None).await.body["current_tenant"].clone();
+    let (alice_id, bobs_tenant) =
+        (Uuid::parse_str(alice_id.as_str().unwrap()).unwrap(), Uuid::parse_str(bobs_tenant.as_str().unwrap()).unwrap());
+    // Staff invitations arrive in Phase 8; until then a second membership is added directly.
+    sqlx::query("insert into membership (tenant_id, user_id) values ($1, $2)")
+        .bind(bobs_tenant)
+        .bind(alice_id)
+        .execute(&superuser)
+        .await
+        .unwrap();
+    sqlx::query("insert into role_grant (id, tenant_id, user_id, role) values ($1, $2, $3, 'owner')")
+        .bind(Uuid::now_v7())
+        .bind(bobs_tenant)
+        .bind(alice_id)
+        .execute(&superuser)
+        .await
+        .unwrap();
+
+    let switched =
+        app.send(Method::PUT, "/api/v1/session/tenant", Some(&alice), Some(json!({"tenant_id": bobs_tenant}))).await;
+    let created = create(&app, &alice, "key-00000001", galle()).await;
+
+    assert_eq!(switched.status, StatusCode::OK, "{:?}", switched.body);
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let owner: Uuid =
+        sqlx::query_scalar("select tenant_id from property where code = 'GAL'").fetch_one(&superuser).await.unwrap();
+    assert_eq!(owner, bobs_tenant);
 }

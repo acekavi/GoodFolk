@@ -48,6 +48,9 @@ pub fn router(state: AppState) -> Router {
         .layer(from_fn(csrf::require_csrf_header))
         .route("/healthz", get(health::live))
         .route("/readyz", get(health::ready))
+        // Set last, so they cover every route above.
+        .fallback(|| async { ApiError::not_found("no such route") })
+        .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(PropagateRequestIdLayer::x_request_id())

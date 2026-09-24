@@ -83,3 +83,22 @@ async fn production_hides_the_schema_from_introspection() {
     assert_eq!(development, json!({"__schema": {"queryType": {"name": "Query"}}}));
     assert_eq!(production, json!({"__schema": null}));
 }
+
+#[tokio::test]
+async fn queries_nested_deeper_than_eight_levels_are_rejected() {
+    let query = "{ __schema { types { fields { type { ofType { ofType { ofType { ofType { name } } } } } } } } }";
+
+    let response = build_schema(false).execute(query).await;
+
+    assert_eq!(response.errors[0].message, "Query is nested too deep.");
+}
+
+#[tokio::test]
+async fn queries_more_complex_than_500_are_rejected() {
+    let fields: Vec<String> = (0..260).map(|i| format!("p{i}: properties {{ id }}")).collect();
+    let query = format!("{{ {} }}", fields.join(" "));
+
+    let response = build_schema(false).execute(query.as_str()).await;
+
+    assert_eq!(response.errors[0].message, "Query is too complex.");
+}

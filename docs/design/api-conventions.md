@@ -36,14 +36,15 @@ Every non-GET/HEAD/OPTIONS request must send `x-goodfolk-csrf: 1` (`crates/core-
 { "type": "about:blank", "title": "Conflict", "status": 409, "detail": "a property with this code already exists" }
 ```
 
-`Content-Type: application/problem+json`, for every error the API returns, including malformed bodies and query strings, GraphQL request parse failures and timeouts. Construct errors with `ApiError::{bad_request, unauthenticated, invalid_credentials, forbidden, conflict, unprocessable, gateway_timeout, internal}`. Database errors are logged and become a bare 500, and internal details never reach the client.
+`Content-Type: application/problem+json`, for every error the API returns, including malformed bodies and query strings, GraphQL request parse failures and timeouts. Construct errors with `ApiError::{bad_request, unauthenticated, invalid_credentials, forbidden, not_found, method_not_allowed, conflict, unprocessable, gateway_timeout, internal}`. Database errors are logged and become a bare 500, and internal details never reach the client.
 
 | Status | When |
 |---|---|
 | 400 | Malformed request (invalid JSON, wrong content type, unparseable query string), missing `Idempotency-Key` |
 | 401 | No or expired session; bad credentials |
 | 403 | Missing permission, no tenant selected, missing CSRF header |
-| 404 | Not found **or not visible to this tenant** (never reveal existence) |
+| 404 | Not found **or not visible to this tenant** (never reveal existence), or no such route (the router's fallback) |
+| 405 | The route exists but not for this method (the router's method-not-allowed fallback) |
 | 409 | Uniqueness conflict, double booking (exclusion violation), idempotent request still running |
 | 412 | `If-Match` version mismatch (from Phase 1) |
 | 422 | Body of the wrong shape (missing or mistyped field), validation failed (`garde`), business rule violated, idempotency key reused for a different request |
