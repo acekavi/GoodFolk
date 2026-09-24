@@ -5,12 +5,17 @@
 
 mod inventory;
 mod room_types;
+mod rooms;
 mod sections;
 
 pub use inventory::{InventoryDay, InventoryDrift, WINDOW_DAYS, extend_window, find_drift, list_inventory, month_keys};
 pub use room_types::{
     Bed, NewRoomType, RoomType, RoomTypeChanges, create_room_type, list_room_types, reorder_room_types,
     update_room_type,
+};
+pub use rooms::{
+    MAX_ROOMS_PER_RANGE, NewRoom, Room, RoomChanges, RoomRange, create_room, create_rooms, list_rooms, reorder_rooms,
+    update_room,
 };
 pub use sections::{Section, create_section, list_sections, rename_section};
 
