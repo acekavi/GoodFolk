@@ -59,16 +59,22 @@ pub async fn signup(
     Ok((StatusCode::CREATED, jar.add(session_cookie(token, expires, state.production)), Json(profile)))
 }
 
+/// After 5 failed attempts for one email within 15 minutes, further attempts for that email are answered
+/// with 429 until the window passes, whether or not the account exists. A successful sign-in clears them.
 #[utoipa::path(post, path = "/api/v1/auth/login", request_body = LoginRequest,
-    responses((status = 200, body = Profile), (status = 401)))]
+    responses((status = 200, body = Profile), (status = 401), (status = 429)))]
 pub async fn login(
     State(state): State<AppState>,
     jar: CookieJar,
     ApiJson(body): ApiJson<LoginRequest>,
 ) -> Result<(CookieJar, Json<Profile>), ApiError> {
+    if !identity::reserve_login_attempt(&state.pool, &body.email).await? {
+        return Err(ApiError::too_many_requests("too many failed sign-in attempts; try again in 15 minutes"));
+    }
     let user = identity::authenticate(&state.pool, &body.email, &body.password)
         .await?
         .ok_or_else(ApiError::invalid_credentials)?;
+    identity::clear_login_failures(&state.pool, &body.email).await?;
     let tenant = identity::default_tenant(&state.pool, user).await?;
     let (token, expires) = identity::create_session(&state.pool, user, tenant).await?;
     let profile = identity::load_profile(&state.pool, user, tenant).await?;

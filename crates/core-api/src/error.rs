@@ -58,6 +58,10 @@ impl ApiError {
         Self::new(StatusCode::UNPROCESSABLE_ENTITY, "Invalid request", Some(detail.into()))
     }
 
+    pub fn too_many_requests(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, "Too many requests", Some(detail.into()))
+    }
+
     pub fn gateway_timeout() -> Self {
         Self::new(StatusCode::GATEWAY_TIMEOUT, "Request timed out", None)
     }

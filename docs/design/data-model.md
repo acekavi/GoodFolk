@@ -43,6 +43,10 @@ Related: [ARCHITECTURE.md](../ARCHITECTURE.md) (why), [api-conventions.md](api-c
 
 Extensions: `btree_gist` (needed by the exclusion constraints).
 
+| Global table | Key columns | Notes |
+|---|---|---|
+| `login_failure` | `id`, `email citext`, `at` | Sign-in throttling (`migrations/0003_login_throttle.sql`). No RLS and no `tenant_id`: looked up before a tenant is known. One row per attempt, written before the password is checked; a successful sign-in deletes the email's rows. The Phase 7 purge job deletes rows older than the window |
+
 ## Phase 2: Rates and meal plans
 
 | Table | Key columns | Constraints and indexes |

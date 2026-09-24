@@ -3,6 +3,7 @@ mod common;
 use axum::http::{Method, StatusCode, header};
 use common::{TestApp, session_cookie};
 use serde_json::json;
+use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -160,4 +161,68 @@ async fn a_session_whose_tenant_membership_was_removed_is_refused(_: PgPoolOptio
 
     assert_eq!(response.status, StatusCode::FORBIDDEN, "{:?}", response.body);
     assert_eq!(response.body["detail"], "no tenant selected");
+}
+
+async fn login(app: &TestApp, email: &str, password: &str) -> common::TestResponse {
+    app.send(Method::POST, "/api/v1/auth/login", None, Some(json!({"email": email, "password": password}))).await
+}
+
+/// Sends `count` sign-ins one after another and returns their statuses.
+async fn login_times(app: &TestApp, email: &str, password: &str, count: usize) -> Vec<StatusCode> {
+    let mut statuses = Vec::with_capacity(count);
+    for _ in 0..count {
+        statuses.push(login(app, email, password).await.status);
+    }
+    statuses
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn five_failed_logins_lock_the_email_until_the_window_passes(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    app.signup_owner("owner@example.com", "A").await;
+    app.signup_owner("other@example.com", "B").await;
+
+    let failures: Vec<StatusCode> = login_times(&app, "owner@example.com", "not the password", 5).await;
+    let locked = login(&app, "Owner@Example.com", "a long enough password").await;
+    let other = login(&app, "other@example.com", "a long enough password").await;
+    sqlx::query("update login_failure set at = at - interval '15 minutes'").execute(&superuser).await.unwrap();
+    let after_window = login(&app, "owner@example.com", "a long enough password").await;
+
+    assert_eq!(failures, vec![StatusCode::UNAUTHORIZED; 5]);
+    assert_eq!(locked.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", locked.body);
+    assert!(is_problem_json(&locked), "{:?}", locked.headers);
+    assert_eq!(other.status, StatusCode::OK);
+    assert_eq!(after_window.status, StatusCode::OK, "{:?}", after_window.body);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_throttled_unknown_email_looks_like_a_throttled_account(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    app.signup_owner("owner@example.com", "A").await;
+    login_times(&app, "owner@example.com", "wrong", 5).await;
+    login_times(&app, "nobody@example.com", "wrong", 5).await;
+
+    let known = login(&app, "owner@example.com", "wrong").await;
+    let unknown = login(&app, "nobody@example.com", "wrong").await;
+
+    assert_eq!(known.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(unknown.status, known.status);
+    assert_eq!(unknown.body, known.body);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_successful_login_clears_earlier_failures(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    app.signup_owner("owner@example.com", "A").await;
+
+    let before = login_times(&app, "owner@example.com", "wrong", 4).await;
+    let success = login(&app, "owner@example.com", "a long enough password").await;
+    let after = login_times(&app, "owner@example.com", "wrong", 4).await;
+    let still_allowed = login(&app, "owner@example.com", "a long enough password").await;
+
+    assert_eq!(before, vec![StatusCode::UNAUTHORIZED; 4]);
+    assert_eq!(success.status, StatusCode::OK);
+    assert_eq!(after, vec![StatusCode::UNAUTHORIZED; 4]);
+    assert_eq!(still_allowed.status, StatusCode::OK);
 }

@@ -43,7 +43,7 @@ Every non-GET/HEAD/OPTIONS request must send `x-goodfolk-csrf: 1` (`crates/core-
 { "type": "about:blank", "title": "Conflict", "status": 409, "detail": "a property with this code already exists" }
 ```
 
-`Content-Type: application/problem+json`, for every error the API returns, including malformed bodies and query strings, GraphQL request parse failures and timeouts. Construct errors with `ApiError::{bad_request, unauthenticated, invalid_credentials, forbidden, not_found, method_not_allowed, conflict, unprocessable, gateway_timeout, internal}`. Database errors are logged and become a bare 500, and internal details never reach the client.
+`Content-Type: application/problem+json`, for every error the API returns, including malformed bodies and query strings, GraphQL request parse failures and timeouts. Construct errors with `ApiError::{bad_request, unauthenticated, invalid_credentials, forbidden, not_found, method_not_allowed, conflict, unprocessable, too_many_requests, gateway_timeout, internal}`. Database errors are logged and become a bare 500, and internal details never reach the client.
 
 | Status | When |
 |---|---|
@@ -55,6 +55,7 @@ Every non-GET/HEAD/OPTIONS request must send `x-goodfolk-csrf: 1` (`crates/core-
 | 409 | Uniqueness conflict, double booking (exclusion violation), idempotent request still running |
 | 412 | `If-Match` version mismatch (from Phase 1) |
 | 422 | Body of the wrong shape (missing or mistyped field), validation failed (`garde`), business rule violated, idempotency key reused for a different request |
+| 429 | Sign-in throttled: 5 failed attempts for one email within 15 minutes (the same answer whether or not the account exists) |
 | 504 | Handler exceeded the 15 s request timeout (`routes::REQUEST_TIMEOUT`) |
 
 ## Validation
