@@ -1,7 +1,7 @@
 use anyhow::{Context, bail};
 use core_api::config::Config;
 use core_api::{AppState, events, router};
-use sqlx::postgres::PgListener;
+use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
 #[global_allocator]
@@ -22,9 +22,13 @@ async fn serve() -> anyhow::Result<()> {
     let pool = db::connect(&config.database_url, config.database_max_connections).await?;
     db::assert_rls_applies(&pool).await?;
     let state = AppState::new(pool, config.production);
-    let mut listener = PgListener::connect(&config.database_listen_url).await?;
-    listener.listen(db::CHANNEL).await?;
-    events::spawn_listener(listener, state.events.clone());
+    // One direct connection, kept open, used only for LISTEN (and to reconnect it).
+    let listen_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .max_lifetime(None)
+        .idle_timeout(None)
+        .connect_lazy(&config.database_listen_url)?;
+    events::spawn_listener(listen_pool, state.events.clone()).await?;
 
     let tcp = tokio::net::TcpListener::bind(config.bind_addr).await?;
     tracing::info!(addr = %config.bind_addr, "listening");

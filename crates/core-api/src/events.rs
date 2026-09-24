@@ -6,6 +6,7 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use db::Event;
 use futures::Stream;
 use serde::Deserialize;
+use sqlx::PgPool;
 use sqlx::postgres::PgListener;
 use std::convert::Infallible;
 use std::time::Duration;
@@ -24,36 +25,68 @@ pub enum LiveEvent {
     Resync,
 }
 
-/// Forwards every `NOTIFY gf_events` from Postgres to this instance's subscribers.
-/// Every instance runs one, so every connected client hears about every change.
+/// How long the listener waits before each attempt to reconnect.
+const RECONNECT_DELAY: Duration = Duration::from_secs(1);
+
+/// Subscribes to `NOTIFY gf_events` on `pool` (a direct connection: poolers in transaction mode cannot
+/// LISTEN), then forwards every notification to this instance's subscribers. Every instance runs one,
+/// so every connected client hears about every change. Fails if the first subscription fails.
 ///
-/// Notifications sent while the connection is down are lost, so every stream is told to resync when it drops.
-pub fn spawn_listener(mut listener: PgListener, events: broadcast::Sender<LiveEvent>) -> tokio::task::JoinHandle<()> {
-    // Sending with no subscribers is normal, so send results are ignored.
-    tokio::spawn(async move {
-        loop {
-            match listener.try_recv().await {
-                Ok(Some(notification)) => match serde_json::from_str::<Event>(notification.payload()) {
-                    Ok(event) => {
-                        let _ = events.send(LiveEvent::Invalidate(event));
-                    }
-                    Err(err) => tracing::warn!(error = %err, "ignoring malformed event payload"),
-                },
-                Ok(None) => {
-                    // The listener has already reconnected and listens again.
-                    tracing::warn!("event listener connection lost; streams will resync");
-                    let _ = events.send(LiveEvent::Resync);
+/// Notifications sent while the connection is down are lost, so streams are told to resync when it
+/// drops, and again once the listener is back if reconnecting took more than one attempt.
+pub async fn spawn_listener(
+    pool: PgPool,
+    events: broadcast::Sender<LiveEvent>,
+) -> Result<tokio::task::JoinHandle<()>, sqlx::Error> {
+    let listener = subscribe(&pool).await?;
+    Ok(tokio::spawn(forward(pool, listener, events)))
+}
+
+async fn subscribe(pool: &PgPool) -> Result<PgListener, sqlx::Error> {
+    let mut listener = PgListener::connect_with(pool).await?;
+    listener.listen(db::CHANNEL).await?;
+    Ok(listener)
+}
+
+// Sending with no subscribers is normal, so send results are ignored.
+async fn forward(pool: PgPool, mut listener: PgListener, events: broadcast::Sender<LiveEvent>) {
+    loop {
+        match listener.try_recv().await {
+            Ok(Some(notification)) => match serde_json::from_str::<Event>(notification.payload()) {
+                Ok(event) => {
+                    let _ = events.send(LiveEvent::Invalidate(event));
                 }
-                Err(err) => {
-                    // The connection may be gone; the next try_recv reconnects. Back off briefly, then
-                    // resync, since notifications may have been missed.
-                    tracing::warn!(error = %err, "event listener error; streams will resync");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    let _ = events.send(LiveEvent::Resync);
-                }
+                Err(err) => tracing::warn!(error = %err, "ignoring malformed event payload"),
+            },
+            Ok(None) => {
+                // The connection dropped and sqlx has already reconnected and listens again.
+                tracing::warn!("event listener connection lost and re-established; streams will resync");
+                let _ = events.send(LiveEvent::Resync);
+            }
+            Err(err) => {
+                // The connection is lost and sqlx could not re-establish it. Streams resync now, but
+                // changes committed until the listener is back are missed too, so they resync again then.
+                tracing::warn!(error = %err, "event listener connection lost; streams will resync");
+                let _ = events.send(LiveEvent::Resync);
+                drop(listener);
+                listener = reconnect(&pool).await;
+                let _ = events.send(LiveEvent::Resync);
             }
         }
-    })
+    }
+}
+
+async fn reconnect(pool: &PgPool) -> PgListener {
+    loop {
+        tokio::time::sleep(RECONNECT_DELAY).await;
+        match subscribe(pool).await {
+            Ok(listener) => {
+                tracing::info!("event listener reconnected; streams will resync");
+                return listener;
+            }
+            Err(err) => tracing::warn!(error = %err, "event listener could not reconnect; retrying"),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
