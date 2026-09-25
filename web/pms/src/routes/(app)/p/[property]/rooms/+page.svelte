@@ -53,7 +53,10 @@
 	const sectionForm = formKeys();
 
 	/** Runs a command; shows its problem if it fails, and refetches after a version conflict. */
-	async function run(command: () => Promise<unknown>): Promise<boolean> {
+	async function run(
+		command: () => Promise<unknown>,
+		onError?: (err: unknown) => void
+	): Promise<boolean> {
 		busy = true;
 		error = '';
 		try {
@@ -62,6 +65,7 @@
 			return true;
 		} catch (err) {
 			error = errorMessage(err);
+			onError?.(err);
 			await client.invalidateQueries({ queryKey: roomsKey(propertyId) });
 			return false;
 		} finally {
@@ -85,16 +89,18 @@
 			floor: bulk.floor || null,
 			section_id: bulk.sectionId || null
 		};
-		const added = await run(async () =>
-			unwrap(
-				await rest.POST('/api/v1/properties/{property}/rooms/bulk', {
-					params: {
-						path: { property: propertyId },
-						header: { 'Idempotency-Key': bulkForm.keyFor(body) }
-					},
-					body
-				})
-			)
+		const added = await run(
+			async () =>
+				unwrap(
+					await rest.POST('/api/v1/properties/{property}/rooms/bulk', {
+						params: {
+							path: { property: propertyId },
+							header: { 'Idempotency-Key': bulkForm.keyFor(body) }
+						},
+						body
+					})
+				),
+			bulkForm.failed
 		);
 		if (added) {
 			bulkForm.reset();
@@ -109,16 +115,18 @@
 			number: single.number,
 			floor: single.floor || null
 		};
-		const added = await run(async () =>
-			unwrap(
-				await rest.POST('/api/v1/properties/{property}/rooms', {
-					params: {
-						path: { property: propertyId },
-						header: { 'Idempotency-Key': singleForm.keyFor(body) }
-					},
-					body
-				})
-			)
+		const added = await run(
+			async () =>
+				unwrap(
+					await rest.POST('/api/v1/properties/{property}/rooms', {
+						params: {
+							path: { property: propertyId },
+							header: { 'Idempotency-Key': singleForm.keyFor(body) }
+						},
+						body
+					})
+				),
+			singleForm.failed
 		);
 		if (added) {
 			singleForm.reset();
@@ -129,16 +137,18 @@
 	async function addSection(event: SubmitEvent) {
 		event.preventDefault();
 		const body = { name: sectionName };
-		const added = await run(async () =>
-			unwrap(
-				await rest.POST('/api/v1/properties/{property}/sections', {
-					params: {
-						path: { property: propertyId },
-						header: { 'Idempotency-Key': sectionForm.keyFor(body) }
-					},
-					body
-				})
-			)
+		const added = await run(
+			async () =>
+				unwrap(
+					await rest.POST('/api/v1/properties/{property}/sections', {
+						params: {
+							path: { property: propertyId },
+							header: { 'Idempotency-Key': sectionForm.keyFor(body) }
+						},
+						body
+					})
+				),
+			sectionForm.failed
 		);
 		if (added) {
 			sectionForm.reset();

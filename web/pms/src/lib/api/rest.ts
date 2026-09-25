@@ -1,6 +1,6 @@
 import createClient from 'openapi-fetch';
 import type { paths } from './openapi';
-import { toApiError } from './problem';
+import { ApiError, toApiError } from './problem';
 
 /** REST client for commands. Same origin, so the session cookie is sent automatically. */
 export const rest = createClient<paths>({
@@ -27,11 +27,18 @@ export function ifMatch(version: number) {
 /**
  * Idempotency keys for one create form. Resending the same body (a double-click or a retry) reuses
  * the key, so it cannot create twice; an edited body is a different request and gets a new key.
- * Call `reset()` after a success so the next create starts fresh.
+ * Call `reset()` after a success so the next create starts fresh, and `failed(err)` when a submit
+ * fails: a definitive client error (4xx) rotates the key, so an unchanged resubmit is a new request
+ * rather than a replay of the stored error; a network error, a 5xx or a 409 "still in progress"
+ * keeps it, since the first request may yet succeed.
  */
 export function formKeys() {
 	let key = idempotencyKey();
 	let last = '';
+	function reset() {
+		key = idempotencyKey();
+		last = '';
+	}
 	return {
 		keyFor(body: unknown): string {
 			const serialized = JSON.stringify(body);
@@ -39,9 +46,11 @@ export function formKeys() {
 			last = serialized;
 			return key;
 		},
-		reset() {
-			key = idempotencyKey();
-			last = '';
+		reset,
+		failed(err: unknown) {
+			if (!(err instanceof ApiError) || err.status < 400 || err.status > 499) return;
+			if (err.status === 409 && err.problem.detail?.includes('in progress')) return;
+			reset();
 		}
 	};
 }

@@ -41,7 +41,7 @@
 	}
 
 	/** Runs a command, shows its problem if it fails, and refetches after a version conflict. */
-	async function run(command: () => Promise<unknown>, onError?: () => void) {
+	async function run(command: () => Promise<unknown>, onError?: (err: unknown) => void) {
 		busy = true;
 		error = '';
 		try {
@@ -49,7 +49,7 @@
 			await client.invalidateQueries({ queryKey: roomTypesKey(propertyId) });
 		} catch (err) {
 			error = errorMessage(err);
-			onError?.();
+			onError?.(err);
 			if (err instanceof ApiError && err.status === 412) {
 				editing = null;
 			}
@@ -74,7 +74,7 @@
 				})
 			);
 			succeeded = true;
-		});
+		}, createForm.failed);
 		if (succeeded) {
 			draft = emptyDraft();
 			createForm.reset();

@@ -50,3 +50,46 @@ describe('formKeys', () => {
 		expect(key1).not.toBe(key2);
 	});
 });
+
+describe('formKeys failed()', () => {
+	const problem = (status: number, detail: string) =>
+		new ApiError({ type: 'about:blank', title: 'Error', status, detail });
+	const body = { code: 'STD', name: 'Standard' };
+
+	/** The key an unchanged resubmit gets after the first attempt failed with `err`. */
+	function keysAround(err: unknown): [string, string] {
+		const keys = formKeys();
+		const first = keys.keyFor(body);
+		keys.failed(err);
+		return [first, keys.keyFor(body)];
+	}
+
+	it('rotates the key after a definitive client error, so a resubmit is a new request', () => {
+		const [first, second] = keysAround(problem(422, 'a room type with code STD already exists'));
+		expect(second).not.toBe(first);
+	});
+
+	it('keeps the key after a network error, so a retry cannot create twice', () => {
+		const [first, second] = keysAround(new TypeError('Failed to fetch'));
+		expect(second).toBe(first);
+	});
+
+	it('keeps the key after a server error', () => {
+		const [first, second] = keysAround(problem(500, 'Internal error'));
+		expect(second).toBe(first);
+	});
+
+	it('keeps the key while the first request with it is still in progress', () => {
+		const inProgress = problem(
+			409,
+			'a request with this Idempotency-Key is still in progress; retry shortly'
+		);
+		const [first, second] = keysAround(inProgress);
+		expect(second).toBe(first);
+	});
+
+	it('rotates the key after any other conflict', () => {
+		const [first, second] = keysAround(problem(409, 'the room is already blocked'));
+		expect(second).not.toBe(first);
+	});
+});

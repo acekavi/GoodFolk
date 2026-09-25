@@ -31,13 +31,16 @@
 				params: { header: { 'Idempotency-Key': submitForm.keyFor(body) } }
 			});
 			if (!data) {
-				error = toApiError(problem, response.status).message;
+				const failure = toApiError(problem, response.status);
+				submitForm.failed(failure);
+				error = failure.message;
 				return;
 			}
 			await client.invalidateQueries({ queryKey: propertiesKey });
 			submitForm.reset();
 			await goto(resolve('/(app)/p/[property]', { property: data.id }));
 		} catch (err) {
+			submitForm.failed(err);
 			error = errorMessage(err);
 		} finally {
 			busy = false;

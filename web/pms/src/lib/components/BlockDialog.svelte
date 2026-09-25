@@ -108,6 +108,7 @@
 			blockKeys.reset();
 			open = false;
 		} catch (err) {
+			blockKeys.failed(err);
 			const conflicts = conflictMessages(err, roomNumber);
 			problems = conflicts.length > 0 ? conflicts : [errorMessage(err)];
 		} finally {
