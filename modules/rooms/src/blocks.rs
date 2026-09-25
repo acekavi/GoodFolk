@@ -1,8 +1,8 @@
-use crate::inventory::{adjust, business_date, extend_window, month_keys};
+use crate::inventory::{WINDOW_DAYS, adjust, business_date, clamped_month_keys, extend_window};
 use crate::{RoomsError, audit, notify, rooms_key, violates};
 use db::{TenantId, Tx, UserId};
 use serde::{Deserialize, Serialize};
-use time::Date;
+use time::{Date, Duration};
 use uuid::Uuid;
 
 /// `OutOfOrder` takes the room out of inventory (renovation, construction); `OutOfService` leaves it
@@ -264,6 +264,10 @@ pub async fn create_block(
     if input.from < today {
         return Err(RoomsError::Invalid(format!("blocks cannot start before the business date ({today})")));
     }
+    // Counters exist only this far ahead, and every month of a block goes into its change event.
+    if input.to > today + Duration::days(WINDOW_DAYS) {
+        return Err(RoomsError::Invalid(format!("a block can end at most {WINDOW_DAYS} days after the business date")));
+    }
     let (room_type, active) = lock_room(tx, property, input.room_id).await?;
     if !active {
         return Err(RoomsError::Invalid("the room is inactive".into()));
@@ -318,7 +322,7 @@ pub async fn create_block(
         serde_json::json!({ "room_id": block.room_id, "from": block.from, "to": block.to, "kind": block.kind }),
     )
     .await?;
-    notify(tx, tenant, property, month_keys(property, block.from, block.to)).await?;
+    notify(tx, tenant, property, clamped_month_keys(property, today, block.from, block.to)).await?;
     Ok(block)
 }
 
@@ -386,7 +390,7 @@ pub async fn shorten_block(
         serde_json::json!({ "to": to }),
     )
     .await?;
-    notify(tx, tenant, property, month_keys(property, restored_from, current.to)).await?;
+    notify(tx, tenant, property, clamped_month_keys(property, today, restored_from, current.to)).await?;
     Ok(block)
 }
 

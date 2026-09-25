@@ -204,6 +204,12 @@ pub fn month_keys(property: Uuid, from: Date, to: Date) -> Vec<String> {
     keys
 }
 
+/// Month keys for the days of `[from, to)` inside the counter window. Only those days have counters to
+/// change, and clamping keeps every event within the NOTIFY payload limit (under 8000 bytes).
+pub(crate) fn clamped_month_keys(property: Uuid, business_date: Date, from: Date, to: Date) -> Vec<String> {
+    month_keys(property, from.max(business_date), to.min(business_date + Duration::days(WINDOW_DAYS)))
+}
+
 /// Month keys for the whole counter window, for changes that touch every day from the business date on.
 pub(crate) fn window_keys(property: Uuid, business_date: Date) -> Vec<String> {
     month_keys(property, business_date, business_date + Duration::days(WINDOW_DAYS))
@@ -211,7 +217,7 @@ pub(crate) fn window_keys(property: Uuid, business_date: Date) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::month_keys;
+    use super::{clamped_month_keys, month_keys, window_keys};
     use time::macros::date;
     use uuid::Uuid;
 
@@ -225,5 +231,18 @@ mod tests {
         );
         assert_eq!(month_keys(p, date!(2026 - 12 - 31), date!(2027 - 01 - 02)).len(), 2);
         assert_eq!(month_keys(p, date!(2026 - 05 - 10), date!(2026 - 05 - 10)), Vec::<String>::new());
+    }
+
+    #[test]
+    fn keys_for_a_change_stay_within_the_counter_window() {
+        let p = Uuid::nil();
+        let business_date = date!(2026 - 05 - 10);
+
+        let keys = clamped_month_keys(p, business_date, date!(2020 - 01 - 01), date!(2040 - 01 - 01));
+
+        assert_eq!(keys, window_keys(p, business_date));
+        assert_eq!(keys.len(), 25, "730 days from 10 May 2026 touch May 2026 to May 2028");
+        assert_eq!(keys[0], format!("inventory:{p}:2026-05"));
+        assert_eq!(keys[24], format!("inventory:{p}:2028-05"));
     }
 }

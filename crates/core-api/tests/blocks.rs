@@ -113,6 +113,18 @@ async fn a_block_cannot_start_before_the_business_date(_: PgPoolOptions, opts: P
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_block_ending_after_the_counter_window_is_a_422(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts).await;
+
+    let too_long = hotel.block(&app, &hotel.owner, 0, 0, 731).await;
+
+    assert_eq!(too_long.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", too_long.body);
+    assert_eq!(too_long.headers[header::CONTENT_TYPE], "application/problem+json");
+    assert_eq!(too_long.body["detail"], "a block can end at most 730 days after the business date");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn releasing_a_block_early_restores_availability(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts).await;

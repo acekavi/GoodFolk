@@ -44,7 +44,7 @@ pub struct CreateBlockRequest {
     /// `YYYY-MM-DD`, on or after the property's business date.
     #[garde(skip)]
     pub from: Date,
-    /// `YYYY-MM-DD`, after `from`.
+    /// `YYYY-MM-DD`, after `from` and at most 730 days after the business date.
     #[garde(skip)]
     pub to: Date,
     #[garde(skip)]

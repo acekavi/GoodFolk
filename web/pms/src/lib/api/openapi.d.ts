@@ -406,7 +406,7 @@ export interface components {
             reason_id: string;
             /**
              * Format: date
-             * @description `YYYY-MM-DD`, after `from`.
+             * @description `YYYY-MM-DD`, after `from` and at most 730 days after the business date.
              */
             to: string;
         };

@@ -120,6 +120,22 @@ async fn blocks_start_on_or_after_the_business_date_and_end_after_they_start(_: 
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn blocks_end_within_the_counter_window(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let dlx = hotel.room_type("DLX").await;
+    let room = hotel.room(dlx.id, "101").await;
+    let other = hotel.room(dlx.id, "102").await;
+
+    let too_long = hotel.block(&room, 0, WINDOW_DAYS + 1, BlockKind::OutOfOrder).await;
+    let to_the_end = hotel.block(&other, WINDOW_DAYS - 1, WINDOW_DAYS, BlockKind::OutOfOrder).await;
+
+    let Err(RoomsError::Invalid(message)) = too_long else { panic!("expected Invalid, got {too_long:?}") };
+    assert_eq!(message, "a block can end at most 730 days after the business date");
+    assert!(to_the_end.is_ok(), "{to_the_end:?}");
+    assert_eq!(hotel.drift().await, vec![]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn releasing_early_restores_the_remaining_days(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;
     let dlx = hotel.room_type("DLX").await;
