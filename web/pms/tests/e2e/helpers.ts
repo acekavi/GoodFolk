@@ -23,3 +23,26 @@ export async function createProperty(page: Page, code: string): Promise<void> {
 	await page.getByRole('button', { name: 'Create property' }).click();
 	await expect(page.getByRole('heading', { name: `Hotel ${code}` })).toBeVisible();
 }
+
+/** Adds a room type on the Room types page. */
+export async function addRoomType(page: Page, code: string, name: string): Promise<void> {
+	const form = page.getByRole('form', { name: 'New room type' });
+	await form.getByLabel('Code').fill(code);
+	await form.getByLabel('Name').fill(name);
+	await form.getByRole('button', { name: 'Add room type' }).click();
+	await expect(page.getByRole('cell', { name: code, exact: true })).toBeVisible();
+}
+
+/** Adds rooms `first` to `last` of one type with the bulk dialog on the Rooms page. */
+export async function addRooms(page: Page, code: string, first: number, last: number) {
+	await page.getByRole('button', { name: 'Add rooms…' }).click();
+	const dialog = page.getByRole('dialog', { name: 'Add rooms' });
+	await dialog.getByLabel('Room type').selectOption({ label: code });
+	await dialog.getByLabel('First number').fill(String(first));
+	await dialog.getByLabel('Last number').fill(String(last));
+	await dialog.getByLabel('Floor').fill(String(first).slice(0, 1));
+	const count = last - first + 1;
+	await dialog.getByRole('button', { name: `Add ${count} rooms` }).click();
+	await expect(dialog).toBeHidden();
+	await expect(page.getByRole('cell', { name: String(last), exact: true })).toBeVisible();
+}

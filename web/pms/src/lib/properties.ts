@@ -9,6 +9,10 @@ export const PropertiesDocument = graphql(`
 			name
 			timezone
 			baseCurrency
+			businessDate
+			checkInTime
+			checkOutTime
+			version
 		}
 	}
 `);

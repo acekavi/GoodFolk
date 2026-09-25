@@ -22,7 +22,7 @@ export type InventoryQuery = { inventory: Array<{ date: string, roomTypeId: stri
 export type PropertiesQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type PropertiesQuery = { properties: Array<{ id: string, code: string, name: string, timezone: string, baseCurrency: string }> };
+export type PropertiesQuery = { properties: Array<{ id: string, code: string, name: string, timezone: string, baseCurrency: string, businessDate: string, checkInTime: string, checkOutTime: string, version: number }> };
 
 export type RoomTypesQueryVariables = Exact<{
   propertyId: string;
@@ -87,6 +87,10 @@ export const PropertiesDocument = new TypedDocumentString(`
     name
     timezone
     baseCurrency
+    businessDate
+    checkInTime
+    checkOutTime
+    version
   }
 }
     `) as unknown as TypedDocumentString<PropertiesQuery, PropertiesQueryVariables>;

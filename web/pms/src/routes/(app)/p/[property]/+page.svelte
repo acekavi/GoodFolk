@@ -19,6 +19,10 @@
 		<dd>{property.timezone}</dd>
 		<dt>Base currency</dt>
 		<dd>{property.baseCurrency}</dd>
+		<dt>Business date</dt>
+		<dd>{property.businessDate}</dd>
+		<dt>Check-in / check-out</dt>
+		<dd>{property.checkInTime} / {property.checkOutTime}</dd>
 	</dl>
 {:else if properties.isSuccess}
 	<p>Property not found.</p>

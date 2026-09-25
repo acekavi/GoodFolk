@@ -77,3 +77,65 @@ label {
 .error {
 	color: var(--danger);
 }
+
+button.secondary {
+	background: var(--bg);
+	border-color: var(--border);
+	color: var(--text);
+}
+
+table {
+	border-collapse: collapse;
+	margin: var(--space) 0;
+}
+
+th,
+td {
+	text-align: left;
+	padding: 0.35rem 0.6rem;
+	border-bottom: 1px solid var(--border);
+}
+
+tr.inactive td {
+	color: var(--muted);
+}
+
+td input {
+	width: 6rem;
+}
+
+.actions {
+	display: flex;
+	gap: 0.25rem;
+}
+
+.inline-form {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: end;
+	gap: var(--space);
+}
+
+.inline-form input[type='number'] {
+	width: 5rem;
+}
+
+.hint {
+	color: var(--muted);
+}
+
+.visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+dialog {
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--bg);
+	color: var(--text);
+}
