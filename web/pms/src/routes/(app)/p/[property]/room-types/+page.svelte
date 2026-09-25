@@ -41,20 +41,19 @@
 	}
 
 	/** Runs a command, shows its problem if it fails, and refetches after a version conflict. */
-	async function run(command: () => Promise<unknown>): Promise<boolean> {
+	async function run(command: () => Promise<unknown>, onError?: () => void) {
 		busy = true;
 		error = '';
 		try {
 			await command();
 			await client.invalidateQueries({ queryKey: roomTypesKey(propertyId) });
-			return true;
 		} catch (err) {
 			error = errorMessage(err);
+			onError?.();
 			if (err instanceof ApiError && err.status === 412) {
 				editing = null;
 			}
 			await client.invalidateQueries({ queryKey: roomTypesKey(propertyId) });
-			return false;
 		} finally {
 			busy = false;
 		}
@@ -63,7 +62,8 @@
 	async function create(event: SubmitEvent) {
 		event.preventDefault();
 		const body = { code: draft.code.toUpperCase(), name: draft.name, ...capacity(draft) };
-		const success = await run(async () => {
+		let succeeded = false;
+		await run(async () => {
 			unwrap(
 				await rest.POST('/api/v1/properties/{property}/room-types', {
 					params: {
@@ -73,8 +73,9 @@
 					body
 				})
 			);
+			succeeded = true;
 		});
-		if (success) {
+		if (succeeded) {
 			draft = emptyDraft();
 			createForm.reset();
 		}
@@ -101,17 +102,17 @@
 		if (moved.every((type, index) => type.id === current[index].id)) return;
 		// Show the new order at once; the refetch after the command confirms it.
 		client.setQueryData(roomTypesKey(propertyId), moved);
-		const success = await run(async () => {
-			unwrap(
-				await rest.PUT('/api/v1/properties/{property}/room-types/order', {
-					params: { path: { property: propertyId } },
-					body: { ids: moved.map((type) => type.id) }
-				})
-			);
-		});
-		if (!success) {
-			client.setQueryData(roomTypesKey(propertyId), current);
-		}
+		await run(
+			async () => {
+				unwrap(
+					await rest.PUT('/api/v1/properties/{property}/room-types/order', {
+						params: { path: { property: propertyId } },
+						body: { ids: moved.map((type) => type.id) }
+					})
+				);
+			},
+			() => client.setQueryData(roomTypesKey(propertyId), current)
+		);
 	}
 </script>
 
