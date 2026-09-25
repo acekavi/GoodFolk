@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { ApiError, errorMessage } from '$lib/api/problem';
-	import { idempotencyKey, ifMatch, rest, unwrap } from '$lib/api/rest';
+	import { formKeys, ifMatch, rest, unwrap } from '$lib/api/rest';
 	import { fetchRoomTypes, moveItem, roomTypesKey, type RoomType } from '$lib/rooms';
 	import { can, fetchMe } from '$lib/session';
 
@@ -29,9 +29,7 @@
 	let dragged = $state<number | null>(null);
 	let error = $state('');
 	let busy = $state(false);
-	// Reused for retries of the same form; a new one after a success or an edit of the form.
-	let createKey = idempotencyKey();
-	let lastBody = '';
+	const createForm = formKeys();
 
 	function capacity(values: Capacity) {
 		return {
@@ -43,40 +41,43 @@
 	}
 
 	/** Runs a command, shows its problem if it fails, and refetches after a version conflict. */
-	async function run(command: () => Promise<unknown>) {
+	async function run(command: () => Promise<unknown>): Promise<boolean> {
 		busy = true;
 		error = '';
 		try {
 			await command();
 			await client.invalidateQueries({ queryKey: roomTypesKey(propertyId) });
+			return true;
 		} catch (err) {
 			error = errorMessage(err);
 			if (err instanceof ApiError && err.status === 412) {
 				editing = null;
-				await client.invalidateQueries({ queryKey: roomTypesKey(propertyId) });
 			}
+			await client.invalidateQueries({ queryKey: roomTypesKey(propertyId) });
+			return false;
 		} finally {
 			busy = false;
 		}
 	}
 
-	function create(event: SubmitEvent) {
+	async function create(event: SubmitEvent) {
 		event.preventDefault();
 		const body = { code: draft.code.toUpperCase(), name: draft.name, ...capacity(draft) };
-		const serialized = JSON.stringify(body);
-		if (lastBody && serialized !== lastBody) createKey = idempotencyKey();
-		lastBody = serialized;
-		return run(async () => {
+		const success = await run(async () => {
 			unwrap(
 				await rest.POST('/api/v1/properties/{property}/room-types', {
-					params: { path: { property: propertyId }, header: { 'Idempotency-Key': createKey } },
+					params: {
+						path: { property: propertyId },
+						header: { 'Idempotency-Key': createForm.keyFor(body) }
+					},
 					body
 				})
 			);
-			draft = emptyDraft();
-			createKey = idempotencyKey();
-			lastBody = '';
 		});
+		if (success) {
+			draft = emptyDraft();
+			createForm.reset();
+		}
 	}
 
 	function update(type: RoomType, body: { name?: string; active?: boolean } & object) {
@@ -94,13 +95,13 @@
 		});
 	}
 
-	function reorder(from: number, to: number) {
+	async function reorder(from: number, to: number) {
 		const current = roomTypes.data ?? [];
 		const moved = moveItem(current, from, to);
 		if (moved.every((type, index) => type.id === current[index].id)) return;
 		// Show the new order at once; the refetch after the command confirms it.
 		client.setQueryData(roomTypesKey(propertyId), moved);
-		return run(async () => {
+		const success = await run(async () => {
 			unwrap(
 				await rest.PUT('/api/v1/properties/{property}/room-types/order', {
 					params: { path: { property: propertyId } },
@@ -108,6 +109,9 @@
 				})
 			);
 		});
+		if (!success) {
+			client.setQueryData(roomTypesKey(propertyId), current);
+		}
 	}
 </script>
 

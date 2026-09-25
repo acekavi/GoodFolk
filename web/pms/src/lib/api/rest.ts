@@ -23,3 +23,25 @@ export function unwrap<T>(result: { data?: T; error?: unknown; response: Respons
 export function ifMatch(version: number) {
 	return { 'If-Match': `"${version}"` };
 }
+
+/**
+ * Idempotency keys for one create form. Resending the same body (a double-click or a retry) reuses
+ * the key, so it cannot create twice; an edited body is a different request and gets a new key.
+ * Call `reset()` after a success so the next create starts fresh.
+ */
+export function formKeys() {
+	let key = idempotencyKey();
+	let last = '';
+	return {
+		keyFor(body: unknown): string {
+			const serialized = JSON.stringify(body);
+			if (last && serialized !== last) key = idempotencyKey();
+			last = serialized;
+			return key;
+		},
+		reset() {
+			key = idempotencyKey();
+			last = '';
+		}
+	};
+}

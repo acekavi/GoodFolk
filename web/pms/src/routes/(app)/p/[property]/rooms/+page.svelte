@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
-	import { ApiError, errorMessage } from '$lib/api/problem';
-	import { idempotencyKey, ifMatch, rest, unwrap } from '$lib/api/rest';
+	import { errorMessage } from '$lib/api/problem';
+	import { formKeys, ifMatch, rest, unwrap } from '$lib/api/rest';
 	import {
 		fetchRooms,
 		fetchRoomTypes,
@@ -48,8 +48,9 @@
 	const bulkNumbers = $derived(rangeNumbers(bulk.prefix, bulk.first, bulk.last));
 	let single = $state({ roomTypeId: '', number: '', floor: '' });
 	let sectionName = $state('');
-	// One key per user action: kept for a retry of the same form, replaced after a success.
-	const keys = { bulk: idempotencyKey(), single: idempotencyKey(), section: idempotencyKey() };
+	const bulkForm = formKeys();
+	const singleForm = formKeys();
+	const sectionForm = formKeys();
 
 	/** Runs a command; shows its problem if it fails, and refetches after a version conflict. */
 	async function run(command: () => Promise<unknown>): Promise<boolean> {
@@ -61,9 +62,7 @@
 			return true;
 		} catch (err) {
 			error = errorMessage(err);
-			if (err instanceof ApiError && err.status === 412) {
-				await client.invalidateQueries({ queryKey: roomsKey(propertyId) });
-			}
+			await client.invalidateQueries({ queryKey: roomsKey(propertyId) });
 			return false;
 		} finally {
 			busy = false;
@@ -78,59 +77,71 @@
 
 	async function addRange(event: SubmitEvent) {
 		event.preventDefault();
+		const body = {
+			room_type_id: bulk.roomTypeId,
+			prefix: bulk.prefix,
+			first: bulk.first,
+			last: bulk.last,
+			floor: bulk.floor || null,
+			section_id: bulk.sectionId || null
+		};
 		const added = await run(async () =>
 			unwrap(
 				await rest.POST('/api/v1/properties/{property}/rooms/bulk', {
-					params: { path: { property: propertyId }, header: { 'Idempotency-Key': keys.bulk } },
-					body: {
-						room_type_id: bulk.roomTypeId,
-						prefix: bulk.prefix,
-						first: bulk.first,
-						last: bulk.last,
-						floor: bulk.floor || null,
-						section_id: bulk.sectionId || null
-					}
+					params: {
+						path: { property: propertyId },
+						header: { 'Idempotency-Key': bulkForm.keyFor(body) }
+					},
+					body
 				})
 			)
 		);
 		if (added) {
-			keys.bulk = idempotencyKey();
+			bulkForm.reset();
 			bulkDialog?.close();
 		}
 	}
 
 	async function addRoom(event: SubmitEvent) {
 		event.preventDefault();
+		const body = {
+			room_type_id: single.roomTypeId || activeTypes[0]?.id,
+			number: single.number,
+			floor: single.floor || null
+		};
 		const added = await run(async () =>
 			unwrap(
 				await rest.POST('/api/v1/properties/{property}/rooms', {
-					params: { path: { property: propertyId }, header: { 'Idempotency-Key': keys.single } },
-					body: {
-						room_type_id: single.roomTypeId || activeTypes[0]?.id,
-						number: single.number,
-						floor: single.floor || null
-					}
+					params: {
+						path: { property: propertyId },
+						header: { 'Idempotency-Key': singleForm.keyFor(body) }
+					},
+					body
 				})
 			)
 		);
 		if (added) {
-			keys.single = idempotencyKey();
+			singleForm.reset();
 			single.number = '';
 		}
 	}
 
 	async function addSection(event: SubmitEvent) {
 		event.preventDefault();
+		const body = { name: sectionName };
 		const added = await run(async () =>
 			unwrap(
 				await rest.POST('/api/v1/properties/{property}/sections', {
-					params: { path: { property: propertyId }, header: { 'Idempotency-Key': keys.section } },
-					body: { name: sectionName }
+					params: {
+						path: { property: propertyId },
+						header: { 'Idempotency-Key': sectionForm.keyFor(body) }
+					},
+					body
 				})
 			)
 		);
 		if (added) {
-			keys.section = idempotencyKey();
+			sectionForm.reset();
 			sectionName = '';
 		}
 	}

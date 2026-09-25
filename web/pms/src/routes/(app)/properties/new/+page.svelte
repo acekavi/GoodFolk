@@ -2,15 +2,12 @@
 	import { resolve } from '$app/paths';
 	import { goto } from '$app/navigation';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import { idempotencyKey, rest } from '$lib/api/rest';
+	import { formKeys, rest } from '$lib/api/rest';
 	import { errorMessage, toApiError } from '$lib/api/problem';
 	import { propertiesKey } from '$lib/properties';
 
 	const client = useQueryClient();
-	// A double-click or network retry resends the same body with the same key, so it cannot create
-	// two properties. An edited resubmission is a different request and gets a new key.
-	let key = idempotencyKey();
-	let lastBody = '';
+	const submitForm = formKeys();
 	let form = $state({ code: '', name: '', timezone: 'Asia/Colombo', base_currency: 'LKR' });
 	let error = $state('');
 	let busy = $state(false);
@@ -24,9 +21,6 @@
 			code: form.code.toUpperCase(),
 			base_currency: form.base_currency.toUpperCase()
 		};
-		const serialized = JSON.stringify(body);
-		if (lastBody && serialized !== lastBody) key = idempotencyKey();
-		lastBody = serialized;
 		try {
 			const {
 				data,
@@ -34,13 +28,14 @@
 				response
 			} = await rest.POST('/api/v1/properties', {
 				body,
-				params: { header: { 'Idempotency-Key': key } }
+				params: { header: { 'Idempotency-Key': submitForm.keyFor(body) } }
 			});
 			if (!data) {
 				error = toApiError(problem, response.status).message;
 				return;
 			}
 			await client.invalidateQueries({ queryKey: propertiesKey });
+			submitForm.reset();
 			await goto(resolve('/(app)/p/[property]', { property: data.id }));
 		} catch (err) {
 			error = errorMessage(err);
