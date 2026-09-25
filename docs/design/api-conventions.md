@@ -43,7 +43,7 @@ Every non-GET/HEAD/OPTIONS request must send `x-goodfolk-csrf: 1` (`crates/core-
 { "type": "about:blank", "title": "Conflict", "status": 409, "detail": "a property with this code already exists" }
 ```
 
-`Content-Type: application/problem+json`, for every error the API returns, including malformed bodies and query strings, GraphQL request parse failures and timeouts. Construct errors with `ApiError::{bad_request, unauthenticated, invalid_credentials, forbidden, not_found, method_not_allowed, conflict, precondition_failed, precondition_required, unprocessable, too_many_requests, gateway_timeout, internal}`. Database errors are logged and become a bare 500, and internal details never reach the client.
+`Content-Type: application/problem+json`, for every error the API returns, including malformed bodies and query strings, GraphQL request parse failures and timeouts. Construct errors with `ApiError::{bad_request, unauthenticated, invalid_credentials, forbidden, not_found, method_not_allowed, conflict, precondition_failed, precondition_required, unprocessable, too_many_requests, gateway_timeout, internal}`. Database errors are logged and become a bare 500, and internal details never reach the client. A problem may carry extension members added with `ApiError::with(name, value)`: a 409 for an overlapping room block lists the blocks in the way as `conflicts`.
 
 | Status | When |
 |---|---|

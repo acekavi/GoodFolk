@@ -105,6 +105,54 @@ export interface paths {
         patch: operations["update_property"];
         trace?: never;
     };
+    "/api/v1/properties/{property}/block-reasons": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_block_reason"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/block-reasons/{reason}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["update_block_reason"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/blocks/{block}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["shorten_block"];
+        trace?: never;
+    };
     "/api/v1/properties/{property}/room-types": {
         parameters: {
             query?: never;
@@ -217,6 +265,23 @@ export interface paths {
         patch: operations["update_room"];
         trace?: never;
     };
+    "/api/v1/properties/{property}/rooms/{room}/blocks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** A 409 lists the blocks in the way as `conflicts` (each with `id`, `room_id`, `from`, `to`, `kind`). */
+        post: operations["create_block"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/sections": {
         parameters: {
             query?: never;
@@ -280,6 +345,70 @@ export interface components {
             count: number;
             /** @description e.g. `king`, `queen`, `twin`, `sofa bed`. */
             kind: string;
+        };
+        /** @description A room blocked for `[from, to)`: `to` is the first day it is back. */
+        Block: {
+            /** Format: date */
+            from: string;
+            /** Format: uuid */
+            id: string;
+            kind: components["schemas"]["BlockKind"];
+            note: string;
+            /** Format: uuid */
+            property_id: string;
+            /** Format: uuid */
+            reason_id: string;
+            /** @description Cancelled before it started. Released blocks no longer block anything. */
+            released: boolean;
+            /** Format: uuid */
+            room_id: string;
+            /** Format: date */
+            to: string;
+            /** Format: int32 */
+            version: number;
+        };
+        /**
+         * @description `OutOfOrder` takes the room out of inventory (renovation, construction); `OutOfService` leaves it
+         *     sellable and only flags it (a short fix, a deep clean).
+         * @enum {string}
+         */
+        BlockKind: "out_of_order" | "out_of_service";
+        /** @description Why a room is blocked. Each property starts with [`DEFAULT_BLOCK_REASONS`] and may add its own. */
+        BlockReason: {
+            active: boolean;
+            code: string;
+            default_kind: components["schemas"]["BlockKind"];
+            /** Format: uuid */
+            id: string;
+            label: string;
+            /** Format: uuid */
+            property_id: string;
+            /** Format: int32 */
+            version: number;
+        };
+        CreateBlockReasonRequest: {
+            /** @description Capital letters, digits and `_`, unique within the property. Cannot be changed later. */
+            code: string;
+            /** @description The kind the block dialog suggests for this reason. */
+            default_kind: components["schemas"]["BlockKind"];
+            label: string;
+        };
+        /** @description Blocks the room for `[from, to)`: `to` is the first day it is back in service. */
+        CreateBlockRequest: {
+            /**
+             * Format: date
+             * @description `YYYY-MM-DD`, on or after the property's business date.
+             */
+            from: string;
+            kind: components["schemas"]["BlockKind"];
+            note?: string;
+            /** Format: uuid */
+            reason_id: string;
+            /**
+             * Format: date
+             * @description `YYYY-MM-DD`, after `from`.
+             */
+            to: string;
         };
         CreatePropertyRequest: {
             /** @description ISO 4217 code, e.g. `LKR`. */
@@ -425,6 +554,17 @@ export interface components {
         SectionRequest: {
             name: string;
         };
+        /**
+         * @description Ends the block early: the room is back from `to`. Sending the business date releases it now; a date on
+         *     or before the block's start cancels it.
+         */
+        ShortenBlockRequest: {
+            /**
+             * Format: date
+             * @description `YYYY-MM-DD`, on or after the business date and before the block's current end.
+             */
+            to: string;
+        };
         SignupRequest: {
             display_name: string;
             email: string;
@@ -439,6 +579,13 @@ export interface components {
             /** Format: uuid */
             id: string;
             name: string;
+        };
+        /** @description Fields left out stay as they are. */
+        UpdateBlockReasonRequest: {
+            /** @description `false` retires the reason: existing blocks keep it, new blocks cannot use it. */
+            active?: boolean | null;
+            default_kind?: components["schemas"]["BlockKind"] | null;
+            label?: string | null;
         };
         UpdatePropertyRequest: {
             /** @description `HH:MM` (24-hour), local time. */
@@ -667,6 +814,173 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Property"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_block_reason: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateBlockReasonRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlockReason"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_block_reason: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                reason: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateBlockReasonRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlockReason"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    shorten_block: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                block: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShortenBlockRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Block"];
                 };
             };
             403: {
@@ -1057,6 +1371,58 @@ export interface operations {
                 content?: never;
             };
             428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_block: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateBlockRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Block"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

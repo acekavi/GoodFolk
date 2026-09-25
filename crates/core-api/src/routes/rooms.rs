@@ -21,7 +21,7 @@ pub(crate) fn rooms_error(err: RoomsError) -> ApiError {
         RoomsError::VersionMismatch(_) => ApiError::precondition_failed(err.to_string()),
         RoomsError::Conflict(message) => ApiError::conflict(message),
         RoomsError::Invalid(message) => ApiError::unprocessable(message),
-        RoomsError::Overlap(_) => ApiError::conflict(err.to_string()),
+        RoomsError::Overlap(ref blocks) => ApiError::conflict(err.to_string()).with("conflicts", blocks),
         RoomsError::Database(db_err) => db_err.into(),
     }
 }

@@ -201,6 +201,182 @@
         }
       }
     },
+    "/api/v1/properties/{property}/block-reasons": {
+      "post": {
+        "tags": [
+          "crate::routes::blocks"
+        ],
+        "operationId": "create_block_reason",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBlockReasonRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BlockReason"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/block-reasons/{reason}": {
+      "patch": {
+        "tags": [
+          "crate::routes::blocks"
+        ],
+        "operationId": "update_block_reason",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "reason",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateBlockReasonRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BlockReason"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/blocks/{block}": {
+      "patch": {
+        "tags": [
+          "crate::routes::blocks"
+        ],
+        "operationId": "shorten_block",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "block",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShortenBlockRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Block"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/room-types": {
       "post": {
         "tags": [
@@ -556,6 +732,68 @@
         }
       }
     },
+    "/api/v1/properties/{property}/rooms/{room}/blocks": {
+      "post": {
+        "tags": [
+          "crate::routes::blocks"
+        ],
+        "summary": "A 409 lists the blocks in the way as `conflicts` (each with `id`, `room_id`, `from`, `to`, `kind`).",
+        "operationId": "create_block",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBlockRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Block"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/sections": {
       "post": {
         "tags": [
@@ -735,6 +973,162 @@
           "kind": {
             "type": "string",
             "description": "e.g. `king`, `queen`, `twin`, `sofa bed`."
+          }
+        }
+      },
+      "Block": {
+        "type": "object",
+        "description": "A room blocked for `[from, to)`: `to` is the first day it is back.",
+        "required": [
+          "id",
+          "property_id",
+          "room_id",
+          "from",
+          "to",
+          "kind",
+          "reason_id",
+          "note",
+          "released",
+          "version"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/BlockKind"
+          },
+          "note": {
+            "type": "string"
+          },
+          "property_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "released": {
+            "type": "boolean",
+            "description": "Cancelled before it started. Released blocks no longer block anything."
+          },
+          "room_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "to": {
+            "type": "string",
+            "format": "date"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "BlockKind": {
+        "type": "string",
+        "description": "`OutOfOrder` takes the room out of inventory (renovation, construction); `OutOfService` leaves it\nsellable and only flags it (a short fix, a deep clean).",
+        "enum": [
+          "out_of_order",
+          "out_of_service"
+        ]
+      },
+      "BlockReason": {
+        "type": "object",
+        "description": "Why a room is blocked. Each property starts with [`DEFAULT_BLOCK_REASONS`] and may add its own.",
+        "required": [
+          "id",
+          "property_id",
+          "code",
+          "label",
+          "default_kind",
+          "active",
+          "version"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "string"
+          },
+          "default_kind": {
+            "$ref": "#/components/schemas/BlockKind"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "label": {
+            "type": "string"
+          },
+          "property_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "CreateBlockReasonRequest": {
+        "type": "object",
+        "required": [
+          "code",
+          "label",
+          "default_kind"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Capital letters, digits and `_`, unique within the property. Cannot be changed later."
+          },
+          "default_kind": {
+            "$ref": "#/components/schemas/BlockKind",
+            "description": "The kind the block dialog suggests for this reason."
+          },
+          "label": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateBlockRequest": {
+        "type": "object",
+        "description": "Blocks the room for `[from, to)`: `to` is the first day it is back in service.",
+        "required": [
+          "from",
+          "to",
+          "kind",
+          "reason_id"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date",
+            "description": "`YYYY-MM-DD`, on or after the property's business date."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/BlockKind"
+          },
+          "note": {
+            "type": "string"
+          },
+          "reason_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "description": "`YYYY-MM-DD`, after `from`."
           }
         }
       },
@@ -1197,6 +1591,20 @@
           }
         }
       },
+      "ShortenBlockRequest": {
+        "type": "object",
+        "description": "Ends the block early: the room is back from `to`. Sending the business date releases it now; a date on\nor before the block's start cancels it.",
+        "required": [
+          "to"
+        ],
+        "properties": {
+          "to": {
+            "type": "string",
+            "format": "date",
+            "description": "`YYYY-MM-DD`, on or after the business date and before the block's current end."
+          }
+        }
+      },
       "SignupRequest": {
         "type": "object",
         "required": [
@@ -1245,6 +1653,35 @@
           },
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "UpdateBlockReasonRequest": {
+        "type": "object",
+        "description": "Fields left out stay as they are.",
+        "properties": {
+          "active": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`false` retires the reason: existing blocks keep it, new blocks cannot use it."
+          },
+          "default_kind": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BlockKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

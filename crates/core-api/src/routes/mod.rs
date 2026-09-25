@@ -1,4 +1,5 @@
 pub(crate) mod auth;
+pub(crate) mod blocks;
 mod health;
 pub(crate) mod properties;
 pub(crate) mod room_types;
@@ -18,6 +19,7 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 use tower_http::trace::TraceLayer;
 
 pub use auth::{LoginRequest, SignupRequest, SwitchTenantRequest};
+pub use blocks::{CreateBlockReasonRequest, CreateBlockRequest, ShortenBlockRequest, UpdateBlockReasonRequest};
 pub use properties::{CreatePropertyRequest, UpdatePropertyRequest};
 pub use room_types::{BedRequest, CreateRoomTypeRequest, UpdateRoomTypeRequest};
 pub use rooms::{CreateRoomRangeRequest, CreateRoomRequest, ReorderRequest, SectionRequest, UpdateRoomRequest};
@@ -36,6 +38,8 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/rooms"), post(rooms::create))
         .route(&format!("{PROPERTY}/rooms/bulk"), post(rooms::create_range))
         .route(&format!("{PROPERTY}/sections"), post(rooms::create_section))
+        .route(&format!("{PROPERTY}/block-reasons"), post(blocks::create_reason))
+        .route(&format!("{PROPERTY}/rooms/{{room}}/blocks"), post(blocks::create))
         .route_layer(from_fn_with_state(state.clone(), idempotency::idempotent));
 
     let requests = Router::new()
@@ -50,6 +54,8 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/rooms/order"), put(rooms::reorder))
         .route(&format!("{PROPERTY}/rooms/{{room}}"), patch(rooms::update))
         .route(&format!("{PROPERTY}/sections/{{section}}"), patch(rooms::rename_section))
+        .route(&format!("{PROPERTY}/block-reasons/{{reason}}"), patch(blocks::update_reason))
+        .route(&format!("{PROPERTY}/blocks/{{block}}"), patch(blocks::shorten))
         .route("/graphql", post(graphql::handler))
         .merge(commands)
         .layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)));

@@ -63,6 +63,7 @@ pub async fn create(
         NewProperty { code: body.code, name: body.name, timezone: body.timezone, base_currency: body.base_currency };
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
     let created = property::create_property(&mut tx, ctx.tenant, ctx.user, input).await.map_err(property_error)?;
+    rooms::seed_block_reasons(&mut tx, ctx.tenant, created.id).await?;
     tx.commit().await?;
     Ok(Versioned::created(created.version, created))
 }

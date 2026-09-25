@@ -9,6 +9,8 @@ pub struct ApiError {
     status: StatusCode,
     title: &'static str,
     detail: Option<String>,
+    /// Extension members, such as the blocks in the way of a new one.
+    extensions: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -19,11 +21,20 @@ struct Problem<'a> {
     status: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<&'a str>,
+    #[serde(flatten)]
+    extensions: &'a serde_json::Map<String, serde_json::Value>,
 }
 
 impl ApiError {
     fn new(status: StatusCode, title: &'static str, detail: Option<String>) -> Self {
-        Self { status, title, detail }
+        Self { status, title, detail, extensions: serde_json::Map::new() }
+    }
+
+    /// Adds an extension member to the problem, e.g. `conflicts: [...]`.
+    pub fn with(mut self, name: &str, value: impl Serialize) -> Self {
+        let value = serde_json::to_value(value).expect("extension members serialize");
+        self.extensions.insert(name.to_owned(), value);
+        self
     }
 
     pub fn bad_request(detail: impl Into<String>) -> Self {
@@ -101,6 +112,7 @@ impl IntoResponse for ApiError {
             title: self.title,
             status: self.status.as_u16(),
             detail: self.detail.as_deref(),
+            extensions: &self.extensions,
         };
         let mut response = (self.status, Json(body)).into_response();
         response
