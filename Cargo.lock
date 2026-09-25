@@ -679,6 +679,7 @@ name = "db"
 version = "0.1.0"
 dependencies = [
  "db",
+ "proptest",
  "serde",
  "serde_json",
  "sqlx",

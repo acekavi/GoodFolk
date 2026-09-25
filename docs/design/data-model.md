@@ -1,6 +1,6 @@
 # Data Model
 
-The reference schema for every phase. Phase 0 tables exist in `migrations/0001_foundation.sql`, Phase 1 tables in `migrations/0003_login_throttle.sql` and `migrations/0004_rooms_inventory.sql`. Tables for later phases are the target design: the migrations that create them are written in their phase and may refine columns, but must keep the rules below.
+The reference schema for every phase. Phase 0 tables exist in `migrations/0001_foundation.sql`, Phase 1 tables in `migrations/0003_login_throttle.sql` and `migrations/0004_rooms_inventory.sql`, Phase 2 tables in `migrations/0006_rates.sql`. Tables for later phases are the target design: the migrations that create them are written in their phase and may refine columns, but must keep the rules below.
 
 Related: [ARCHITECTURE.md](../ARCHITECTURE.md) (why), [api-conventions.md](api-conventions.md) (how data leaves the API).
 
@@ -49,15 +49,20 @@ Extensions: `btree_gist` (needed by the exclusion constraints).
 |---|---|---|
 | `login_failure` | `id`, `email citext`, `at` | Sign-in throttling (`migrations/0003_login_throttle.sql`). No RLS and no `tenant_id`: looked up before a tenant is known. One row per attempt, written before the password is checked; a successful sign-in deletes the email's rows. The Phase 7 purge job deletes rows older than the window |
 
-## Phase 2: Rates and meal plans
+## Phase 2: Rates and meal plans (implemented)
+
+Created by `migrations/0006_rates.sql` (`0005_idempotency_etag.sql` adds `idempotency_key.etag`, so a replayed create carries its `ETag`). Every table carries `tenant_id` and `property_id` and references its property through `(tenant_id, property_id)`; prices and restrictions reference the plan's room type through `(property_id, rate_plan_id, room_type_id)`. Amounts are minor units in the plan's (or supplement's) currency, at most 100 000 000 000.
 
 | Table | Key columns | Constraints and indexes |
 |---|---|---|
-| `rate_plan` | `id`, `tenant_id`, `property_id`, `code`, `name`, `kind` (`standard` \| `derived` \| `custom`), `segment` (`FIT_F` \| `FIT_L` \| `OTA` \| `TA` \| `IBE`), `residency` (`resident` \| `non_resident` \| null = any), `currency`, `parent_id null`, `derive_mode` (`percent` \| `amount`), `derive_value bigint` (basis points or minor units), `rounding_step bigint`, `inherit_restrictions bool`, `allowed_meal_plans text[]`, `cancellation_policy_id`, `active`, `version` | `unique (property_id, code)`; `check ((kind = 'derived') = (parent_id is not null))`. Same currency as the parent (enforced in the module, tested). Derivation depth ≤ 3; no cycles |
-| `rate_plan_room_type` | `(rate_plan_id, room_type_id)`, `tenant_id` | Which room types a plan sells |
-| `rate_day` | `(rate_plan_id, room_type_id, date, occupancy)`, `tenant_id`, `property_id`, `amount bigint`, `closed bool`, `min_stay`, `max_stay`, `closed_to_arrival`, `closed_to_departure` | **Resolved** prices, derived plans included. Recomputed in the same transaction as the parent change. Index `(property_id, date)` for grids and search |
-| `meal_supplement` | `id`, `tenant_id`, `property_id`, `meal_plan` (`RO` \| `BB` \| `HB` \| `FB`), `currency`, `adult_amount`, `child_amount`, `valid daterange` | Per person per night on top of the room price. `RO` is always 0. Exclusion: no overlapping `valid` for the same `(property_id, meal_plan, currency)` |
-| `cancellation_policy` | `id`, `tenant_id`, `property_id`, `name`, `rules jsonb` | Rules: list of `{days_before_arrival, penalty: {kind: nights\|percent\|amount, value}}`; `no_show` penalty |
+| `rate_plan` | `id`, `tenant_id`, `property_id`, `code`, `name`, `kind` (`standard` \| `derived` \| `custom`), `segment` (`FIT_F` \| `FIT_L` \| `OTA` \| `TA` \| `IBE`), `residency` (`resident` \| `non_resident` \| null = any), `currency`, `parent_id null`, `derive_mode` (`percent` \| `amount`), `derive_value bigint` (basis points or minor units), `rounding_step bigint`, `extra_adult_amount bigint`, `inherit_restrictions bool`, `allowed_meal_plans text[]`, `cancellation_policy_id null`, `active`, `version` | `unique (property_id, code)`; `rate_plan_derivation_check`: a plan has a parent and a formula exactly when it is derived, percent within −100 % … +1000 %; `rate_plan_segment_residency_check`: `FIT_F` is `non_resident`, `FIT_L` is `resident`. Same currency as the parent, derivation depth ≤ 3, no cycles, and only standard or derived plans as parents: enforced in the `rates` module, tested |
+| `rate_plan_room_type` | `(rate_plan_id, room_type_id)`, `tenant_id`, `property_id` | Which room types a plan sells. A derived plan sells a subset of its parent's. Removing a type deletes the plan's prices and restrictions for it (`on delete cascade`) |
+| `rate_day` | `(rate_plan_id, date, room_type_id, occupancy)`, `tenant_id`, `property_id`, `amount bigint` | **Resolved** prices, derived plans included; `occupancy` is the number of adults (1 … 50). Recomputed in the same transaction as the parent change (one `insert … select … on conflict do update` per level, through `app.derive_amount`). Index `(property_id, date)` for grids and search |
+| `rate_restriction` | `(rate_plan_id, date, room_type_id)`, `tenant_id`, `property_id`, `closed bool`, `min_stay null`, `max_stay null`, `closed_to_arrival`, `closed_to_departure` | Restrictions per plan, room type and date (the target design kept them on `rate_day`; they apply to every occupancy, so they have their own row). **Resolved**: a derived plan with `inherit_restrictions` holds a copy of its parent's rows, rewritten with them. Index `(property_id, date)` |
+| `meal_supplement` | `id`, `tenant_id`, `property_id`, `meal_plan` (`BB` \| `HB` \| `FB`), `currency`, `adult_amount`, `child_amount`, `valid daterange`, `version` | Per person per night on top of the room price. `RO` is always 0 and has no rows. `valid` has a lower bound; no upper bound means until further notice. Exclusion `meal_supplement_no_overlap`: no overlapping `valid` for the same `(property_id, meal_plan, currency)` |
+| `cancellation_policy` | `id`, `tenant_id`, `property_id`, `name`, `rules jsonb`, `no_show jsonb`, `version` | `unique (property_id, name)`. `rules`: list of `{days_before_arrival, penalty: {kind: nights\|percent\|amount, value}}` (percent in basis points); `no_show`: one penalty |
+
+`app.derive_amount(base, mode, value, step)` changes a price by `value` basis points (`percent`) or minor units (`amount`), never below 0, rounded half-up to a multiple of `step`, in integer arithmetic. Derived plans apply their formula to the parent's price with it, and bulk changes apply theirs to a plan's own prices.
 
 ## Phase 3: Reservations and guests
 

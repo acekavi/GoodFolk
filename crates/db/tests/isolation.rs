@@ -448,3 +448,117 @@ async fn inventory_days_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnect
     assert_eq!(seen, 0);
     assert!(err.contains("row-level security"), "unexpected error: {err}");
 }
+
+/// One row in every Phase 2 table, on top of [`seed_rooms`], for `tenant`'s property.
+async fn seed_rates(pool: &PgPool, tenant: TenantId) {
+    let rooms = seed_rooms(pool, tenant).await;
+    let (policy, plan) = (Uuid::now_v7(), Uuid::now_v7());
+    let mut tx = begin(pool, Scope::tenant(tenant)).await.unwrap();
+    let statements = [
+        "insert into cancellation_policy (id, tenant_id, property_id, name, rules, no_show)
+         values ($4, $1, $2, 'Flexible', '[]', '{\"kind\": \"nights\", \"value\": 1}')",
+        "insert into rate_plan (id, tenant_id, property_id, code, name, kind, segment, currency, cancellation_policy_id)
+         values ($5, $1, $2, 'BAR', 'Best available', 'standard', 'IBE', 'USD', $4)",
+        "insert into rate_plan_room_type (tenant_id, property_id, rate_plan_id, room_type_id) values ($1, $2, $5, $3)",
+        "insert into rate_day (tenant_id, property_id, rate_plan_id, room_type_id, date, occupancy, amount)
+         values ($1, $2, $5, $3, current_date, 2, 12000)",
+        "insert into rate_restriction (tenant_id, property_id, rate_plan_id, room_type_id, date, min_stay)
+         values ($1, $2, $5, $3, current_date, 2)",
+        "insert into meal_supplement (id, tenant_id, property_id, meal_plan, currency, adult_amount, child_amount, valid)
+         values (gen_random_uuid(), $1, $2, 'BB', 'USD', 1500, 750, daterange(current_date, null))",
+    ];
+    for statement in statements {
+        sqlx::query(statement)
+            .bind(tenant.0)
+            .bind(rooms.property)
+            .bind(rooms.room_type)
+            .bind(policy)
+            .bind(plan)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+}
+
+/// Tenant `b` sees none of `a`'s rows in `table`, only its own, and cannot insert a row owned by `a` (`insert`
+/// binds `$1` to `a` and takes every other id from `b`'s own rows).
+async fn assert_rates_table_isolated(opts: PgConnectOptions, table: &str, insert: &'static str) {
+    let pool = app_pool(opts, 1).await;
+    let a = seed_tenant(&pool, "A").await;
+    let b = seed_tenant(&pool, "B").await;
+    seed_rates(&pool, a).await;
+    seed_rates(&pool, b).await;
+
+    let seen = visible_rows(&pool, b, table).await;
+    let err = foreign_insert_error(&pool, b, a, insert).await;
+
+    assert_eq!(seen, 1, "B sees only its own {table} row");
+    assert!(err.contains("row-level security"), "unexpected error: {err}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn cancellation_policies_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_rates_table_isolated(
+        opts,
+        "cancellation_policy",
+        "insert into cancellation_policy (id, tenant_id, property_id, name, rules, no_show)
+         select gen_random_uuid(), $1, id, 'Strict', '[]', '{}' from property",
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn rate_plans_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_rates_table_isolated(
+        opts,
+        "rate_plan",
+        "insert into rate_plan (id, tenant_id, property_id, code, name, kind, segment, currency)
+         select gen_random_uuid(), $1, id, 'OTA', 'OTA', 'custom', 'OTA', 'USD' from property",
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn rate_plan_room_types_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_rates_table_isolated(
+        opts,
+        "rate_plan_room_type",
+        "insert into rate_plan_room_type (tenant_id, property_id, rate_plan_id, room_type_id)
+         select $1, p.property_id, p.id, t.id from rate_plan p, room_type t",
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn rate_days_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_rates_table_isolated(
+        opts,
+        "rate_day",
+        "insert into rate_day (tenant_id, property_id, rate_plan_id, room_type_id, date, occupancy, amount)
+         select $1, property_id, rate_plan_id, room_type_id, current_date + 1, 1, 9000 from rate_plan_room_type",
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn rate_restrictions_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_rates_table_isolated(
+        opts,
+        "rate_restriction",
+        "insert into rate_restriction (tenant_id, property_id, rate_plan_id, room_type_id, date, closed)
+         select $1, property_id, rate_plan_id, room_type_id, current_date + 1, true from rate_plan_room_type",
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn meal_supplements_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_rates_table_isolated(
+        opts,
+        "meal_supplement",
+        "insert into meal_supplement (id, tenant_id, property_id, meal_plan, currency, adult_amount, child_amount, valid)
+         select gen_random_uuid(), $1, id, 'HB', 'USD', 3000, 1500, daterange(current_date, null) from property",
+    )
+    .await;
+}
