@@ -59,6 +59,9 @@ fn check_number(number: &str) -> Result<(), RoomsError> {
 }
 
 /// The room type must be an active type of this property, and the section (if any) a section of it.
+/// The type is read `for share`, so it cannot be retired until this transaction ends; retiring counts the
+/// type's active rooms under `for update`, so it either waits for this room or this check sees it retired.
+/// Sections have no active flag and are never deleted, so they need no lock.
 async fn check_references(
     tx: &mut Tx,
     property: Uuid,
@@ -67,7 +70,7 @@ async fn check_references(
 ) -> Result<(), RoomsError> {
     if let Some(room_type) = room_type {
         let active: Option<bool> =
-            sqlx::query_scalar("select active from room_type where id = $1 and property_id = $2")
+            sqlx::query_scalar("select active from room_type where id = $1 and property_id = $2 for share")
                 .bind(room_type)
                 .bind(property)
                 .fetch_optional(&mut **tx)

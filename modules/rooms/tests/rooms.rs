@@ -3,6 +3,7 @@ mod common;
 use common::Hotel;
 use rooms::{NewRoom, Room, RoomChanges, RoomRange, RoomTypeChanges, RoomsError};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use std::time::Duration;
 use uuid::Uuid;
 
 impl Hotel {
@@ -131,6 +132,34 @@ async fn a_room_needs_an_active_room_type_of_its_property(_: PgPoolOptions, opts
     assert!(matches!(unknown, Err(RoomsError::Invalid(_))), "{unknown:?}");
     assert!(matches!(inactive, Err(RoomsError::Invalid(_))), "{inactive:?}");
     assert!(matches!(retire_in_use, Err(RoomsError::Conflict(_))), "{retire_in_use:?}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_room_added_while_its_type_is_being_retired_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let dlx = hotel.room_type("DLX").await;
+    // Retire the empty type, but hold the transaction open while a room is added to it.
+    let mut retiring = hotel.tx().await;
+    let retired = RoomTypeChanges { active: Some(false), ..RoomTypeChanges::default() };
+    rooms::update_room_type(&mut retiring, hotel.tenant, hotel.user, hotel.property, dlx.id, 1, retired).await.unwrap();
+
+    let commit_later = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        retiring.commit().await.unwrap();
+    };
+    let add = async {
+        let mut tx = hotel.tx().await;
+        let input = NewRoom { room_type_id: dlx.id, number: "101".into(), floor: None, section_id: None };
+        let added = rooms::create_room(&mut tx, hotel.tenant, hotel.user, hotel.property, input).await;
+        if added.is_ok() {
+            tx.commit().await.unwrap();
+        }
+        added
+    };
+    let ((), added) = tokio::join!(commit_later, add);
+
+    assert!(matches!(added, Err(RoomsError::Invalid(_))), "{added:?}");
+    assert_eq!(hotel.drift().await, vec![]);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
