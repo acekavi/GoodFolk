@@ -6,14 +6,6 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use uuid::Uuid;
 
 impl Hotel {
-    async fn room(&self, room_type: Uuid, number: &str) -> Room {
-        let input = NewRoom { room_type_id: room_type, number: number.into(), floor: None, section_id: None };
-        let mut tx = self.tx().await;
-        let room = rooms::create_room(&mut tx, self.tenant, self.user, self.property, input).await.unwrap();
-        tx.commit().await.unwrap();
-        room
-    }
-
     async fn update_room(&self, room: &Room, changes: RoomChanges) -> Result<Room, RoomsError> {
         let mut tx = self.tx().await;
         let updated =

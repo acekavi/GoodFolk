@@ -3,11 +3,16 @@
 //! Every function takes a transaction scoped to the caller's tenant and checks that ids belong to the
 //! given property. Writes record an audit entry and queue change events in the same transaction.
 
+mod blocks;
 mod inventory;
 mod room_types;
 mod rooms;
 mod sections;
 
+pub use blocks::{
+    Block, BlockKind, BlockReason, BlockReasonChanges, DEFAULT_BLOCK_REASONS, NewBlock, NewBlockReason, create_block,
+    create_block_reason, list_block_reasons, list_blocks, seed_block_reasons, shorten_block, update_block_reason,
+};
 pub use inventory::{InventoryDay, InventoryDrift, WINDOW_DAYS, extend_window, find_drift, list_inventory, month_keys};
 pub use room_types::{
     Bed, NewRoomType, RoomType, RoomTypeChanges, create_room_type, list_room_types, reorder_room_types,
@@ -36,6 +41,9 @@ pub enum RoomsError {
     /// A business rule, such as a capacity that does not add up or an unknown room type.
     #[error("{0}")]
     Invalid(String),
+    /// The room is already blocked on some of the dates; lists the blocks in the way.
+    #[error("the room is already blocked on some of these dates")]
+    Overlap(Vec<Block>),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }

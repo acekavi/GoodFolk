@@ -2,7 +2,7 @@
 
 use db::testing::app_pool;
 use db::{Scope, TenantId, Tx, UserId, begin};
-use rooms::{InventoryDay, NewRoomType, RoomType, WINDOW_DAYS};
+use rooms::{BlockReason, InventoryDay, NewRoom, NewRoomType, Room, RoomType, WINDOW_DAYS};
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
 use time::{Date, Duration};
@@ -37,6 +37,7 @@ impl Hotel {
             base_currency: "LKR".into(),
         };
         let property = property::create_property(&mut tx, tenant, user, hotel).await.unwrap();
+        rooms::seed_block_reasons(&mut tx, tenant, property.id).await.unwrap();
         tx.commit().await.unwrap();
         Self { pool, tenant, user, property: property.id, business_date: property.business_date }
     }
@@ -48,6 +49,21 @@ impl Hotel {
     /// The business date plus `days`.
     pub fn day(&self, days: i64) -> Date {
         self.business_date + Duration::days(days)
+    }
+
+    pub async fn room(&self, room_type: Uuid, number: &str) -> Room {
+        let input = NewRoom { room_type_id: room_type, number: number.into(), floor: None, section_id: None };
+        let mut tx = self.tx().await;
+        let room = rooms::create_room(&mut tx, self.tenant, self.user, self.property, input).await.unwrap();
+        tx.commit().await.unwrap();
+        room
+    }
+
+    /// The seeded block reason with `code`.
+    pub async fn reason(&self, code: &str) -> BlockReason {
+        let mut tx = self.tx().await;
+        let reasons = rooms::list_block_reasons(&mut tx, self.property).await.unwrap();
+        reasons.into_iter().find(|reason| reason.code == code).expect("a seeded reason")
     }
 
     pub async fn room_type(&self, code: &str) -> RoomType {
