@@ -67,6 +67,9 @@ test('blocking a room reduces availability on the calendar until it is released'
 	for (let day = 1; day < Number(today.slice(8)); day++) await page.keyboard.press('ArrowRight');
 	await page.keyboard.press('Enter');
 	const day = page.getByRole('region', { name: `Blocks on ${today}` });
+	// The day's blocks are announced as they appear, and focus stays on the grid.
+	await expect(day).toHaveAttribute('aria-live', 'polite');
+	await expect(grid).toBeFocused();
 	await expect(day).toContainText('101');
 	await expect(day).toContainText('Leaking pipe');
 	await day.getByRole('button', { name: 'Release room 101' }).click();

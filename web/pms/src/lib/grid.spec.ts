@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { moveFocus, revealColumn, visibleColumns } from './grid';
+import { clampCell, moveFocus, revealColumn, visibleColumns } from './grid';
 
 describe('visibleColumns', () => {
 	it('covers the columns in view plus overscan on both sides', () => {
@@ -42,5 +42,28 @@ describe('moveFocus', () => {
 
 	it('ignores other keys', () => {
 		expect(moveFocus({ row: 1, column: 5 }, 'a', size)).toBeNull();
+	});
+});
+
+describe('clampCell', () => {
+	it('keeps a cell that still exists', () => {
+		expect(clampCell({ row: 1, column: 5 }, { rows: 3, columns: 31 })).toEqual({
+			row: 1,
+			column: 5
+		});
+	});
+
+	it('moves to the last row or column when the grid shrinks', () => {
+		expect(clampCell({ row: 2, column: 30 }, { rows: 2, columns: 28 })).toEqual({
+			row: 1,
+			column: 27
+		});
+	});
+
+	it('stays at the origin of an empty grid', () => {
+		expect(clampCell({ row: 2, column: 5 }, { rows: 0, columns: 0 })).toEqual({
+			row: 0,
+			column: 0
+		});
 	});
 });

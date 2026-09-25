@@ -44,6 +44,14 @@ export interface Cell {
 	column: number;
 }
 
+/** `cell`, moved onto the last row or column if the grid no longer has it (`{ 0, 0 }` when empty). */
+export function clampCell(cell: Cell, size: { rows: number; columns: number }): Cell {
+	return {
+		row: Math.max(0, Math.min(size.rows - 1, cell.row)),
+		column: Math.max(0, Math.min(size.columns - 1, cell.column))
+	};
+}
+
 /** The cell a navigation key moves to, or `null` if the key does not navigate. */
 export function moveFocus(
 	cell: Cell,

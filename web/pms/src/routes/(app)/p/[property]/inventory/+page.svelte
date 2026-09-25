@@ -180,8 +180,10 @@
 		</p>
 	{/if}
 
-	{#if selected}
-		<section aria-label="Blocks on {selected.date}">
+	<!-- Always in the page, so a screen reader announces the blocks when Enter or a click opens a day;
+	     focus stays on the grid for the next arrow key. -->
+	<section aria-live="polite" aria-label={selected ? `Blocks on ${selected.date}` : undefined}>
+		{#if selected}
 			<h2>{selected.code} on {selected.date}</h2>
 			{#if selectedBlocks.length === 0}
 				<p>No rooms of this type are blocked on this day.</p>
@@ -205,8 +207,8 @@
 					{/each}
 				</ul>
 			{/if}
-		</section>
-	{/if}
+		{/if}
+	</section>
 {:else}
 	<p>Loading…</p>
 {/if}

@@ -9,7 +9,7 @@
 -->
 <script lang="ts" generics="Row extends { id: string; label: string }">
 	import type { Snippet } from 'svelte';
-	import { moveFocus, revealColumn, visibleColumns, type Cell } from '$lib/grid';
+	import { clampCell, moveFocus, revealColumn, visibleColumns, type Cell } from '$lib/grid';
 
 	interface Props {
 		/** Accessible name of the grid. */
@@ -51,12 +51,15 @@
 	let viewport = $state<HTMLDivElement>();
 	let scrollLeft = $state(0);
 	let width = $state(0);
-	let active = $state<Cell>({ row: 0, column: 0 });
+	let chosen = $state<Cell>({ row: 0, column: 0 });
+	// The chosen cell, kept inside the grid when rows or columns go away (a room type is retired), so
+	// `aria-activedescendant` always names a rendered cell.
+	const active = $derived(clampCell(chosen, { rows: rows.length, columns: columns.length }));
 
 	// Start on `initialColumn`, scrolled to the left edge, whenever the columns change (a new month).
 	$effect(() => {
 		const column = Math.min(initialColumn, Math.max(0, columns.length - 1));
-		active = { row: 0, column };
+		chosen = { row: 0, column };
 		if (viewport) viewport.scrollLeft = column * columnWidth;
 	});
 
@@ -79,7 +82,7 @@
 	}
 
 	function activate(cellAt: Cell) {
-		active = cellAt;
+		chosen = cellAt;
 		const row = rows[cellAt.row];
 		if (row) onactivate?.(row, columns[cellAt.column]);
 	}
@@ -93,7 +96,7 @@
 		const next = moveFocus(active, event.key, { rows: rows.length, columns: columns.length });
 		if (!next || !viewport) return;
 		event.preventDefault();
-		active = next;
+		chosen = next;
 		viewport.scrollLeft = revealColumn(
 			next.column,
 			viewport.scrollLeft,
@@ -110,7 +113,7 @@
 	aria-label={label}
 	aria-rowcount={rows.length + 1}
 	aria-colcount={columns.length + 1}
-	aria-activedescendant={rows.length > 0 ? cellId(active) : undefined}
+	aria-activedescendant={rows.length > 0 && columns.length > 0 ? cellId(active) : undefined}
 	bind:this={viewport}
 	bind:clientWidth={width}
 	onscroll={() => (scrollLeft = viewport?.scrollLeft ?? 0)}
