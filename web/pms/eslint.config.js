@@ -39,11 +39,5 @@ export default defineConfig(
 		// Override or add rule settings here, such as:
 		// 'svelte/button-has-type': 'error'
 		rules: {}
-	},
-	{
-		files: ['src/lib/components/DateGrid.svelte'],
-		rules: {
-			'svelte/a11y-click-events-have-key-events': 'off'
-		}
 	}
 );
