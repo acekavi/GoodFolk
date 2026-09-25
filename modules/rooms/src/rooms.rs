@@ -233,7 +233,6 @@ pub async fn update_room(
     let moves_counts = room_type != current.room_type_id || active != current.active;
     if moves_counts {
         extend_window(tx, property).await?;
-        contribute(tx, property, today, id, current.room_type_id, current.active, -1).await?;
     }
     let updated = sqlx::query_as::<_, Room>(sqlx::AssertSqlSafe(format!(
         "update room set room_type_id = $2, number = coalesce($3, number),
@@ -262,7 +261,13 @@ pub async fn update_room(
     };
     let mut keys = vec![rooms_key(property)];
     if moves_counts {
-        contribute(tx, property, today, id, updated.room_type_id, updated.active, 1).await?;
+        // Lock order: inventory_day rows are locked in ascending (room_type_id, date) order, so two opposite
+        // retypes cannot deadlock. Each call keeps its own type's counters valid, so either order is correct.
+        let mut shares = [(current.room_type_id, current.active, -1), (updated.room_type_id, updated.active, 1)];
+        shares.sort_by_key(|&(room_type, _, _)| room_type);
+        for (room_type, active, sign) in shares {
+            contribute(tx, property, today, id, room_type, active, sign).await?;
+        }
         keys.extend(window_keys(property, today));
     }
     audit(
