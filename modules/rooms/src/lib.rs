@@ -13,7 +13,9 @@ pub use blocks::{
     Block, BlockKind, BlockReason, BlockReasonChanges, DEFAULT_BLOCK_REASONS, NewBlock, NewBlockReason, create_block,
     create_block_reason, list_block_reasons, list_blocks, seed_block_reasons, shorten_block, update_block_reason,
 };
-pub use inventory::{InventoryDay, InventoryDrift, WINDOW_DAYS, extend_window, find_drift, list_inventory, month_keys};
+pub use inventory::{
+    InventoryDay, InventoryDrift, WINDOW_DAYS, extend_window, find_drift, list_inventory, month_keys, months,
+};
 pub use room_types::{
     Bed, NewRoomType, RoomType, RoomTypeChanges, create_room_type, list_room_types, reorder_room_types,
     update_room_type,

@@ -1779,6 +1779,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rates"
+version = "0.1.0"
+dependencies = [
+ "db",
+ "property",
+ "proptest",
+ "rooms",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "time",
+ "tokio",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

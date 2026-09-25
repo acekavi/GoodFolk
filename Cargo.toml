@@ -11,6 +11,7 @@ publish = false
 db = { path = "crates/db" }
 identity = { path = "modules/identity" }
 property = { path = "modules/property" }
+rates = { path = "modules/rates" }
 rooms = { path = "modules/rooms" }
 
 anyhow = "1"

@@ -223,15 +223,20 @@ pub async fn list_inventory(
     .await
 }
 
-/// Cache keys `inventory:<property>:<yyyy-mm>` for every month that `[from, to)` touches.
-pub fn month_keys(property: Uuid, from: Date, to: Date) -> Vec<String> {
-    let mut keys = Vec::new();
+/// Every month (`yyyy-mm`) that `[from, to)` touches, in order. Cache keys for date ranges are built from it.
+pub fn months(from: Date, to: Date) -> Vec<String> {
+    let mut months = Vec::new();
     let mut month = from.replace_day(1).expect("every month has a first day");
     while from < to && month < to {
-        keys.push(format!("inventory:{property}:{:04}-{:02}", month.year(), u8::from(month.month())));
+        months.push(format!("{:04}-{:02}", month.year(), u8::from(month.month())));
         month += Duration::days(i64::from(month.month().length(month.year())));
     }
-    keys
+    months
+}
+
+/// Cache keys `inventory:<property>:<yyyy-mm>` for every month that `[from, to)` touches.
+pub fn month_keys(property: Uuid, from: Date, to: Date) -> Vec<String> {
+    months(from, to).into_iter().map(|month| format!("inventory:{property}:{month}")).collect()
 }
 
 /// Month keys for the days of `[from, to)` inside the counter window. Only those days have counters to
