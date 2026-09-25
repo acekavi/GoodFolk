@@ -53,31 +53,30 @@ impl Sequence<'_> {
         let hotel = self.hotel;
         let mut tx = hotel.tx().await;
         let (tenant, user, property) = (hotel.tenant, hotel.user, hotel.property);
-        match *op {
+        let applied = match *op {
             Op::CreateRoom { room_type } => {
                 let number = format!("{}-{}", self.name, self.rooms.len());
                 let input = NewRoom { room_type_id: self.types[room_type].id, number, floor: None, section_id: None };
-                if let Ok(room) = rooms::create_room(&mut tx, tenant, user, property, input).await {
-                    self.rooms.push(room);
-                }
+                rooms::create_room(&mut tx, tenant, user, property, input)
+                    .await
+                    .map(|room| self.rooms.push(room))
+                    .is_ok()
             }
             Op::SetActive { room, active } => {
                 let Some(current) = self.rooms.get(room).cloned() else { return };
                 let changes = RoomChanges { active: Some(active), ..RoomChanges::default() };
-                if let Ok(updated) =
-                    rooms::update_room(&mut tx, tenant, user, property, current.id, current.version, changes).await
-                {
-                    self.rooms[room] = updated;
-                }
+                rooms::update_room(&mut tx, tenant, user, property, current.id, current.version, changes)
+                    .await
+                    .map(|updated| self.rooms[room] = updated)
+                    .is_ok()
             }
             Op::Retype { room, room_type } => {
                 let Some(current) = self.rooms.get(room).cloned() else { return };
                 let changes = RoomChanges { room_type_id: Some(self.types[room_type].id), ..RoomChanges::default() };
-                if let Ok(updated) =
-                    rooms::update_room(&mut tx, tenant, user, property, current.id, current.version, changes).await
-                {
-                    self.rooms[room] = updated;
-                }
+                rooms::update_room(&mut tx, tenant, user, property, current.id, current.version, changes)
+                    .await
+                    .map(|updated| self.rooms[room] = updated)
+                    .is_ok()
             }
             Op::Block { room, start, days, out_of_order } => {
                 let Some(current) = self.rooms.get(room) else { return };
@@ -90,21 +89,24 @@ impl Sequence<'_> {
                     reason_id: reason.id,
                     note: String::new(),
                 };
-                if let Ok(block) = rooms::create_block(&mut tx, tenant, user, property, input).await {
-                    self.blocks.push(block);
-                }
+                rooms::create_block(&mut tx, tenant, user, property, input)
+                    .await
+                    .map(|block| self.blocks.push(block))
+                    .is_ok()
             }
             Op::Shorten { block, to } => {
                 let Some(current) = self.blocks.get(block).cloned() else { return };
-                if let Ok(shortened) =
-                    rooms::shorten_block(&mut tx, tenant, user, property, current.id, current.version, hotel.day(to))
-                        .await
-                {
-                    self.blocks[block] = shortened;
-                }
+                rooms::shorten_block(&mut tx, tenant, user, property, current.id, current.version, hotel.day(to))
+                    .await
+                    .map(|shortened| self.blocks[block] = shortened)
+                    .is_ok()
             }
+        };
+        if applied {
+            tx.commit().await.unwrap();
+        } else {
+            tx.rollback().await.unwrap();
         }
-        tx.commit().await.unwrap();
     }
 }
 
