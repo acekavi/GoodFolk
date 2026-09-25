@@ -1,8 +1,10 @@
-use crate::{RatesError, audit, business_date, lock_rates, notify, rate_plans_key, violates};
+use crate::prices::{derive_prices, tree_keys};
+use crate::{RatesError, audit, business_date, lock_rates, notify, rate_plans_key, rates_keys, violates};
 use db::{TenantId, Tx, UserId};
 use serde::Serialize;
 use sqlx::Row;
 use sqlx::postgres::PgRow;
+use time::Duration;
 use uuid::Uuid;
 
 /// Most levels of derived plans below a standard plan.
@@ -205,6 +207,21 @@ impl Tree {
         }
         false
     }
+
+    /// The plans derived from `id`, level by level: children, then grandchildren, and so on.
+    pub(crate) fn descendant_levels(&self, id: Uuid) -> Vec<Vec<Uuid>> {
+        let mut levels: Vec<Vec<Uuid>> = Vec::new();
+        let mut current = vec![id];
+        loop {
+            let next: Vec<Uuid> =
+                current.iter().flat_map(|parent| self.children(*parent).map(|child| child.id)).collect();
+            if next.is_empty() {
+                return levels;
+            }
+            levels.push(next.clone());
+            current = next;
+        }
+    }
 }
 
 /// The residency a plan in `segment` is sold to: `FIT_F` and `FIT_L` fix it.
@@ -380,7 +397,7 @@ pub async fn create_rate_plan(
     property: Uuid,
     input: NewRatePlan,
 ) -> Result<RatePlan, RatesError> {
-    business_date(tx, property).await?;
+    let today = business_date(tx, property).await?;
     lock_rates(tx, property).await?;
     let tree = Tree(list_rate_plans(tx, property).await?);
     let residency = residency_for(input.segment, input.residency)?;
@@ -432,8 +449,14 @@ pub async fn create_rate_plan(
         Err(err) => return Err(err.into()),
     }
     set_room_types(tx, tenant, property, id, &types).await?;
+    let mut keys = vec![rate_plans_key(property)];
+    if input.kind == PlanKind::Derived {
+        let end = today + Duration::days(rooms::WINDOW_DAYS);
+        derive_prices(tx, &[vec![id]], None, today, end, false).await?;
+        keys.extend(rates_keys(property, id, today, end));
+    }
     audit(tx, tenant, actor, "rate_plan.created", "rate_plan", id, serde_json::json!({ "code": input.code })).await?;
-    notify(tx, tenant, property, vec![rate_plans_key(property)]).await?;
+    notify(tx, tenant, property, keys).await?;
     load(tx, property, id).await
 }
 
@@ -464,7 +487,7 @@ pub async fn update_rate_plan(
     expected_version: i32,
     changes: RatePlanChanges,
 ) -> Result<RatePlan, RatesError> {
-    business_date(tx, property).await?;
+    let today = business_date(tx, property).await?;
     lock_rates(tx, property).await?;
     let tree = Tree(list_rate_plans(tx, property).await?);
     let current = tree.get(id).ok_or(RatesError::NotFound("rate plan"))?;
@@ -543,6 +566,18 @@ pub async fn update_rate_plan(
     .execute(&mut **tx)
     .await?;
     set_room_types(tx, tenant, property, id, &types).await?;
+    let mut keys = vec![rate_plans_key(property)];
+    let moved = changes.parent_id.is_some_and(|parent| Some(parent) != current.parent_id);
+    let reformulated = changes.derive_mode.is_some_and(|mode| Some(mode) != current.derive_mode)
+        || changes.derive_value.is_some_and(|value| Some(value) != current.derive_value)
+        || changes.rounding_step.is_some_and(|step| step != current.rounding_step);
+    let added_types = types.iter().any(|t| !current.room_type_ids.contains(t));
+    if current.kind == PlanKind::Derived && (moved || reformulated || added_types) {
+        let end = today + Duration::days(rooms::WINDOW_DAYS);
+        let levels: Vec<Vec<Uuid>> = std::iter::once(vec![id]).chain(tree.descendant_levels(id)).collect();
+        derive_prices(tx, &levels, None, today, end, moved).await?;
+        keys.extend(tree_keys(&tree, property, id, today, end));
+    }
     audit(
         tx,
         tenant,
@@ -553,6 +588,6 @@ pub async fn update_rate_plan(
         serde_json::json!({ "parent_id": changes.parent_id, "active": changes.active }),
     )
     .await?;
-    notify(tx, tenant, property, vec![rate_plans_key(property)]).await?;
+    notify(tx, tenant, property, keys).await?;
     load(tx, property, id).await
 }

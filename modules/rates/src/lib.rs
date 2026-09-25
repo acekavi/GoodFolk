@@ -44,6 +44,7 @@ macro_rules! text_enum {
 mod meals;
 mod plans;
 mod policies;
+mod prices;
 
 pub use meals::{
     MealSupplement, MealSupplementChanges, NewMealSupplement, create_meal_supplement, list_meal_supplements,
@@ -57,10 +58,17 @@ pub use policies::{
     CancellationPolicy, CancellationPolicyChanges, CancellationRule, NewCancellationPolicy, Penalty, PenaltyKind,
     create_cancellation_policy, list_cancellation_policies, update_cancellation_policy,
 };
+pub use prices::{
+    BulkChange, BulkPreview, Price, PriceChange, PriceChangeCell, PriceChangeMode, bulk_change, list_prices,
+    preview_bulk_change, set_prices,
+};
 
 use db::{Event, TenantId, Tx, UserId};
 use time::Date;
 use uuid::Uuid;
+
+/// Largest amount of money, in minor units, anywhere in rates (the tables check it too).
+pub const MAX_AMOUNT: i64 = 100_000_000_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RatesError {

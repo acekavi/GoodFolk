@@ -135,3 +135,37 @@ impl Hotel {
         rates::list_rate_plans(&mut self.tx().await, self.property).await.unwrap()
     }
 }
+
+/// `app.derive_amount` computed exactly: `base` plus `value` basis points (`percent`) or minor units
+/// (`amount`), at least 0, rounded half-up to a multiple of `step`.
+pub fn derived(base: i64, mode: ChangeMode, value: i64, step: i64) -> i64 {
+    let (numerator, denominator) = match mode {
+        ChangeMode::Percent => (i128::from(base) * (10_000 + i128::from(value)), 10_000_i128),
+        ChangeMode::Amount => (i128::from(base) + i128::from(value), 1),
+    };
+    let unit = denominator * i128::from(step);
+    let (whole, rest) = (numerator.max(0) / unit, numerator.max(0) % unit);
+    let steps = if 2 * rest >= unit { whole + 1 } else { whole };
+    i64::try_from(steps * i128::from(step)).unwrap()
+}
+
+impl Hotel {
+    /// Sets `plan`'s prices in their own transaction, committed if it succeeds.
+    pub async fn try_prices(&self, plan: &RatePlan, prices: &[rates::Price]) -> Result<(), RatesError> {
+        let mut tx = self.tx().await;
+        rates::set_prices(&mut tx, self.tenant, self.user, self.property, plan.id, prices).await?;
+        tx.commit().await.unwrap();
+        Ok(())
+    }
+
+    /// `amount` for `occupancy` adults in `room_type` on each day in `[from, to)`.
+    pub fn prices(&self, room_type: Uuid, from: i64, to: i64, occupancy: i32, amount: i64) -> Vec<rates::Price> {
+        (from..to).map(|day| rates::Price { room_type_id: room_type, date: self.day(day), occupancy, amount }).collect()
+    }
+
+    /// `plan`'s prices over the whole rate window, by date, room type and occupancy.
+    pub async fn stored(&self, plan: &RatePlan) -> Vec<rates::Price> {
+        let window = (self.day(0), self.day(rooms::WINDOW_DAYS));
+        rates::list_prices(&mut self.tx().await, self.property, plan.id, window.0, window.1).await.unwrap()
+    }
+}
