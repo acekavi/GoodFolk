@@ -30,14 +30,32 @@ macro_rules! text_enum {
                 }
             }
         }
+
+        impl TryFrom<String> for $name {
+            type Error = String;
+
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                $name::parse(&value).ok_or_else(|| format!("unknown {} {value:?}", stringify!($name)))
+            }
+        }
     };
 }
 
+mod meals;
 mod plans;
+mod policies;
 
+pub use meals::{
+    MealSupplement, MealSupplementChanges, NewMealSupplement, create_meal_supplement, list_meal_supplements,
+    update_meal_supplement,
+};
 pub use plans::{
     ChangeMode, MealPlan, NewRatePlan, PlanKind, RatePlan, RatePlanChanges, Residency, Segment, create_rate_plan,
     list_rate_plans, update_rate_plan,
+};
+pub use policies::{
+    CancellationPolicy, CancellationPolicyChanges, CancellationRule, NewCancellationPolicy, Penalty, PenaltyKind,
+    create_cancellation_policy, list_cancellation_policies, update_cancellation_policy,
 };
 
 use db::{Event, TenantId, Tx, UserId};
