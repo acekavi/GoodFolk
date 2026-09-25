@@ -226,3 +226,23 @@ async fn a_successful_login_clears_earlier_failures(_: PgPoolOptions, opts: PgCo
     assert_eq!(after, vec![StatusCode::UNAUTHORIZED; 4]);
     assert_eq!(still_allowed.status, StatusCode::OK);
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn concurrent_failed_logins_cannot_exceed_the_limit(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    app.signup_owner("owner@example.com", "A").await;
+
+    let attempts = (0..12).map(|_| login(&app, "owner@example.com", "not the password"));
+    let statuses: Vec<StatusCode> =
+        futures::future::join_all(attempts).await.into_iter().map(|response| response.status).collect();
+
+    let rejected = statuses.iter().filter(|status| **status == StatusCode::UNAUTHORIZED).count();
+    let throttled = statuses.iter().filter(|status| **status == StatusCode::TOO_MANY_REQUESTS).count();
+    assert_eq!((rejected, throttled), (5, 7), "{statuses:?}");
+    let recorded: i64 = sqlx::query_scalar("select count(*) from login_failure where email = 'owner@example.com'")
+        .fetch_one(&superuser)
+        .await
+        .unwrap();
+    assert_eq!(recorded, 5);
+}

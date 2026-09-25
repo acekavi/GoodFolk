@@ -1,6 +1,6 @@
 use crate::auth::TenantContext;
 use crate::concurrency::{IfMatch, Versioned};
-use crate::error::{ApiError, validate};
+use crate::error::{ApiError, Changes, validate, validate_changes};
 use crate::extract::{ApiJson, ApiPath};
 use crate::routes::rooms::rooms_error;
 use crate::state::AppState;
@@ -36,6 +36,12 @@ pub struct UpdateBlockReasonRequest {
     /// `false` retires the reason: existing blocks keep it, new blocks cannot use it.
     #[garde(skip)]
     pub active: Option<bool>,
+}
+
+impl Changes for UpdateBlockReasonRequest {
+    fn is_empty(&self) -> bool {
+        self.label.is_none() && self.default_kind.is_none() && self.active.is_none()
+    }
 }
 
 /// Blocks the room for `[from, to)`: `to` is the first day it is back in service.
@@ -96,7 +102,7 @@ pub async fn update_reason(
     ApiJson(body): ApiJson<UpdateBlockReasonRequest>,
 ) -> Result<Versioned<BlockReason>, ApiError> {
     ctx.require(Permission::RoomsManage, Some(property))?;
-    validate(&body)?;
+    validate_changes(&body)?;
     let changes = BlockReasonChanges { label: body.label, default_kind: body.default_kind, active: body.active };
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
     let updated = rooms::update_block_reason(&mut tx, ctx.tenant, ctx.user, property, reason, version, changes)

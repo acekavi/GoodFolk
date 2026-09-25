@@ -195,13 +195,30 @@ async fn a_stale_version_is_412_and_a_missing_one_428(_: PgPoolOptions, opts: Pg
     let missing = patch(&app, &owner, &path, None, json!({"name": "Third edit"})).await;
     let malformed = patch(&app, &owner, &path, Some("2"), json!({"name": "Fourth edit"})).await;
     let unknown =
-        patch(&app, &owner, &format!("/api/v1/properties/{}", Uuid::now_v7()), Some("\"1\""), json!({})).await;
+        patch(&app, &owner, &format!("/api/v1/properties/{}", Uuid::now_v7()), Some("\"1\""), json!({"name": "X"}))
+            .await;
 
     assert_eq!(stale.status, StatusCode::PRECONDITION_FAILED, "{:?}", stale.body);
     assert_eq!(stale.headers[header::CONTENT_TYPE], "application/problem+json");
     assert_eq!(missing.status, StatusCode::PRECONDITION_REQUIRED, "{:?}", missing.body);
     assert_eq!(malformed.status, StatusCode::BAD_REQUEST, "{:?}", malformed.body);
     assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{:?}", unknown.body);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_empty_update_is_a_422_and_keeps_the_version(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    let created = create(&app, &owner, "key-00000001", galle()).await;
+    let path = format!("/api/v1/properties/{}", created.body["id"].as_str().unwrap());
+
+    let empty = patch(&app, &owner, &path, Some("\"1\""), json!({})).await;
+    let then = patch(&app, &owner, &path, Some("\"1\""), json!({"name": "Galle Fort"})).await;
+
+    assert_eq!(empty.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", empty.body);
+    assert_eq!(empty.body["detail"], "send at least one field to change");
+    assert_eq!(then.status, StatusCode::OK, "{:?}", then.body);
+    assert_eq!(then.body["version"], 2);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

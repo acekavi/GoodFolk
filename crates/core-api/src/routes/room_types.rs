@@ -1,6 +1,6 @@
 use crate::auth::TenantContext;
 use crate::concurrency::{IfMatch, Versioned};
-use crate::error::{ApiError, validate};
+use crate::error::{ApiError, Changes, validate, validate_changes};
 use crate::extract::{ApiJson, ApiPath};
 use crate::routes::rooms::{ReorderRequest, rooms_error};
 use crate::state::AppState;
@@ -68,6 +68,19 @@ pub struct UpdateRoomTypeRequest {
     pub active: Option<bool>,
 }
 
+impl Changes for UpdateRoomTypeRequest {
+    fn is_empty(&self) -> bool {
+        self.name.is_none()
+            && self.base_occupancy.is_none()
+            && self.max_adults.is_none()
+            && self.max_children.is_none()
+            && self.max_occupancy.is_none()
+            && self.bed_config.is_none()
+            && self.amenities.is_none()
+            && self.active.is_none()
+    }
+}
+
 fn beds(requests: Vec<BedRequest>) -> Vec<Bed> {
     requests.into_iter().map(|bed| Bed { kind: bed.kind, count: bed.count }).collect()
 }
@@ -110,7 +123,7 @@ pub async fn update(
     ApiJson(body): ApiJson<UpdateRoomTypeRequest>,
 ) -> Result<Versioned<RoomType>, ApiError> {
     ctx.require(Permission::RoomsManage, Some(property))?;
-    validate(&body)?;
+    validate_changes(&body)?;
     let changes = RoomTypeChanges {
         name: body.name,
         base_occupancy: body.base_occupancy,

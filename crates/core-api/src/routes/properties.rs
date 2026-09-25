@@ -1,6 +1,6 @@
 use crate::auth::TenantContext;
 use crate::concurrency::{IfMatch, Versioned};
-use crate::error::{ApiError, validate};
+use crate::error::{ApiError, Changes, validate, validate_changes};
 use crate::extract::{ApiJson, ApiPath};
 use crate::state::AppState;
 use axum::extract::State;
@@ -37,6 +37,12 @@ pub struct UpdatePropertyRequest {
     /// `HH:MM` (24-hour), local time.
     #[garde(inner(pattern(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")))]
     pub check_out_time: Option<String>,
+}
+
+impl Changes for UpdatePropertyRequest {
+    fn is_empty(&self) -> bool {
+        self.name.is_none() && self.check_in_time.is_none() && self.check_out_time.is_none()
+    }
 }
 
 fn property_error(err: PropertyError) -> ApiError {
@@ -80,7 +86,7 @@ pub async fn update(
     ApiJson(body): ApiJson<UpdatePropertyRequest>,
 ) -> Result<Versioned<Property>, ApiError> {
     ctx.require(Permission::PropertiesManage, Some(property))?;
-    validate(&body)?;
+    validate_changes(&body)?;
     let changes =
         PropertyChanges { name: body.name, check_in_time: body.check_in_time, check_out_time: body.check_out_time };
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;

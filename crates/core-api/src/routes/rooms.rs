@@ -1,6 +1,6 @@
 use crate::auth::TenantContext;
 use crate::concurrency::{IfMatch, Versioned};
-use crate::error::{ApiError, validate};
+use crate::error::{ApiError, Changes, validate, validate_changes};
 use crate::extract::{ApiJson, ApiPath};
 use crate::state::AppState;
 use axum::Json;
@@ -88,6 +88,16 @@ pub struct UpdateRoomRequest {
     pub active: Option<bool>,
 }
 
+impl Changes for UpdateRoomRequest {
+    fn is_empty(&self) -> bool {
+        self.room_type_id.is_none()
+            && self.number.is_none()
+            && self.floor.is_none()
+            && self.section_id.is_none()
+            && self.active.is_none()
+    }
+}
+
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct SectionRequest {
     #[garde(length(chars, min = 1, max = 100))]
@@ -153,7 +163,7 @@ pub async fn update(
     ApiJson(body): ApiJson<UpdateRoomRequest>,
 ) -> Result<Versioned<Room>, ApiError> {
     ctx.require(Permission::RoomsManage, Some(property))?;
-    validate(&body)?;
+    validate_changes(&body)?;
     let changes = RoomChanges {
         room_type_id: body.room_type_id,
         number: body.number,

@@ -85,6 +85,7 @@ Request DTOs derive `garde::Validate` and are checked with `error::validate(&bod
 
 - Editable resources return `version` in their body and an `ETag: "<version>"` header: handlers return `concurrency::Versioned::{ok, created}(version, body)` (`crates/core-api/src/concurrency.rs`). GraphQL nodes expose `version` too, which is where the SPA reads it.
 - Updates take the `concurrency::IfMatch` extractor, so they must send `If-Match: "<version>"`: missing is 428, not a quoted number is 400. The module's `update … where id = $1 and version = $2 … returning` finds no row on mismatch; it then checks whether the row exists and returns a version-mismatch error (412) or not-found (404). The client refetches and shows what changed.
+- An update that names no field to change is a 422 ("send at least one field to change"): update DTOs implement `error::Changes` and handlers check them with `error::validate_changes`, so an empty `PATCH` cannot bump the version.
 - Reordering (`PUT …/order`) is not a concurrent edit of one resource: it takes no `If-Match` and does not bump versions.
 
 ## Change events

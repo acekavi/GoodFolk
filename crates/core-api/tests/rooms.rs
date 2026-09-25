@@ -214,3 +214,66 @@ async fn a_new_room_tells_screens_to_refetch_rooms_and_inventory(_: PgPoolOption
     let months = event.keys.iter().filter(|key| key.starts_with(&format!("inventory:{property_id}:"))).count();
     assert!((25..=26).contains(&months), "{:?}", event.keys);
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn rooms_and_sections_cannot_be_added_to_another_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let (owner, property) = hotel(&app).await;
+    let room_type = post(&app, &owner, &format!("{property}/room-types"), deluxe()).await.body["id"].clone();
+    let intruder = app.signup_owner("intruder@example.com", "Other Hotels").await;
+    let own = json!({"code": "KAN", "name": "Kandy", "timezone": "Asia/Colombo", "base_currency": "LKR"});
+    let own = post(&app, &intruder, "/api/v1/properties", own).await.body["id"].as_str().unwrap().to_owned();
+    let room = json!({"room_type_id": room_type, "number": "666"});
+    let range = json!({"room_type_id": room_type, "first": 600, "last": 601});
+
+    let into_their_property = post(&app, &intruder, &format!("{property}/rooms"), room.clone()).await;
+    let range_into_their_property = post(&app, &intruder, &format!("{property}/rooms/bulk"), range).await;
+    let section_in_their_property =
+        post(&app, &intruder, &format!("{property}/sections"), json!({"name": "Intruders"})).await;
+    let with_their_room_type = post(&app, &intruder, &format!("/api/v1/properties/{own}/rooms"), room).await;
+
+    assert_eq!(into_their_property.status, StatusCode::NOT_FOUND, "{:?}", into_their_property.body);
+    assert_eq!(range_into_their_property.status, StatusCode::NOT_FOUND, "{:?}", range_into_their_property.body);
+    assert_eq!(section_in_their_property.status, StatusCode::NOT_FOUND, "{:?}", section_in_their_property.body);
+    assert_eq!(with_their_room_type.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", with_their_room_type.body);
+    let (rooms, sections): (i64, i64) =
+        sqlx::query_as("select (select count(*) from room), (select count(*) from housekeeping_section)")
+            .fetch_one(&superuser)
+            .await
+            .unwrap();
+    assert_eq!((rooms, sections), (0, 0));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_update_that_changes_nothing_is_a_422_and_keeps_the_version(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let (owner, property) = hotel(&app).await;
+    let room_type = post(&app, &owner, &format!("{property}/room-types"), deluxe()).await.body["id"].clone();
+    let room = post(&app, &owner, &format!("{property}/rooms"), json!({"room_type_id": room_type, "number": "101"}))
+        .await
+        .body["id"]
+        .clone();
+    let reason: Uuid =
+        sqlx::query_scalar("select id from block_reason where code = 'OTHER'").fetch_one(&superuser).await.unwrap();
+
+    let responses = [
+        patch(&app, &owner, &format!("{property}/room-types/{}", room_type.as_str().unwrap()), 1, json!({})).await,
+        patch(&app, &owner, &format!("{property}/rooms/{}", room.as_str().unwrap()), 1, json!({})).await,
+        patch(&app, &owner, &format!("{property}/block-reasons/{reason}"), 1, json!({"label": null})).await,
+    ];
+
+    for response in responses {
+        assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", response.body);
+        assert_eq!(response.body["detail"], "send at least one field to change");
+    }
+    let versions: (i32, i32, i32) = sqlx::query_as(
+        "select (select version from room_type), (select version from room),
+                (select version from block_reason where code = 'OTHER')",
+    )
+    .fetch_one(&superuser)
+    .await
+    .unwrap();
+    assert_eq!(versions, (1, 1, 1));
+}

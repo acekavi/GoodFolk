@@ -126,3 +126,16 @@ impl IntoResponse for ApiError {
 pub fn validate<T: garde::Validate<Context = ()>>(value: &T) -> Result<(), ApiError> {
     value.validate().map_err(|report| ApiError::unprocessable(report.to_string()))
 }
+
+/// An update request whose fields are all optional.
+pub trait Changes {
+    /// True when the request names nothing to change.
+    fn is_empty(&self) -> bool;
+}
+
+/// Validates an update request like [`validate`], and refuses one that changes nothing, so an empty
+/// `PATCH` cannot bump the resource's version.
+pub fn validate_changes<T: garde::Validate<Context = ()> + Changes>(value: &T) -> Result<(), ApiError> {
+    validate(value)?;
+    if value.is_empty() { Err(ApiError::unprocessable("send at least one field to change")) } else { Ok(()) }
+}
