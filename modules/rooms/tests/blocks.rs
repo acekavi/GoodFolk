@@ -161,7 +161,10 @@ async fn cancelling_before_the_start_frees_every_day(_: PgPoolOptions, opts: PgC
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
-async fn a_blocked_room_takes_its_blocks_along_when_retyped_or_deactivated(_: PgPoolOptions, opts: PgConnectOptions) {
+async fn a_blocked_room_takes_its_blocks_along_when_retyped_deactivated_or_reactivated(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
     let hotel = Hotel::new(opts).await;
     let std = hotel.room_type("STD").await;
     let dlx = hotel.room_type("DLX").await;
@@ -176,13 +179,22 @@ async fn a_blocked_room_takes_its_blocks_along_when_retyped_or_deactivated(_: Pg
     let moved = (hotel.out_of_order_days(std.id).await, hotel.out_of_order_days(dlx.id).await);
     let mut tx = hotel.tx().await;
     let deactivate = RoomChanges { active: Some(false), ..RoomChanges::default() };
-    rooms::update_room(&mut tx, hotel.tenant, hotel.user, hotel.property, room.id, retyped.version, deactivate)
+    let deactivated =
+        rooms::update_room(&mut tx, hotel.tenant, hotel.user, hotel.property, room.id, retyped.version, deactivate)
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    let while_inactive = hotel.out_of_order_days(dlx.id).await;
+    let mut tx = hotel.tx().await;
+    let reactivate = RoomChanges { active: Some(true), ..RoomChanges::default() };
+    rooms::update_room(&mut tx, hotel.tenant, hotel.user, hotel.property, room.id, deactivated.version, reactivate)
         .await
         .unwrap();
     tx.commit().await.unwrap();
 
     assert_eq!(moved, (vec![], vec![1, 2]));
-    assert_eq!(hotel.out_of_order_days(dlx.id).await, Vec::<i64>::new());
+    assert_eq!(while_inactive, Vec::<i64>::new());
+    assert_eq!(hotel.out_of_order_days(dlx.id).await, vec![1, 2]);
     assert_eq!(hotel.drift().await, vec![]);
 }
 
