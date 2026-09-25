@@ -54,6 +54,11 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
 - Meal plans RO/BB/HB/FB as per-person supplements, and which meal plans each rate plan allows.
 - Rate grid screen with bulk edit.
 - Property-based tests for price derivation (rounding, chains, edge dates).
+- Carried over from the Phase 1 reviews (do these before Phase 3 adds reservations to `inventory_day`):
+  - **Retype deadlock (open).** Two opposite retypes can still deadlock inside the first room type they share, when the room moving out has an out-of-order block. `rooms::inventory::contribute` locks that type's rows in a different order for −1 and +1. Fix: make `contribute` one UPDATE per type (physical ± 1, and out-of-order ± 1 on the block's days), or lock rows with `select … order by date for update` first. Then correct the lock-order bullet in [api-conventions.md](design/api-conventions.md) ("Patterns to copy"), which currently promises more than the code does, and its `rooms::clamped_month_keys` path (the real path is `rooms::inventory::clamped_month_keys`, crate-internal).
+  - The `adjust` and block UPDATEs lock rows in scan order, so any lock-order guarantee on `inventory_day` depends on the query plan. Settle one locking pattern before reservations touch the same rows.
+  - Tests still to add: concurrent sign-in attempts against the throttle; a REST cross-tenant POST of a room or section.
+  - Smaller follow-ups: `ETag` on replayed idempotent 201s and in the OpenAPI annotations; an empty PATCH still bumps the version; the rooms page's single page-wide busy flag; `DateGrid` can jump back to an old row when rows shrink and grow again.
 
 ## Phase 3 — Reservations ([spec](specs/phase-3-reservations.md))
 
