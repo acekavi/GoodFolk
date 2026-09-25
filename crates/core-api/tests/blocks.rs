@@ -164,3 +164,49 @@ async fn blocking_and_reasons_follow_the_role_permissions(_: PgPoolOptions, opts
     assert_eq!(retired.status, StatusCode::OK, "{:?}", retired.body);
     assert_eq!(retired.body["active"], false);
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn another_tenants_rooms_types_sections_and_blocks_cannot_be_changed(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts).await;
+    let section = post(&app, &hotel.owner, &format!("{}/sections", hotel.path), json!({"name": "East"})).await;
+    let block = hotel.block(&app, &hotel.owner, 0, 1, 3).await;
+    let (room, section, block) =
+        (hotel.rooms[0], section.body["id"].as_str().unwrap(), block.body["id"].as_str().unwrap());
+    let intruder = app.signup_owner("intruder@example.com", "Other Hotels").await;
+    let own = json!({"code": "KAN", "name": "Kandy", "timezone": "Asia/Colombo", "base_currency": "LKR"});
+    let own = format!(
+        "/api/v1/properties/{}",
+        post(&app, &intruder, "/api/v1/properties", own).await.body["id"].as_str().unwrap()
+    );
+    let new_block = json!({"from": hotel.day(5), "to": hotel.day(6), "kind": "out_of_order",
+                           "reason_id": hotel.reason("MAINTENANCE").await});
+
+    // Through the other tenant's property, and through the intruder's own property with the other tenant's ids.
+    for property in [hotel.path.as_str(), own.as_str()] {
+        let responses = [
+            patch(&app, &intruder, &format!("{property}/rooms/{room}"), 1, json!({"floor": "9"})).await,
+            patch(&app, &intruder, &format!("{property}/room-types/{}", hotel.room_type), 1, json!({"name": "X"}))
+                .await,
+            patch(&app, &intruder, &format!("{property}/sections/{section}"), 1, json!({"name": "X"})).await,
+            patch(&app, &intruder, &format!("{property}/blocks/{block}"), 1, json!({"to": hotel.day(2)})).await,
+            post(&app, &intruder, &format!("{property}/rooms/{room}/blocks"), new_block.clone()).await,
+        ];
+        for response in responses {
+            assert_eq!(response.status, StatusCode::NOT_FOUND, "{property}: {:?}", response.body);
+        }
+    }
+    let versions: (i32, i32, i32, i32, i64) = sqlx::query_as(
+        "select (select version from room where id = $1), (select version from room_type where id = $2),
+                (select version from housekeeping_section where id = $3::uuid),
+                (select version from room_block where id = $4::uuid), (select count(*) from room_block)",
+    )
+    .bind(room)
+    .bind(hotel.room_type)
+    .bind(section)
+    .bind(block)
+    .fetch_one(&hotel.superuser)
+    .await
+    .unwrap();
+    assert_eq!(versions, (1, 1, 1, 1, 1), "nothing of the other tenant changed");
+}

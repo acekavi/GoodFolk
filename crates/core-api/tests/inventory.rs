@@ -159,6 +159,22 @@ async fn a_calendar_range_is_limited_to_93_days(_: PgPoolOptions, opts: PgConnec
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_blocks_range_is_limited_to_400_days(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let galle = Galle::new(&app, &PgPool::connect_with(opts).await.unwrap()).await;
+    let query = "query ($p: UUID!, $from: Date!, $to: Date!) { blocks(propertyId: $p, from: $from, to: $to) { from } }";
+
+    let longest =
+        graphql(&app, &galle.owner, query, json!({"p": galle.id, "from": galle.day(0), "to": galle.day(400)})).await;
+    let too_long =
+        graphql(&app, &galle.owner, query, json!({"p": galle.id, "from": galle.day(0), "to": galle.day(401)})).await;
+
+    assert_eq!(longest["errors"], Value::Null, "{longest:?}");
+    assert_eq!(longest["data"]["blocks"], json!([{"from": galle.day(1)}]));
+    assert_eq!(too_long["errors"][0]["message"], "the range must be 1 to 400 days");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn another_tenant_sees_no_rooms_or_inventory(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
     let galle = Galle::new(&app, &PgPool::connect_with(opts).await.unwrap()).await;
@@ -169,13 +185,17 @@ async fn another_tenant_sees_no_rooms_or_inventory(_: PgPoolOptions, opts: PgCon
         &stranger,
         "query ($p: UUID!, $from: Date!, $to: Date!) {
            roomTypes(propertyId: $p) { id } rooms(propertyId: $p) { id }
+           sections(propertyId: $p) { id } blockReasons(propertyId: $p) { id }
            inventory(propertyId: $p, from: $from, to: $to) { date } blocks(propertyId: $p, from: $from, to: $to) { id }
          }",
         json!({"p": galle.id, "from": galle.day(0), "to": galle.day(30)}),
     )
     .await;
 
-    assert_eq!(body["data"], json!({"roomTypes": [], "rooms": [], "inventory": [], "blocks": []}));
+    assert_eq!(
+        body["data"],
+        json!({"roomTypes": [], "rooms": [], "sections": [], "blockReasons": [], "inventory": [], "blocks": []})
+    );
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
