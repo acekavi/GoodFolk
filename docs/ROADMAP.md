@@ -9,6 +9,7 @@ Companion to [ARCHITECTURE.md](ARCHITECTURE.md). Each phase ends in something th
 | [design/data-model.md](design/data-model.md) | Every table, all phases, and the rules each must follow |
 | [design/api-conventions.md](design/api-conventions.md) | Auth, CSRF, errors, idempotency, concurrency, events, GraphQL and REST shapes |
 | [superpowers/plans/2026-09-23-phase-0-foundations.md](superpowers/plans/2026-09-23-phase-0-foundations.md) | **Phase 0 implementation plan**: 15 test-first tasks with complete code, run in order on a clean repository before the plan was written |
+| [superpowers/plans/2026-09-24-phase-1-rooms-inventory.md](superpowers/plans/2026-09-24-phase-1-rooms-inventory.md) | **Phase 1 implementation plan**: 17 tasks with complete code, executed in order on the Phase 0 code before the plan was written |
 | [specs/](specs/) | Phases 1–9: scope, data, API, UI, rules, required tests and performance gates |
 
 Each later phase gets its step-by-step implementation plan at the start of that phase, written and verified against the code as it stands then (the same method as Phase 0). Writing code-level plans for Phase 7 now would mean guessing at code that Phases 1–6 have not written yet.
@@ -28,7 +29,7 @@ Each later phase gets its step-by-step implementation plan at the start of that 
 
 Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub, `/proto`, MinIO (Phase 6); `If-Match`, login throttling, Playwright (Phase 1); persisted GraphQL queries (Phase 4); staff invitations (Phase 8).
 
-## Phase 1 — Rooms, room types, inventory base ([spec](specs/phase-1-rooms-inventory.md))
+## Phase 1 — Rooms, room types, inventory base ([spec](specs/phase-1-rooms-inventory.md), [plan](superpowers/plans/2026-09-24-phase-1-rooms-inventory.md))
 
 - Room types, rooms, floors and sections. CRUD over REST, lists over GraphQL.
 - `inventory_day` counters and the room block model (out of order / out of service, reason codes).
@@ -44,8 +45,7 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
     - an HTTP-level tenant switch followed by a create;
     - the `property.created` audit row.
   - Log a warning when `load_grants` skips a role it doesn't recognise.
-  - Check the SSE `?property=` filter against the user's grants once property-scoped roles exist.
-  - A purge job for expired sessions and old idempotency keys (runs in `jobs-svc`, Phase 7).
+  - Still open, not in the Phase 1 plan: check the SSE `?property=` filter against the user's grants (property-scoped grants exist now, but the stream only carries cache keys); a purge job for expired sessions, old idempotency keys and old `login_failure` rows (runs in `jobs-svc`, Phase 7).
 
 ## Phase 2 — Rates and meal plans ([spec](specs/phase-2-rates-meal-plans.md))
 

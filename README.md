@@ -11,7 +11,7 @@ Multi-tenant, cloud-hosted hotel property management system.
 |---|---|
 | `crates/core-api` | axum HTTP API (REST commands, GraphQL reads, server-sent events) |
 | `crates/db` | Postgres pool, migrations, tenant-scoped transactions, change events |
-| `modules/*` | Domain modules (`identity`, `property`, …) |
+| `modules/*` | Domain modules (`identity`, `property`, `rooms`, …) |
 | `migrations/` | SQL migrations, applied by `core-api migrate` |
 | `web/pms` | SvelteKit staff app (single-page) |
 
@@ -41,6 +41,18 @@ cargo fmt --all --check
 cd web/pms
 bun run api:schemas && bun run codegen   # after any API change; commit the result
 bun run lint && bun run check && bun run test && bun run build
+```
+
+### Performance gates
+
+Phase 1 sets two, both run by hand because shared CI machines make timings noisy:
+
+```sh
+# inventory(month) for a 200-room, 12-type property: p95 under 20 ms server time
+DATABASE_URL=$DATABASE_OWNER_URL cargo test --release -p core-api --test perf -- --ignored --nocapture
+
+# the month grid for the same property renders in under 50 ms and scrolls at 60 fps (see End-to-end tests)
+cd web/pms && E2E_PERF=1 E2E_DATABASE_URL=... bun run test:e2e --grep @perf
 ```
 
 ### End-to-end tests

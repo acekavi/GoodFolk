@@ -327,7 +327,7 @@ query TapeTile($property: ID!, $from: Date!, $to: Date!, $rooms: [ID!]) {
 
 ### 7.3 Inventory
 
-- `inventory_day(property_id, room_type_id, date, physical, sold, blocked, …)` keeps a counter row per room type per day, updated in the same transaction as the reservation or block. Availability reads are then O(days), with no counting over reservations.
+- `inventory_day(property_id, room_type_id, date, physical, sold, out_of_order)` keeps a counter row per room type per day, from the business date for 730 days, updated in the same transaction as the room, reservation or block. Availability reads are then O(days), with no counting over reservations.
 - Correctness guard: a nightly job recomputes counters from the source tables and alerts on drift.
 - **Room blocks**: `room_block(room_id, range, reason, kind, note)` with `kind = out_of_order` (removed from inventory, for renovation or construction) or `out_of_service` (still sellable, but flagged). Reason codes are configurable per property. Blocks show on the tape chart and reduce availability. They cannot overlap existing stays unless the overlapping stays are moved first; the server returns the list of conflicts.
 - Inventory calendar screen (GraphQL): room types × dates grid showing free/sold/blocked, plus restrictions, windowed by month.
