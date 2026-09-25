@@ -36,10 +36,21 @@ impl Role {
             Role::Owner => true,
             Role::Manager => matches!(
                 permission,
-                PropertiesView | PropertiesManage | RoomsView | RoomsManage | InventoryView | InventoryBlock
+                PropertiesView
+                    | PropertiesManage
+                    | RoomsView
+                    | RoomsManage
+                    | InventoryView
+                    | InventoryBlock
+                    | RatesView
+                    | RatesManage
             ),
-            Role::FrontDesk => matches!(permission, PropertiesView | RoomsView | InventoryView | InventoryBlock),
-            Role::Housekeeping | Role::Accountant => matches!(permission, PropertiesView | RoomsView | InventoryView),
+            Role::FrontDesk => {
+                matches!(permission, PropertiesView | RoomsView | InventoryView | InventoryBlock | RatesView)
+            }
+            Role::Housekeeping | Role::Accountant => {
+                matches!(permission, PropertiesView | RoomsView | InventoryView | RatesView)
+            }
         }
     }
 }
@@ -59,6 +70,10 @@ pub enum Permission {
     InventoryView,
     /// Block rooms and release or shorten blocks.
     InventoryBlock,
+    /// See rate plans, prices, restrictions, meal supplements and cancellation policies, and quote stays.
+    RatesView,
+    /// Create and change rate plans, prices, restrictions, meal supplements and cancellation policies.
+    RatesManage,
 }
 
 /// A role held tenant-wide (`property_id: None`) or for one property.

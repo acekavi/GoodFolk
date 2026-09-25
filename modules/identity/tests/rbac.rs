@@ -39,14 +39,35 @@ fn roles_round_trip_through_their_database_names() {
 #[test]
 fn each_role_has_exactly_its_permissions() {
     use Permission::*;
-    let all =
-        [PropertiesView, PropertiesCreate, PropertiesManage, RoomsView, RoomsManage, InventoryView, InventoryBlock];
+    let all = [
+        PropertiesView,
+        PropertiesCreate,
+        PropertiesManage,
+        RoomsView,
+        RoomsManage,
+        InventoryView,
+        InventoryBlock,
+        RatesView,
+        RatesManage,
+    ];
     let expected: [(Role, &[Permission]); 5] = [
         (Role::Owner, &all),
-        (Role::Manager, &[PropertiesView, PropertiesManage, RoomsView, RoomsManage, InventoryView, InventoryBlock]),
-        (Role::FrontDesk, &[PropertiesView, RoomsView, InventoryView, InventoryBlock]),
-        (Role::Housekeeping, &[PropertiesView, RoomsView, InventoryView]),
-        (Role::Accountant, &[PropertiesView, RoomsView, InventoryView]),
+        (
+            Role::Manager,
+            &[
+                PropertiesView,
+                PropertiesManage,
+                RoomsView,
+                RoomsManage,
+                InventoryView,
+                InventoryBlock,
+                RatesView,
+                RatesManage,
+            ],
+        ),
+        (Role::FrontDesk, &[PropertiesView, RoomsView, InventoryView, InventoryBlock, RatesView]),
+        (Role::Housekeeping, &[PropertiesView, RoomsView, InventoryView, RatesView]),
+        (Role::Accountant, &[PropertiesView, RoomsView, InventoryView, RatesView]),
     ];
 
     for (role, permitted) in expected {
