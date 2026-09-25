@@ -14,3 +14,20 @@ export async function fetchMe(): Promise<Profile> {
 export function isTenantOwner(profile: Profile): boolean {
 	return profile.grants.some((grant) => grant.role === 'owner' && grant.property_id == null);
 }
+
+type Role = Profile['grants'][number]['role'];
+
+/** Roles allowed each action, mirroring `identity::Permission` on the server. */
+const ACTIONS = {
+	manageRooms: ['owner', 'manager'],
+	blockRooms: ['owner', 'manager', 'front_desk']
+} satisfies Record<string, Role[]>;
+
+/** UI hint only; the API enforces permissions. A grant counts tenant-wide or for `propertyId`. */
+export function can(profile: Profile, action: keyof typeof ACTIONS, propertyId: string): boolean {
+	const roles: Role[] = ACTIONS[action];
+	return profile.grants.some(
+		(grant) =>
+			roles.includes(grant.role) && (grant.property_id == null || grant.property_id === propertyId)
+	);
+}
