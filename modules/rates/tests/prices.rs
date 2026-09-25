@@ -196,3 +196,43 @@ async fn a_bulk_change_stays_in_the_window_and_on_hand_priced_plans(_: PgPoolOpt
     assert_eq!(invalid(bulk(bar.id, change(0, rooms::WINDOW_DAYS + 1)).await), window);
     assert_eq!(invalid(bulk(bar.id, change(5, 5)).await), "the range ends after it starts");
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_derived_plan_price_exceeding_max_amount_rolls_back(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let bar = hotel.plan(hotel.standard_plan("BAR", "USD")).await;
+    // +200% derivation: parent 50B × 3 = 150B > MAX_AMOUNT (100B)
+    let ota = hotel.plan(hotel.derived_plan("OTA", &bar, ChangeMode::Percent, 20_000)).await;
+    let parent_price = 50_000_000_000_i64; // +200% would give 150B, exceeding 100B limit
+    let prices = [Price { room_type_id: hotel.deluxe.id, date: hotel.day(0), occupancy: 1, amount: parent_price }];
+
+    let result = hotel.try_prices(&bar, &prices).await;
+
+    assert_eq!(invalid(result), "this change would make a price larger than 100000000000 minor units");
+    assert_eq!(hotel.stored(&bar).await.len(), 0, "parent prices unchanged");
+    assert_eq!(hotel.stored(&ota).await.len(), 0, "derived prices unchanged");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_bulk_percent_that_would_exceed_max_amount_is_rejected(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let bar = hotel.plan(hotel.standard_plan("BAR", "USD")).await;
+    let initial = hotel.prices(hotel.deluxe.id, 0, 1, 1, 9_500_000_000_i64);
+    hotel.try_prices(&bar, &initial).await.unwrap();
+    let change = BulkChange {
+        from: hotel.day(0),
+        to: hotel.day(1),
+        weekdays: vec![],
+        room_type_ids: vec![hotel.deluxe.id],
+        occupancies: vec![],
+        change: PriceChange { mode: PriceChangeMode::Percent, value: 100_000 }, // +1000%, would give 95_000_000_000 * 11
+    };
+
+    let result = {
+        let mut tx = hotel.tx().await;
+        rates::bulk_change(&mut tx, hotel.tenant, hotel.user, hotel.property, bar.id, &change).await
+    };
+
+    assert_eq!(invalid(result), "this change would make a price larger than 100000000000 minor units");
+    assert_eq!(hotel.stored(&bar).await[0].amount, 9_500_000_000_i64, "price unchanged");
+}

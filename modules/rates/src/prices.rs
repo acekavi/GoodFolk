@@ -2,7 +2,7 @@
 //! same transaction, one `insert … select … on conflict do update` per level.
 
 use crate::plans::{PlanKind, RatePlan, Tree, list_rate_plans};
-use crate::{MAX_AMOUNT, RatesError, audit, business_date, lock_rates, notify, rates_keys};
+use crate::{MAX_AMOUNT, RatesError, audit, business_date, lock_rates, notify, rates_keys, violates};
 use db::{TenantId, Tx, UserId};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -111,7 +111,7 @@ pub(crate) async fn derive_prices(
     from: Date,
     to: Date,
     prune: bool,
-) -> Result<(), sqlx::Error> {
+) -> Result<(), RatesError> {
     for plans in levels {
         if prune {
             sqlx::query(
@@ -129,7 +129,7 @@ pub(crate) async fn derive_prices(
             .execute(&mut **tx)
             .await?;
         }
-        sqlx::query(
+        match sqlx::query(
             "insert into rate_day (tenant_id, property_id, rate_plan_id, room_type_id, date, occupancy, amount)
              select c.tenant_id, c.property_id, c.id, p.room_type_id, p.date, p.occupancy,
                     app.derive_amount(p.amount, c.derive_mode, c.derive_value, c.rounding_step)
@@ -145,7 +145,16 @@ pub(crate) async fn derive_prices(
         .bind(from)
         .bind(to)
         .execute(&mut **tx)
-        .await?;
+        .await
+        {
+            Ok(_) => {}
+            Err(err) if violates(&err, "rate_day_amount_check") => {
+                return Err(RatesError::Invalid(format!(
+                    "this change would make a price larger than {MAX_AMOUNT} minor units"
+                )));
+            }
+            Err(err) => return Err(err.into()),
+        }
     }
     Ok(())
 }
@@ -182,7 +191,7 @@ pub async fn set_prices(
     }
     let (Some(first), Some(last)) = (cells.keys().next(), cells.keys().next_back()) else { return Ok(()) };
     let (from, to) = (first.0, last.0 + Duration::days(1));
-    sqlx::query(
+    match sqlx::query(
         "insert into rate_day (tenant_id, property_id, rate_plan_id, room_type_id, date, occupancy, amount)
          select $1, $2, $3, c.room_type_id, c.date, c.occupancy, c.amount
          from unnest($4::date[], $5::uuid[], $6::integer[], $7::bigint[]) as c (date, room_type_id, occupancy, amount)
@@ -196,7 +205,16 @@ pub async fn set_prices(
     .bind(cells.keys().map(|key| key.2).collect::<Vec<_>>())
     .bind(cells.values().copied().collect::<Vec<_>>())
     .execute(&mut **tx)
-    .await?;
+    .await
+    {
+        Ok(_) => {}
+        Err(err) if violates(&err, "rate_day_amount_check") => {
+            return Err(RatesError::Invalid(format!(
+                "this change would make a price larger than {MAX_AMOUNT} minor units"
+            )));
+        }
+        Err(err) => return Err(err.into()),
+    }
     let mut touched: Vec<Uuid> = cells.keys().map(|key| key.1).collect();
     touched.sort_unstable();
     touched.dedup();
@@ -279,7 +297,7 @@ pub async fn bulk_change(
     let tree = Tree(list_rate_plans(tx, property).await?);
     let plan = hand_priced(&tree, plan)?;
     let selection = select(today, plan, change)?;
-    let changed = sqlx::query(sqlx::AssertSqlSafe(format!(
+    let changed = match sqlx::query(sqlx::AssertSqlSafe(format!(
         "insert into rate_day (tenant_id, property_id, rate_plan_id, room_type_id, date, occupancy, amount)
          select $10, $11, $1, c.room_type_id, c.date, c.occupancy, c.after from ({CHANGES}) c
          on conflict (rate_plan_id, date, room_type_id, occupancy) do update set amount = excluded.amount"
@@ -296,8 +314,16 @@ pub async fn bulk_change(
     .bind(tenant.0)
     .bind(property)
     .execute(&mut **tx)
-    .await?
-    .rows_affected();
+    .await
+    {
+        Ok(result) => result.rows_affected(),
+        Err(err) if violates(&err, "rate_day_amount_check") => {
+            return Err(RatesError::Invalid(format!(
+                "this change would make a price larger than {MAX_AMOUNT} minor units"
+            )));
+        }
+        Err(err) => return Err(err.into()),
+    };
     derive_prices(tx, &tree.descendant_levels(plan.id), Some(&selection.room_types), change.from, change.to, false)
         .await?;
     audit(
