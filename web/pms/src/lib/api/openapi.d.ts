@@ -274,7 +274,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** A 409 lists the blocks in the way as `conflicts` (each with `id`, `room_id`, `from`, `to`, `kind`). */
+        /** A 409 lists the blocks in the way as `conflicts`: full `Block` objects, as this endpoint returns them. */
         post: operations["create_block"];
         delete?: never;
         options?: never;

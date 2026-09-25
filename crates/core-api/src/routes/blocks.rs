@@ -106,7 +106,7 @@ pub async fn update_reason(
     Ok(Versioned::ok(updated.version, updated))
 }
 
-/// A 409 lists the blocks in the way as `conflicts` (each with `id`, `room_id`, `from`, `to`, `kind`).
+/// A 409 lists the blocks in the way as `conflicts`: full `Block` objects, as this endpoint returns them.
 #[utoipa::path(post, operation_id = "create_block", path = "/api/v1/properties/{property}/rooms/{room}/blocks", request_body = CreateBlockRequest,
     params(("property" = Uuid, Path), ("room" = Uuid, Path), ("Idempotency-Key" = String, Header)),
     responses((status = 201, body = Block), (status = 403), (status = 404), (status = 409), (status = 422)))]

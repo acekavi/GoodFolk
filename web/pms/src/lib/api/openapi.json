@@ -737,7 +737,7 @@
         "tags": [
           "crate::routes::blocks"
         ],
-        "summary": "A 409 lists the blocks in the way as `conflicts` (each with `id`, `room_id`, `from`, `to`, `kind`).",
+        "summary": "A 409 lists the blocks in the way as `conflicts`: full `Block` objects, as this endpoint returns them.",
         "operationId": "create_block",
         "parameters": [
           {
