@@ -49,7 +49,7 @@ fn property_error(err: PropertyError) -> ApiError {
     }
 }
 
-#[utoipa::path(post, path = "/api/v1/properties", request_body = CreatePropertyRequest,
+#[utoipa::path(post, operation_id = "create_property", path = "/api/v1/properties", request_body = CreatePropertyRequest,
     params(("Idempotency-Key" = String, Header)),
     responses((status = 201, body = Property), (status = 403), (status = 409), (status = 422)))]
 pub async fn create(
@@ -68,7 +68,7 @@ pub async fn create(
 }
 
 /// Changes a property's settings. The business date is not editable: night audit moves it.
-#[utoipa::path(patch, path = "/api/v1/properties/{property}", request_body = UpdatePropertyRequest,
+#[utoipa::path(patch, operation_id = "update_property", path = "/api/v1/properties/{property}", request_body = UpdatePropertyRequest,
     params(("property" = Uuid, Path), ("If-Match" = String, Header, description = "the version edited, e.g. \"3\"")),
     responses((status = 200, body = Property), (status = 403), (status = 404), (status = 412), (status = 422), (status = 428)))]
 pub async fn update(

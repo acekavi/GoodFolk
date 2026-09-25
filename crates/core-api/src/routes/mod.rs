@@ -1,6 +1,8 @@
 pub(crate) mod auth;
 mod health;
 pub(crate) mod properties;
+pub(crate) mod room_types;
+pub(crate) mod rooms;
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -17,6 +19,8 @@ use tower_http::trace::TraceLayer;
 
 pub use auth::{LoginRequest, SignupRequest, SwitchTenantRequest};
 pub use properties::{CreatePropertyRequest, UpdatePropertyRequest};
+pub use room_types::{BedRequest, CreateRoomTypeRequest, UpdateRoomTypeRequest};
+pub use rooms::{CreateRoomRangeRequest, CreateRoomRequest, ReorderRequest, SectionRequest, UpdateRoomRequest};
 
 /// Longest a request may run before it is answered with 504.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -25,8 +29,13 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 pub const ABANDONED_CLAIM_AFTER: Duration = Duration::from_secs(60);
 
 pub fn router(state: AppState) -> Router {
+    const PROPERTY: &str = "/api/v1/properties/{property}";
     let commands = Router::new()
         .route("/api/v1/properties", post(properties::create))
+        .route(&format!("{PROPERTY}/room-types"), post(room_types::create))
+        .route(&format!("{PROPERTY}/rooms"), post(rooms::create))
+        .route(&format!("{PROPERTY}/rooms/bulk"), post(rooms::create_range))
+        .route(&format!("{PROPERTY}/sections"), post(rooms::create_section))
         .route_layer(from_fn_with_state(state.clone(), idempotency::idempotent));
 
     let requests = Router::new()
@@ -35,7 +44,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/me", get(auth::me))
         .route("/api/v1/session/tenant", put(auth::switch_tenant))
-        .route("/api/v1/properties/{property}", patch(properties::update))
+        .route(PROPERTY, patch(properties::update))
+        .route(&format!("{PROPERTY}/room-types/order"), put(room_types::reorder))
+        .route(&format!("{PROPERTY}/room-types/{{room_type}}"), patch(room_types::update))
+        .route(&format!("{PROPERTY}/rooms/order"), put(rooms::reorder))
+        .route(&format!("{PROPERTY}/rooms/{{room}}"), patch(rooms::update))
+        .route(&format!("{PROPERTY}/sections/{{section}}"), patch(rooms::rename_section))
         .route("/graphql", post(graphql::handler))
         .merge(commands)
         .layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)));

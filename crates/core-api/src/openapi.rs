@@ -1,4 +1,8 @@
-use crate::routes::{CreatePropertyRequest, LoginRequest, SignupRequest, SwitchTenantRequest, UpdatePropertyRequest};
+use crate::routes::{
+    BedRequest, CreatePropertyRequest, CreateRoomRangeRequest, CreateRoomRequest, CreateRoomTypeRequest, LoginRequest,
+    ReorderRequest, SectionRequest, SignupRequest, SwitchTenantRequest, UpdatePropertyRequest, UpdateRoomRequest,
+    UpdateRoomTypeRequest,
+};
 use utoipa::OpenApi;
 
 #[derive(OpenApi)]
@@ -12,6 +16,15 @@ use utoipa::OpenApi;
         crate::routes::auth::switch_tenant,
         crate::routes::properties::create,
         crate::routes::properties::update,
+        crate::routes::room_types::create,
+        crate::routes::room_types::update,
+        crate::routes::room_types::reorder,
+        crate::routes::rooms::create,
+        crate::routes::rooms::create_range,
+        crate::routes::rooms::update,
+        crate::routes::rooms::reorder,
+        crate::routes::rooms::create_section,
+        crate::routes::rooms::rename_section,
     ),
     components(schemas(
         SignupRequest,
@@ -19,11 +32,23 @@ use utoipa::OpenApi;
         SwitchTenantRequest,
         CreatePropertyRequest,
         UpdatePropertyRequest,
+        BedRequest,
+        CreateRoomTypeRequest,
+        UpdateRoomTypeRequest,
+        ReorderRequest,
+        CreateRoomRequest,
+        CreateRoomRangeRequest,
+        UpdateRoomRequest,
+        SectionRequest,
         identity::Profile,
         identity::TenantSummary,
         identity::Grant,
         identity::Role,
         property::Property,
+        rooms::Bed,
+        rooms::RoomType,
+        rooms::Room,
+        rooms::Section,
     ))
 )]
 pub struct ApiDoc;

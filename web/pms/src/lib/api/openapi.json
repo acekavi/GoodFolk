@@ -109,7 +109,7 @@
         "tags": [
           "crate::routes::properties"
         ],
-        "operationId": "create",
+        "operationId": "create_property",
         "parameters": [
           {
             "name": "Idempotency-Key",
@@ -152,7 +152,7 @@
           "crate::routes::properties"
         ],
         "summary": "Changes a property's settings. The business date is not editable: night audit moves it.",
-        "operationId": "update",
+        "operationId": "update_property",
         "parameters": [
           {
             "name": "property",
@@ -201,6 +201,476 @@
         }
       }
     },
+    "/api/v1/properties/{property}/room-types": {
+      "post": {
+        "tags": [
+          "crate::routes::room_types"
+        ],
+        "operationId": "create_room_type",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRoomTypeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoomType"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/room-types/order": {
+      "put": {
+        "tags": [
+          "crate::routes::room_types"
+        ],
+        "operationId": "reorder_room_types",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/room-types/{room_type}": {
+      "patch": {
+        "tags": [
+          "crate::routes::room_types"
+        ],
+        "operationId": "update_room_type",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRoomTypeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoomType"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/rooms": {
+      "post": {
+        "tags": [
+          "crate::routes::rooms"
+        ],
+        "operationId": "create_room",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRoomRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Room"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/rooms/bulk": {
+      "post": {
+        "tags": [
+          "crate::routes::rooms"
+        ],
+        "operationId": "create_rooms",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRoomRangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Room"
+                  }
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/rooms/order": {
+      "put": {
+        "tags": [
+          "crate::routes::rooms"
+        ],
+        "operationId": "reorder_rooms",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/rooms/{room}": {
+      "patch": {
+        "tags": [
+          "crate::routes::rooms"
+        ],
+        "operationId": "update_room",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRoomRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Room"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/sections": {
+      "post": {
+        "tags": [
+          "crate::routes::rooms"
+        ],
+        "operationId": "create_section",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Section"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/sections/{section}": {
+      "patch": {
+        "tags": [
+          "crate::routes::rooms"
+        ],
+        "operationId": "rename_section",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "section",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Section"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
     "/api/v1/session/tenant": {
       "put": {
         "tags": [
@@ -234,6 +704,40 @@
   },
   "components": {
     "schemas": {
+      "Bed": {
+        "type": "object",
+        "description": "Beds of one kind in a room type, e.g. `{ \"kind\": \"king\", \"count\": 1 }`.",
+        "required": [
+          "kind",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "kind": {
+            "type": "string"
+          }
+        }
+      },
+      "BedRequest": {
+        "type": "object",
+        "required": [
+          "kind",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "kind": {
+            "type": "string",
+            "description": "e.g. `king`, `queen`, `twin`, `sofa bed`."
+          }
+        }
+      },
       "CreatePropertyRequest": {
         "type": "object",
         "required": [
@@ -257,6 +761,125 @@
           "timezone": {
             "type": "string",
             "description": "IANA time zone, e.g. `Asia/Colombo`."
+          }
+        }
+      },
+      "CreateRoomRangeRequest": {
+        "type": "object",
+        "description": "Rooms `{prefix}{first}` to `{prefix}{last}`: `{\"first\": 101, \"last\": 120}` adds 101 to 120.",
+        "required": [
+          "room_type_id",
+          "first",
+          "last"
+        ],
+        "properties": {
+          "first": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "floor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "room_type_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "section_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        }
+      },
+      "CreateRoomRequest": {
+        "type": "object",
+        "required": [
+          "room_type_id",
+          "number"
+        ],
+        "properties": {
+          "floor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "number": {
+            "type": "string",
+            "description": "Letters, digits and `-`, up to 10 characters, unique within the property."
+          },
+          "room_type_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "section_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        }
+      },
+      "CreateRoomTypeRequest": {
+        "type": "object",
+        "required": [
+          "code",
+          "name",
+          "base_occupancy",
+          "max_adults",
+          "max_children",
+          "max_occupancy"
+        ],
+        "properties": {
+          "amenities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "base_occupancy": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "bed_config": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BedRequest"
+            }
+          },
+          "code": {
+            "type": "string",
+            "description": "1 to 10 capital letters or digits, unique within the property. Cannot be changed later."
+          },
+          "max_adults": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "max_children": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "max_occupancy": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
           }
         }
       },
@@ -384,6 +1007,22 @@
           }
         }
       },
+      "ReorderRequest": {
+        "type": "object",
+        "required": [
+          "ids"
+        ],
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Every id of the collection, in the new display order."
+          }
+        }
+      },
       "Role": {
         "type": "string",
         "enum": [
@@ -393,6 +1032,170 @@
           "housekeeping",
           "accountant"
         ]
+      },
+      "Room": {
+        "type": "object",
+        "required": [
+          "id",
+          "property_id",
+          "room_type_id",
+          "number",
+          "active",
+          "sort_order",
+          "version"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "floor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "number": {
+            "type": "string"
+          },
+          "property_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "room_type_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "section_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "sort_order": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "RoomType": {
+        "type": "object",
+        "required": [
+          "id",
+          "property_id",
+          "code",
+          "name",
+          "base_occupancy",
+          "max_adults",
+          "max_children",
+          "max_occupancy",
+          "bed_config",
+          "amenities",
+          "sort_order",
+          "active",
+          "version"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "amenities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "base_occupancy": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "bed_config": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Bed"
+            }
+          },
+          "code": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "max_adults": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "max_children": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "max_occupancy": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          },
+          "property_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sort_order": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "Section": {
+        "type": "object",
+        "description": "A housekeeping section: a group of rooms one housekeeper looks after.",
+        "required": [
+          "id",
+          "property_id",
+          "name",
+          "version"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "property_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "SectionRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
       },
       "SignupRequest": {
         "type": "object",
@@ -461,6 +1264,109 @@
               "null"
             ],
             "description": "`HH:MM` (24-hour), local time."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UpdateRoomRequest": {
+        "type": "object",
+        "description": "Fields left out stay as they are; `floor` and `section_id` sent as `null` are cleared.",
+        "properties": {
+          "active": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "floor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "number": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "room_type_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "section_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        }
+      },
+      "UpdateRoomTypeRequest": {
+        "type": "object",
+        "description": "Fields left out stay as they are.",
+        "properties": {
+          "active": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`false` retires the type; it must have no active rooms."
+          },
+          "amenities": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "base_occupancy": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "bed_config": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/BedRequest"
+            }
+          },
+          "max_adults": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "max_children": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "max_occupancy": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
           },
           "name": {
             "type": [

@@ -81,7 +81,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["create"];
+        post: operations["create_property"];
         delete?: never;
         options?: never;
         head?: never;
@@ -102,7 +102,151 @@ export interface paths {
         options?: never;
         head?: never;
         /** Changes a property's settings. The business date is not editable: night audit moves it. */
-        patch: operations["update"];
+        patch: operations["update_property"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/room-types": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_room_type"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/room-types/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["reorder_room_types"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/room-types/{room_type}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["update_room_type"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/rooms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_room"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/rooms/bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_rooms"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/rooms/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["reorder_rooms"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/rooms/{room}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["update_room"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/sections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_section"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/sections/{section}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["rename_section"];
         trace?: never;
     };
     "/api/v1/session/tenant": {
@@ -125,6 +269,18 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Beds of one kind in a room type, e.g. `{ "kind": "king", "count": 1 }`. */
+        Bed: {
+            /** Format: int32 */
+            count: number;
+            kind: string;
+        };
+        BedRequest: {
+            /** Format: int32 */
+            count: number;
+            /** @description e.g. `king`, `queen`, `twin`, `sofa bed`. */
+            kind: string;
+        };
         CreatePropertyRequest: {
             /** @description ISO 4217 code, e.g. `LKR`. */
             base_currency: string;
@@ -133,6 +289,43 @@ export interface components {
             name: string;
             /** @description IANA time zone, e.g. `Asia/Colombo`. */
             timezone: string;
+        };
+        /** @description Rooms `{prefix}{first}` to `{prefix}{last}`: `{"first": 101, "last": 120}` adds 101 to 120. */
+        CreateRoomRangeRequest: {
+            /** Format: int32 */
+            first: number;
+            floor?: string | null;
+            /** Format: int32 */
+            last: number;
+            prefix?: string;
+            /** Format: uuid */
+            room_type_id: string;
+            /** Format: uuid */
+            section_id?: string | null;
+        };
+        CreateRoomRequest: {
+            floor?: string | null;
+            /** @description Letters, digits and `-`, up to 10 characters, unique within the property. */
+            number: string;
+            /** Format: uuid */
+            room_type_id: string;
+            /** Format: uuid */
+            section_id?: string | null;
+        };
+        CreateRoomTypeRequest: {
+            amenities?: string[];
+            /** Format: int32 */
+            base_occupancy: number;
+            bed_config?: components["schemas"]["BedRequest"][];
+            /** @description 1 to 10 capital letters or digits, unique within the property. Cannot be changed later. */
+            code: string;
+            /** Format: int32 */
+            max_adults: number;
+            /** Format: int32 */
+            max_children: number;
+            /** Format: int32 */
+            max_occupancy: number;
+            name: string;
         };
         /** @description A role held tenant-wide (`property_id: None`) or for one property. */
         Grant: {
@@ -173,8 +366,65 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        ReorderRequest: {
+            /** @description Every id of the collection, in the new display order. */
+            ids: string[];
+        };
         /** @enum {string} */
         Role: "owner" | "manager" | "front_desk" | "housekeeping" | "accountant";
+        Room: {
+            active: boolean;
+            floor?: string | null;
+            /** Format: uuid */
+            id: string;
+            number: string;
+            /** Format: uuid */
+            property_id: string;
+            /** Format: uuid */
+            room_type_id: string;
+            /** Format: uuid */
+            section_id?: string | null;
+            /** Format: int32 */
+            sort_order: number;
+            /** Format: int32 */
+            version: number;
+        };
+        RoomType: {
+            active: boolean;
+            amenities: string[];
+            /** Format: int32 */
+            base_occupancy: number;
+            bed_config: components["schemas"]["Bed"][];
+            code: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: int32 */
+            max_adults: number;
+            /** Format: int32 */
+            max_children: number;
+            /** Format: int32 */
+            max_occupancy: number;
+            name: string;
+            /** Format: uuid */
+            property_id: string;
+            /** Format: int32 */
+            sort_order: number;
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description A housekeeping section: a group of rooms one housekeeper looks after. */
+        Section: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: uuid */
+            property_id: string;
+            /** Format: int32 */
+            version: number;
+        };
+        SectionRequest: {
+            name: string;
+        };
         SignupRequest: {
             display_name: string;
             email: string;
@@ -195,6 +445,32 @@ export interface components {
             check_in_time?: string | null;
             /** @description `HH:MM` (24-hour), local time. */
             check_out_time?: string | null;
+            name?: string | null;
+        };
+        /** @description Fields left out stay as they are; `floor` and `section_id` sent as `null` are cleared. */
+        UpdateRoomRequest: {
+            active?: boolean | null;
+            floor?: string | null;
+            number?: string | null;
+            /** Format: uuid */
+            room_type_id?: string | null;
+            /** Format: uuid */
+            section_id?: string | null;
+        };
+        /** @description Fields left out stay as they are. */
+        UpdateRoomTypeRequest: {
+            /** @description `false` retires the type; it must have no active rooms. */
+            active?: boolean | null;
+            amenities?: string[] | null;
+            /** Format: int32 */
+            base_occupancy?: number | null;
+            bed_config?: components["schemas"]["BedRequest"][] | null;
+            /** Format: int32 */
+            max_adults?: number | null;
+            /** Format: int32 */
+            max_children?: number | null;
+            /** Format: int32 */
+            max_occupancy?: number | null;
             name?: string | null;
         };
     };
@@ -324,7 +600,7 @@ export interface operations {
             };
         };
     };
-    create: {
+    create_property: {
         parameters: {
             query?: never;
             header: {
@@ -367,7 +643,7 @@ export interface operations {
             };
         };
     };
-    update: {
+    update_property: {
         parameters: {
             query?: never;
             header: {
@@ -400,6 +676,484 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_room_type: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRoomTypeRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoomType"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reorder_room_types: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReorderRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_room_type: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                room_type: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateRoomTypeRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoomType"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_room: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRoomRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Room"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_rooms: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRoomRangeRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Room"][];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reorder_rooms: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReorderRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_room: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateRoomRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Room"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_section: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SectionRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Section"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rename_section: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                section: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SectionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Section"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
