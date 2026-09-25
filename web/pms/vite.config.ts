@@ -22,6 +22,13 @@ export default defineConfig({
 			'/graphql': api
 		}
 	},
+	// `vite preview` serves the production build the same way (end-to-end tests use it).
+	preview: {
+		proxy: {
+			'/api': api,
+			'/graphql': api
+		}
+	},
 	test: {
 		expect: { requireAssertions: true },
 		projects: [

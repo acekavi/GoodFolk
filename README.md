@@ -43,6 +43,22 @@ bun run api:schemas && bun run codegen   # after any API change; commit the resu
 bun run lint && bun run check && bun run test && bun run build
 ```
 
+### End-to-end tests
+
+Playwright (`web/pms/tests/e2e`) drives the production build against a real API and Postgres. It starts both itself: the API on port 18080 (`cargo run -p core-api`) and `vite preview` on port 4173. Give it a migrated database of its own, so test accounts never land in your development data:
+
+```sh
+# once: create and migrate a database for the tests (psql, or any Postgres client)
+psql "$DATABASE_OWNER_URL" -c 'create database goodfolk_e2e'
+DATABASE_OWNER_URL=postgres://goodfolk_owner:goodfolk_owner_dev@localhost:5432/goodfolk_e2e cargo run -p core-api -- migrate
+
+cd web/pms
+bunx playwright install chromium   # once
+E2E_DATABASE_URL=postgres://goodfolk_api:goodfolk_api_dev@localhost:5432/goodfolk_e2e bun run test:e2e
+```
+
+Chromium runs with its sandbox on, as in CI. If your machine cannot start it ("No usable sandbox!", for example on distributions that restrict unprivileged user namespaces), add `PLAYWRIGHT_NO_SANDBOX=1` for local runs; the config refuses it when `CI` is set.
+
 ### Configuration
 
 The API (`core-api serve`) reads:

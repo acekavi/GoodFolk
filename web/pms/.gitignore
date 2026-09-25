@@ -1,6 +1,9 @@
 node_modules
 
 # Output
+/test-results
+/playwright-report
+/blob-report
 .output
 .vercel
 .netlify

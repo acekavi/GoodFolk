@@ -15,12 +15,14 @@
 		"test:unit": "vitest",
 		"test": "npm run test:unit -- --run",
 		"api:schemas": "cd ../.. && cargo run -q -p core-api --bin export-schemas -- web/pms/src/lib/api",
-		"codegen": "openapi-typescript src/lib/api/openapi.json -o src/lib/api/openapi.d.ts && graphql-codegen"
+		"codegen": "openapi-typescript src/lib/api/openapi.json -o src/lib/api/openapi.d.ts && graphql-codegen",
+		"test:e2e": "playwright test"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
 		"@graphql-codegen/cli": "7.4.2",
 		"@graphql-codegen/client-preset": "6.2.0",
+		"@playwright/test": "1.63.0",
 		"@sveltejs/adapter-static": "^3.0.10",
 		"@sveltejs/kit": "^2.63.0",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
