@@ -313,7 +313,7 @@ pub async fn create_block(
         Err(err) => return Err(err.into()),
     };
     if block.kind == BlockKind::OutOfOrder {
-        adjust(tx, property, room_type, block.from, Some(block.to), 0, 1).await?;
+        adjust(tx, property, room_type, block.from, block.to, 0, 1).await?;
     }
     audit(
         tx,
@@ -382,7 +382,7 @@ pub async fn shorten_block(
     let restored_from = if cancelled { current.from.max(today) } else { to };
     if current.kind == BlockKind::OutOfOrder && room_active {
         lock_days(tx, property, &[room_type], restored_from, current.to).await?;
-        adjust(tx, property, room_type, restored_from, Some(current.to), 0, -1).await?;
+        adjust(tx, property, room_type, restored_from, current.to, 0, -1).await?;
     }
     audit(
         tx,

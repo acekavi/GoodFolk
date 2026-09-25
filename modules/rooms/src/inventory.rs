@@ -67,6 +67,7 @@ pub async fn extend_window(tx: &mut Tx, property: Uuid) -> Result<(), sqlx::Erro
          cross join lateral (select p.business_date + offset_days as date
                              from generate_series(greatest(0, existing.last - p.business_date + 1), $2 - 1) offset_days) day
          where rt.property_id = $1
+         order by rt.id, day.date
          on conflict do nothing",
     )
     .bind(property)
@@ -76,20 +77,20 @@ pub async fn extend_window(tx: &mut Tx, property: Uuid) -> Result<(), sqlx::Erro
     Ok(())
 }
 
-/// Adds the deltas to `room_type`'s counters on each day in `[from, to)` (`to: None` = to the end of the
-/// window). `from` must not be before the business date: past days are history and never change.
+/// Adds the deltas to `room_type`'s counters on each day in `[from, to)`. `from` must not be before the
+/// business date: past days are history and never change.
 pub(crate) async fn adjust(
     tx: &mut Tx,
     property: Uuid,
     room_type: Uuid,
     from: Date,
-    to: Option<Date>,
+    to: Date,
     physical: i32,
     out_of_order: i32,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "update inventory_day set physical = physical + $5, out_of_order = out_of_order + $6
-         where property_id = $1 and room_type_id = $2 and date >= $3 and ($4::date is null or date < $4)",
+         where property_id = $1 and room_type_id = $2 and date >= $3 and date < $4",
     )
     .bind(property)
     .bind(room_type)
@@ -132,8 +133,8 @@ pub(crate) async fn lock_days(
     Ok(())
 }
 
-/// Adds (`sign = 1`) or removes (`sign = -1`) one room's share of its type's counters from `today` on:
-/// one physical room, plus one out-of-order room on each day of its active out-of-order blocks.
+/// Adds (`sign = 1`) or removes (`sign = -1`) one room's share of its type's counters over the window from
+/// `today`: one physical room, plus one out-of-order room on each day of its active out-of-order blocks.
 /// Inactive rooms have no share. One statement changes both counters, so `out_of_order <= physical`
 /// holds on every row after it.
 pub(crate) async fn contribute(
@@ -155,13 +156,14 @@ pub(crate) async fn contribute(
                  select 1 from room_block b
                  where b.room_id = $3 and b.released_at is null and b.kind = 'out_of_order' and b.period @> i.date
              ))::integer
-         where i.property_id = $1 and i.room_type_id = $4 and i.date >= $2",
+         where i.property_id = $1 and i.room_type_id = $4 and i.date >= $2 and i.date < $6",
     )
     .bind(property)
     .bind(today)
     .bind(room)
     .bind(room_type)
     .bind(sign)
+    .bind(today + Duration::days(WINDOW_DAYS))
     .execute(&mut **tx)
     .await?;
     Ok(())

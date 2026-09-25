@@ -128,53 +128,80 @@ async fn counters_match_a_recount_after_any_sequence_of_changes(_: PgPoolOptions
     }
 }
 
-/// Retype pairs run at once, each room moving to the other's type while it has an out-of-order block.
+/// Retype pairs run at once, each room moving to the other's type while it has an out-of-order block. Each
+/// pair also shortens a block in one type and creates a block in the other, on rooms that stay put.
 const OPPOSITE_RETYPES: usize = 30;
 
+/// One command in [`opposite_retypes_and_block_changes_run_concurrently_without_deadlocking`].
+enum Change {
+    Retype(Room, uuid::Uuid),
+    Shorten(Block, time::Date),
+    Block(NewBlock),
+}
+
 #[sqlx::test(migrator = "db::MIGRATOR")]
-async fn opposite_retypes_of_blocked_rooms_run_concurrently_without_deadlocking(
+async fn opposite_retypes_and_block_changes_run_concurrently_without_deadlocking(
     _: PgPoolOptions,
     opts: PgConnectOptions,
 ) {
     let hotel = Hotel::new(opts.clone()).await;
     let (a, b) = (hotel.room_type("A").await, hotel.room_type("B").await);
     let reason = hotel.reason("OTHER").await;
-    let mut moves = Vec::new();
+    let out_of_order = |room: &Room, start: i64| NewBlock {
+        room_id: room.id,
+        from: hotel.day(start),
+        to: hotel.day(start + 10),
+        kind: BlockKind::OutOfOrder,
+        reason_id: reason.id,
+        note: String::new(),
+    };
+    let block = |input: NewBlock| async {
+        let mut tx = hotel.tx().await;
+        let block = rooms::create_block(&mut tx, hotel.tenant, hotel.user, hotel.property, input).await.unwrap();
+        tx.commit().await.unwrap();
+        block
+    };
+    let mut changes = Vec::new();
     for pair in 0..OPPOSITE_RETYPES {
+        let start = i64::try_from(pair).unwrap();
         for (from, to, side) in [(a.id, b.id, "a"), (b.id, a.id, "b")] {
             let room = hotel.room(from, &format!("{side}{pair}")).await;
-            let start = i64::try_from(pair).unwrap();
-            let block = NewBlock {
-                room_id: room.id,
-                from: hotel.day(start),
-                to: hotel.day(start + 10),
-                kind: BlockKind::OutOfOrder,
-                reason_id: reason.id,
-                note: String::new(),
-            };
-            let mut tx = hotel.tx().await;
-            rooms::create_block(&mut tx, hotel.tenant, hotel.user, hotel.property, block).await.unwrap();
-            tx.commit().await.unwrap();
-            moves.push((room, to));
+            block(out_of_order(&room, start)).await;
+            changes.push(Change::Retype(room, to));
         }
+        let shortened = hotel.room(a.id, &format!("c{pair}")).await;
+        changes.push(Change::Shorten(block(out_of_order(&shortened, start)).await, hotel.day(start + 5)));
+        let blocked = hotel.room(b.id, &format!("d{pair}")).await;
+        changes.push(Change::Block(out_of_order(&blocked, start)));
     }
 
     let pool = db::testing::app_pool(opts, 16).await;
     let (tenant, user, property) = (hotel.tenant, hotel.user, hotel.property);
+    let total = changes.len();
     let mut tasks = tokio::task::JoinSet::new();
-    for (room, to) in moves {
+    for change in changes {
         let pool = pool.clone();
         tasks.spawn(async move {
             let mut tx = db::begin(&pool, db::Scope::tenant(tenant)).await.unwrap();
-            let changes = RoomChanges { room_type_id: Some(to), ..RoomChanges::default() };
-            let updated = rooms::update_room(&mut tx, tenant, user, property, room.id, room.version, changes).await?;
+            match change {
+                Change::Retype(room, to) => {
+                    let changes = RoomChanges { room_type_id: Some(to), ..RoomChanges::default() };
+                    rooms::update_room(&mut tx, tenant, user, property, room.id, room.version, changes).await?;
+                }
+                Change::Shorten(block, to) => {
+                    rooms::shorten_block(&mut tx, tenant, user, property, block.id, block.version, to).await?;
+                }
+                Change::Block(input) => {
+                    rooms::create_block(&mut tx, tenant, user, property, input).await?;
+                }
+            }
             tx.commit().await?;
-            Ok::<_, rooms::RoomsError>(updated)
+            Ok::<_, rooms::RoomsError>(())
         });
     }
     let failures: Vec<String> =
         tasks.join_all().await.into_iter().filter_map(|result| result.err().map(|err| err.to_string())).collect();
 
-    assert!(failures.is_empty(), "{} of {} retypes failed: {failures:?}", failures.len(), 2 * OPPOSITE_RETYPES);
+    assert!(failures.is_empty(), "{} of {total} changes failed: {failures:?}", failures.len());
     assert_eq!(hotel.drift().await, vec![]);
 }

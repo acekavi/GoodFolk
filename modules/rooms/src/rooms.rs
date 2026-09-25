@@ -191,7 +191,7 @@ async fn insert_rooms(
     };
     created.sort_by_key(|room| room.sort_order);
     let count = i32::try_from(created.len()).expect("at most MAX_ROOMS_PER_RANGE rooms");
-    adjust(tx, property, room_type, today, None, count, 0).await?;
+    adjust(tx, property, room_type, today, today + Duration::days(WINDOW_DAYS), count, 0).await?;
     // One entry for the batch, on the room type the rooms were added to.
     audit(tx, tenant, actor, "rooms.created", "room_type", room_type, serde_json::json!({ "numbers": numbers }))
         .await?;
