@@ -1,3 +1,42 @@
+type BedNode {
+	kind: String!
+	count: Int!
+}
+
+enum BlockKind {
+	"""
+	Out of inventory: reduces availability.
+	"""
+	OUT_OF_ORDER
+	"""
+	Still sellable; shown only.
+	"""
+	OUT_OF_SERVICE
+}
+
+"""
+A room blocked for `[from, to)`: `to` is the first day it is back.
+"""
+type BlockNode {
+	id: UUID!
+	roomId: UUID!
+	from: Date!
+	to: Date!
+	kind: BlockKind!
+	reasonId: UUID!
+	note: String!
+	version: Int!
+}
+
+type BlockReasonNode {
+	id: UUID!
+	code: String!
+	label: String!
+	defaultKind: BlockKind!
+	active: Boolean!
+	version: Int!
+}
+
 """
 ISO 8601 calendar date without timezone.
 Format: %Y-%m-%d
@@ -8,6 +47,18 @@ Format: %Y-%m-%d
 * `2000-02-24`
 """
 scalar Date
+
+"""
+One room type on one day. `available = physical - sold - outOfOrder`.
+"""
+type InventoryDayNode {
+	date: Date!
+	roomTypeId: UUID!
+	physical: Int!
+	sold: Int!
+	outOfOrder: Int!
+	available: Int!
+}
 
 type PropertyNode {
 	id: UUID!
@@ -35,6 +86,63 @@ type Query {
 	Properties the current user can see, ordered by code.
 	"""
 	properties: [PropertyNode!]!
+	"""
+	The property's room types, active or not, in display order.
+	"""
+	roomTypes(propertyId: UUID!): [RoomTypeNode!]!
+	"""
+	The property's rooms, active or not, in display order; only one type's if `roomTypeId` is given.
+	"""
+	rooms(propertyId: UUID!, roomTypeId: UUID): [RoomNode!]!
+	"""
+	Housekeeping sections, by name.
+	"""
+	sections(propertyId: UUID!): [SectionNode!]!
+	"""
+	Reasons a room can be blocked for, active or not, by code.
+	"""
+	blockReasons(propertyId: UUID!): [BlockReasonNode!]!
+	"""
+	Active room blocks overlapping `[from, to)` (at most 400 days), by start date.
+	"""
+	blocks(propertyId: UUID!, from: Date!, to: Date!): [BlockNode!]!
+	"""
+	Counts per room type per day for `[from, to)` (at most 93 days), by date then room type. Days before
+	the business date that were never counted, and days past the 730-day window, have no rows.
+	"""
+	inventory(propertyId: UUID!, from: Date!, to: Date!): [InventoryDayNode!]!
+}
+
+type RoomNode {
+	id: UUID!
+	roomTypeId: UUID!
+	number: String!
+	floor: String
+	sectionId: UUID
+	active: Boolean!
+	sortOrder: Int!
+	version: Int!
+}
+
+type RoomTypeNode {
+	id: UUID!
+	code: String!
+	name: String!
+	baseOccupancy: Int!
+	maxAdults: Int!
+	maxChildren: Int!
+	maxOccupancy: Int!
+	beds: [BedNode!]!
+	amenities: [String!]!
+	sortOrder: Int!
+	active: Boolean!
+	version: Int!
+}
+
+type SectionNode {
+	id: UUID!
+	name: String!
+	version: Int!
 }
 
 """
