@@ -17,6 +17,8 @@ export default defineConfig({
 	testDir: 'tests/e2e',
 	fullyParallel: true,
 	forbidOnly: !!process.env.CI,
+	// Performance checks (@perf) run only when asked for: E2E_PERF=1.
+	grepInvert: process.env.E2E_PERF === '1' ? undefined : /@perf/,
 	retries: process.env.CI ? 1 : 0,
 	reporter: process.env.CI ? [['github'], ['list']] : 'list',
 	use: {

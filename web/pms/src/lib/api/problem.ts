@@ -4,6 +4,8 @@ export interface Problem {
 	title: string;
 	status: number;
 	detail?: string;
+	/** Extension members, such as `conflicts` on a 409 for an overlapping room block. */
+	[extension: string]: unknown;
 }
 
 export class ApiError extends Error {

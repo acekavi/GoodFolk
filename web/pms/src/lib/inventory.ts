@@ -1,6 +1,8 @@
 import { graphql } from './api/gql';
 import type { InventoryQuery } from './api/gql/graphql';
 import { query } from './api/graphql';
+import type { components } from './api/openapi';
+import { ApiError } from './api/problem';
 
 export const InventoryDocument = graphql(`
 	query Inventory($propertyId: UUID!, $from: Date!, $to: Date!) {
@@ -81,5 +83,16 @@ export function indexInventory(rows: InventoryDay[]) {
 export function blocksOn(blocks: Block[], date: string, rooms?: Set<string>): Block[] {
 	return blocks.filter(
 		(block) => block.from <= date && date < block.to && (!rooms || rooms.has(block.roomId))
+	);
+}
+
+type BlockConflict = Pick<components['schemas']['Block'], 'room_id' | 'from' | 'to' | 'kind'>;
+
+/** One sentence per block listed in a 409's `conflicts`; empty for any other error. */
+export function conflictMessages(error: unknown, roomNumber: (roomId: string) => string): string[] {
+	if (!(error instanceof ApiError) || !Array.isArray(error.problem.conflicts)) return [];
+	return (error.problem.conflicts as BlockConflict[]).map(
+		(block) =>
+			`Room ${roomNumber(block.room_id)} is already blocked from ${block.from} until ${block.to} (${block.kind.replaceAll('_', ' ')}).`
 	);
 }

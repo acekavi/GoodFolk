@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { ApiError } from './api/problem';
 import {
 	addDays,
 	blocksOn,
+	conflictMessages,
 	indexInventory,
 	inventoryKey,
 	monthDays,
@@ -79,5 +81,26 @@ describe('blocksOn', () => {
 		];
 
 		expect(blocksOn(blocks, '2026-09-24', new Set(['r201'])).map((b) => b.id)).toEqual(['b2']);
+	});
+});
+
+describe('conflictMessages', () => {
+	it('names each block in the way of a 409', () => {
+		const conflict = new ApiError({
+			type: 'about:blank',
+			title: 'Conflict',
+			status: 409,
+			conflicts: [
+				{ id: 'b1', room_id: 'r101', from: '2026-09-24', to: '2026-09-26', kind: 'out_of_order' }
+			]
+		});
+
+		expect(conflictMessages(conflict, () => '101')).toEqual([
+			'Room 101 is already blocked from 2026-09-24 until 2026-09-26 (out of order).'
+		]);
+	});
+
+	it('is empty for any other error', () => {
+		expect(conflictMessages(new TypeError('Failed to fetch'), () => '101')).toEqual([]);
 	});
 });
