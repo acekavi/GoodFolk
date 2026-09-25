@@ -140,17 +140,21 @@
 			<div class="row" role="row" aria-rowindex={r + 2}>
 				<div class="rail" role="rowheader" aria-colindex={1}>{row.label}</div>
 				{#each rendered as column (columns[column])}
+					<!-- svelte-ignore a11y_click_events_have_key_events -->
+					<!-- svelte-ignore a11y_interactive_supports_focus -->
 					<div
 						id={cellId({ row: r, column })}
 						class="cell"
 						class:active={active.row === r && active.column === column}
 						role="gridcell"
-						tabindex="-1"
 						aria-colindex={column + 2}
 						aria-label={cellLabel(row, columns[column])}
 						style:transform="translateX({railWidth + column * columnWidth}px)"
-						onclick={() => activate({ row: r, column })}
-						onkeydown={keydown}
+						onmousedown={(event) => event.preventDefault()}
+						onclick={() => {
+							activate({ row: r, column });
+							viewport?.focus();
+						}}
 					>
 						{@render cell(row, columns[column])}
 					</div>

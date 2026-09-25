@@ -50,6 +50,17 @@ test('blocking a room reduces availability on the calendar until it is released'
 	);
 	await dialog.getByRole('button', { name: 'Cancel' }).click();
 
+	// Click a cell and press ArrowRight: the active cell should move one column, not two.
+	const cellToday = grid.getByRole('gridcell', { name: `DLX ${today}: 4 available` });
+	const cellTomorrow = grid.getByRole('gridcell', {
+		name: `DLX ${addDays(today, 1)}: 4 available`
+	});
+	await cellToday.click();
+	await page.keyboard.press('ArrowRight');
+	const tomorrowId = await cellTomorrow.getAttribute('id');
+	expect(tomorrowId).not.toBeNull();
+	await expect(grid).toHaveAttribute('aria-activedescendant', tomorrowId ?? '');
+
 	// Keyboard: go to the first day of the month, walk right to the business date and open it.
 	await grid.focus();
 	await page.keyboard.press('Home');
