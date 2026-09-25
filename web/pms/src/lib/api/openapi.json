@@ -132,6 +132,14 @@
         },
         "responses": {
           "201": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -185,6 +193,14 @@
         },
         "responses": {
           "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -238,6 +254,14 @@
         },
         "responses": {
           "201": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -299,6 +323,14 @@
         },
         "responses": {
           "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -361,6 +393,14 @@
         },
         "responses": {
           "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -414,6 +454,14 @@
         },
         "responses": {
           "201": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -510,6 +558,14 @@
         },
         "responses": {
           "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -564,6 +620,14 @@
         },
         "responses": {
           "201": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -715,6 +779,14 @@
         },
         "responses": {
           "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -779,6 +851,14 @@
         },
         "responses": {
           "201": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -831,6 +911,14 @@
         },
         "responses": {
           "201": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -892,6 +980,14 @@
         },
         "responses": {
           "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {

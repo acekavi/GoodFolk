@@ -65,7 +65,7 @@ pub async fn idempotent(State(state): State<AppState>, request: Request, next: N
     .await?;
     let Some(claimed_at) = claimed_at else {
         let stored: Option<StoredClaim> = sqlx::query_as(
-            "select request_hash, status_code, content_type, response_body
+            "select request_hash, status_code, content_type, etag, response_body
              from idempotency_key where tenant_id = $1 and key = $2",
         )
         .bind(ctx.tenant.0)
@@ -89,7 +89,7 @@ pub async fn idempotent(State(state): State<AppState>, request: Request, next: N
     let stored = async {
         let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
         sqlx::query(
-            "update idempotency_key set status_code = $4, content_type = $5, response_body = $6
+            "update idempotency_key set status_code = $4, content_type = $5, etag = $6, response_body = $7
              where tenant_id = $1 and key = $2 and created_at = $3",
         )
         .bind(ctx.tenant.0)
@@ -97,6 +97,7 @@ pub async fn idempotent(State(state): State<AppState>, request: Request, next: N
         .bind(claimed_at)
         .bind(i16::try_from(response_parts.status.as_u16()).expect("HTTP status codes fit in i16"))
         .bind(response_parts.headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()))
+        .bind(response_parts.headers.get(header::ETAG).and_then(|v| v.to_str().ok()))
         .bind(body.to_vec())
         .execute(&mut *tx)
         .await?;
@@ -111,14 +112,14 @@ pub async fn idempotent(State(state): State<AppState>, request: Request, next: N
 }
 
 /// A claimed key's request hash, and its response once the request has finished:
-/// `(request_hash, status_code, content_type, response_body)`.
-type StoredClaim = (Vec<u8>, Option<i16>, Option<String>, Option<Vec<u8>>);
+/// `(request_hash, status_code, content_type, etag, response_body)`.
+type StoredClaim = (Vec<u8>, Option<i16>, Option<String>, Option<String>, Option<Vec<u8>>);
 
 /// Answers a request whose key is already claimed: replays the stored response, or reports why it cannot.
 fn replay(stored: Option<StoredClaim>, request_hash: &[u8]) -> Result<Response, ApiError> {
     let in_progress = || ApiError::conflict("a request with this Idempotency-Key is still in progress; retry shortly");
     // The claim vanished between the insert and the lookup: its request failed and released it.
-    let Some((stored_hash, status, content_type, body)) = stored else {
+    let Some((stored_hash, status, content_type, etag, body)) = stored else {
         return Err(in_progress());
     };
     if stored_hash != request_hash {
@@ -130,8 +131,10 @@ fn replay(stored: Option<StoredClaim>, request_hash: &[u8]) -> Result<Response, 
     let status =
         u16::try_from(status).ok().and_then(|s| StatusCode::from_u16(s).ok()).ok_or_else(ApiError::internal)?;
     let mut replay = (status, body).into_response();
-    if let Some(content_type) = content_type.and_then(|v| header::HeaderValue::from_str(&v).ok()) {
-        replay.headers_mut().insert(header::CONTENT_TYPE, content_type);
+    for (name, value) in [(header::CONTENT_TYPE, content_type), (header::ETAG, etag)] {
+        if let Some(value) = value.and_then(|v| header::HeaderValue::from_str(&v).ok()) {
+            replay.headers_mut().insert(name, value);
+        }
     }
     Ok(replay)
 }

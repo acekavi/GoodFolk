@@ -67,7 +67,7 @@ Request DTOs derive `garde::Validate` and are checked with `error::validate(&bod
 
 - The client sends `Idempotency-Key: <8–200 chars>`, one fresh UUID per user action, reused only when retrying that same action.
 - Mount create routes in the `commands` router, which has `.route_layer(from_fn_with_state(state, idempotency::idempotent))`.
-- Same key, same request: the stored first response is replayed. Same key, different request: 422. The request hash covers the user, method, path, query string and body, so a different user or query with the same key is a different request.
+- Same key, same request: the stored first response is replayed, with its status, body, `Content-Type` and `ETag`. Same key, different request: 422. The request hash covers the user, method, path, query string and body, so a different user or query with the same key is a different request.
 - First request still running: 409, and the client retries. A claim is abandoned once it has been unfinished for 60 s (`routes::ABANDONED_CLAIM_AFTER`, the 15 s timeout plus margin), for example after a timeout or a dropped connection, and the next request with that key takes it over and runs.
 - A 5xx response, or one larger than 1 MiB, is not stored; its claim is released so the client may retry.
 - The SPA's create forms take keys from `formKeys()` (`web/pms/src/lib/api/rest.ts`): the same body gets the same key (a double-click or a retry replays instead of creating twice); an edited body gets a new key; `reset()` after a success starts fresh; `failed(err)` after a failure rotates the key on a definitive 4xx (so an unchanged resubmit is a new request, not a replay of the stored error) and keeps it after a network error, a 5xx or a 409 "still in progress", when the first request may still succeed.
@@ -83,7 +83,7 @@ Request DTOs derive `garde::Validate` and are checked with `error::validate(&bod
 
 ## Optimistic concurrency
 
-- Editable resources return `version` in their body and an `ETag: "<version>"` header: handlers return `concurrency::Versioned::{ok, created}(version, body)` (`crates/core-api/src/concurrency.rs`). GraphQL nodes expose `version` too, which is where the SPA reads it.
+- Editable resources return `version` in their body and an `ETag: "<version>"` header: handlers return `concurrency::Versioned::{ok, created}(version, body)` (`crates/core-api/src/concurrency.rs`). Their `#[utoipa::path]` success response declares the header (`headers(("ETag" = String, …))`); `tests/openapi.rs` lists the operations that do. GraphQL nodes expose `version` too, which is where the SPA reads it.
 - Updates take the `concurrency::IfMatch` extractor, so they must send `If-Match: "<version>"`: missing is 428, not a quoted number is 400. The module's `update … where id = $1 and version = $2 … returning` finds no row on mismatch; it then checks whether the row exists and returns a version-mismatch error (412) or not-found (404). The client refetches and shows what changed.
 - An update that names no field to change is a 422 ("send at least one field to change"): update DTOs implement `error::Changes` and handlers check them with `error::validate_changes`, so an empty `PATCH` cannot bump the version.
 - Reordering (`PUT …/order`) is not a concurrent edit of one resource: it takes no `If-Match` and does not bump versions.

@@ -106,7 +106,8 @@ pub struct SectionRequest {
 
 #[utoipa::path(post, operation_id = "create_room", path = "/api/v1/properties/{property}/rooms", request_body = CreateRoomRequest,
     params(("property" = Uuid, Path), ("Idempotency-Key" = String, Header)),
-    responses((status = 201, body = Room), (status = 403), (status = 404), (status = 409), (status = 422)))]
+    responses((status = 201, body = Room,
+        headers(("ETag" = String, description = "the version, e.g. \"1\"; send it back as If-Match"))), (status = 403), (status = 404), (status = 409), (status = 422)))]
 pub async fn create(
     State(state): State<AppState>,
     ctx: TenantContext,
@@ -154,7 +155,8 @@ pub async fn create_range(
 
 #[utoipa::path(patch, operation_id = "update_room", path = "/api/v1/properties/{property}/rooms/{room}", request_body = UpdateRoomRequest,
     params(("property" = Uuid, Path), ("room" = Uuid, Path), ("If-Match" = String, Header)),
-    responses((status = 200, body = Room), (status = 403), (status = 404), (status = 409), (status = 412), (status = 422), (status = 428)))]
+    responses((status = 200, body = Room,
+        headers(("ETag" = String, description = "the version, e.g. \"1\"; send it back as If-Match"))), (status = 403), (status = 404), (status = 409), (status = 412), (status = 422), (status = 428)))]
 pub async fn update(
     State(state): State<AppState>,
     ctx: TenantContext,
@@ -198,7 +200,8 @@ pub async fn reorder(
 
 #[utoipa::path(post, operation_id = "create_section", path = "/api/v1/properties/{property}/sections", request_body = SectionRequest,
     params(("property" = Uuid, Path), ("Idempotency-Key" = String, Header)),
-    responses((status = 201, body = Section), (status = 403), (status = 404), (status = 409), (status = 422)))]
+    responses((status = 201, body = Section,
+        headers(("ETag" = String, description = "the version, e.g. \"1\"; send it back as If-Match"))), (status = 403), (status = 404), (status = 409), (status = 422)))]
 pub async fn create_section(
     State(state): State<AppState>,
     ctx: TenantContext,
@@ -216,7 +219,8 @@ pub async fn create_section(
 
 #[utoipa::path(patch, operation_id = "rename_section", path = "/api/v1/properties/{property}/sections/{section}", request_body = SectionRequest,
     params(("property" = Uuid, Path), ("section" = Uuid, Path), ("If-Match" = String, Header)),
-    responses((status = 200, body = Section), (status = 403), (status = 404), (status = 409), (status = 412), (status = 422), (status = 428)))]
+    responses((status = 200, body = Section,
+        headers(("ETag" = String, description = "the version, e.g. \"1\"; send it back as If-Match"))), (status = 403), (status = 404), (status = 409), (status = 412), (status = 422), (status = 428)))]
 pub async fn rename_section(
     State(state): State<AppState>,
     ctx: TenantContext,

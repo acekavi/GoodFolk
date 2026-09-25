@@ -1,6 +1,6 @@
 mod common;
 
-use axum::http::{Method, StatusCode, Uri};
+use axum::http::{Method, StatusCode, Uri, header};
 use common::{TestApp, TestResponse};
 use core_api::idempotency::request_hash;
 use db::{Scope, TenantId, UserId};
@@ -98,4 +98,17 @@ async fn a_server_error_is_not_stored_so_the_request_can_be_retried(_: PgPoolOpt
     assert_eq!(failed.status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(stored, 0);
     assert_eq!(retry.status, StatusCode::CREATED, "{:?}", retry.body);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_replayed_create_carries_the_etag_of_the_first_response(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    let (cookie, _, _) = owner(&app).await;
+
+    let first = create(&app, &cookie, "/api/v1/properties", "key-00000001", galle()).await;
+    let replay = create(&app, &cookie, "/api/v1/properties", "key-00000001", galle()).await;
+
+    assert_eq!(first.headers[header::ETAG], "\"1\"");
+    assert_eq!(replay.status, StatusCode::CREATED);
+    assert_eq!(replay.headers.get(header::ETAG), first.headers.get(header::ETAG));
 }

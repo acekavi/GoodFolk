@@ -50,3 +50,42 @@ fn every_operation_has_its_own_id() {
     let unique: BTreeSet<&String> = ids.iter().collect();
     assert_eq!(unique.len(), ids.len(), "repeated operation ids in {ids:?}");
 }
+
+/// Responses that return a versioned resource send its version as `ETag`, and the document says so.
+#[test]
+fn versioned_responses_declare_their_etag() {
+    let doc = ApiDoc::openapi();
+    let mut declared: Vec<String> = doc
+        .paths
+        .paths
+        .values()
+        .flat_map(|item| [&item.get, &item.put, &item.post, &item.delete, &item.patch])
+        .flatten()
+        .filter(|operation| {
+            ["200", "201"].iter().any(|status| match operation.responses.responses.get(*status) {
+                Some(utoipa::openapi::RefOr::T(response)) => response.headers.contains_key("ETag"),
+                _ => false,
+            })
+        })
+        .map(|operation| operation.operation_id.clone().expect("every operation has an id"))
+        .collect();
+    declared.sort();
+
+    assert_eq!(
+        declared,
+        [
+            "create_block",
+            "create_block_reason",
+            "create_property",
+            "create_room",
+            "create_room_type",
+            "create_section",
+            "rename_section",
+            "shorten_block",
+            "update_block_reason",
+            "update_property",
+            "update_room",
+            "update_room_type",
+        ]
+    );
+}

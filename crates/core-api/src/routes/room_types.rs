@@ -87,7 +87,8 @@ fn beds(requests: Vec<BedRequest>) -> Vec<Bed> {
 
 #[utoipa::path(post, operation_id = "create_room_type", path = "/api/v1/properties/{property}/room-types", request_body = CreateRoomTypeRequest,
     params(("property" = Uuid, Path), ("Idempotency-Key" = String, Header)),
-    responses((status = 201, body = RoomType), (status = 403), (status = 404), (status = 409), (status = 422)))]
+    responses((status = 201, body = RoomType,
+        headers(("ETag" = String, description = "the version, e.g. \"1\"; send it back as If-Match"))), (status = 403), (status = 404), (status = 409), (status = 422)))]
 pub async fn create(
     State(state): State<AppState>,
     ctx: TenantContext,
@@ -114,7 +115,8 @@ pub async fn create(
 
 #[utoipa::path(patch, operation_id = "update_room_type", path = "/api/v1/properties/{property}/room-types/{room_type}", request_body = UpdateRoomTypeRequest,
     params(("property" = Uuid, Path), ("room_type" = Uuid, Path), ("If-Match" = String, Header)),
-    responses((status = 200, body = RoomType), (status = 403), (status = 404), (status = 409), (status = 412), (status = 422), (status = 428)))]
+    responses((status = 200, body = RoomType,
+        headers(("ETag" = String, description = "the version, e.g. \"1\"; send it back as If-Match"))), (status = 403), (status = 404), (status = 409), (status = 412), (status = 422), (status = 428)))]
 pub async fn update(
     State(state): State<AppState>,
     ctx: TenantContext,

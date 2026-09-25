@@ -73,7 +73,8 @@ pub struct ShortenBlockRequest {
 
 #[utoipa::path(post, operation_id = "create_block_reason", path = "/api/v1/properties/{property}/block-reasons", request_body = CreateBlockReasonRequest,
     params(("property" = Uuid, Path), ("Idempotency-Key" = String, Header)),
-    responses((status = 201, body = BlockReason), (status = 403), (status = 404), (status = 409), (status = 422)))]
+    responses((status = 201, body = BlockReason,
+        headers(("ETag" = String, description = "the version, e.g. \"1\"; send it back as If-Match"))), (status = 403), (status = 404), (status = 409), (status = 422)))]
 pub async fn create_reason(
     State(state): State<AppState>,
     ctx: TenantContext,
@@ -93,7 +94,8 @@ pub async fn create_reason(
 #[utoipa::path(patch, operation_id = "update_block_reason", path = "/api/v1/properties/{property}/block-reasons/{reason}",
     request_body = UpdateBlockReasonRequest,
     params(("property" = Uuid, Path), ("reason" = Uuid, Path), ("If-Match" = String, Header)),
-    responses((status = 200, body = BlockReason), (status = 403), (status = 404), (status = 412), (status = 422), (status = 428)))]
+    responses((status = 200, body = BlockReason,
+        headers(("ETag" = String, description = "the version, e.g. \"1\"; send it back as If-Match"))), (status = 403), (status = 404), (status = 412), (status = 422), (status = 428)))]
 pub async fn update_reason(
     State(state): State<AppState>,
     ctx: TenantContext,
@@ -115,7 +117,8 @@ pub async fn update_reason(
 /// A 409 lists the blocks in the way as `conflicts`: full `Block` objects, as this endpoint returns them.
 #[utoipa::path(post, operation_id = "create_block", path = "/api/v1/properties/{property}/rooms/{room}/blocks", request_body = CreateBlockRequest,
     params(("property" = Uuid, Path), ("room" = Uuid, Path), ("Idempotency-Key" = String, Header)),
-    responses((status = 201, body = Block), (status = 403), (status = 404), (status = 409), (status = 422)))]
+    responses((status = 201, body = Block,
+        headers(("ETag" = String, description = "the version, e.g. \"1\"; send it back as If-Match"))), (status = 403), (status = 404), (status = 409), (status = 422)))]
 pub async fn create(
     State(state): State<AppState>,
     ctx: TenantContext,
@@ -140,7 +143,8 @@ pub async fn create(
 
 #[utoipa::path(patch, operation_id = "shorten_block", path = "/api/v1/properties/{property}/blocks/{block}", request_body = ShortenBlockRequest,
     params(("property" = Uuid, Path), ("block" = Uuid, Path), ("If-Match" = String, Header)),
-    responses((status = 200, body = Block), (status = 403), (status = 404), (status = 412), (status = 422), (status = 428)))]
+    responses((status = 200, body = Block,
+        headers(("ETag" = String, description = "the version, e.g. \"1\"; send it back as If-Match"))), (status = 403), (status = 404), (status = 412), (status = 422), (status = 428)))]
 pub async fn shorten(
     State(state): State<AppState>,
     ctx: TenantContext,

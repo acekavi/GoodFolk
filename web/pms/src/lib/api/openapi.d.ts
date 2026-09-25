@@ -764,6 +764,8 @@ export interface operations {
         responses: {
             201: {
                 headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -810,6 +812,8 @@ export interface operations {
         responses: {
             200: {
                 headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -867,6 +871,8 @@ export interface operations {
         responses: {
             201: {
                 headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -919,6 +925,8 @@ export interface operations {
         responses: {
             200: {
                 headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -977,6 +985,8 @@ export interface operations {
         responses: {
             200: {
                 headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -1034,6 +1044,8 @@ export interface operations {
         responses: {
             201: {
                 headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -1127,6 +1139,8 @@ export interface operations {
         responses: {
             200: {
                 headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -1190,6 +1204,8 @@ export interface operations {
         responses: {
             201: {
                 headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -1334,6 +1350,8 @@ export interface operations {
         responses: {
             200: {
                 headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -1398,6 +1416,8 @@ export interface operations {
         responses: {
             201: {
                 headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -1449,6 +1469,8 @@ export interface operations {
         responses: {
             201: {
                 headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -1501,6 +1523,8 @@ export interface operations {
         responses: {
             200: {
                 headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
