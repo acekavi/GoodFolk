@@ -1,4 +1,4 @@
-use crate::inventory::{WINDOW_DAYS, adjust, business_date, clamped_month_keys, extend_window};
+use crate::inventory::{WINDOW_DAYS, adjust, business_date, clamped_month_keys, extend_window, lock_days};
 use crate::{RoomsError, audit, notify, rooms_key, violates};
 use db::{TenantId, Tx, UserId};
 use serde::{Deserialize, Serialize};
@@ -286,6 +286,9 @@ pub async fn create_block(
         return Err(RoomsError::Overlap(conflicts));
     }
     extend_window(tx, property).await?;
+    if input.kind == BlockKind::OutOfOrder {
+        lock_days(tx, property, &[room_type], input.from, input.to).await?;
+    }
     let inserted = sqlx::query_as::<_, Block>(sqlx::AssertSqlSafe(format!(
         "insert into room_block (id, tenant_id, property_id, room_id, period, kind, reason_id, note, created_by)
          values ($1, $2, $3, $4, daterange($5, $6), $7, $8, $9, $10)
@@ -378,6 +381,7 @@ pub async fn shorten_block(
     // Days the block covered from the business date on, and no longer does.
     let restored_from = if cancelled { current.from.max(today) } else { to };
     if current.kind == BlockKind::OutOfOrder && room_active {
+        lock_days(tx, property, &[room_type], restored_from, current.to).await?;
         adjust(tx, property, room_type, restored_from, Some(current.to), 0, -1).await?;
     }
     audit(

@@ -102,9 +102,40 @@ pub(crate) async fn adjust(
     Ok(())
 }
 
+/// Locks `room_types`' counter rows on each day in `[from, to)`, in one statement.
+///
+/// Lock order: every command that changes counters calls this once, after its room and block row locks and
+/// before its first counter update, covering every row it will change. Rows are locked in ascending
+/// (room_type_id, date) order, so two such commands never wait on each other in a cycle.
+pub(crate) async fn lock_days(
+    tx: &mut Tx,
+    property: Uuid,
+    room_types: &[Uuid],
+    from: Date,
+    to: Date,
+) -> Result<(), sqlx::Error> {
+    let mut room_types = room_types.to_vec();
+    room_types.sort_unstable();
+    room_types.dedup();
+    sqlx::query(
+        "select 1 from inventory_day
+         where property_id = $1 and room_type_id = any($2) and date >= $3 and date < $4
+         order by room_type_id, date
+         for update",
+    )
+    .bind(property)
+    .bind(&room_types)
+    .bind(from)
+    .bind(to)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// Adds (`sign = 1`) or removes (`sign = -1`) one room's share of its type's counters from `today` on:
 /// one physical room, plus one out-of-order room on each day of its active out-of-order blocks.
-/// Inactive rooms have no share. Removal takes the blocks off first so `out_of_order <= physical` holds.
+/// Inactive rooms have no share. One statement changes both counters, so `out_of_order <= physical`
+/// holds on every row after it.
 pub(crate) async fn contribute(
     tx: &mut Tx,
     property: Uuid,
@@ -117,14 +148,14 @@ pub(crate) async fn contribute(
     if !active {
         return Ok(());
     }
-    if sign > 0 {
-        adjust(tx, property, room_type, today, None, sign, 0).await?;
-    }
     sqlx::query(
-        "update inventory_day i set out_of_order = i.out_of_order + $5
-         from room_block b
-         where b.room_id = $3 and b.released_at is null and b.kind = 'out_of_order' and b.period @> i.date
-           and i.property_id = $1 and i.room_type_id = $4 and i.date >= $2",
+        "update inventory_day i
+         set physical = i.physical + $5,
+             out_of_order = i.out_of_order + $5 * (exists (
+                 select 1 from room_block b
+                 where b.room_id = $3 and b.released_at is null and b.kind = 'out_of_order' and b.period @> i.date
+             ))::integer
+         where i.property_id = $1 and i.room_type_id = $4 and i.date >= $2",
     )
     .bind(property)
     .bind(today)
@@ -133,9 +164,6 @@ pub(crate) async fn contribute(
     .bind(sign)
     .execute(&mut **tx)
     .await?;
-    if sign < 0 {
-        adjust(tx, property, room_type, today, None, sign, 0).await?;
-    }
     Ok(())
 }
 

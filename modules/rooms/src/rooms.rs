@@ -1,8 +1,8 @@
-use crate::inventory::{adjust, business_date, contribute, extend_window, window_keys};
+use crate::inventory::{WINDOW_DAYS, adjust, business_date, contribute, extend_window, lock_days, window_keys};
 use crate::{RoomsError, audit, notify, reorder, rooms_key, violates};
 use db::{TenantId, Tx, UserId};
 use serde::Serialize;
-use time::Date;
+use time::{Date, Duration};
 use uuid::Uuid;
 
 /// Most rooms one range may create.
@@ -165,6 +165,7 @@ async fn insert_rooms(
         return Err(numbers_taken(&taken));
     }
     extend_window(tx, property).await?;
+    lock_days(tx, property, &[room_type], today, today + Duration::days(WINDOW_DAYS)).await?;
     let ids: Vec<Uuid> = numbers.iter().map(|_| Uuid::now_v7()).collect();
     let inserted = sqlx::query_as::<_, Room>(sqlx::AssertSqlSafe(format!(
         "insert into room (id, tenant_id, property_id, room_type_id, number, floor, section_id, sort_order)
@@ -231,8 +232,12 @@ pub async fn update_room(
     let type_to_check = (changes.room_type_id.is_some() || (active && !current.active)).then_some(room_type);
     check_references(tx, property, type_to_check, changes.section_id.flatten()).await?;
     let moves_counts = room_type != current.room_type_id || active != current.active;
+    // The types whose counters hold this room's share, before and after the change.
+    let shares = [(current.room_type_id, current.active, -1), (room_type, active, 1)];
     if moves_counts {
         extend_window(tx, property).await?;
+        let types: Vec<Uuid> = shares.iter().filter(|share| share.1).map(|share| share.0).collect();
+        lock_days(tx, property, &types, today, today + Duration::days(WINDOW_DAYS)).await?;
     }
     let updated = sqlx::query_as::<_, Room>(sqlx::AssertSqlSafe(format!(
         "update room set room_type_id = $2, number = coalesce($3, number),
@@ -261,10 +266,6 @@ pub async fn update_room(
     };
     let mut keys = vec![rooms_key(property)];
     if moves_counts {
-        // Lock order: inventory_day rows are locked in ascending (room_type_id, date) order, so two opposite
-        // retypes cannot deadlock. Each call keeps its own type's counters valid, so either order is correct.
-        let mut shares = [(current.room_type_id, current.active, -1), (updated.room_type_id, updated.active, 1)];
-        shares.sort_by_key(|&(room_type, _, _)| room_type);
         for (room_type, active, sign) in shares {
             contribute(tx, property, today, id, room_type, active, sign).await?;
         }

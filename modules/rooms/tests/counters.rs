@@ -127,3 +127,54 @@ async fn counters_match_a_recount_after_any_sequence_of_changes(_: PgPoolOptions
         }
     }
 }
+
+/// Retype pairs run at once, each room moving to the other's type while it has an out-of-order block.
+const OPPOSITE_RETYPES: usize = 30;
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn opposite_retypes_of_blocked_rooms_run_concurrently_without_deadlocking(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts.clone()).await;
+    let (a, b) = (hotel.room_type("A").await, hotel.room_type("B").await);
+    let reason = hotel.reason("OTHER").await;
+    let mut moves = Vec::new();
+    for pair in 0..OPPOSITE_RETYPES {
+        for (from, to, side) in [(a.id, b.id, "a"), (b.id, a.id, "b")] {
+            let room = hotel.room(from, &format!("{side}{pair}")).await;
+            let start = i64::try_from(pair).unwrap();
+            let block = NewBlock {
+                room_id: room.id,
+                from: hotel.day(start),
+                to: hotel.day(start + 10),
+                kind: BlockKind::OutOfOrder,
+                reason_id: reason.id,
+                note: String::new(),
+            };
+            let mut tx = hotel.tx().await;
+            rooms::create_block(&mut tx, hotel.tenant, hotel.user, hotel.property, block).await.unwrap();
+            tx.commit().await.unwrap();
+            moves.push((room, to));
+        }
+    }
+
+    let pool = db::testing::app_pool(opts, 16).await;
+    let (tenant, user, property) = (hotel.tenant, hotel.user, hotel.property);
+    let mut tasks = tokio::task::JoinSet::new();
+    for (room, to) in moves {
+        let pool = pool.clone();
+        tasks.spawn(async move {
+            let mut tx = db::begin(&pool, db::Scope::tenant(tenant)).await.unwrap();
+            let changes = RoomChanges { room_type_id: Some(to), ..RoomChanges::default() };
+            let updated = rooms::update_room(&mut tx, tenant, user, property, room.id, room.version, changes).await?;
+            tx.commit().await?;
+            Ok::<_, rooms::RoomsError>(updated)
+        });
+    }
+    let failures: Vec<String> =
+        tasks.join_all().await.into_iter().filter_map(|result| result.err().map(|err| err.to_string())).collect();
+
+    assert!(failures.is_empty(), "{} of {} retypes failed: {failures:?}", failures.len(), 2 * OPPOSITE_RETYPES);
+    assert_eq!(hotel.drift().await, vec![]);
+}
