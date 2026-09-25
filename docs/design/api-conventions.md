@@ -70,6 +70,7 @@ Request DTOs derive `garde::Validate` and are checked with `error::validate(&bod
 - Same key, same request: the stored first response is replayed. Same key, different request: 422. The request hash covers the user, method, path, query string and body, so a different user or query with the same key is a different request.
 - First request still running: 409, and the client retries. A claim is abandoned once it has been unfinished for 60 s (`routes::ABANDONED_CLAIM_AFTER`, the 15 s timeout plus margin), for example after a timeout or a dropped connection, and the next request with that key takes it over and runs.
 - A 5xx response, or one larger than 1 MiB, is not stored; its claim is released so the client may retry.
+- The SPA's create forms take keys from `formKeys()` (`web/pms/src/lib/api/rest.ts`): the same body gets the same key (a double-click or a retry replays instead of creating twice); an edited body gets a new key; `reset()` after a success starts fresh; `failed(err)` after a failure rotates the key on a definitive 4xx (so an unchanged resubmit is a new request, not a replay of the stored error) and keeps it after a network error, a 5xx or a 409 "still in progress", when the first request may still succeed.
 
 ## Patterns to copy
 
@@ -89,6 +90,8 @@ Request DTOs derive `garde::Validate` and are checked with `error::validate(&bod
 ## Change events
 
 After a successful write, in the same transaction, call `db::notify(&mut tx, &Event { tenant_id, property_id, keys })`. Keys name **TanStack Query keys** the client should invalidate (`"properties"`, `"room-types:<property>"`, `"rooms:<property>"` (rooms, sections and block reasons), `"inventory:<property>:<yyyy-mm>"` (one per month a change touches), later `"tape:<property>:<tileStart>"` …). Events never carry data. Choose keys so that a change refetches only screens that show it; the SPA's query keys start with the same string (`web/pms/src/lib/rooms.ts`, `inventory.ts`).
+
+Keep events small: `pg_notify` payloads must stay under 8000 bytes. Inventory month keys are clamped to the counter window (`[business date, business date + 730 days)`, `rooms::clamped_month_keys`), which caps a change at 25 month keys, and blocks may not end past the window. A new key family that grows with a date range needs the same kind of bound.
 
 ## GraphQL
 

@@ -102,6 +102,9 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
 - Night audit review screen: expected arrivals not checked in (mark no-show / extend / cancel), departures, the day's POS bills, booking bills, and payments by method and currency.
 - `jobs-svc`: checkpointed, idempotent close (room/meal postings, exchange-rate lock, statistics snapshot, reports, business-date roll), triggered by Cloud Scheduler or manually.
 - Daily statistics and core reports (occupancy, ADR, RevPAR, arrivals and departures, in-house).
+- Carried over from Phase 1:
+  - Once the business-date roll exists, run `rooms::extend_window` under a property-level lock: today a writer may insert counter rows computed from a business date the roll is moving, leaving stale rows behind.
+  - The roll updates `property.business_date` with the row locked `for update`, and counter writers read the business date `for share` (today `inventory::business_date` reads it unlocked), so no write adjusts counters from a business date that is changing under it.
 
 ## Phase 8 — Settings completeness and channels ([spec](specs/phase-8-settings-channels.md))
 
