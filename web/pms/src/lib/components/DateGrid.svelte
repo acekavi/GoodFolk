@@ -55,6 +55,13 @@
 	// The chosen cell, kept inside the grid when rows or columns go away (a room type is retired), so
 	// `aria-activedescendant` always names a rendered cell.
 	const active = $derived(clampCell(chosen, { rows: rows.length, columns: columns.length }));
+	// Once the grid shrinks, the clamped cell becomes the chosen one, so the cell does not jump back to its
+	// old row when the rows come back.
+	$effect.pre(() => {
+		if (rows.length > 0 && (active.row !== chosen.row || active.column !== chosen.column)) {
+			chosen = active;
+		}
+	});
 
 	// Start on `initialColumn`, scrolled to the left edge, whenever the columns change (a new month).
 	$effect(() => {

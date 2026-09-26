@@ -76,3 +76,34 @@ test('blocking a room reduces availability on the calendar until it is released'
 
 	await expect(grid.getByRole('gridcell', { name: `DLX ${today}: 5 available` })).toBeVisible();
 });
+
+test('the active cell stays on its row when room types are retired and restored', async ({
+	page,
+	context
+}) => {
+	await signUp(page);
+	await createProperty(page, 'GAL');
+	await page.getByRole('link', { name: 'Room types' }).click();
+	for (const code of ['AAA', 'BBB', 'CCC']) await addRoomType(page, code, `Type ${code}`);
+	const settings = await context.newPage();
+	await settings.goto(page.url());
+
+	await page.getByRole('link', { name: 'Inventory' }).click();
+	const today = (await page.getByTestId('business-date').textContent())!.trim();
+	const grid = page.getByRole('grid', { name: 'Availability' });
+	const cell = (code: string) => grid.getByRole('gridcell', { name: `${code} ${today}:` });
+	await cell('CCC').click();
+	await expect(grid).toHaveAttribute(
+		'aria-activedescendant',
+		(await cell('CCC').getAttribute('id'))!
+	);
+
+	// Retiring the last type moves the active cell up a row; restoring it must not move it back.
+	await settings.getByRole('button', { name: 'Deactivate CCC' }).click();
+	await expect(cell('CCC')).toHaveCount(0);
+	const bbb = (await cell('BBB').getAttribute('id'))!;
+	await expect(grid).toHaveAttribute('aria-activedescendant', bbb);
+	await settings.getByRole('button', { name: 'Activate CCC' }).click();
+	await expect(cell('CCC')).toBeVisible();
+	await expect(grid).toHaveAttribute('aria-activedescendant', bbb);
+});

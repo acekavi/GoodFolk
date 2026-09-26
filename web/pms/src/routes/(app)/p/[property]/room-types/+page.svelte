@@ -62,7 +62,6 @@
 	async function create(event: SubmitEvent) {
 		event.preventDefault();
 		const body = { code: draft.code.toUpperCase(), name: draft.name, ...capacity(draft) };
-		let succeeded = false;
 		await run(async () => {
 			unwrap(
 				await rest.POST('/api/v1/properties/{property}/room-types', {
@@ -73,12 +72,10 @@
 					body
 				})
 			);
-			succeeded = true;
-		}, createForm.failed);
-		if (succeeded) {
+			// Cleared before the refetch shows the new type, so the next one can be typed at once.
 			draft = emptyDraft();
 			createForm.reset();
-		}
+		}, createForm.failed);
 	}
 
 	function update(type: RoomType, body: { name?: string; active?: boolean } & object) {

@@ -3,6 +3,7 @@
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { errorMessage } from '$lib/api/problem';
 	import { formKeys, ifMatch, rest, unwrap } from '$lib/api/rest';
+	import { Pending } from '$lib/pending.svelte';
 	import {
 		fetchRooms,
 		fetchRoomTypes,
@@ -35,7 +36,8 @@
 	const groups = $derived(groupRooms(rooms.data?.rooms ?? [], roomTypes.data ?? [], groupBy));
 
 	let error = $state('');
-	let busy = $state(false);
+	// Only the row, list or form a command changes is disabled while it runs.
+	const pending = new Pending();
 	let bulkDialog = $state<HTMLDialogElement>();
 	let bulk = $state({
 		roomTypeId: '',
@@ -52,15 +54,18 @@
 	const singleForm = formKeys();
 	const sectionForm = formKeys();
 
-	/** Runs a command; shows its problem if it fails, and refetches after a version conflict. */
+	/**
+	 * Runs a command under `key` (a room's id, `order`, or a form's name); shows its problem if it fails,
+	 * and refetches either way.
+	 */
 	async function run(
+		key: string,
 		command: () => Promise<unknown>,
 		onError?: (err: unknown) => void
 	): Promise<boolean> {
-		busy = true;
 		error = '';
 		try {
-			await command();
+			await pending.run(key, command);
 			await client.invalidateQueries({ queryKey: roomsKey(propertyId) });
 			return true;
 		} catch (err) {
@@ -68,8 +73,6 @@
 			onError?.(err);
 			await client.invalidateQueries({ queryKey: roomsKey(propertyId) });
 			return false;
-		} finally {
-			busy = false;
 		}
 	}
 
@@ -90,6 +93,7 @@
 			section_id: bulk.sectionId || null
 		};
 		const added = await run(
+			'bulk',
 			async () =>
 				unwrap(
 					await rest.POST('/api/v1/properties/{property}/rooms/bulk', {
@@ -116,6 +120,7 @@
 			floor: single.floor || null
 		};
 		const added = await run(
+			'room',
 			async () =>
 				unwrap(
 					await rest.POST('/api/v1/properties/{property}/rooms', {
@@ -138,6 +143,7 @@
 		event.preventDefault();
 		const body = { name: sectionName };
 		const added = await run(
+			'section',
 			async () =>
 				unwrap(
 					await rest.POST('/api/v1/properties/{property}/sections', {
@@ -165,7 +171,7 @@
 			active?: boolean;
 		}
 	) {
-		return run(async () =>
+		return run(room.id, async () =>
 			unwrap(
 				await rest.PATCH('/api/v1/properties/{property}/rooms/{room}', {
 					params: { path: { property: propertyId, room: room.id }, header: ifMatch(room.version) },
@@ -181,7 +187,7 @@
 		const from = all.findIndex((r) => r.id === room.id);
 		const moved = moveItem(all, from, from + delta);
 		if (moved.every((r, index) => r.id === all[index].id)) return;
-		return run(async () =>
+		return run('order', async () =>
 			unwrap(
 				await rest.PUT('/api/v1/properties/{property}/rooms/order', {
 					params: { path: { property: propertyId } },
@@ -207,7 +213,9 @@
 			</select>
 		</label>
 		{#if manage}
-			<button disabled={busy || activeTypes.length === 0} onclick={openBulk}>Add rooms…</button>
+			<button disabled={pending.has('bulk') || activeTypes.length === 0} onclick={openBulk}
+				>Add rooms…</button
+			>
 		{/if}
 	</div>
 	{#if activeTypes.length === 0}
@@ -236,7 +244,7 @@
 								<select
 									aria-label="Type of room {room.number}"
 									value={room.roomTypeId}
-									disabled={busy}
+									disabled={pending.has(room.id)}
 									onchange={(event) => update(room, { room_type_id: event.currentTarget.value })}
 								>
 									{#each roomTypes.data as type (type.id)}
@@ -248,7 +256,7 @@
 								<input
 									aria-label="Floor of room {room.number}"
 									value={room.floor ?? ''}
-									disabled={busy}
+									disabled={pending.has(room.id)}
 									onchange={(event) => update(room, { floor: event.currentTarget.value || null })}
 								/>
 							</td>
@@ -256,7 +264,7 @@
 								<select
 									aria-label="Section of room {room.number}"
 									value={room.sectionId ?? ''}
-									disabled={busy}
+									disabled={pending.has(room.id)}
 									onchange={(event) =>
 										update(room, { section_id: event.currentTarget.value || null })}
 								>
@@ -277,18 +285,18 @@
 								<button
 									class="secondary"
 									aria-label="Move room {room.number} up"
-									disabled={busy}
+									disabled={pending.has('order')}
 									onclick={() => move(room, -1)}>↑</button
 								>
 								<button
 									class="secondary"
 									aria-label="Move room {room.number} down"
-									disabled={busy}
+									disabled={pending.has('order')}
 									onclick={() => move(room, 1)}>↓</button
 								>
 								<button
 									class="secondary"
-									disabled={busy}
+									disabled={pending.has(room.id)}
 									aria-label="{room.active ? 'Deactivate' : 'Activate'} room {room.number}"
 									onclick={() => update(room, { active: !room.active })}
 									>{room.active ? 'Deactivate' : 'Activate'}</button
@@ -316,14 +324,14 @@
 				</select>
 			</label>
 			<label>Floor <input maxlength="20" bind:value={single.floor} /></label>
-			<button disabled={busy}>Add room</button>
+			<button disabled={pending.has('room')}>Add room</button>
 		</form>
 
 		<h2>Housekeeping sections</h2>
 		<p>{rooms.data.sections.map((section) => section.name).join(', ') || 'None yet.'}</p>
 		<form class="inline-form" aria-label="New section" onsubmit={addSection}>
 			<label>Name <input required maxlength="100" bind:value={sectionName} /></label>
-			<button disabled={busy}>Add section</button>
+			<button disabled={pending.has('section')}>Add section</button>
 		</form>
 	{/if}
 {:else}
@@ -359,7 +367,8 @@
 		{/if}
 		{#if error}<p class="error" role="alert">{error}</p>{/if}
 		<div class="actions">
-			<button disabled={busy || bulkNumbers.length === 0 || bulkNumbers.length > MAX_RANGE}
+			<button
+				disabled={pending.has('bulk') || bulkNumbers.length === 0 || bulkNumbers.length > MAX_RANGE}
 				>Add {bulkNumbers.length} rooms</button
 			>
 			<button type="button" class="secondary" onclick={() => bulkDialog?.close()}>Cancel</button>
