@@ -1,5 +1,5 @@
 //! Prices: set by hand on standard and custom plans, changed in bulk, and derived down the plan tree in the
-//! same transaction, one `insert … select … on conflict do update` per level.
+//! same transaction, set-based, level by level.
 
 use crate::plans::{PlanKind, RatePlan, Tree, list_rate_plans};
 use crate::{MAX_AMOUNT, RatesError, audit, business_date, lock_rates, notify, rates_keys, violates};
@@ -101,19 +101,31 @@ pub(crate) fn tree_keys(tree: &Tree, property: Uuid, plan: Uuid, from: Date, to:
         .collect()
 }
 
+/// Which rows repricing a level touches besides updating the prices it already has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reprice {
+    /// The parents only changed prices they had: nothing to add.
+    Existing,
+    /// The parents may have new prices: add them below too.
+    Added,
+    /// The plan moved to another parent: add its new parent's cells and drop those the new parent lacks.
+    Moved,
+}
+
 /// Recomputes the prices of the plans in `levels` from their parents' for `room_types` (all if `None`) on
-/// `[from, to)`: each level is derived from the one before, the first from its own parents. `prune` first
-/// deletes prices whose parent price is gone, which only happens when a plan moved to another parent.
+/// `[from, to)`: each level is derived from the one before, the first from its own parents. Per level, one
+/// `update … from` rewrites the prices it has (an upsert of existing rows measured about a third slower for
+/// the bulk-change gate), and for `Added` and `Moved` one `insert … select` adds the missing ones.
 pub(crate) async fn derive_prices(
     tx: &mut Tx,
     levels: &[Vec<Uuid>],
     room_types: Option<&[Uuid]>,
     from: Date,
     to: Date,
-    prune: bool,
+    reprice: Reprice,
 ) -> Result<(), RatesError> {
     for plans in levels {
-        if prune {
+        if reprice == Reprice::Moved {
             sqlx::query(
                 "delete from rate_day d using rate_plan c
                  where c.id = d.rate_plan_id and d.rate_plan_id = any($1) and d.date >= $3 and d.date < $4
@@ -130,15 +142,13 @@ pub(crate) async fn derive_prices(
             .await?;
         }
         match sqlx::query(
-            "insert into rate_day (tenant_id, property_id, rate_plan_id, room_type_id, date, occupancy, amount)
-             select c.tenant_id, c.property_id, c.id, p.room_type_id, p.date, p.occupancy,
-                    app.derive_amount(p.amount, c.derive_mode, c.derive_value, c.rounding_step)
-             from rate_plan c
-             join rate_plan_room_type s on s.rate_plan_id = c.id
-             join rate_day p on p.rate_plan_id = c.parent_id and p.room_type_id = s.room_type_id
-             where c.id = any($1) and p.date >= $3 and p.date < $4 and ($2::uuid[] is null or p.room_type_id = any($2))
-             on conflict (rate_plan_id, date, room_type_id, occupancy) do update set amount = excluded.amount
-             where rate_day.amount is distinct from excluded.amount",
+            "update rate_day d set amount = app.derive_amount(p.amount, c.derive_mode, c.derive_value, c.rounding_step)
+             from rate_plan c, rate_day p
+             where c.id = any($1) and d.rate_plan_id = c.id and d.date >= $3 and d.date < $4
+               and ($2::uuid[] is null or d.room_type_id = any($2))
+               and p.rate_plan_id = c.parent_id and p.date = d.date and p.room_type_id = d.room_type_id
+               and p.occupancy = d.occupancy
+               and d.amount <> app.derive_amount(p.amount, c.derive_mode, c.derive_value, c.rounding_step)",
         )
         .bind(plans)
         .bind(room_types)
@@ -154,6 +164,34 @@ pub(crate) async fn derive_prices(
                 )));
             }
             Err(err) => return Err(err.into()),
+        }
+        if reprice != Reprice::Existing {
+            match sqlx::query(
+                "insert into rate_day (tenant_id, property_id, rate_plan_id, room_type_id, date, occupancy, amount)
+                 select c.tenant_id, c.property_id, c.id, p.room_type_id, p.date, p.occupancy,
+                        app.derive_amount(p.amount, c.derive_mode, c.derive_value, c.rounding_step)
+                 from rate_plan c
+                 join rate_plan_room_type s on s.rate_plan_id = c.id
+                 join rate_day p on p.rate_plan_id = c.parent_id and p.room_type_id = s.room_type_id
+                 where c.id = any($1) and p.date >= $3 and p.date < $4
+                   and ($2::uuid[] is null or p.room_type_id = any($2))
+                 on conflict (rate_plan_id, date, room_type_id, occupancy) do nothing",
+            )
+            .bind(plans)
+            .bind(room_types)
+            .bind(from)
+            .bind(to)
+            .execute(&mut **tx)
+            .await
+            {
+                Ok(_) => {}
+                Err(err) if violates(&err, "rate_day_amount_check") => {
+                    return Err(RatesError::Invalid(format!(
+                        "this change would make a price larger than {MAX_AMOUNT} minor units"
+                    )));
+                }
+                Err(err) => return Err(err.into()),
+            }
         }
     }
     Ok(())
@@ -218,24 +256,27 @@ pub async fn set_prices(
     let mut touched: Vec<Uuid> = cells.keys().map(|key| key.1).collect();
     touched.sort_unstable();
     touched.dedup();
-    derive_prices(tx, &tree.descendant_levels(plan.id), Some(&touched), from, to, false).await?;
+    derive_prices(tx, &tree.descendant_levels(plan.id), Some(&touched), from, to, Reprice::Added).await?;
     audit(tx, tenant, actor, "rate_plan.prices_set", "rate_plan", plan.id, serde_json::json!({ "count": cells.len() }))
         .await?;
     notify(tx, tenant, property, tree_keys(&tree, property, plan.id, from, to)).await?;
     Ok(())
 }
 
-/// The cells a bulk change on `plan` selects, with their price before and after. Binds: `$1` plan, `$2` from,
-/// `$3` to, `$4` room types, `$5` ISO weekdays, `$6` occupancies (empty: all), `$7` mode, `$8` value, `$9` the
-/// plan's rounding step.
+/// The existing prices `d` a bulk change on plan `$1` selects: `[$2, $3)`, room types `$4`, ISO weekdays `$5`,
+/// occupancies `$6` (empty: all), and that `$7` (mode) by `$8` (value), rounded to `$9`, changes.
+const EXISTING: &str = "d.rate_plan_id = $1 and d.date >= $2 and d.date < $3 and d.room_type_id = any($4)
+      and extract(isodow from d.date)::integer = any($5)
+      and (cardinality($6::integer[]) = 0 or d.occupancy = any($6))
+      and d.amount <> app.derive_amount(d.amount, $7, $8, $9)";
+
+/// The cells a bulk change on `plan` selects, with their price before and after; binds as for [`EXISTING`].
+/// `set` also selects cells without a price, which it adds.
 const CHANGES: &str = "
     select d.room_type_id, d.date, d.occupancy, d.amount as before,
            app.derive_amount(d.amount, $7, $8, $9) as after
     from rate_day d
-    where $7 <> 'set' and d.rate_plan_id = $1 and d.date >= $2 and d.date < $3 and d.room_type_id = any($4)
-      and extract(isodow from d.date)::integer = any($5)
-      and (cardinality($6::integer[]) = 0 or d.occupancy = any($6))
-      and d.amount <> app.derive_amount(d.amount, $7, $8, $9)
+    where $7 <> 'set' and {EXISTING}
     union all
     select t.id, s.day::date, o.occupancy, d.amount, $8
     from room_type t
@@ -246,6 +287,11 @@ const CHANGES: &str = "
     where $7 = 'set' and t.id = any($4) and extract(isodow from s.day)::integer = any($5)
       and (cardinality($6::integer[]) = 0 or o.occupancy = any($6))
       and d.amount is distinct from $8";
+
+/// [`CHANGES`] with [`EXISTING`] filled in.
+fn changes() -> String {
+    CHANGES.replace("{EXISTING}", EXISTING)
+}
 
 /// A bulk change, checked, with its selection resolved to the binds [`CHANGES`] takes.
 struct Selection {
@@ -297,24 +343,34 @@ pub async fn bulk_change(
     let tree = Tree(list_rate_plans(tx, property).await?);
     let plan = hand_priced(&tree, plan)?;
     let selection = select(today, plan, change)?;
-    let changed = match sqlx::query(sqlx::AssertSqlSafe(format!(
-        "insert into rate_day (tenant_id, property_id, rate_plan_id, room_type_id, date, occupancy, amount)
-         select $10, $11, $1, c.room_type_id, c.date, c.occupancy, c.after from ({CHANGES}) c
-         on conflict (rate_plan_id, date, room_type_id, occupancy) do update set amount = excluded.amount"
-    )))
-    .bind(plan.id)
-    .bind(change.from)
-    .bind(change.to)
-    .bind(&selection.room_types)
-    .bind(&selection.weekdays)
-    .bind(&change.occupancies)
-    .bind(change.change.mode.as_str())
-    .bind(change.change.value)
-    .bind(plan.rounding_step)
-    .bind(tenant.0)
-    .bind(property)
-    .execute(&mut **tx)
-    .await
+    // `set` may add prices; `percent` and `amount` only change existing ones, so they update in place.
+    let apply = if change.change.mode == PriceChangeMode::Set {
+        format!(
+            "insert into rate_day (tenant_id, property_id, rate_plan_id, room_type_id, date, occupancy, amount)
+             select $10, $11, $1, c.room_type_id, c.date, c.occupancy, c.after from ({}) c
+             on conflict (rate_plan_id, date, room_type_id, occupancy) do update set amount = excluded.amount",
+            changes()
+        )
+    } else {
+        format!(
+            "update rate_day d set amount = app.derive_amount(d.amount, $7, $8, $9)
+             where d.tenant_id = $10 and d.property_id = $11 and {EXISTING}"
+        )
+    };
+    let changed = match sqlx::query(sqlx::AssertSqlSafe(apply))
+        .bind(plan.id)
+        .bind(change.from)
+        .bind(change.to)
+        .bind(&selection.room_types)
+        .bind(&selection.weekdays)
+        .bind(&change.occupancies)
+        .bind(change.change.mode.as_str())
+        .bind(change.change.value)
+        .bind(plan.rounding_step)
+        .bind(tenant.0)
+        .bind(property)
+        .execute(&mut **tx)
+        .await
     {
         Ok(result) => result.rows_affected(),
         Err(err) if violates(&err, "rate_day_amount_check") => {
@@ -324,8 +380,9 @@ pub async fn bulk_change(
         }
         Err(err) => return Err(err.into()),
     };
-    derive_prices(tx, &tree.descendant_levels(plan.id), Some(&selection.room_types), change.from, change.to, false)
-        .await?;
+    let reprice = if change.change.mode == PriceChangeMode::Set { Reprice::Added } else { Reprice::Existing };
+    let levels = tree.descendant_levels(plan.id);
+    derive_prices(tx, &levels, Some(&selection.room_types), change.from, change.to, reprice).await?;
     audit(
         tx,
         tenant,
@@ -358,9 +415,10 @@ pub async fn preview_bulk_change(
     let selection = select(today, plan, change)?;
     let rows: Vec<(Uuid, Date, i32, Option<i64>, i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select c.room_type_id, c.date, c.occupancy, c.before, c.after, count(*) over () as total
-         from ({CHANGES}) c join room_type rt on rt.id = c.room_type_id
+         from ({}) c join room_type rt on rt.id = c.room_type_id
          order by c.date, rt.sort_order, rt.code, c.occupancy
-         limit $10"
+         limit $10",
+        changes()
     )))
     .bind(plan.id)
     .bind(change.from)

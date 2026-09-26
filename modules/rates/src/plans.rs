@@ -1,4 +1,4 @@
-use crate::prices::{derive_prices, tree_keys};
+use crate::prices::{Reprice, derive_prices, tree_keys};
 use crate::restrictions::{derive_restrictions, inheriting_levels};
 use crate::{RatesError, audit, business_date, lock_rates, notify, rate_plans_key, rates_keys, violates};
 use db::{TenantId, Tx, UserId};
@@ -453,7 +453,7 @@ pub async fn create_rate_plan(
     let mut keys = vec![rate_plans_key(property)];
     if input.kind == PlanKind::Derived {
         let end = today + Duration::days(rooms::WINDOW_DAYS);
-        derive_prices(tx, &[vec![id]], None, today, end, false).await?;
+        derive_prices(tx, &[vec![id]], None, today, end, Reprice::Added).await?;
         if input.inherit_restrictions {
             derive_restrictions(tx, &[vec![id]], None, today, end).await?;
         }
@@ -579,7 +579,8 @@ pub async fn update_rate_plan(
     let end = today + Duration::days(rooms::WINDOW_DAYS);
     if current.kind == PlanKind::Derived && (moved || reformulated || added_types) {
         let levels: Vec<Vec<Uuid>> = std::iter::once(vec![id]).chain(tree.descendant_levels(id)).collect();
-        derive_prices(tx, &levels, None, today, end, moved).await?;
+        let reprice = if moved { Reprice::Moved } else { Reprice::Added };
+        derive_prices(tx, &levels, None, today, end, reprice).await?;
         keys.extend(tree_keys(&tree, property, id, today, end));
     }
     // A plan that starts inheriting, or inherits from a new parent or for new room types, takes a fresh copy;

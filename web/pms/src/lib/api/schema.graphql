@@ -37,6 +37,38 @@ type BlockReasonNode {
 	version: Int!
 }
 
+type BulkPreviewNode {
+	"""
+	How many of the plan's prices would change.
+	"""
+	total: Int!
+	"""
+	The first 50, by date, room type and occupancy.
+	"""
+	cells: [PriceChangeCellNode!]!
+}
+
+type CancellationPolicyNode {
+	id: UUID!
+	name: String!
+	"""
+	Furthest from arrival first.
+	"""
+	rules: [CancellationRuleNode!]!
+	noShow: PenaltyNode!
+	version: Int!
+}
+
+type CancellationRuleNode {
+	daysBeforeArrival: Int!
+	penalty: PenaltyNode!
+}
+
+enum ChangeMode {
+	PERCENT
+	AMOUNT
+}
+
 """
 ISO 8601 calendar date without timezone.
 Format: %Y-%m-%d
@@ -58,6 +90,61 @@ type InventoryDayNode {
 	sold: Int!
 	outOfOrder: Int!
 	available: Int!
+}
+
+enum MealPlan {
+	RO
+	BB
+	HB
+	FB
+}
+
+"""
+Per person per night on top of the room price, for the nights from `from` until `to` (`null`: open-ended).
+"""
+type MealSupplementNode {
+	id: UUID!
+	mealPlan: MealPlan!
+	currency: String!
+	adultAmount: Int!
+	childAmount: Int!
+	from: Date!
+	to: Date
+	version: Int!
+}
+
+enum PenaltyKind {
+	NIGHTS
+	PERCENT
+	AMOUNT
+}
+
+type PenaltyNode {
+	kind: PenaltyKind!
+	value: Int!
+}
+
+enum PlanKind {
+	STANDARD
+	DERIVED
+	CUSTOM
+}
+
+"""
+One price a bulk change would change: `before` is `null` where `SET` adds a price.
+"""
+type PriceChangeCellNode {
+	roomTypeId: UUID!
+	date: Date!
+	occupancy: Int!
+	before: Int
+	after: Int!
+}
+
+enum PriceChangeMode {
+	PERCENT
+	AMOUNT
+	SET
 }
 
 type PropertyNode {
@@ -111,6 +198,113 @@ type Query {
 	the business date that were never counted, and days past the 730-day window, have no rows.
 	"""
 	inventory(propertyId: UUID!, from: Date!, to: Date!): [InventoryDayNode!]!
+	"""
+	The property's rate plans in tree order: each standard or custom plan, by code, followed by the plans
+	derived from it, depth first.
+	"""
+	ratePlans(propertyId: UUID!): [RatePlanNode!]!
+	"""
+	A plan's prices and restrictions for `[from, to)` (at most 93 days), by date, room type and occupancy.
+	"""
+	rateGrid(propertyId: UUID!, ratePlanId: UUID!, from: Date!, to: Date!): RateGridNode!
+	"""
+	What a bulk change would do to a standard or custom plan's prices on `[from, to)`, without doing it.
+	Left out, `weekdays` (ISO: 1 = Monday), `roomTypeIds` and `occupancies` mean all.
+	"""
+	bulkChangePreview(propertyId: UUID!, ratePlanId: UUID!, from: Date!, to: Date!, weekdays: [Int!]! = [], roomTypeIds: [UUID!]! = [], occupancies: [Int!]! = [], mode: PriceChangeMode!, value: Int!): BulkPreviewNode!
+	"""
+	Meal supplements by currency, meal plan and start.
+	"""
+	mealSupplements(propertyId: UUID!): [MealSupplementNode!]!
+	"""
+	Cancellation policies by name.
+	"""
+	cancellationPolicies(propertyId: UUID!): [CancellationPolicyNode!]!
+	"""
+	Prices a stay of `[checkIn, checkOut)` (at most 90 nights) and lists every reason it cannot be sold.
+	"""
+	quote(propertyId: UUID!, roomTypeId: UUID!, ratePlanId: UUID!, mealPlan: MealPlan!, checkIn: Date!, checkOut: Date!, adults: Int!, children: Int!, residency: Residency!): QuoteNode!
+}
+
+type QuoteNightNode {
+	date: Date!
+	room: Int!
+	meal: Int!
+}
+
+"""
+What a stay costs, in minor units of `currency`. `restrictionsOk` is true when nothing stops the sale.
+"""
+type QuoteNode {
+	nights: [QuoteNightNode!]!
+	total: Int!
+	currency: String!
+	restrictionsOk: Boolean!
+	violations: [ViolationNode!]!
+}
+
+"""
+A plan's resolved prices and restrictions for a date range. Days without a row have none.
+"""
+type RateGridNode {
+	prices: [RatePriceNode!]!
+	restrictions: [RestrictionNode!]!
+}
+
+"""
+A rate plan. Amounts are minor units in its currency.
+"""
+type RatePlanNode {
+	id: UUID!
+	code: String!
+	name: String!
+	kind: PlanKind!
+	segment: Segment!
+	"""
+	`null`: any guest.
+	"""
+	residency: Residency
+	currency: String!
+	parentId: UUID
+	"""
+	Levels of plans above this one; the list is in tree order, so this indents it.
+	"""
+	depth: Int!
+	deriveMode: ChangeMode
+	deriveValue: Int
+	roundingStep: Int!
+	extraAdultAmount: Int!
+	inheritRestrictions: Boolean!
+	allowedMealPlans: [MealPlan!]!
+	cancellationPolicyId: UUID
+	roomTypeIds: [UUID!]!
+	active: Boolean!
+	version: Int!
+}
+
+"""
+A price for `occupancy` adults, in minor units of the plan's currency.
+"""
+type RatePriceNode {
+	roomTypeId: UUID!
+	date: Date!
+	occupancy: Int!
+	amount: Int!
+}
+
+enum Residency {
+	RESIDENT
+	NON_RESIDENT
+}
+
+type RestrictionNode {
+	roomTypeId: UUID!
+	date: Date!
+	closed: Boolean!
+	minStay: Int
+	maxStay: Int
+	closedToArrival: Boolean!
+	closedToDeparture: Boolean!
 }
 
 type RoomNode {
@@ -145,6 +339,14 @@ type SectionNode {
 	version: Int!
 }
 
+enum Segment {
+	FIT_F
+	FIT_L
+	OTA
+	TA
+	IBE
+}
+
 """
 A UUID is a unique 128-bit number, stored as 16 octets. UUIDs are parsed as
 Strings within GraphQL. UUIDs are used to assign unique identifiers to
@@ -156,6 +358,28 @@ entities without requiring a central allocating authority.
 * [RFC4122: A Universally Unique Identifier (UUID) URN Namespace](http://tools.ietf.org/html/rfc4122)
 """
 scalar UUID
+
+enum ViolationKind {
+	INVALID_STAY
+	INACTIVE
+	RESIDENCY
+	ROOM_TYPE_NOT_SOLD
+	OCCUPANCY
+	MEAL_PLAN_NOT_ALLOWED
+	NO_PRICE
+	NO_MEAL_SUPPLEMENT
+	CLOSED
+	MIN_STAY
+	MAX_STAY
+	CLOSED_TO_ARRIVAL
+	CLOSED_TO_DEPARTURE
+}
+
+type ViolationNode {
+	kind: ViolationKind!
+	date: Date
+	message: String!
+}
 
 """
 Directs the executor to include this field or fragment only when the `if` argument is true.

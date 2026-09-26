@@ -179,6 +179,227 @@ pub struct InventoryDayNode {
     pub available: i32,
 }
 
+/// A GraphQL enum mirroring one of the rates module's enums, with conversions both ways.
+macro_rules! mirror_enum {
+    ($(#[$meta:meta])* $node:ident as $name:literal from $source:path { $($variant:ident),+ $(,)? }) => {
+        $(#[$meta])*
+        #[derive(Enum, Clone, Copy, PartialEq, Eq)]
+        #[graphql(name = $name)]
+        pub enum $node {
+            $($variant),+
+        }
+
+        impl From<$source> for $node {
+            fn from(value: $source) -> Self {
+                match value {
+                    $(<$source>::$variant => $node::$variant),+
+                }
+            }
+        }
+
+        impl From<$node> for $source {
+            fn from(value: $node) -> Self {
+                match value {
+                    $($node::$variant => <$source>::$variant),+
+                }
+            }
+        }
+    };
+}
+
+mirror_enum!(PlanKindNode as "PlanKind" from rates::PlanKind { Standard, Derived, Custom });
+mirror_enum!(SegmentNode as "Segment" from rates::Segment { FitF, FitL, Ota, Ta, Ibe });
+mirror_enum!(ResidencyNode as "Residency" from rates::Residency { Resident, NonResident });
+mirror_enum!(ChangeModeNode as "ChangeMode" from rates::ChangeMode { Percent, Amount });
+mirror_enum!(MealPlanNode as "MealPlan" from rates::MealPlan { Ro, Bb, Hb, Fb });
+mirror_enum!(PriceChangeModeNode as "PriceChangeMode" from rates::PriceChangeMode { Percent, Amount, Set });
+mirror_enum!(PenaltyKindNode as "PenaltyKind" from rates::PenaltyKind { Nights, Percent, Amount });
+mirror_enum!(ViolationKindNode as "ViolationKind" from rates::ViolationKind {
+    InvalidStay,
+    Inactive,
+    Residency,
+    RoomTypeNotSold,
+    Occupancy,
+    MealPlanNotAllowed,
+    NoPrice,
+    NoMealSupplement,
+    Closed,
+    MinStay,
+    MaxStay,
+    ClosedToArrival,
+    ClosedToDeparture,
+});
+
+/// A rate plan. Amounts are minor units in its currency.
+#[derive(SimpleObject)]
+pub struct RatePlanNode {
+    pub id: Uuid,
+    pub code: String,
+    pub name: String,
+    pub kind: PlanKindNode,
+    pub segment: SegmentNode,
+    /// `null`: any guest.
+    pub residency: Option<ResidencyNode>,
+    pub currency: String,
+    pub parent_id: Option<Uuid>,
+    /// Levels of plans above this one; the list is in tree order, so this indents it.
+    pub depth: i32,
+    pub derive_mode: Option<ChangeModeNode>,
+    pub derive_value: Option<i64>,
+    pub rounding_step: i64,
+    pub extra_adult_amount: i64,
+    pub inherit_restrictions: bool,
+    pub allowed_meal_plans: Vec<MealPlanNode>,
+    pub cancellation_policy_id: Option<Uuid>,
+    pub room_type_ids: Vec<Uuid>,
+    pub active: bool,
+    pub version: i32,
+}
+
+impl From<rates::RatePlan> for RatePlanNode {
+    fn from(p: rates::RatePlan) -> Self {
+        Self {
+            id: p.id,
+            code: p.code,
+            name: p.name,
+            kind: p.kind.into(),
+            segment: p.segment.into(),
+            residency: p.residency.map(Into::into),
+            currency: p.currency,
+            parent_id: p.parent_id,
+            depth: p.depth,
+            derive_mode: p.derive_mode.map(Into::into),
+            derive_value: p.derive_value,
+            rounding_step: p.rounding_step,
+            extra_adult_amount: p.extra_adult_amount,
+            inherit_restrictions: p.inherit_restrictions,
+            allowed_meal_plans: p.allowed_meal_plans.into_iter().map(Into::into).collect(),
+            cancellation_policy_id: p.cancellation_policy_id,
+            room_type_ids: p.room_type_ids,
+            active: p.active,
+            version: p.version,
+        }
+    }
+}
+
+/// A price for `occupancy` adults, in minor units of the plan's currency.
+#[derive(SimpleObject)]
+pub struct RatePriceNode {
+    pub room_type_id: Uuid,
+    pub date: Date,
+    pub occupancy: i32,
+    pub amount: i64,
+}
+
+#[derive(SimpleObject)]
+pub struct RestrictionNode {
+    pub room_type_id: Uuid,
+    pub date: Date,
+    pub closed: bool,
+    pub min_stay: Option<i32>,
+    pub max_stay: Option<i32>,
+    pub closed_to_arrival: bool,
+    pub closed_to_departure: bool,
+}
+
+/// A plan's resolved prices and restrictions for a date range. Days without a row have none.
+#[derive(SimpleObject)]
+pub struct RateGridNode {
+    pub prices: Vec<RatePriceNode>,
+    pub restrictions: Vec<RestrictionNode>,
+}
+
+/// One price a bulk change would change: `before` is `null` where `SET` adds a price.
+#[derive(SimpleObject)]
+pub struct PriceChangeCellNode {
+    pub room_type_id: Uuid,
+    pub date: Date,
+    pub occupancy: i32,
+    pub before: Option<i64>,
+    pub after: i64,
+}
+
+#[derive(SimpleObject)]
+pub struct BulkPreviewNode {
+    /// How many of the plan's prices would change.
+    pub total: i64,
+    /// The first 50, by date, room type and occupancy.
+    pub cells: Vec<PriceChangeCellNode>,
+}
+
+/// Per person per night on top of the room price, for the nights from `from` until `to` (`null`: open-ended).
+#[derive(SimpleObject)]
+pub struct MealSupplementNode {
+    pub id: Uuid,
+    pub meal_plan: MealPlanNode,
+    pub currency: String,
+    pub adult_amount: i64,
+    pub child_amount: i64,
+    pub from: Date,
+    pub to: Option<Date>,
+    pub version: i32,
+}
+
+#[derive(SimpleObject)]
+pub struct PenaltyNode {
+    pub kind: PenaltyKindNode,
+    pub value: i64,
+}
+
+impl From<rates::Penalty> for PenaltyNode {
+    fn from(penalty: rates::Penalty) -> Self {
+        Self { kind: penalty.kind.into(), value: penalty.value }
+    }
+}
+
+#[derive(SimpleObject)]
+pub struct CancellationRuleNode {
+    pub days_before_arrival: i32,
+    pub penalty: PenaltyNode,
+}
+
+#[derive(SimpleObject)]
+pub struct CancellationPolicyNode {
+    pub id: Uuid,
+    pub name: String,
+    /// Furthest from arrival first.
+    pub rules: Vec<CancellationRuleNode>,
+    pub no_show: PenaltyNode,
+    pub version: i32,
+}
+
+#[derive(SimpleObject)]
+pub struct QuoteNightNode {
+    pub date: Date,
+    pub room: i64,
+    pub meal: i64,
+}
+
+#[derive(SimpleObject)]
+pub struct ViolationNode {
+    pub kind: ViolationKindNode,
+    pub date: Option<Date>,
+    pub message: String,
+}
+
+/// What a stay costs, in minor units of `currency`. `restrictionsOk` is true when nothing stops the sale.
+#[derive(SimpleObject)]
+pub struct QuoteNode {
+    pub nights: Vec<QuoteNightNode>,
+    pub total: i64,
+    pub currency: String,
+    pub restrictions_ok: bool,
+    pub violations: Vec<ViolationNode>,
+}
+
+/// A rates rule the query broke, as a GraphQL error; database errors stay hidden.
+fn rates_error(err: rates::RatesError) -> async_graphql::Error {
+    match err {
+        rates::RatesError::Database(db_err) => internal(db_err),
+        other => async_graphql::Error::new(other.to_string()),
+    }
+}
+
 /// Checks `permission` for `property` and opens a transaction in the caller's tenant.
 async fn scoped(ctx: &Context<'_>, permission: Permission, property: Uuid) -> async_graphql::Result<Tx> {
     let pool = ctx.data::<PgPool>()?;
@@ -324,6 +545,202 @@ impl Query {
                 available: d.available(),
             })
             .collect())
+    }
+
+    /// The property's rate plans in tree order: each standard or custom plan, by code, followed by the plans
+    /// derived from it, depth first.
+    async fn rate_plans(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<RatePlanNode>> {
+        let mut tx = scoped(ctx, Permission::RatesView, property_id).await?;
+        let plans = rates::list_rate_plans(&mut tx, property_id).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(plans.into_iter().map(RatePlanNode::from).collect())
+    }
+
+    /// A plan's prices and restrictions for `[from, to)` (at most 93 days), by date, room type and occupancy.
+    async fn rate_grid(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        rate_plan_id: Uuid,
+        from: Date,
+        to: Date,
+    ) -> async_graphql::Result<RateGridNode> {
+        check_range(from, to, 93)?;
+        let mut tx = scoped(ctx, Permission::RatesView, property_id).await?;
+        let prices = rates::list_prices(&mut tx, property_id, rate_plan_id, from, to).await.map_err(internal)?;
+        let restrictions =
+            rates::list_restrictions(&mut tx, property_id, rate_plan_id, from, to).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(RateGridNode {
+            prices: prices
+                .into_iter()
+                .map(|p| RatePriceNode {
+                    room_type_id: p.room_type_id,
+                    date: p.date,
+                    occupancy: p.occupancy,
+                    amount: p.amount,
+                })
+                .collect(),
+            restrictions: restrictions
+                .into_iter()
+                .map(|r| RestrictionNode {
+                    room_type_id: r.room_type_id,
+                    date: r.date,
+                    closed: r.closed,
+                    min_stay: r.min_stay,
+                    max_stay: r.max_stay,
+                    closed_to_arrival: r.closed_to_arrival,
+                    closed_to_departure: r.closed_to_departure,
+                })
+                .collect(),
+        })
+    }
+
+    /// What a bulk change would do to a standard or custom plan's prices on `[from, to)`, without doing it.
+    /// Left out, `weekdays` (ISO: 1 = Monday), `roomTypeIds` and `occupancies` mean all.
+    #[allow(clippy::too_many_arguments)]
+    async fn bulk_change_preview(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        rate_plan_id: Uuid,
+        from: Date,
+        to: Date,
+        #[graphql(default)] weekdays: Vec<u8>,
+        #[graphql(default)] room_type_ids: Vec<Uuid>,
+        #[graphql(default)] occupancies: Vec<i32>,
+        mode: PriceChangeModeNode,
+        value: i64,
+    ) -> async_graphql::Result<BulkPreviewNode> {
+        if weekdays.iter().any(|day| !(1..=7).contains(day)) {
+            return Err(async_graphql::Error::new("weekdays are 1 (Monday) to 7 (Sunday)"));
+        }
+        let change = rates::BulkChange {
+            from,
+            to,
+            weekdays: weekdays.iter().map(|day| time::Weekday::Monday.nth_next(day - 1)).collect(),
+            room_type_ids,
+            occupancies,
+            change: rates::PriceChange { mode: mode.into(), value },
+        };
+        let mut tx = scoped(ctx, Permission::RatesView, property_id).await?;
+        let preview =
+            rates::preview_bulk_change(&mut tx, property_id, rate_plan_id, &change, 50).await.map_err(rates_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(BulkPreviewNode {
+            total: preview.total,
+            cells: preview
+                .cells
+                .into_iter()
+                .map(|c| PriceChangeCellNode {
+                    room_type_id: c.room_type_id,
+                    date: c.date,
+                    occupancy: c.occupancy,
+                    before: c.before,
+                    after: c.after,
+                })
+                .collect(),
+        })
+    }
+
+    /// Meal supplements by currency, meal plan and start.
+    async fn meal_supplements(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+    ) -> async_graphql::Result<Vec<MealSupplementNode>> {
+        let mut tx = scoped(ctx, Permission::RatesView, property_id).await?;
+        let supplements = rates::list_meal_supplements(&mut tx, property_id).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(supplements
+            .into_iter()
+            .map(|s| MealSupplementNode {
+                id: s.id,
+                meal_plan: s.meal_plan.into(),
+                currency: s.currency,
+                adult_amount: s.adult_amount,
+                child_amount: s.child_amount,
+                from: s.from,
+                to: s.to,
+                version: s.version,
+            })
+            .collect())
+    }
+
+    /// Cancellation policies by name.
+    async fn cancellation_policies(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+    ) -> async_graphql::Result<Vec<CancellationPolicyNode>> {
+        let mut tx = scoped(ctx, Permission::RatesView, property_id).await?;
+        let policies = rates::list_cancellation_policies(&mut tx, property_id).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(policies
+            .into_iter()
+            .map(|p| CancellationPolicyNode {
+                id: p.id,
+                name: p.name,
+                rules: p
+                    .rules
+                    .into_iter()
+                    .map(|rule| CancellationRuleNode {
+                        days_before_arrival: rule.days_before_arrival,
+                        penalty: rule.penalty.into(),
+                    })
+                    .collect(),
+                no_show: p.no_show.into(),
+                version: p.version,
+            })
+            .collect())
+    }
+
+    /// Prices a stay of `[checkIn, checkOut)` (at most 90 nights) and lists every reason it cannot be sold.
+    #[allow(clippy::too_many_arguments)]
+    async fn quote(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        room_type_id: Uuid,
+        rate_plan_id: Uuid,
+        meal_plan: MealPlanNode,
+        check_in: Date,
+        check_out: Date,
+        adults: i32,
+        children: i32,
+        residency: ResidencyNode,
+    ) -> async_graphql::Result<QuoteNode> {
+        if check_out > check_in && check_out - check_in > Duration::days(90) {
+            return Err(async_graphql::Error::new("a quote is for at most 90 nights"));
+        }
+        let request = rates::QuoteRequest {
+            room_type_id,
+            rate_plan_id,
+            meal_plan: meal_plan.into(),
+            check_in,
+            check_out,
+            adults,
+            children,
+            residency: residency.into(),
+        };
+        let mut tx = scoped(ctx, Permission::RatesView, property_id).await?;
+        let quote = rates::load_quote(&mut tx, property_id, &request).await.map_err(rates_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(QuoteNode {
+            nights: quote
+                .nights
+                .into_iter()
+                .map(|n| QuoteNightNode { date: n.date, room: n.room, meal: n.meal })
+                .collect(),
+            total: quote.total,
+            currency: quote.currency,
+            restrictions_ok: quote.restrictions_ok,
+            violations: quote
+                .violations
+                .into_iter()
+                .map(|v| ViolationNode { kind: v.kind.into(), date: v.date, message: v.message })
+                .collect(),
+        })
     }
 }
 

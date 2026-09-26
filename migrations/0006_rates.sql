@@ -4,9 +4,10 @@
 -- A price changed by `value` basis points (`percent`) or minor units (`amount`), either possibly negative,
 -- never below 0, rounded half-up to a multiple of `step`. Derived plans apply their formula to the parent's
 -- price with it, and bulk changes apply theirs to a plan's own prices. Integer arithmetic only: every input
--- is bounded by the checks below, so nothing overflows. Mirrored in web/pms/src/lib/rates.ts for previews.
+-- is bounded by the checks below, so nothing overflows. Not STRICT, so the planner inlines it into the
+-- statements that call it once per row.
 create function app.derive_amount(base bigint, mode text, value bigint, step bigint) returns bigint
-language sql immutable strict parallel safe
+language sql immutable parallel safe
 as $$
   select case mode
     when 'percent' then (2 * greatest(base * (10000 + value), 0) + 10000 * step) / (20000 * step) * step
@@ -89,6 +90,8 @@ create table rate_plan_room_type (
 
 -- Resolved prices per plan, room type, date and occupancy (adults), derived plans included: a write to a
 -- plan's prices recomputes its descendants' rows in the same transaction, so reads never derive anything.
+-- Half of each page is left free: a bulk change rewrites every price on a page, and the new versions then fit
+-- beside the old ones (HOT updates, no index writes).
 create table rate_day (
   tenant_id uuid not null,
   property_id uuid not null,
@@ -101,7 +104,7 @@ create table rate_day (
   foreign key (tenant_id, property_id) references property (tenant_id, id) on delete cascade,
   foreign key (property_id, rate_plan_id, room_type_id)
     references rate_plan_room_type (property_id, rate_plan_id, room_type_id) on delete cascade
-);
+) with (fillfactor = 50);
 create index rate_day_property_date_idx on rate_day (property_id, date);
 
 -- Resolved restrictions per plan, room type and date. A derived plan that inherits restrictions gets a copy
