@@ -19,6 +19,15 @@ fn the_openapi_document_lists_every_rest_route() {
             "/api/v1/properties/{property}/block-reasons",
             "/api/v1/properties/{property}/block-reasons/{reason}",
             "/api/v1/properties/{property}/blocks/{block}",
+            "/api/v1/properties/{property}/cancellation-policies",
+            "/api/v1/properties/{property}/cancellation-policies/{policy}",
+            "/api/v1/properties/{property}/meal-supplements",
+            "/api/v1/properties/{property}/meal-supplements/{supplement}",
+            "/api/v1/properties/{property}/rate-plans",
+            "/api/v1/properties/{property}/rate-plans/{plan}",
+            "/api/v1/properties/{property}/rate-plans/{plan}/bulk-change",
+            "/api/v1/properties/{property}/rate-plans/{plan}/prices",
+            "/api/v1/properties/{property}/rate-plans/{plan}/restrictions",
             "/api/v1/properties/{property}/room-types",
             "/api/v1/properties/{property}/room-types/order",
             "/api/v1/properties/{property}/room-types/{room_type}",
@@ -76,16 +85,34 @@ fn versioned_responses_declare_their_etag() {
         [
             "create_block",
             "create_block_reason",
+            "create_cancellation_policy",
+            "create_meal_supplement",
             "create_property",
+            "create_rate_plan",
             "create_room",
             "create_room_type",
             "create_section",
             "rename_section",
             "shorten_block",
             "update_block_reason",
+            "update_cancellation_policy",
+            "update_meal_supplement",
             "update_property",
+            "update_rate_plan",
             "update_room",
             "update_room_type",
         ]
     );
+}
+
+/// Enums are documented with the values the API sends and accepts, so generated types match the JSON.
+#[test]
+fn rate_enums_are_documented_with_their_json_values() {
+    let doc = serde_json::to_value(ApiDoc::openapi()).unwrap();
+    let values = |name: &str| doc["components"]["schemas"][name]["enum"].clone();
+
+    assert_eq!(values("PlanKind"), serde_json::json!(["standard", "derived", "custom"]));
+    assert_eq!(values("Segment"), serde_json::json!(["FIT_F", "FIT_L", "OTA", "TA", "IBE"]));
+    assert_eq!(values("MealPlan"), serde_json::json!(["RO", "BB", "HB", "FB"]));
+    assert_eq!(values("Residency"), serde_json::json!(["resident", "non_resident"]));
 }

@@ -2,6 +2,7 @@ pub(crate) mod auth;
 pub(crate) mod blocks;
 mod health;
 pub(crate) mod properties;
+pub(crate) mod rates;
 pub(crate) mod room_types;
 pub(crate) mod rooms;
 
@@ -21,6 +22,11 @@ use tower_http::trace::TraceLayer;
 pub use auth::{LoginRequest, SignupRequest, SwitchTenantRequest};
 pub use blocks::{CreateBlockReasonRequest, CreateBlockRequest, ShortenBlockRequest, UpdateBlockReasonRequest};
 pub use properties::{CreatePropertyRequest, UpdatePropertyRequest};
+pub use rates::{
+    BulkChangeRequest, BulkChangeResponse, CreateCancellationPolicyRequest, CreateMealSupplementRequest,
+    CreateRatePlanRequest, PriceChangeRequest, PriceRequest, RestrictionsRequest, SetPricesRequest,
+    UpdateCancellationPolicyRequest, UpdateMealSupplementRequest, UpdateRatePlanRequest,
+};
 pub use room_types::{BedRequest, CreateRoomTypeRequest, UpdateRoomTypeRequest};
 pub use rooms::{CreateRoomRangeRequest, CreateRoomRequest, ReorderRequest, SectionRequest, UpdateRoomRequest};
 
@@ -40,6 +46,10 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/sections"), post(rooms::create_section))
         .route(&format!("{PROPERTY}/block-reasons"), post(blocks::create_reason))
         .route(&format!("{PROPERTY}/rooms/{{room}}/blocks"), post(blocks::create))
+        .route(&format!("{PROPERTY}/rate-plans"), post(rates::create_plan))
+        .route(&format!("{PROPERTY}/rate-plans/{{plan}}/bulk-change"), post(rates::bulk_change))
+        .route(&format!("{PROPERTY}/meal-supplements"), post(rates::create_supplement))
+        .route(&format!("{PROPERTY}/cancellation-policies"), post(rates::create_policy))
         .route_layer(from_fn_with_state(state.clone(), idempotency::idempotent));
 
     let requests = Router::new()
@@ -56,6 +66,11 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/sections/{{section}}"), patch(rooms::rename_section))
         .route(&format!("{PROPERTY}/block-reasons/{{reason}}"), patch(blocks::update_reason))
         .route(&format!("{PROPERTY}/blocks/{{block}}"), patch(blocks::shorten))
+        .route(&format!("{PROPERTY}/rate-plans/{{plan}}"), patch(rates::update_plan))
+        .route(&format!("{PROPERTY}/rate-plans/{{plan}}/prices"), put(rates::set_prices))
+        .route(&format!("{PROPERTY}/rate-plans/{{plan}}/restrictions"), put(rates::set_restrictions))
+        .route(&format!("{PROPERTY}/meal-supplements/{{supplement}}"), patch(rates::update_supplement))
+        .route(&format!("{PROPERTY}/cancellation-policies/{{policy}}"), patch(rates::update_policy))
         .route("/graphql", post(graphql::handler))
         .merge(commands)
         .layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)));

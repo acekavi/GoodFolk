@@ -536,6 +536,7 @@ dependencies = [
  "identity",
  "mimalloc",
  "property",
+ "rates",
  "rooms",
  "serde",
  "serde_json",

@@ -153,6 +153,155 @@ export interface paths {
         patch: operations["shorten_block"];
         trace?: never;
     };
+    "/api/v1/properties/{property}/cancellation-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_cancellation_policy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/cancellation-policies/{policy}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["update_cancellation_policy"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/meal-supplements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_meal_supplement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/meal-supplements/{supplement}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["update_meal_supplement"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/rate-plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_rate_plan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/rate-plans/{plan}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["update_rate_plan"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/rate-plans/{plan}/bulk-change": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** A percent or amount change is not safe to repeat, so this command takes an `Idempotency-Key` like a create. */
+        post: operations["bulk_change_prices"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/rate-plans/{plan}/prices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Sets prices cell by cell (the rate grid saves edited cells in batches). Not versioned: the last write to a
+         *     cell wins. A cell listed twice takes its last amount.
+         */
+        put: operations["set_prices"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/rate-plans/{plan}/restrictions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["set_restrictions"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/room-types": {
         parameters: {
             query?: never;
@@ -386,6 +535,51 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        /**
+         * @description Changes a plan's prices on `[from, to)`. Left out, `weekdays` (ISO: 1 = Monday … 7 = Sunday),
+         *     `room_type_ids` and `occupancies` mean all.
+         */
+        BulkChangeRequest: {
+            change: components["schemas"]["PriceChangeRequest"];
+            /** Format: date */
+            from: string;
+            occupancies?: number[];
+            room_type_ids?: string[];
+            /** Format: date */
+            to: string;
+            weekdays?: number[];
+        };
+        BulkChangeResponse: {
+            /**
+             * Format: int64
+             * @description How many of the plan's own prices changed.
+             */
+            changed: number;
+        };
+        /** @description What cancelling or not arriving costs. Reservations (Phase 3) apply it; rate plans name one. */
+        CancellationPolicy: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            no_show: components["schemas"]["Penalty"];
+            /** Format: uuid */
+            property_id: string;
+            /** @description Furthest from arrival first; the rule with the fewest days at or above the days left applies. */
+            rules: components["schemas"]["CancellationRule"][];
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description Cancelling `days_before_arrival` days or fewer before arrival costs `penalty`. */
+        CancellationRule: {
+            /** Format: int32 */
+            days_before_arrival: number;
+            penalty: components["schemas"]["Penalty"];
+        };
+        /**
+         * @description How a price is changed: by basis points (`percent`, 1500 = +15 %) or by minor units (`amount`).
+         * @enum {string}
+         */
+        ChangeMode: "percent" | "amount";
         CreateBlockReasonRequest: {
             /** @description Capital letters, digits and `_`, unique within the property. Cannot be changed later. */
             code: string;
@@ -410,6 +604,37 @@ export interface components {
              */
             to: string;
         };
+        CreateCancellationPolicyRequest: {
+            name: string;
+            no_show: components["schemas"]["Penalty"];
+            /** @description Each with its own number of days before arrival. */
+            rules: components["schemas"]["CancellationRule"][];
+        };
+        CreateMealSupplementRequest: {
+            /**
+             * Format: int64
+             * @description Minor units per adult per night.
+             */
+            adult_amount: number;
+            /**
+             * Format: int64
+             * @description Minor units per child per night.
+             */
+            child_amount: number;
+            currency: string;
+            /**
+             * Format: date
+             * @description The first night it applies to.
+             */
+            from: string;
+            /** @description `BB`, `HB` or `FB`: room only has no supplement. */
+            meal_plan: components["schemas"]["MealPlan"];
+            /**
+             * Format: date
+             * @description The first night it no longer applies to; left out, until further notice.
+             */
+            to?: string | null;
+        };
         CreatePropertyRequest: {
             /** @description ISO 4217 code, e.g. `LKR`. */
             base_currency: string;
@@ -418,6 +643,45 @@ export interface components {
             name: string;
             /** @description IANA time zone, e.g. `Asia/Colombo`. */
             timezone: string;
+        };
+        CreateRatePlanRequest: {
+            /** @description Default `["RO"]`. */
+            allowed_meal_plans?: components["schemas"]["MealPlan"][];
+            /** Format: uuid */
+            cancellation_policy_id?: string | null;
+            /** @description Capital letters, digits, `_` and `-`, unique within the property. Cannot be changed later. */
+            code: string;
+            /** @description ISO 4217. A derived plan uses its parent's. */
+            currency: string;
+            derive_mode?: components["schemas"]["ChangeMode"] | null;
+            /**
+             * Format: int64
+             * @description Derived plans only: basis points (`percent`, -10000 to 100000) or minor units (`amount`).
+             */
+            derive_value?: number | null;
+            /**
+             * Format: int64
+             * @description Minor units added per adult above the highest occupancy priced below a stay's. Default 0.
+             */
+            extra_adult_amount?: number;
+            /** @description Derived plans only: copy the parent's restrictions. */
+            inherit_restrictions?: boolean;
+            kind: components["schemas"]["PlanKind"];
+            name: string;
+            /**
+             * Format: uuid
+             * @description Derived plans only.
+             */
+            parent_id?: string | null;
+            residency?: components["schemas"]["Residency"] | null;
+            /** @description A derived plan sells a subset of its parent's room types. */
+            room_type_ids: string[];
+            /**
+             * Format: int64
+             * @description Minor units; derived and bulk-changed prices are rounded half-up to a multiple of it. Default 1.
+             */
+            rounding_step?: number;
+            segment: components["schemas"]["Segment"];
         };
         /** @description Rooms `{prefix}{first}` to `{prefix}{last}`: `{"first": 101, "last": 120}` adds 101 to 120. */
         CreateRoomRangeRequest: {
@@ -466,6 +730,83 @@ export interface components {
             email: string;
             password: string;
         };
+        /**
+         * @description Room only, bed and breakfast, half board, full board.
+         * @enum {string}
+         */
+        MealPlan: "RO" | "BB" | "HB" | "FB";
+        /**
+         * @description What a meal plan costs per person per night on top of the room price, in one currency, for the nights
+         *     from `from` until `to` (the first night it no longer applies; `None`: until further notice).
+         */
+        MealSupplement: {
+            /** Format: int64 */
+            adult_amount: number;
+            /** Format: int64 */
+            child_amount: number;
+            currency: string;
+            /** Format: date */
+            from: string;
+            /** Format: uuid */
+            id: string;
+            meal_plan: components["schemas"]["MealPlan"];
+            /** Format: uuid */
+            property_id: string;
+            /** Format: date */
+            to?: string | null;
+            /** Format: int32 */
+            version: number;
+        };
+        Penalty: {
+            kind: components["schemas"]["PenaltyKind"];
+            /** Format: int64 */
+            value: number;
+        };
+        /**
+         * @description `nights`: that many nights' room price; `percent`: basis points of the stay; `amount`: minor units in
+         *     the plan's currency.
+         * @enum {string}
+         */
+        PenaltyKind: "nights" | "percent" | "amount";
+        /**
+         * @description `Standard` plans are priced by hand and may have derived plans; `Derived` plans are priced from their
+         *     parent by a formula; `Custom` plans are priced by hand and stand alone.
+         * @enum {string}
+         */
+        PlanKind: "standard" | "derived" | "custom";
+        /**
+         * @description A bulk change adds basis points (`percent`) or minor units (`amount`) to existing prices, rounded to
+         *     the plan's step, or `set`s every selected price to the value.
+         * @enum {string}
+         */
+        PriceChangeMode: "percent" | "amount" | "set";
+        PriceChangeRequest: {
+            mode: components["schemas"]["PriceChangeMode"];
+            /**
+             * Format: int64
+             * @description Basis points (`percent`), or minor units (`amount`, `set`).
+             */
+            value: number;
+        };
+        PriceRequest: {
+            /**
+             * Format: int64
+             * @description Minor units in the plan's currency.
+             */
+            amount: number;
+            /**
+             * Format: date
+             * @description `YYYY-MM-DD`, from the business date for 730 days.
+             */
+            date: string;
+            /**
+             * Format: int32
+             * @description Adults, 1 to the room type's maximum occupancy.
+             */
+            occupancy: number;
+            /** Format: uuid */
+            room_type_id: string;
+        };
         Profile: {
             /** Format: uuid */
             current_tenant?: string | null;
@@ -495,9 +836,78 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        RatePlan: {
+            active: boolean;
+            allowed_meal_plans: components["schemas"]["MealPlan"][];
+            /** Format: uuid */
+            cancellation_policy_id?: string | null;
+            code: string;
+            currency: string;
+            /**
+             * Format: int32
+             * @description Levels of plans above this one: 0 for standard and custom plans.
+             */
+            depth: number;
+            derive_mode?: components["schemas"]["ChangeMode"] | null;
+            /**
+             * Format: int64
+             * @description Basis points (`percent`) or minor units (`amount`); may be negative.
+             */
+            derive_value?: number | null;
+            /**
+             * Format: int64
+             * @description Added per adult above the highest occupancy priced below a stay's.
+             */
+            extra_adult_amount: number;
+            /** Format: uuid */
+            id: string;
+            /** @description Copy the parent's restrictions instead of setting its own. */
+            inherit_restrictions: boolean;
+            kind: components["schemas"]["PlanKind"];
+            name: string;
+            /** Format: uuid */
+            parent_id?: string | null;
+            /** Format: uuid */
+            property_id: string;
+            residency?: components["schemas"]["Residency"] | null;
+            /** @description The room types it sells, in their display order. */
+            room_type_ids: string[];
+            /**
+             * Format: int64
+             * @description Derived and bulk-changed prices are rounded half-up to a multiple of this, in minor units.
+             */
+            rounding_step: number;
+            segment: components["schemas"]["Segment"];
+            /** Format: int32 */
+            version: number;
+        };
         ReorderRequest: {
             /** @description Every id of the collection, in the new display order. */
             ids: string[];
+        };
+        /**
+         * @description Which guests a plan may be sold to.
+         * @enum {string}
+         */
+        Residency: "resident" | "non_resident";
+        /**
+         * @description Sets restrictions on every day of `[from, to)`. Left out, `weekdays` (ISO) and `room_type_ids` mean all,
+         *     and a restriction field means "leave as it is"; `min_stay` or `max_stay` sent as `null` removes it.
+         */
+        RestrictionsRequest: {
+            closed?: boolean | null;
+            closed_to_arrival?: boolean | null;
+            closed_to_departure?: boolean | null;
+            /** Format: date */
+            from: string;
+            /** Format: int32 */
+            max_stay?: number | null;
+            /** Format: int32 */
+            min_stay?: number | null;
+            room_type_ids?: string[];
+            /** Format: date */
+            to: string;
+            weekdays?: number[];
         };
         /** @enum {string} */
         Role: "owner" | "manager" | "front_desk" | "housekeeping" | "accountant";
@@ -555,6 +965,16 @@ export interface components {
             name: string;
         };
         /**
+         * @description Where a plan is sold: foreign (`FIT_F`) or local (`FIT_L`) independent travellers, online travel
+         *     agents, travel agent contracts, or the hotel's own booking engine.
+         * @enum {string}
+         */
+        Segment: "FIT_F" | "FIT_L" | "OTA" | "TA" | "IBE";
+        /** @description Prices for a standard or custom plan; derived plans are repriced from them in the same transaction. */
+        SetPricesRequest: {
+            prices: components["schemas"]["PriceRequest"][];
+        };
+        /**
          * @description Ends the block early: the room is back from `to`. Sending the business date releases it now; a date on
          *     or before the block's start cancels it.
          */
@@ -587,12 +1007,57 @@ export interface components {
             default_kind?: components["schemas"]["BlockKind"] | null;
             label?: string | null;
         };
+        /** @description Fields left out stay as they are; `rules` replaces every rule. */
+        UpdateCancellationPolicyRequest: {
+            name?: string | null;
+            no_show?: components["schemas"]["Penalty"] | null;
+            rules?: components["schemas"]["CancellationRule"][] | null;
+        };
+        /** @description Fields left out stay as they are; `to` sent as `null` makes the supplement open-ended. */
+        UpdateMealSupplementRequest: {
+            /** Format: int64 */
+            adult_amount?: number | null;
+            /** Format: int64 */
+            child_amount?: number | null;
+            /** Format: date */
+            from?: string | null;
+            /** Format: date */
+            to?: string | null;
+        };
         UpdatePropertyRequest: {
             /** @description `HH:MM` (24-hour), local time. */
             check_in_time?: string | null;
             /** @description `HH:MM` (24-hour), local time. */
             check_out_time?: string | null;
             name?: string | null;
+        };
+        /**
+         * @description Fields left out stay as they are; `residency` and `cancellation_policy_id` sent as `null` are cleared.
+         *     The code, kind and currency never change.
+         */
+        UpdateRatePlanRequest: {
+            /** @description `false` stops selling the plan; its prices stay. */
+            active?: boolean | null;
+            allowed_meal_plans?: components["schemas"]["MealPlan"][] | null;
+            /** Format: uuid */
+            cancellation_policy_id?: string | null;
+            derive_mode?: components["schemas"]["ChangeMode"] | null;
+            /** Format: int64 */
+            derive_value?: number | null;
+            /** Format: int64 */
+            extra_adult_amount?: number | null;
+            inherit_restrictions?: boolean | null;
+            name?: string | null;
+            /**
+             * Format: uuid
+             * @description Moves a derived plan under another parent; its prices (and inherited restrictions) follow the new one.
+             */
+            parent_id?: string | null;
+            residency?: components["schemas"]["Residency"] | null;
+            room_type_ids?: string[] | null;
+            /** Format: int64 */
+            rounding_step?: number | null;
+            segment?: components["schemas"]["Segment"] | null;
         };
         /** @description Fields left out stay as they are; `floor` and `section_id` sent as `null` are cleared. */
         UpdateRoomRequest: {
@@ -1018,6 +1483,493 @@ export interface operations {
                 content?: never;
             };
             428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_cancellation_policy: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCancellationPolicyRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CancellationPolicy"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_cancellation_policy: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                policy: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCancellationPolicyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CancellationPolicy"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_meal_supplement: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateMealSupplementRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MealSupplement"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_meal_supplement: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                supplement: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMealSupplementRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MealSupplement"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_rate_plan: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRatePlanRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RatePlan"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_rate_plan: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                plan: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateRatePlanRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RatePlan"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    bulk_change_prices: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+                plan: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkChangeRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkChangeResponse"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_prices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                plan: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetPricesRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_restrictions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                plan: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestrictionsRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

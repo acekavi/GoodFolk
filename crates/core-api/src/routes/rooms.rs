@@ -27,7 +27,9 @@ pub(crate) fn rooms_error(err: RoomsError) -> ApiError {
 }
 
 /// Tells a field sent as `null` (`Some(None)`: clear it) from one left out (`None`: keep it).
-fn present<'de, T: Deserialize<'de>, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Option<T>>, D::Error> {
+pub(crate) fn present<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error> {
     Option::<T>::deserialize(deserializer).map(Some)
 }
 
