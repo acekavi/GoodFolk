@@ -151,7 +151,11 @@ async fn derived_prices_follow_their_formulas_down_the_chain(_: PgPoolOptions, o
                     }
                 }
                 Op::Reformulate { level, formula } => {
-                    let Some(plan) = plans.get(level) else { return };
+                    let Some(plan) = plans.get(level) else {
+                        // Level is missing; skip this step.
+                        tx.rollback().await.unwrap();
+                        continue;
+                    };
                     let changes = RatePlanChanges {
                         derive_mode: Some(formula.mode),
                         derive_value: Some(formula.value),
