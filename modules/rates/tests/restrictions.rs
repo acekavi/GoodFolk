@@ -144,3 +144,103 @@ async fn restrictions_are_checked(_: PgPoolOptions, opts: PgConnectOptions) {
     );
     assert_eq!(invalid(hotel.try_restrict(&bar, nothing).await), "set at least one restriction");
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_inheriting_plan_moved_to_another_parent_copies_the_new_parents_restrictions(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts).await;
+    let p1 = hotel.plan(hotel.standard_plan("P1", "USD")).await;
+    let p2 = hotel.plan(hotel.standard_plan("P2", "USD")).await;
+    let deluxe = hotel.deluxe.id;
+
+    // P1 closed on day 3
+    hotel.try_restrict(&p1, RestrictionChange { closed: Some(true), ..hotel.restrict(&[deluxe], 3, 4) }).await.unwrap();
+
+    // P2 has min_stay 2 on day 5
+    hotel
+        .try_restrict(&p2, RestrictionChange { min_stay: Some(Some(2)), ..hotel.restrict(&[deluxe], 5, 6) })
+        .await
+        .unwrap();
+
+    // D derives from P1 with inheritance
+    let inheriting = |code: &str, parent: &rates::RatePlan| rates::NewRatePlan {
+        inherit_restrictions: true,
+        ..hotel.derived_plan(code, parent, ChangeMode::Percent, 1_000)
+    };
+    let d = hotel.plan(inheriting("D", &p1)).await;
+
+    // G (grandchild) inherits from D
+    let g = hotel.plan(inheriting("G", &d)).await;
+
+    // Before moving, D and G have P1's restrictions (closure on day 3)
+    let d_before = hotel.restrictions(&d).await;
+    let g_before = hotel.restrictions(&g).await;
+    assert_eq!(summary(&hotel, &d_before), [(3, "DLX", true, None, false)]);
+    assert_eq!(summary(&hotel, &g_before), [(3, "DLX", true, None, false)]);
+
+    // Move D to P2
+    let move_changes = RatePlanChanges { parent_id: Some(p2.id), ..RatePlanChanges::default() };
+    let d = hotel.try_update(&d, move_changes).await.unwrap();
+
+    // After moving, D and G should have P2's restrictions (min_stay 2 on day 5), not P1's
+    let d_after = hotel.restrictions(&d).await;
+    let g_after = hotel.restrictions(&g).await;
+    assert_eq!(summary(&hotel, &d_after), [(5, "DLX", false, Some(2), false)]);
+    assert_eq!(summary(&hotel, &g_after), [(5, "DLX", false, Some(2), false)]);
+    // P1's closure on day 3 should be gone
+    assert!(!d_after.iter().any(|r| r.date == hotel.day(3)));
+    assert!(!g_after.iter().any(|r| r.date == hotel.day(3)));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn adding_a_room_type_to_an_inheriting_plan_copies_the_parents_restrictions_for_it(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts).await;
+    let deluxe = hotel.deluxe.id;
+    let standard = hotel.standard.id;
+
+    // Parent sells both STD and DLX
+    let parent = hotel.plan(hotel.standard_plan("PARENT", "USD")).await;
+
+    // Parent has restrictions on DLX only
+    hotel
+        .try_restrict(&parent, RestrictionChange { min_stay: Some(Some(3)), ..hotel.restrict(&[deluxe], 0, 7) })
+        .await
+        .unwrap();
+
+    // Derived plan inherits and sells only STD initially
+    let derived = hotel
+        .plan(rates::NewRatePlan {
+            room_type_ids: vec![standard],
+            inherit_restrictions: true,
+            ..hotel.derived_plan("DERIVED", &parent, ChangeMode::Percent, 1_000)
+        })
+        .await;
+
+    // DERIVED initially has no restrictions (only sells STD, parent's restrictions are on DLX)
+    assert!(hotel.restrictions(&derived).await.is_empty());
+
+    // Add DLX to DERIVED
+    let add_types_changes =
+        RatePlanChanges { room_type_ids: Some(vec![standard, deluxe]), ..RatePlanChanges::default() };
+    let derived = hotel.try_update(&derived, add_types_changes).await.unwrap();
+
+    // DERIVED should now have the parent's DLX restrictions
+    let derived_restrictions = hotel.restrictions(&derived).await;
+    assert_eq!(
+        summary(&hotel, &derived_restrictions),
+        [
+            (0, "DLX", false, Some(3), false),
+            (1, "DLX", false, Some(3), false),
+            (2, "DLX", false, Some(3), false),
+            (3, "DLX", false, Some(3), false),
+            (4, "DLX", false, Some(3), false),
+            (5, "DLX", false, Some(3), false),
+            (6, "DLX", false, Some(3), false),
+        ]
+    );
+}
