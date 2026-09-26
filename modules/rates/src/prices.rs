@@ -221,7 +221,8 @@ pub async fn set_prices(
         if !(1..=*max).contains(&price.occupancy) {
             return Err(RatesError::Invalid(format!("{code} takes 1 to {max} guests")));
         }
-        check_range(today, price.date, price.date + Duration::days(1))?;
+        let next = price.date.next_day().ok_or_else(|| RatesError::Invalid(WINDOW_MESSAGE.into()))?;
+        check_range(today, price.date, next)?;
         if !(0..=MAX_AMOUNT).contains(&price.amount) {
             return Err(RatesError::Invalid(format!("a price is 0 to {MAX_AMOUNT} minor units")));
         }

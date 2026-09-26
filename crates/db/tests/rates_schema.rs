@@ -222,6 +222,19 @@ async fn derive_amount_rounds_half_up_to_the_step(pool: PgPool) {
     }
 }
 
+/// A NULL `base` or `value` gives NULL, not 0: `greatest()` ignores NULL arguments, so without an explicit
+/// NULL arm the CASE would silently treat a NULL input as if it were 0.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn derive_amount_is_null_for_a_null_base_or_value(pool: PgPool) {
+    let null_base: Option<i64> =
+        sqlx::query_scalar("select app.derive_amount(null, 'percent', 0, 1)").fetch_one(&pool).await.unwrap();
+    let null_value: Option<i64> =
+        sqlx::query_scalar("select app.derive_amount(100, 'percent', null, 1)").fetch_one(&pool).await.unwrap();
+
+    assert_eq!(null_base, None);
+    assert_eq!(null_value, None);
+}
+
 /// Random inputs across the whole allowed range, compared with exact arithmetic. Each run draws new ones.
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn derive_amount_matches_exact_arithmetic(pool: PgPool) {

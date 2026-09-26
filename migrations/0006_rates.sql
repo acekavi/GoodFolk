@@ -9,9 +9,10 @@
 create function app.derive_amount(base bigint, mode text, value bigint, step bigint) returns bigint
 language sql immutable parallel safe
 as $$
-  select case mode
-    when 'percent' then (2 * greatest(base * (10000 + value), 0) + 10000 * step) / (20000 * step) * step
-    when 'amount' then (2 * greatest(base + value, 0) + step) / (2 * step) * step
+  select case
+    when base is null or value is null then null
+    when mode = 'percent' then (2 * greatest(base * (10000 + value), 0) + 10000 * step) / (20000 * step) * step
+    when mode = 'amount' then (2 * greatest(base + value, 0) + step) / (2 * step) * step
   end
 $$;
 

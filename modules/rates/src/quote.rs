@@ -37,6 +37,10 @@ pub struct QuoteRoomType {
 
 /// The rows a quote reads: the plan's prices for the room type on the stay's nights, its restrictions on those
 /// nights and the departure date, and the supplements for the chosen meal plan in the plan's currency.
+///
+/// Callers that build one by hand (rather than through [`load_quote`]) must make `plan.id` and
+/// `room_type.id` match the [`QuoteRequest`]'s `rate_plan_id` and `room_type_id`; [`quote`] asserts this in
+/// debug builds.
 #[derive(Debug, Clone)]
 pub struct QuoteData {
     pub plan: RatePlan,
@@ -122,6 +126,8 @@ fn room_price(plan: &RatePlan, prices: &[Price], date: Date, adults: i32) -> Opt
 
 /// Prices a stay and lists every reason it cannot be sold. Pure: everything it needs is in `data`.
 pub fn quote(request: &QuoteRequest, data: &QuoteData) -> Quote {
+    debug_assert_eq!(data.plan.id, request.rate_plan_id, "QuoteData.plan must be the requested rate plan");
+    debug_assert_eq!(data.room_type.id, request.room_type_id, "QuoteData.room_type must be the requested room type");
     let (plan, room_type) = (&data.plan, &data.room_type);
 
     // Early exit for invalid stays using O(1) helper
@@ -574,5 +580,21 @@ mod tests {
 
         assert_eq!(quoted.nights[0].room, 8_000 + 2 * 2_500, "price for 1 adult plus 2 extra");
         assert!(quoted.restrictions_ok);
+    }
+
+    #[test]
+    #[should_panic(expected = "QuoteData.plan must be the requested rate plan")]
+    fn quote_asserts_the_data_matches_the_requested_plan() {
+        let mismatched = QuoteRequest { rate_plan_id: Uuid::from_u128(99), ..stay(1) };
+
+        let _ = quote(&mismatched, &data());
+    }
+
+    #[test]
+    #[should_panic(expected = "QuoteData.room_type must be the requested room type")]
+    fn quote_asserts_the_data_matches_the_requested_room_type() {
+        let mismatched = QuoteRequest { room_type_id: Uuid::from_u128(99), ..stay(1) };
+
+        let _ = quote(&mismatched, &data());
     }
 }

@@ -166,6 +166,14 @@ async fn a_bulk_change_is_previewed_and_a_stay_quoted_over_graphql(_: PgPoolOpti
         json!({"p": hotel.id, "plan": hotel.bar["id"], "from": hotel.day(0), "to": hotel.day(3)}),
     )
     .await;
+    let too_long = graphql(
+        &app,
+        &hotel.owner,
+        preview,
+        json!({"p": hotel.id, "plan": hotel.bar["id"], "from": hotel.day(0), "to": hotel.day(400)}),
+    )
+    .await;
+    assert_eq!(too_long["errors"][0]["message"], "the range must be 1 to 366 days");
     let stay = |plan: &Value, from: i64, to: i64, residency: &str| {
         json!({"p": hotel.id, "type": hotel.deluxe, "plan": plan["id"], "in": hotel.day(from), "out": hotel.day(to),
                "residency": residency})

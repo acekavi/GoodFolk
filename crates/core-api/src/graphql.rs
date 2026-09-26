@@ -615,6 +615,7 @@ impl Query {
         if weekdays.iter().any(|day| !(1..=7).contains(day)) {
             return Err(async_graphql::Error::new("weekdays are 1 (Monday) to 7 (Sunday)"));
         }
+        check_range(from, to, 366)?;
         let change = rates::BulkChange {
             from,
             to,

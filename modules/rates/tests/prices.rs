@@ -3,7 +3,7 @@ mod common;
 use common::Hotel;
 use rates::{BulkChange, ChangeMode, Price, PriceChange, PriceChangeMode, RatePlanChanges, RatesError};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use time::Weekday;
+use time::{Date, Weekday};
 use uuid::Uuid;
 
 fn invalid(result: Result<impl std::fmt::Debug, RatesError>) -> String {
@@ -68,6 +68,20 @@ async fn only_hand_priced_plans_take_prices_for_what_they_sell(_: PgPoolOptions,
     let window = "prices and restrictions are set from the business date for 730 days";
     assert_eq!((invalid(yesterday), invalid(past_the_window)), (window.to_owned(), window.to_owned()));
     assert!(matches!(unknown_plan, Err(RatesError::NotFound("rate plan"))), "{unknown_plan:?}");
+}
+
+/// A price dated `9999-12-31` (`Date::MAX`) is out of the rate window, not a panic: computing `date + 1 day`
+/// to build the checked range must not overflow before the window check runs.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_price_dated_the_maximum_date_is_rejected_without_panicking(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let bar = hotel.plan(hotel.standard_plan("BAR", "USD")).await;
+    let at_max = [Price { room_type_id: hotel.deluxe.id, date: Date::MAX, occupancy: 2, amount: 100 }];
+
+    let result = hotel.try_prices(&bar, &at_max).await;
+
+    let window = "prices and restrictions are set from the business date for 730 days";
+    assert_eq!(invalid(result), window);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

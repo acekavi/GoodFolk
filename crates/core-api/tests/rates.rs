@@ -237,9 +237,19 @@ async fn only_owners_and_managers_manage_rates(_: PgPoolOptions, opts: PgConnect
     let supplement =
         json!({"meal_plan": "BB", "currency": "USD", "adult_amount": 1, "child_amount": 1, "from": hotel.day(0)});
     let policy = json!({"name": "Strict", "rules": [], "no_show": {"kind": "nights", "value": 1}});
+    let supplement_by_manager =
+        post(&app, &manager, &format!("{}/meal-supplements", hotel.path), supplement.clone()).await;
+    let supplement_path =
+        format!("{}/meal-supplements/{}", hotel.path, supplement_by_manager.body["id"].as_str().unwrap());
+    let policy_by_manager =
+        post(&app, &manager, &format!("{}/cancellation-policies", hotel.path), policy.clone()).await;
+    let policy_path =
+        format!("{}/cancellation-policies/{}", hotel.path, policy_by_manager.body["id"].as_str().unwrap());
 
     assert_eq!(by_manager.status, StatusCode::CREATED, "{:?}", by_manager.body);
     assert_eq!(priced_by_manager.status, StatusCode::NO_CONTENT, "{:?}", priced_by_manager.body);
+    assert_eq!(supplement_by_manager.status, StatusCode::CREATED, "{:?}", supplement_by_manager.body);
+    assert_eq!(policy_by_manager.status, StatusCode::CREATED, "{:?}", policy_by_manager.body);
     for staff in [&front_desk, &accountant] {
         let refused = [
             post(&app, staff, &plans, hotel.bar()).await,
@@ -248,6 +258,9 @@ async fn only_owners_and_managers_manage_rates(_: PgPoolOptions, opts: PgConnect
             put(&app, staff, &format!("{bar_path}/restrictions"), restriction.clone()).await,
             post(&app, staff, &format!("{}/meal-supplements", hotel.path), supplement.clone()).await,
             post(&app, staff, &format!("{}/cancellation-policies", hotel.path), policy.clone()).await,
+            patch(&app, staff, &bar_path, 1, json!({"name": "Renamed"})).await,
+            patch(&app, staff, &supplement_path, 1, json!({"adult_amount": 2})).await,
+            patch(&app, staff, &policy_path, 1, json!({"name": "Renamed"})).await,
         ];
         for response in refused {
             assert_eq!(response.status, StatusCode::FORBIDDEN, "{:?}", response.body);

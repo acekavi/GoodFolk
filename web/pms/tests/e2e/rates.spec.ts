@@ -270,3 +270,36 @@ test('meal supplements are set per currency and added to a quote per person', as
 		'Total 136.00 USD'
 	);
 });
+
+test('the restrictions dialog refuses to save with no weekday ticked', async ({ page }) => {
+	await signUp(page);
+	await createProperty(page, 'GAL');
+	await page.getByRole('link', { name: 'Room types' }).click();
+	await addRoomType(page, 'DLX', 'Deluxe');
+	await page.getByRole('link', { name: 'Rate plans' }).click();
+	await page.getByRole('button', { name: 'New rate plan' }).click();
+	await savePlan(page, { code: 'BAR', name: 'Best available', currency: 'USD', segment: 'FIT_F' });
+
+	await page.getByRole('link', { name: 'Rates', exact: true }).click();
+	const today = (await page.getByTestId('business-date').textContent())!.trim();
+	const grid = page.getByRole('grid', { name: 'Prices' });
+	const cell = (row: string, date: string, text: string) =>
+		grid.getByRole('gridcell', { name: `${row} ${date}: ${text}` });
+
+	const restrictions = page.getByRole('dialog', { name: 'Restrictions' });
+	await page.getByRole('button', { name: 'Restrictions…' }).click();
+	await restrictions.getByLabel('From').fill(today);
+	await restrictions.getByLabel('Through').fill(today);
+	for (const day of ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']) {
+		await restrictions.getByLabel(day).uncheck();
+	}
+	await restrictions.getByLabel('Minimum stay').fill('2');
+	await restrictions.getByRole('button', { name: 'Save restrictions' }).click();
+
+	await expect(restrictions.getByRole('alert')).toContainText(
+		'Choose at least one day and one room type.'
+	);
+	await expect(restrictions).toBeVisible();
+	await restrictions.getByRole('button', { name: 'Cancel' }).click();
+	await expect(cell('DLX · restrictions', today, 'none')).toBeVisible();
+});

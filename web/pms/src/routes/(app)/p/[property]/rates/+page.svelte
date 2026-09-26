@@ -273,6 +273,10 @@
 	async function previewBulk() {
 		if (!plan || !bulkForm?.reportValidity()) return;
 		dialogError = '';
+		if (bulk.weekdays.length === 0 || bulk.roomTypeIds.length === 0) {
+			dialogError = 'Choose at least one day and one room type.';
+			return;
+		}
 		try {
 			const body = bulkBody();
 			preview = (
@@ -356,6 +360,10 @@
 		if (!plan) return;
 		const planId = plan.id;
 		dialogError = '';
+		if (restriction.weekdays.length === 0 || restriction.roomTypeIds.length === 0) {
+			dialogError = 'Choose at least one day and one room type.';
+			return;
+		}
 		try {
 			await pending.run('restrictions', async () =>
 				unwrap(
