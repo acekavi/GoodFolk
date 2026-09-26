@@ -10,6 +10,7 @@ Companion to [ARCHITECTURE.md](ARCHITECTURE.md). Each phase ends in something th
 | [design/api-conventions.md](design/api-conventions.md) | Auth, CSRF, errors, idempotency, concurrency, events, GraphQL and REST shapes |
 | [superpowers/plans/2026-09-23-phase-0-foundations.md](superpowers/plans/2026-09-23-phase-0-foundations.md) | **Phase 0 implementation plan**: 15 test-first tasks with complete code, run in order on a clean repository before the plan was written |
 | [superpowers/plans/2026-09-24-phase-1-rooms-inventory.md](superpowers/plans/2026-09-24-phase-1-rooms-inventory.md) | **Phase 1 implementation plan**: 17 tasks with complete code, executed in order on the Phase 0 code before the plan was written |
+| [superpowers/plans/2026-09-25-phase-2-rates-meal-plans.md](superpowers/plans/2026-09-25-phase-2-rates-meal-plans.md) | **Phase 2 implementation plan**: 17 tasks with complete code, executed in order on the Phase 1 code before the plan was written |
 | [specs/](specs/) | Phases 1–9: scope, data, API, UI, rules, required tests and performance gates |
 
 Each later phase gets its step-by-step implementation plan at the start of that phase, written and verified against the code as it stands then (the same method as Phase 0). Writing code-level plans for Phase 7 now would mean guessing at code that Phases 1–6 have not written yet.
@@ -47,7 +48,7 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
   - Log a warning when `load_grants` skips a role it doesn't recognise.
   - Still open, not in the Phase 1 plan: check the SSE `?property=` filter against the user's grants (property-scoped grants exist now, but the stream only carries cache keys); a purge job for expired sessions, old idempotency keys and old `login_failure` rows (runs in `jobs-svc`, Phase 7).
 
-## Phase 2 — Rates and meal plans ([spec](specs/phase-2-rates-meal-plans.md))
+## Phase 2 — Rates and meal plans ([spec](specs/phase-2-rates-meal-plans.md), [plan](superpowers/plans/2026-09-25-phase-2-rates-meal-plans.md))
 
 - Rate plans: standard, derived and custom, with segment tags (FIT-F, FIT-L, OTA, TA, IBE) (FIT-F = non-resident, FIT-L = resident; residency enforcement; resident prices set by hand; derivation only within the same currency).
 - `rate_day` with occupancy pricing and restrictions. Transactional recomputation of derived plans, depth limit, cycle prevention.
@@ -57,8 +58,8 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
 - Carried over from the Phase 1 reviews (do these before Phase 3 adds reservations to `inventory_day`):
   - **Retype deadlock (resolved).** `contribute` is now one UPDATE per type, and every counter writer locks its rows up front with `rooms::inventory::lock_days`; a test runs 30 concurrent opposite-retype pairs of blocked rooms. The lock-order bullet in [api-conventions.md](design/api-conventions.md) now states that rule.
   - **Scan-order locking (resolved).** `lock_days` locks every row a command will change in ascending `(room_type_id, date)` order before its first UPDATE, so the UPDATEs' plan order no longer matters; reservations must use it too.
-  - Tests still to add: concurrent sign-in attempts against the throttle; a REST cross-tenant POST of a room or section.
-  - Smaller follow-ups: `ETag` on replayed idempotent 201s and in the OpenAPI annotations; an empty PATCH still bumps the version; the rooms page's single page-wide busy flag; `DateGrid` can jump back to an old row when rows shrink and grow again.
+  - Tests added in the Phase 2 plan: concurrent sign-in attempts against the throttle; REST cross-tenant POSTs of a room, a room range and a section.
+  - Follow-ups done in the Phase 2 plan: replayed idempotent creates carry their `ETag`, and the OpenAPI document declares it; an update that names no field is a 422 and keeps the version; the rooms page disables only the row or form a command changes; `DateGrid` keeps its active cell when rows shrink and grow again.
 
 ## Phase 3 — Reservations ([spec](specs/phase-3-reservations.md))
 
