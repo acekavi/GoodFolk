@@ -45,6 +45,7 @@ mod meals;
 mod plans;
 mod policies;
 mod prices;
+mod restrictions;
 
 pub use meals::{
     MealSupplement, MealSupplementChanges, NewMealSupplement, create_meal_supplement, list_meal_supplements,
@@ -62,6 +63,7 @@ pub use prices::{
     BulkChange, BulkPreview, Price, PriceChange, PriceChangeCell, PriceChangeMode, bulk_change, list_prices,
     preview_bulk_change, set_prices,
 };
+pub use restrictions::{Restriction, RestrictionChange, list_restrictions, set_restrictions};
 
 use db::{Event, TenantId, Tx, UserId};
 use time::Date;

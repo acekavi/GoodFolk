@@ -1,4 +1,5 @@
 use crate::prices::{derive_prices, tree_keys};
+use crate::restrictions::{derive_restrictions, inheriting_levels};
 use crate::{RatesError, audit, business_date, lock_rates, notify, rate_plans_key, rates_keys, violates};
 use db::{TenantId, Tx, UserId};
 use serde::Serialize;
@@ -453,6 +454,9 @@ pub async fn create_rate_plan(
     if input.kind == PlanKind::Derived {
         let end = today + Duration::days(rooms::WINDOW_DAYS);
         derive_prices(tx, &[vec![id]], None, today, end, false).await?;
+        if input.inherit_restrictions {
+            derive_restrictions(tx, &[vec![id]], None, today, end).await?;
+        }
         keys.extend(rates_keys(property, id, today, end));
     }
     audit(tx, tenant, actor, "rate_plan.created", "rate_plan", id, serde_json::json!({ "code": input.code })).await?;
@@ -572,10 +576,18 @@ pub async fn update_rate_plan(
         || changes.derive_value.is_some_and(|value| Some(value) != current.derive_value)
         || changes.rounding_step.is_some_and(|step| step != current.rounding_step);
     let added_types = types.iter().any(|t| !current.room_type_ids.contains(t));
+    let end = today + Duration::days(rooms::WINDOW_DAYS);
     if current.kind == PlanKind::Derived && (moved || reformulated || added_types) {
-        let end = today + Duration::days(rooms::WINDOW_DAYS);
         let levels: Vec<Vec<Uuid>> = std::iter::once(vec![id]).chain(tree.descendant_levels(id)).collect();
         derive_prices(tx, &levels, None, today, end, moved).await?;
+        keys.extend(tree_keys(&tree, property, id, today, end));
+    }
+    // A plan that starts inheriting, or inherits from a new parent or for new room types, takes a fresh copy;
+    // one that stops inheriting keeps its copy as its own restrictions.
+    let inherits = changes.inherit_restrictions.unwrap_or(current.inherit_restrictions);
+    if inherits && (!current.inherit_restrictions || moved || added_types) {
+        let levels: Vec<Vec<Uuid>> = std::iter::once(vec![id]).chain(inheriting_levels(&tree, id)).collect();
+        derive_restrictions(tx, &levels, None, today, end).await?;
         keys.extend(tree_keys(&tree, property, id, today, end));
     }
     audit(

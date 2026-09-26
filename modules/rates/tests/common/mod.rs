@@ -169,3 +169,34 @@ impl Hotel {
         rates::list_prices(&mut self.tx().await, self.property, plan.id, window.0, window.1).await.unwrap()
     }
 }
+
+impl Hotel {
+    /// Restrictions on every day of `[from, to)` for `room_types`, with no field set yet.
+    pub fn restrict(&self, room_types: &[Uuid], from: i64, to: i64) -> rates::RestrictionChange {
+        rates::RestrictionChange {
+            from: self.day(from),
+            to: self.day(to),
+            weekdays: vec![],
+            room_type_ids: room_types.to_vec(),
+            closed: None,
+            min_stay: None,
+            max_stay: None,
+            closed_to_arrival: None,
+            closed_to_departure: None,
+        }
+    }
+
+    /// Sets restrictions in their own transaction, committed if it succeeds.
+    pub async fn try_restrict(&self, plan: &RatePlan, change: rates::RestrictionChange) -> Result<u64, RatesError> {
+        let mut tx = self.tx().await;
+        let changed = rates::set_restrictions(&mut tx, self.tenant, self.user, self.property, plan.id, &change).await?;
+        tx.commit().await.unwrap();
+        Ok(changed)
+    }
+
+    /// `plan`'s restrictions over the whole rate window, by date and room type.
+    pub async fn restrictions(&self, plan: &RatePlan) -> Vec<rates::Restriction> {
+        let window = (self.day(0), self.day(rooms::WINDOW_DAYS));
+        rates::list_restrictions(&mut self.tx().await, self.property, plan.id, window.0, window.1).await.unwrap()
+    }
+}
