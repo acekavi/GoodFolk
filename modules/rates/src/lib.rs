@@ -45,6 +45,7 @@ mod meals;
 mod plans;
 mod policies;
 mod prices;
+mod quote;
 mod restrictions;
 
 pub use meals::{
@@ -62,6 +63,9 @@ pub use policies::{
 pub use prices::{
     BulkChange, BulkPreview, Price, PriceChange, PriceChangeCell, PriceChangeMode, bulk_change, list_prices,
     preview_bulk_change, set_prices,
+};
+pub use quote::{
+    Quote, QuoteData, QuoteNight, QuoteRequest, QuoteRoomType, Violation, ViolationKind, load_quote, quote,
 };
 pub use restrictions::{Restriction, RestrictionChange, list_restrictions, set_restrictions};
 
