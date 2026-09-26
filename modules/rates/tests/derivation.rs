@@ -25,8 +25,9 @@ struct Formula {
 fn formula() -> impl Strategy<Value = Formula> {
     let step = prop_oneof![Just(1_i64), Just(5), Just(50), Just(100), Just(1_000)];
     prop_oneof![
-        // Percent: at most +200% to keep root 10M × 3 derivations × 3^(+200%) under MAX_AMOUNT.
-        // Bound: 10M × 3^3 × 3^(200%) ≈ 13.3B < 100B.
+        // Percent: single derivation chain 10M × (1 + 200%)^3 = 270M, safe from MAX_AMOUNT (100B).
+        // Compounding bulk percent changes on the same root cells may exceed it; the test treats
+        // those as refused ops and verifies prices remain unchanged.
         (-10_000..=20_000_i64, step.clone()).prop_map(|(value, step)| Formula {
             mode: ChangeMode::Percent,
             value,
@@ -48,11 +49,12 @@ enum Op {
 
 fn op() -> impl Strategy<Value = Op> {
     prop_oneof![
-        // Root amounts up to 10M; 3 derivations × 3^(+200%) ≈ 270M < 100B.
+        // Root amounts up to 10M; 3 derivations × (1 + 200%)^3 = 270M, safe from MAX_AMOUNT.
         (0..40_i64, 1..10_i64, 1..=3_i32, 0..=10_000_000_i64)
             .prop_map(|(day, days, occupancy, amount)| Op::SetPrices { day, days, occupancy, amount }),
-        // Bulk percent: -10000..=100000 (same as select() bounds), capped at ±200% for safety.
-        (0..40_i64, 1..20_i64, -10_000..=20_000_i64).prop_map(|(day, days, value)| Op::Bulk {
+        // Bulk percent: ±50% per op. Compounding on same cells may exceed MAX_AMOUNT;
+        // the test treats those as refused changes.
+        (0..40_i64, 1..20_i64, -5_000..=5_000_i64).prop_map(|(day, days, value)| Op::Bulk {
             day,
             days,
             mode: PriceChangeMode::Percent,
@@ -92,13 +94,22 @@ async fn derived_prices_follow_their_formulas_down_the_chain(_: PgPoolOptions, o
             let context = format!("chain {chain} {formulas:?}, step {step} of {ops:?}");
             let mut tx = hotel.tx().await;
             let (tenant, user, property) = (hotel.tenant, hotel.user, hotel.property);
-            match op.clone() {
+            let op_succeeded = match op.clone() {
                 Op::SetPrices { day, days, occupancy, amount } => {
                     let prices = hotel.prices(hotel.deluxe.id, day, day + days, occupancy, amount);
-                    rates::set_prices(&mut tx, tenant, user, property, root.id, &prices).await.unwrap();
-                    // Update model with new prices.
-                    for price in &prices {
-                        root_model.insert((price.date, price.occupancy), price.amount);
+                    match rates::set_prices(&mut tx, tenant, user, property, root.id, &prices).await {
+                        Ok(()) => {
+                            // Update model with new prices.
+                            for price in &prices {
+                                root_model.insert((price.date, price.occupancy), price.amount);
+                            }
+                            true
+                        }
+                        Err(rates::RatesError::Invalid(msg)) if msg.contains("larger than") => {
+                            // Refused: a change would exceed MAX_AMOUNT. Leave model unchanged, rollback later.
+                            false
+                        }
+                        Err(e) => panic!("unexpected error in set_prices: {e:?}"),
                     }
                 }
                 Op::Bulk { day, days, mode, value } => {
@@ -110,28 +121,37 @@ async fn derived_prices_follow_their_formulas_down_the_chain(_: PgPoolOptions, o
                         occupancies: vec![],
                         change: PriceChange { mode, value },
                     };
-                    rates::bulk_change(&mut tx, tenant, user, property, root.id, &change).await.unwrap();
-                    // Update model: apply the bulk change with same rounding.
-                    for (date, occupancy) in root_model.keys().cloned().collect::<Vec<_>>() {
-                        if date >= change.from && date < change.to {
-                            let old_amount = root_model[&(date, occupancy)];
-                            let new_amount = match mode {
-                                PriceChangeMode::Percent => {
-                                    let (num, denom) =
-                                        (i128::from(old_amount) * (10_000 + i128::from(value)), 10_000_i128);
-                                    let (whole, rest) = (num.max(0) / denom, num.max(0) % denom);
-                                    let steps = if 2 * rest >= denom { whole + 1 } else { whole };
-                                    i64::try_from(steps).unwrap()
+                    match rates::bulk_change(&mut tx, tenant, user, property, root.id, &change).await {
+                        Ok(_) => {
+                            // Update model: apply the bulk change with same rounding.
+                            for (date, occupancy) in root_model.keys().cloned().collect::<Vec<_>>() {
+                                if date >= change.from && date < change.to {
+                                    let old_amount = root_model[&(date, occupancy)];
+                                    let new_amount = match mode {
+                                        PriceChangeMode::Percent => {
+                                            let (num, denom) =
+                                                (i128::from(old_amount) * (10_000 + i128::from(value)), 10_000_i128);
+                                            let (whole, rest) = (num.max(0) / denom, num.max(0) % denom);
+                                            let steps = if 2 * rest >= denom { whole + 1 } else { whole };
+                                            i64::try_from(steps).unwrap()
+                                        }
+                                        PriceChangeMode::Amount => (old_amount + value).max(0),
+                                        PriceChangeMode::Set => value,
+                                    };
+                                    root_model.insert((date, occupancy), new_amount);
                                 }
-                                PriceChangeMode::Amount => (old_amount + value).max(0),
-                                PriceChangeMode::Set => value,
-                            };
-                            root_model.insert((date, occupancy), new_amount);
+                            }
+                            true
                         }
+                        Err(rates::RatesError::Invalid(msg)) if msg.contains("larger than") => {
+                            // Refused: a change would exceed MAX_AMOUNT. Leave model unchanged, rollback later.
+                            false
+                        }
+                        Err(e) => panic!("unexpected error in bulk_change: {e:?}"),
                     }
                 }
                 Op::Reformulate { level, formula } => {
-                    let Some(plan) = plans.get(level) else { continue };
+                    let Some(plan) = plans.get(level) else { return };
                     let changes = RatePlanChanges {
                         derive_mode: Some(formula.mode),
                         derive_value: Some(formula.value),
@@ -144,9 +164,14 @@ async fn derived_prices_follow_their_formulas_down_the_chain(_: PgPoolOptions, o
                             .unwrap();
                     plans[level] = updated;
                     // Root model unchanged (reformulation affects children only).
+                    true
                 }
+            };
+            if op_succeeded {
+                tx.commit().await.unwrap();
+            } else {
+                tx.rollback().await.unwrap();
             }
-            tx.commit().await.unwrap();
 
             // Verify root plan matches model.
             let stored_root = hotel.stored(&root).await;
