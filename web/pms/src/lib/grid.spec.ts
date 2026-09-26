@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampCell, moveFocus, revealColumn, visibleColumns } from './grid';
+import { clampCell, moveFocus, resolveRow, revealColumn, visibleColumns } from './grid';
 
 describe('visibleColumns', () => {
 	it('covers the columns in view plus overscan on both sides', () => {
@@ -65,5 +65,26 @@ describe('clampCell', () => {
 			row: 0,
 			column: 0
 		});
+	});
+});
+
+describe('resolveRow', () => {
+	it('keeps the chosen row when a different row is removed and then restored', () => {
+		const rows = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+		expect(resolveRow(rows, 'c', 2)).toBe(2);
+
+		const withoutB = [{ id: 'a' }, { id: 'c' }];
+		expect(resolveRow(withoutB, 'c', 2)).toBe(1);
+
+		expect(resolveRow(rows, 'c', 1)).toBe(2);
+	});
+
+	it('falls back to the clamped index when the chosen row itself is gone', () => {
+		const withoutB = [{ id: 'a' }, { id: 'c' }];
+		expect(resolveRow(withoutB, 'b', 1)).toBe(1);
+	});
+
+	it('stays at the origin when there are no rows', () => {
+		expect(resolveRow([], 'b', 1)).toBe(0);
 	});
 });

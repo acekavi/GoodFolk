@@ -9,7 +9,14 @@
 -->
 <script lang="ts" generics="Row extends { id: string; label: string }">
 	import type { Snippet } from 'svelte';
-	import { clampCell, moveFocus, revealColumn, visibleColumns, type Cell } from '$lib/grid';
+	import {
+		clampCell,
+		moveFocus,
+		resolveRow,
+		revealColumn,
+		visibleColumns,
+		type Cell
+	} from '$lib/grid';
 
 	interface Props {
 		/** Accessible name of the grid. */
@@ -51,22 +58,39 @@
 	let viewport = $state<HTMLDivElement>();
 	let scrollLeft = $state(0);
 	let width = $state(0);
-	let chosen = $state<Cell>({ row: 0, column: 0 });
+	// The chosen row, tracked by id (not position), so it stays put when a different row is removed or
+	// restored around it; `row` is the last known index, used to fall back to a nearby row if the chosen
+	// one itself is gone. The column is tracked by index, as it always was.
+	let chosen = $state<{ rowId: string | null; row: number; column: number }>({
+		rowId: null,
+		row: 0,
+		column: 0
+	});
 	// The chosen cell, kept inside the grid when rows or columns go away (a room type is retired), so
 	// `aria-activedescendant` always names a rendered cell.
-	const active = $derived(clampCell(chosen, { rows: rows.length, columns: columns.length }));
+	const active = $derived(
+		clampCell(
+			{ row: resolveRow(rows, chosen.rowId, chosen.row), column: chosen.column },
+			{ rows: rows.length, columns: columns.length }
+		)
+	);
 	// Once the grid shrinks, the clamped cell becomes the chosen one, so the cell does not jump back to its
-	// old row when the rows come back.
+	// old row (or column) when rows or columns come back.
 	$effect.pre(() => {
-		if (rows.length > 0 && (active.row !== chosen.row || active.column !== chosen.column)) {
-			chosen = active;
+		if (
+			rows.length > 0 &&
+			(rows[active.row]?.id !== chosen.rowId || active.column !== chosen.column)
+		) {
+			chosen = { rowId: rows[active.row]?.id ?? null, row: active.row, column: active.column };
 		}
 	});
 
 	// Start on `initialColumn`, scrolled to the left edge, whenever the columns change (a new month).
+	// `rowId` is resolved by the commit effect above, not read here, so this does not also re-run on
+	// every change to `rows`.
 	$effect(() => {
 		const column = Math.min(initialColumn, Math.max(0, columns.length - 1));
-		chosen = { row: 0, column };
+		chosen = { rowId: null, row: 0, column };
 		if (viewport) viewport.scrollLeft = column * columnWidth;
 	});
 
@@ -89,7 +113,7 @@
 	}
 
 	function activate(cellAt: Cell) {
-		chosen = cellAt;
+		chosen = { rowId: rows[cellAt.row]?.id ?? null, row: cellAt.row, column: cellAt.column };
 		const row = rows[cellAt.row];
 		if (row) onactivate?.(row, columns[cellAt.column]);
 	}
@@ -103,7 +127,7 @@
 		const next = moveFocus(active, event.key, { rows: rows.length, columns: columns.length });
 		if (!next || !viewport) return;
 		event.preventDefault();
-		chosen = next;
+		chosen = { rowId: rows[next.row]?.id ?? null, row: next.row, column: next.column };
 		viewport.scrollLeft = revealColumn(
 			next.column,
 			viewport.scrollLeft,

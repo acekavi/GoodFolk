@@ -35,4 +35,26 @@ describe('Pending', () => {
 		expect([pending.has('a'), pending.has('b')]).toEqual([false, true]);
 		void second;
 	});
+
+	it('stays busy for overlapping commands on the same key until all of them settle', async () => {
+		const pending = new Pending();
+		let finishFirst = () => {};
+		let finishSecond = () => {};
+		const first = pending.run(
+			'order',
+			() => new Promise<void>((resolve) => (finishFirst = resolve))
+		);
+		const second = pending.run(
+			'order',
+			() => new Promise<void>((resolve) => (finishSecond = resolve))
+		);
+
+		finishFirst();
+		await first;
+		expect(pending.has('order')).toBe(true);
+
+		finishSecond();
+		await second;
+		expect(pending.has('order')).toBe(false);
+	});
 });

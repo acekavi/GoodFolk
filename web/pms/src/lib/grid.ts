@@ -44,6 +44,23 @@ export interface Cell {
 	column: number;
 }
 
+/**
+ * The current index of the row with id `chosenId`, or `fallbackIndex` clamped to the rows that exist when
+ * that row is no longer among `rows` (its type was retired). Resolving by id, rather than by position,
+ * keeps the chosen row in place when a different row is removed or restored around it.
+ */
+export function resolveRow(
+	rows: { id: string }[],
+	chosenId: string | null,
+	fallbackIndex: number
+): number {
+	if (chosenId !== null) {
+		const index = rows.findIndex((row) => row.id === chosenId);
+		if (index !== -1) return index;
+	}
+	return Math.max(0, Math.min(rows.length - 1, fallbackIndex));
+}
+
 /** `cell`, moved onto the last row or column if the grid no longer has it (`{ 0, 0 }` when empty). */
 export function clampCell(cell: Cell, size: { rows: number; columns: number }): Cell {
 	return {
