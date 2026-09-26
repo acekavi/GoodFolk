@@ -303,6 +303,11 @@ export function restrictionSummary(
  * Collects edits and saves them together once none has come for `delay` ms, so cells edited in quick
  * succession go out in one request. A cell edited twice is saved with its last value. A failed save goes to
  * `onError`; its edits are not retried (the screen refetches and shows what was saved).
+ *
+ * Saves are serialized: a flush's `save` does not start until the previous flush's `save` has settled
+ * (succeeded or failed). The prices endpoint is unversioned (last write wins), so if a cell were re-edited
+ * while its save was still in flight, two overlapping PUTs could arrive out of order and let the stale one
+ * win; queuing each flush's save behind the one before it rules that out.
  */
 export function batcher<T>(
 	key: (item: T) => string,
@@ -313,6 +318,8 @@ export function batcher<T>(
 	let queued = new Map<string, T>();
 	let saving = new Set<string>();
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	/** Resolves once every flush queued so far has run its `save` and settled, in order. */
+	let chain: Promise<void> = Promise.resolve();
 
 	async function flush() {
 		clearTimeout(timer);
@@ -320,13 +327,19 @@ export function batcher<T>(
 		queued = new Map();
 		if (items.size === 0) return;
 		saving = new Set([...saving, ...items.keys()]);
-		try {
-			await save([...items.values()]);
-		} catch (err) {
-			onError(err);
-		} finally {
-			for (const itemKey of items.keys()) saving.delete(itemKey);
-		}
+		const previous = chain;
+		const run = (async () => {
+			await previous;
+			try {
+				await save([...items.values()]);
+			} catch (err) {
+				onError(err);
+			} finally {
+				for (const itemKey of items.keys()) saving.delete(itemKey);
+			}
+		})();
+		chain = run;
+		await run;
 	}
 
 	return {

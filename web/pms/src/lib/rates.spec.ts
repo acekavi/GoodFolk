@@ -189,4 +189,66 @@ describe('batcher', () => {
 		expect(failures).toHaveLength(1);
 		expect(batch.has('a')).toBe(false);
 	});
+
+	it("does not start a second flush's save until the first one settles", async () => {
+		vi.useFakeTimers();
+		let resolveFirst: (() => void) | undefined;
+		const calls: string[][] = [];
+		const batch = batcher<{ cell: string; value: string }>(
+			(edit) => edit.cell,
+			(edits) => {
+				calls.push(edits.map((edit) => `${edit.cell}=${edit.value}`));
+				if (calls.length === 1) {
+					return new Promise<void>((resolve) => {
+						resolveFirst = resolve;
+					});
+				}
+				return Promise.resolve();
+			},
+			400
+		);
+
+		batch.add({ cell: 'a', value: '1' });
+		await vi.advanceTimersByTimeAsync(400);
+		expect(calls).toEqual([['a=1']]);
+
+		batch.add({ cell: 'b', value: '2' });
+		await vi.advanceTimersByTimeAsync(400);
+		// The second flush is queued (its cell reports as saving), but its save has not run yet.
+		expect(calls).toHaveLength(1);
+		expect(batch.has('b')).toBe(true);
+
+		resolveFirst?.();
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(calls).toEqual([['a=1'], ['b=2']]);
+		expect(batch.has('b')).toBe(false);
+	});
+
+	it('lets the next flush run even after the previous save fails', async () => {
+		vi.useFakeTimers();
+		const calls: string[][] = [];
+		const failures: unknown[] = [];
+		let first = true;
+		const batch = batcher<{ cell: string; value: string }>(
+			(edit) => edit.cell,
+			async (edits) => {
+				calls.push(edits.map((edit) => `${edit.cell}=${edit.value}`));
+				if (first) {
+					first = false;
+					throw new Error('offline');
+				}
+			},
+			400,
+			(err) => failures.push(err)
+		);
+
+		batch.add({ cell: 'a', value: '1' });
+		await vi.advanceTimersByTimeAsync(400);
+		batch.add({ cell: 'b', value: '2' });
+		await vi.advanceTimersByTimeAsync(400);
+
+		expect(calls).toEqual([['a=1'], ['b=2']]);
+		expect(failures).toHaveLength(1);
+	});
 });
