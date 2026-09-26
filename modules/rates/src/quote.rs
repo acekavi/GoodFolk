@@ -9,6 +9,9 @@ use serde::Serialize;
 use time::{Date, Duration};
 use uuid::Uuid;
 
+/// Maximum number of nights in a single stay.
+pub const MAX_STAY_NIGHTS: i64 = 730;
+
 /// A stay to price: `[check_in, check_out)`, for guests of `residency`.
 #[derive(Debug, Clone)]
 pub struct QuoteRequest {
@@ -54,6 +57,7 @@ pub struct QuoteNight {
 text_enum!(
     /// Why a stay cannot be sold as quoted.
     ViolationKind {
+        InvalidStay = "invalid_stay",
         Inactive = "inactive",
         Residency = "residency",
         RoomTypeNotSold = "room_type_not_sold",
@@ -107,6 +111,48 @@ fn room_price(plan: &RatePlan, prices: &[Price], date: Date, adults: i32) -> Opt
 /// Prices a stay and lists every reason it cannot be sold. Pure: everything it needs is in `data`.
 pub fn quote(request: &QuoteRequest, data: &QuoteData) -> Quote {
     let (plan, room_type) = (&data.plan, &data.room_type);
+
+    // Early exit for invalid stays: empty or too long
+    if request.check_out <= request.check_in {
+        return Quote {
+            nights: vec![],
+            total: 0,
+            currency: plan.currency.clone(),
+            restrictions_ok: false,
+            violations: vec![Violation {
+                kind: ViolationKind::InvalidStay,
+                date: None,
+                message: "check-out must be after check-in".into(),
+            }],
+        };
+    }
+
+    // Count nights safely using next_day() to avoid Date::MAX panic
+    let mut night_count = 0i64;
+    let mut current = request.check_in;
+    while current < request.check_out {
+        night_count += 1;
+        if let Some(next) = current.next_day() {
+            current = next;
+        } else {
+            break;
+        }
+    }
+
+    if night_count > MAX_STAY_NIGHTS {
+        return Quote {
+            nights: vec![],
+            total: 0,
+            currency: plan.currency.clone(),
+            restrictions_ok: false,
+            violations: vec![Violation {
+                kind: ViolationKind::InvalidStay,
+                date: None,
+                message: format!("stay of {night_count} nights exceeds maximum of {MAX_STAY_NIGHTS}"),
+            }],
+        };
+    }
+
     let mut violations = Vec::new();
     let mut violation = |kind: ViolationKind, date: Option<Date>, message: String| {
         violations.push(Violation { kind, date, message });
@@ -122,12 +168,12 @@ pub fn quote(request: &QuoteRequest, data: &QuoteData) -> Quote {
         violation(ViolationKind::RoomTypeNotSold, None, format!("{} does not sell {}", plan.code, room_type.code));
     }
     let (adults, children) = (request.adults, request.children);
-    if adults < 1
-        || adults > room_type.max_adults
-        || children < 0
-        || children > room_type.max_children
-        || adults + children > room_type.max_occupancy
-    {
+    let occupancy_valid = adults >= 1
+        && adults <= room_type.max_adults
+        && children >= 0
+        && children <= room_type.max_children
+        && adults + children <= room_type.max_occupancy;
+    if !occupancy_valid {
         violation(
             ViolationKind::Occupancy,
             None,
@@ -146,42 +192,78 @@ pub fn quote(request: &QuoteRequest, data: &QuoteData) -> Quote {
     let length = i32::try_from(stay.len()).unwrap_or(i32::MAX);
     let restriction = |date: Date| data.restrictions.iter().find(|r| r.date == date);
     let mut quoted = Vec::with_capacity(stay.len());
-    for &date in &stay {
-        let room = room_price(plan, &data.prices, date, adults).unwrap_or_else(|| {
-            violation(ViolationKind::NoPrice, Some(date), format!("no price for {adults} adults on {date}"));
-            0
-        });
-        let meal = if request.meal_plan == MealPlan::Ro {
-            0
-        } else {
-            let covers = |s: &&MealSupplement| s.from <= date && s.to.is_none_or(|to| date < to);
-            match data.supplements.iter().find(covers) {
-                Some(supplement) => {
-                    i64::from(adults) * supplement.adult_amount + i64::from(children) * supplement.child_amount
+
+    // Only price nights if occupancy is valid
+    if occupancy_valid {
+        for &date in &stay {
+            let room = room_price(plan, &data.prices, date, adults).unwrap_or_else(|| {
+                violation(ViolationKind::NoPrice, Some(date), format!("no price for {adults} adults on {date}"));
+                0
+            });
+            let meal = if request.meal_plan == MealPlan::Ro {
+                0
+            } else {
+                let covers = |s: &&MealSupplement| s.from <= date && s.to.is_none_or(|to| date < to);
+                match data.supplements.iter().find(covers) {
+                    Some(supplement) => {
+                        i64::from(adults) * supplement.adult_amount + i64::from(children) * supplement.child_amount
+                    }
+                    None => {
+                        let meal_plan = request.meal_plan.as_str();
+                        violation(
+                            ViolationKind::NoMealSupplement,
+                            Some(date),
+                            format!("no {meal_plan} supplement in {} on {date}", plan.currency),
+                        );
+                        0
+                    }
                 }
-                None => {
-                    let meal_plan = request.meal_plan.as_str();
+            };
+
+            if let Some(r) = restriction(date) {
+                if r.closed {
+                    violation(ViolationKind::Closed, Some(date), format!("{} is closed on {date}", plan.code));
+                }
+                if let Some(min) = r.min_stay.filter(|min| length < *min) {
                     violation(
-                        ViolationKind::NoMealSupplement,
+                        ViolationKind::MinStay,
                         Some(date),
-                        format!("no {meal_plan} supplement in {} on {date}", plan.currency),
+                        format!("stays over {date} are at least {min} nights"),
                     );
-                    0
+                }
+                if let Some(max) = r.max_stay.filter(|max| length > *max) {
+                    violation(
+                        ViolationKind::MaxStay,
+                        Some(date),
+                        format!("stays over {date} are at most {max} nights"),
+                    );
                 }
             }
-        };
-        if let Some(r) = restriction(date) {
-            if r.closed {
-                violation(ViolationKind::Closed, Some(date), format!("{} is closed on {date}", plan.code));
-            }
-            if let Some(min) = r.min_stay.filter(|min| length < *min) {
-                violation(ViolationKind::MinStay, Some(date), format!("stays over {date} are at least {min} nights"));
-            }
-            if let Some(max) = r.max_stay.filter(|max| length > *max) {
-                violation(ViolationKind::MaxStay, Some(date), format!("stays over {date} are at most {max} nights"));
+            quoted.push(QuoteNight { date, room, meal });
+        }
+    } else {
+        // When occupancy is invalid, still check restrictions but don't price nights
+        for &date in &stay {
+            if let Some(r) = restriction(date) {
+                if r.closed {
+                    violation(ViolationKind::Closed, Some(date), format!("{} is closed on {date}", plan.code));
+                }
+                if let Some(min) = r.min_stay.filter(|min| length < *min) {
+                    violation(
+                        ViolationKind::MinStay,
+                        Some(date),
+                        format!("stays over {date} are at least {min} nights"),
+                    );
+                }
+                if let Some(max) = r.max_stay.filter(|max| length > *max) {
+                    violation(
+                        ViolationKind::MaxStay,
+                        Some(date),
+                        format!("stays over {date} are at most {max} nights"),
+                    );
+                }
             }
         }
-        quoted.push(QuoteNight { date, room, meal });
     }
     if restriction(request.check_in).is_some_and(|r| r.closed_to_arrival) {
         let date = request.check_in;
@@ -205,6 +287,22 @@ pub fn quote(request: &QuoteRequest, data: &QuoteData) -> Quote {
 pub async fn load_quote(tx: &mut Tx, property: Uuid, request: &QuoteRequest) -> Result<Quote, RatesError> {
     if request.check_out <= request.check_in {
         return Err(RatesError::Invalid("check-out is after check-in".into()));
+    }
+
+    // Count nights safely before any queries
+    let mut night_count = 0i64;
+    let mut current = request.check_in;
+    while current < request.check_out {
+        night_count += 1;
+        if let Some(next) = current.next_day() {
+            current = next;
+        } else {
+            break;
+        }
+    }
+
+    if night_count > MAX_STAY_NIGHTS {
+        return Err(RatesError::Invalid(format!("stay of {night_count} nights exceeds maximum of {MAX_STAY_NIGHTS}")));
     }
     let plan = list_rate_plans(tx, property)
         .await?
@@ -463,5 +561,79 @@ mod tests {
             kinds(&stay(1), &retired),
             [(ViolationKind::Inactive, None), (ViolationKind::RoomTypeNotSold, None)]
         );
+    }
+
+    #[test]
+    fn empty_and_backwards_stays_give_invalid_stay() {
+        let empty = QuoteRequest { check_out: ARRIVAL, ..stay(1) };
+        let backwards = QuoteRequest { check_in: day(2), check_out: day(1), ..stay(1) };
+
+        let empty_quoted = quote(&empty, &data());
+        let backwards_quoted = quote(&backwards, &data());
+
+        assert!(empty_quoted.nights.is_empty());
+        assert_eq!(empty_quoted.total, 0);
+        assert!(!empty_quoted.restrictions_ok);
+        assert_eq!(empty_quoted.violations.len(), 1);
+        assert_eq!(empty_quoted.violations[0].kind, ViolationKind::InvalidStay);
+
+        assert!(backwards_quoted.nights.is_empty());
+        assert_eq!(backwards_quoted.total, 0);
+        assert!(!backwards_quoted.restrictions_ok);
+        assert_eq!(backwards_quoted.violations.len(), 1);
+        assert_eq!(backwards_quoted.violations[0].kind, ViolationKind::InvalidStay);
+    }
+
+    #[test]
+    fn a_stay_over_max_stay_nights_gives_invalid_stay() {
+        let too_long = QuoteRequest { check_out: ARRIVAL + time::Duration::days(731), ..stay(1) };
+
+        let quoted = quote(&too_long, &data());
+
+        assert!(quoted.nights.is_empty());
+        assert_eq!(quoted.total, 0);
+        assert!(!quoted.restrictions_ok);
+        assert_eq!(quoted.violations.len(), 1);
+        assert_eq!(quoted.violations[0].kind, ViolationKind::InvalidStay);
+        assert!(quoted.violations[0].message.contains("731"));
+    }
+
+    #[test]
+    fn check_out_at_date_max_does_not_panic() {
+        let at_max = QuoteRequest { check_out: Date::MAX, ..stay(1) };
+
+        let _ = quote(&at_max, &data());
+        // If we got here without panicking, the test passes
+    }
+
+    #[test]
+    fn zero_adults_gives_occupancy_violation_without_no_price() {
+        let zero_adults = QuoteRequest { adults: 0, ..stay(1) };
+        let quoted = quote(&zero_adults, &data());
+
+        let violations: Vec<ViolationKind> = quoted.violations.iter().map(|v| v.kind).collect();
+        assert_eq!(violations, vec![ViolationKind::Occupancy]);
+        assert!(quoted.nights.is_empty());
+    }
+
+    #[test]
+    fn negative_children_gives_occupancy_violation() {
+        let negative_children = QuoteRequest { children: -1, ..stay(1) };
+        let quoted = quote(&negative_children, &data());
+
+        let violations: Vec<ViolationKind> = quoted.violations.iter().map(|v| v.kind).collect();
+        assert_eq!(violations, vec![ViolationKind::Occupancy]);
+    }
+
+    #[test]
+    fn fallback_across_two_extra_adults() {
+        let room_type_3 = QuoteRoomType { max_adults: 3, ..data().room_type };
+        let only_single = QuoteData { prices: vec![price(0, 1, 8_000)], room_type: room_type_3, ..data() };
+        let three_adults = QuoteRequest { adults: 3, children: 0, ..stay(1) };
+
+        let quoted = quote(&three_adults, &only_single);
+
+        assert_eq!(quoted.nights[0].room, 8_000 + 2 * 2_500, "price for 1 adult plus 2 extra");
+        assert!(quoted.restrictions_ok);
     }
 }

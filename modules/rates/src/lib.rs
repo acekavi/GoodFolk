@@ -65,7 +65,8 @@ pub use prices::{
     preview_bulk_change, set_prices,
 };
 pub use quote::{
-    Quote, QuoteData, QuoteNight, QuoteRequest, QuoteRoomType, Violation, ViolationKind, load_quote, quote,
+    MAX_STAY_NIGHTS, Quote, QuoteData, QuoteNight, QuoteRequest, QuoteRoomType, Violation, ViolationKind, load_quote,
+    quote,
 };
 pub use restrictions::{Restriction, RestrictionChange, list_restrictions, set_restrictions};
 
