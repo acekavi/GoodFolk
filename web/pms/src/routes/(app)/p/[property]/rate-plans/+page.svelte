@@ -1,11 +1,12 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
-	import { errorMessage } from '$lib/api/problem';
+	import { ApiError, errorMessage } from '$lib/api/problem';
 	import { formKeys, ifMatch, rest, unwrap } from '$lib/api/rest';
 	import type { components } from '$lib/api/openapi';
 	import { Pending } from '$lib/pending.svelte';
 	import {
+		descendants,
 		fetchRatePlans,
 		formatMoney,
 		formula,
@@ -72,6 +73,10 @@
 	const createForm = formKeys();
 	const parent = $derived(draft?.kind === 'derived' ? byId.get(draft.parentId) : undefined);
 	const currency = $derived(parent?.currency ?? draft?.currency ?? '');
+	/** A plan can't be derived from itself or from one of its own descendants (that would be a cycle). */
+	const excludedParents = $derived(
+		draft?.id ? descendants(plans.data?.ratePlans ?? [], draft.id) : new Set<string>()
+	);
 
 	function newDraft(): Draft {
 		return {
@@ -198,8 +203,18 @@
 			});
 			draft = null;
 		} catch (err) {
-			error = err instanceof Error && !('problem' in err) ? err.message : errorMessage(err);
-			if (!draft?.id) createForm.failed(err);
+			if (err instanceof ApiError && err.status === 412 && d.id) {
+				// Someone else saved first: reload rather than let a stale If-Match overwrite their change.
+				const fresh = await fetchRatePlans(propertyId);
+				client.setQueryData(ratePlansKey(propertyId), fresh);
+				const freshPlan = fresh.ratePlans.find((plan) => plan.id === d.id);
+				draft = freshPlan ? editDraft(freshPlan) : null;
+				error =
+					'Someone else changed this plan. The form now shows the latest version; make your change again.';
+			} else {
+				error = err instanceof Error && !('problem' in err) ? err.message : errorMessage(err);
+				if (!draft?.id) createForm.failed(err);
+			}
 		} finally {
 			await client.invalidateQueries({ queryKey: ratePlansKey(propertyId) });
 		}
@@ -267,7 +282,7 @@
 					{/if}
 				</tr>
 			{:else}
-				<tr><td colspan="6">No rate plans yet.</td></tr>
+				<tr><td colspan={manage ? 6 : 5}>No rate plans yet.</td></tr>
 			{/each}
 		</tbody>
 	</table>
@@ -306,7 +321,7 @@
 					<select required bind:value={draft.parentId}>
 						<option value="" disabled>Choose a plan</option>
 						{#each plans.data.ratePlans as plan (plan.id)}
-							{#if plan.kind !== 'CUSTOM' && plan.id !== draft.id}
+							{#if plan.kind !== 'CUSTOM' && plan.id !== draft.id && !excludedParents.has(plan.id)}
 								<option value={plan.id}>{plan.code}</option>
 							{/if}
 						{/each}

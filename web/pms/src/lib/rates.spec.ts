@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	batcher,
+	descendants,
 	formatMoney,
 	formula,
 	indexRates,
@@ -112,6 +113,17 @@ describe('formula', () => {
 		expect(formula(plan({ deriveMode: 'AMOUNT', deriveValue: -1050, roundingStep: 1 }), bar)).toBe(
 			'BAR − 10.50'
 		);
+	});
+});
+
+describe('descendants', () => {
+	it('finds every plan derived from a plan, directly or through another derived plan', () => {
+		const a = plan({ id: 'a', code: 'A', parentId: null });
+		const b = plan({ id: 'b', code: 'B', parentId: 'a' });
+		const c = plan({ id: 'c', code: 'C', parentId: 'b' });
+		const sibling = plan({ id: 'sibling', code: 'SIB', parentId: null });
+
+		expect(descendants([a, b, c, sibling], 'a')).toEqual(new Set(['b', 'c']));
 	});
 });
 

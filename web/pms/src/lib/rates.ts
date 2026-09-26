@@ -244,6 +244,30 @@ export function indexRates(grid: RateGrid) {
 	};
 }
 
+/**
+ * Every plan derived from `id`, directly or through another derived plan, found by following
+ * `parentId` links. Does not include `id` itself.
+ */
+export function descendants(
+	plans: readonly Pick<RatePlan, 'id' | 'parentId'>[],
+	id: string
+): Set<string> {
+	const children = new Map<string, string[]>();
+	for (const plan of plans) {
+		if (!plan.parentId) continue;
+		children.set(plan.parentId, [...(children.get(plan.parentId) ?? []), plan.id]);
+	}
+	const found = new Set<string>();
+	const queue = [...(children.get(id) ?? [])];
+	while (queue.length > 0) {
+		const next = queue.shift()!;
+		if (found.has(next)) continue;
+		found.add(next);
+		queue.push(...(children.get(next) ?? []));
+	}
+	return found;
+}
+
 /** How a derived plan follows its parent, e.g. `BAR + 15%, rounded to 1.00`. */
 export function formula(
 	plan: Pick<RatePlan, 'deriveMode' | 'deriveValue' | 'roundingStep' | 'currency'>,
