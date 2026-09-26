@@ -147,15 +147,16 @@
 		return `${row.label} ${date}: ${amount === undefined ? 'no price' : formatMoney(amount, currency)}`;
 	}
 
-	let editing = $state<{ row: RateRow; date: string; text: string } | null>(null);
+	let editing = $state<{ row: RateRow; date: string; text: string; planId: string } | null>(null);
 
 	function startEditing(row: RateRow, date: string) {
 		finishEditing();
-		if (!editable || row.occupancy === null || date < businessDate) return;
+		if (!editable || !plan || row.occupancy === null || date < businessDate) return;
 		const amount = price(row, date);
 		editing = {
 			row,
 			date,
+			planId: plan.id,
 			text: amount === undefined ? '' : formatMoney(amount, currency).replaceAll(',', '')
 		};
 	}
@@ -164,7 +165,7 @@
 	function finishEditing() {
 		const current = editing;
 		editing = null;
-		if (!current || !plan || current.row.occupancy === null || current.text.trim() === '') return;
+		if (!current || current.row.occupancy === null || current.text.trim() === '') return;
 		const amount = parseMoney(current.text, currency);
 		if (amount === null) {
 			error = `“${current.text}” is not a price.`;
@@ -173,7 +174,7 @@
 		if (amount === price(current.row, current.date)) return;
 		error = '';
 		const edit = {
-			planId: plan.id,
+			planId: current.planId,
 			room_type_id: current.row.roomTypeId,
 			date: current.date,
 			occupancy: current.row.occupancy,
@@ -192,6 +193,10 @@
 		finishEditing();
 		void edits.flush();
 		chosenPlan = id;
+		// The quote panel's room type and result belonged to the old plan; start it over for the new one.
+		stay.roomTypeId = plans.data?.ratePlans.find((p) => p.id === id)?.roomTypeIds[0] ?? '';
+		quoted = null;
+		quoteError = '';
 	}
 
 	/** Range forms: `through` is the last day changed; the API takes `[from, to)`. */
@@ -216,20 +221,30 @@
 	}
 
 	let bulkDialog = $state<HTMLDialogElement>();
+	let bulkForm = $state<HTMLFormElement>();
 	let bulk = $state({
 		...rangeForm(),
 		mode: 'percent' as 'percent' | 'amount' | 'set',
 		value: ''
 	});
 	let preview = $state<BulkPreviewQuery['bulkChangePreview'] | null>(null);
+	/** The body `preview` was computed from; `applyBulk` sends exactly this, never a body built fresh. */
+	let previewed = $state<ReturnType<typeof bulkBody> | null>(null);
 	let dialogError = $state('');
 	const bulkKeys = formKeys();
 
 	function openBulk() {
 		bulk = { ...rangeForm(), mode: 'percent', value: '' };
 		preview = null;
+		previewed = null;
 		dialogError = '';
 		bulkDialog?.showModal();
+	}
+
+	/** Any change to the bulk form invalidates its preview, so Apply can never outrun what it showed. */
+	function clearBulkPreview() {
+		preview = null;
+		previewed = null;
 	}
 
 	/** The bulk change's value in the API's units: basis points, or minor units (signed for `amount`). */
@@ -256,7 +271,7 @@
 	}
 
 	async function previewBulk() {
-		if (!plan) return;
+		if (!plan || !bulkForm?.reportValidity()) return;
 		dialogError = '';
 		try {
 			const body = bulkBody();
@@ -272,19 +287,21 @@
 					value: body.change.value
 				})
 			).bulkChangePreview;
+			previewed = body;
 		} catch (err) {
 			preview = null;
+			previewed = null;
 			dialogError = err instanceof Error && !('problem' in err) ? err.message : errorMessage(err);
 		}
 	}
 
 	async function applyBulk(event: SubmitEvent) {
 		event.preventDefault();
-		if (!plan) return;
+		if (!plan || !previewed) return;
 		const planId = plan.id;
+		const body = previewed;
 		dialogError = '';
 		try {
-			const body = bulkBody();
 			await pending.run('bulk', async () =>
 				unwrap(
 					await rest.POST('/api/v1/properties/{property}/rate-plans/{plan}/bulk-change', {
@@ -485,10 +502,23 @@
 								inputmode="decimal"
 								bind:value={editing.text}
 								use:focusOnMount
+								onmousedown={(event) => event.stopPropagation()}
+								onclick={(event) => event.stopPropagation()}
 								onkeydown={(event) => {
 									event.stopPropagation();
-									if (event.key === 'Enter') finishEditing();
-									if (event.key === 'Escape') editing = null;
+									// Move focus back to the grid before the input unmounts, so arrow keys
+									// keep working; whichever of Enter/Escape runs first below settles
+									// `editing`, so the blur this triggers is a no-op finishEditing.
+									const grid = (event.currentTarget as HTMLElement).closest(
+										'[role=grid]'
+									) as HTMLElement | null;
+									if (event.key === 'Enter') {
+										finishEditing();
+										grid?.focus();
+									} else if (event.key === 'Escape') {
+										editing = null;
+										grid?.focus();
+									}
 								}}
 								onblur={finishEditing}
 							/>
@@ -604,25 +634,24 @@
 {/snippet}
 
 <dialog bind:this={bulkDialog} aria-labelledby="bulk-title">
-	<form class="form" onsubmit={applyBulk}>
+	<form
+		class="form"
+		bind:this={bulkForm}
+		onsubmit={applyBulk}
+		oninput={clearBulkPreview}
+		onchange={clearBulkPreview}
+	>
 		<h2 id="bulk-title">Bulk change</h2>
 		{@render rangeFields(bulk)}
 		<label>
 			Change
-			<select bind:value={bulk.mode} onchange={() => (preview = null)}>
+			<select bind:value={bulk.mode}>
 				<option value="percent">By a percentage (e.g. 10 or -5)</option>
 				<option value="amount">By an amount (e.g. 5.00 or -5.00)</option>
 				<option value="set">Set to</option>
 			</select>
 		</label>
-		<label
-			>Value <input
-				required
-				inputmode="decimal"
-				bind:value={bulk.value}
-				oninput={() => (preview = null)}
-			/></label
-		>
+		<label>Value <input required inputmode="decimal" bind:value={bulk.value} /></label>
 		{#if preview}
 			<p data-testid="preview-total">
 				{preview.total}

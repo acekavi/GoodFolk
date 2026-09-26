@@ -251,4 +251,30 @@ describe('batcher', () => {
 		expect(calls).toEqual([['a=1'], ['b=2']]);
 		expect(failures).toHaveLength(1);
 	});
+
+	it("does not deadlock a later flush when a previous flush's onError itself throws", async () => {
+		const calls: string[][] = [];
+		let first = true;
+		const batch = batcher<{ cell: string; value: string }>(
+			(edit) => edit.cell,
+			async (edits) => {
+				calls.push(edits.map((edit) => `${edit.cell}=${edit.value}`));
+				if (first) {
+					first = false;
+					throw new Error('offline');
+				}
+			},
+			400,
+			() => {
+				throw new Error('onError itself throws');
+			}
+		);
+
+		batch.add({ cell: 'a', value: '1' });
+		await batch.flush().catch(() => {});
+		batch.add({ cell: 'b', value: '2' });
+		await batch.flush();
+
+		expect(calls).toEqual([['a=1'], ['b=2']]);
+	});
 });

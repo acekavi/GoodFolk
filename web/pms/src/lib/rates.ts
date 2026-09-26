@@ -329,7 +329,9 @@ export function batcher<T>(
 		saving = new Set([...saving, ...items.keys()]);
 		const previous = chain;
 		const run = (async () => {
-			await previous;
+			// A previous flush's `run` only rejects if its own `onError` callback itself threw; swallow
+			// that here so a broken `onError` can't deadlock every flush queued after it.
+			await previous.catch(() => {});
 			try {
 				await save([...items.values()]);
 			} catch (err) {

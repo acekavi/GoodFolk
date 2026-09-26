@@ -128,6 +128,20 @@ test('prices are edited in the grid, changed in bulk and quoted', async ({ page 
 	await page.keyboard.press('Enter');
 	await expect(cell('DLX · 2 adults', today, '150.00')).toBeVisible();
 
+	// Clicking inside the open editor does not close it, and after Enter the grid keeps keyboard
+	// focus, so the arrow keys still move the active cell.
+	await cell('DLX · 2 adults', today, '150.00').click();
+	const priceInput = page.getByLabel(`Price for DLX · 2 adults on ${today}`);
+	await priceInput.click();
+	await priceInput.fill('150');
+	await expect(priceInput).toBeVisible();
+	await page.keyboard.press('Enter');
+	await expect(cell('DLX · 2 adults', today, '150.00')).toBeVisible();
+	await page.keyboard.press('ArrowRight');
+	await page.keyboard.press('Enter');
+	await expect(page.getByLabel(`Price for DLX · 2 adults on ${addDays(today, 1)}`)).toBeVisible();
+	await page.keyboard.press('Escape');
+
 	// The derived plan follows at once: 150.00 + 15% = 172.50, rounded to 173.00.
 	await page.getByLabel('Rate plan').selectOption({ label: 'OTA' });
 	await expect(page.getByText('Derived from BAR: BAR + 15%, rounded to 1.00')).toBeVisible();
@@ -144,6 +158,14 @@ test('prices are edited in the grid, changed in bulk and quoted', async ({ page 
 	await bulk.getByLabel('Value').fill('100');
 	await bulk.getByRole('button', { name: 'Preview' }).click();
 	await expect(bulk.getByTestId('preview-total')).toContainText('prices change');
+
+	// Changing the form after Preview invalidates it: Apply must always send exactly what was shown.
+	await bulk.getByLabel('Through').fill(addDays(month.end, 1));
+	await expect(bulk.getByRole('button', { name: 'Apply' })).toBeDisabled();
+	await bulk.getByLabel('Through').fill(month.end);
+	await bulk.getByRole('button', { name: 'Preview' }).click();
+	await expect(bulk.getByTestId('preview-total')).toContainText('prices change');
+
 	await bulk.getByRole('button', { name: 'Apply' }).click();
 	await expect(bulk).toBeHidden();
 	await page.getByRole('button', { name: 'Bulk change…' }).click();
