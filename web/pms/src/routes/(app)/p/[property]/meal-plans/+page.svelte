@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
-	import { errorMessage } from '$lib/api/problem';
+	import { ApiError, errorMessage } from '$lib/api/problem';
 	import { formKeys, ifMatch, rest, unwrap } from '$lib/api/rest';
+	import { addDays } from '$lib/inventory';
 	import { Pending } from '$lib/pending.svelte';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
 	import {
@@ -49,9 +50,10 @@
 		adult: '',
 		child: '0',
 		from: '',
-		to: ''
+		through: ''
 	});
-	let editing = $state<{ id: string; adult: string; child: string; to: string } | null>(null);
+	/** `through`: the last night charged (inclusive), as the rates page's range forms use it. */
+	let editing = $state<{ id: string; adult: string; child: string; through: string } | null>(null);
 
 	function amount(text: string, currency: string): number {
 		const value = parseMoney(text, currency);
@@ -83,7 +85,7 @@
 				adult_amount: amount(draft.adult, currency),
 				child_amount: amount(draft.child, currency),
 				from: draft.from || businessDate,
-				to: draft.to || null
+				to: draft.through ? addDays(draft.through, 1) : null
 			};
 		} catch (err) {
 			error = (err as Error).message;
@@ -108,34 +110,62 @@
 		if (added) addForm.reset();
 	}
 
-	function edit(supplement: MealSupplement) {
-		editing = {
+	/** `supplement.to` (exclusive) shown as `through`: its last night charged (inclusive). */
+	function editFields(supplement: MealSupplement) {
+		return {
 			id: supplement.id,
 			adult: formatMoney(supplement.adultAmount, supplement.currency).replaceAll(',', ''),
 			child: formatMoney(supplement.childAmount, supplement.currency).replaceAll(',', ''),
-			to: supplement.to ?? ''
+			through: supplement.to ? addDays(supplement.to, -1) : ''
 		};
+	}
+
+	function edit(supplement: MealSupplement) {
+		editing = editFields(supplement);
 	}
 
 	async function save(supplement: MealSupplement) {
 		if (!editing) return;
 		const changes = editing;
-		const saved = await run(supplement.id, async () =>
-			unwrap(
-				await rest.PATCH('/api/v1/properties/{property}/meal-supplements/{supplement}', {
-					params: {
-						path: { property: propertyId, supplement: supplement.id },
-						header: ifMatch(supplement.version)
-					},
-					body: {
-						adult_amount: amount(changes.adult, supplement.currency),
-						child_amount: amount(changes.child, supplement.currency),
-						to: changes.to || null
-					}
-				})
-			)
-		);
-		if (saved) editing = null;
+		let adultAmount: number;
+		let childAmount: number;
+		try {
+			adultAmount = amount(changes.adult, supplement.currency);
+			childAmount = amount(changes.child, supplement.currency);
+		} catch (err) {
+			error = (err as Error).message;
+			return;
+		}
+		const to = changes.through ? addDays(changes.through, 1) : null;
+		error = '';
+		try {
+			await pending.run(supplement.id, async () =>
+				unwrap(
+					await rest.PATCH('/api/v1/properties/{property}/meal-supplements/{supplement}', {
+						params: {
+							path: { property: propertyId, supplement: supplement.id },
+							header: ifMatch(supplement.version)
+						},
+						body: { adult_amount: adultAmount, child_amount: childAmount, to }
+					})
+				)
+			);
+			editing = null;
+		} catch (err) {
+			if (err instanceof ApiError && err.status === 412) {
+				// Someone else saved first: reload rather than let a stale If-Match overwrite their change.
+				const fresh = await fetchRatePlans(propertyId);
+				client.setQueryData(ratePlansKey(propertyId), fresh);
+				const freshSupplement = fresh.mealSupplements.find((s) => s.id === supplement.id);
+				editing = freshSupplement ? editFields(freshSupplement) : null;
+				error =
+					'Someone else changed this supplement. The row now shows the latest version; make your change again.';
+			} else {
+				error = err instanceof Error && !('problem' in err) ? err.message : errorMessage(err);
+			}
+		} finally {
+			await client.invalidateQueries({ queryKey: ratePlansKey(propertyId) });
+		}
 	}
 </script>
 
@@ -159,7 +189,7 @@
 					<th>Per adult</th>
 					<th>Per child</th>
 					<th>From</th>
-					<th>Until (first night not charged)</th>
+					<th>Through</th>
 					{#if manage}<th><span class="visually-hidden">Actions</span></th>{/if}
 				</tr>
 			</thead>
@@ -172,7 +202,13 @@
 							<td><input aria-label="Per adult for {code}" bind:value={editing.adult} /></td>
 							<td><input aria-label="Per child for {code}" bind:value={editing.child} /></td>
 							<td>{supplement.from}</td>
-							<td><input type="date" aria-label="Until for {code}" bind:value={editing.to} /></td>
+							<td>
+								<input
+									type="date"
+									aria-label="Through (last night charged, optional) for {code}"
+									bind:value={editing.through}
+								/>
+							</td>
 							<td class="actions">
 								<button
 									aria-label="Save {code}"
@@ -185,7 +221,7 @@
 							<td>{formatMoney(supplement.adultAmount, currency)}</td>
 							<td>{formatMoney(supplement.childAmount, currency)}</td>
 							<td>{supplement.from}</td>
-							<td>{supplement.to ?? 'Until further notice'}</td>
+							<td>{supplement.to ? addDays(supplement.to, -1) : 'Until further notice'}</td>
 							{#if manage}
 								<td>
 									<button
@@ -218,8 +254,11 @@
 			<label>Currency <input required pattern={'[A-Za-z]{3}'} bind:value={draft.currency} /></label>
 			<label>Per adult <input required inputmode="decimal" bind:value={draft.adult} /></label>
 			<label>Per child <input required inputmode="decimal" bind:value={draft.child} /></label>
-			<label>From <input type="date" bind:value={draft.from} /></label>
-			<label>Until (optional) <input type="date" bind:value={draft.to} /></label>
+			<label>From <input type="date" required bind:value={draft.from} /></label>
+			<label
+				>Through (last night charged, optional)
+				<input type="date" bind:value={draft.through} /></label
+			>
 			<button disabled={pending.has('add')}>Add supplement</button>
 		</form>
 	{/if}

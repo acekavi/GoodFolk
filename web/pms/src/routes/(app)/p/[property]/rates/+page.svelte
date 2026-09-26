@@ -399,7 +399,10 @@
 		event.preventDefault();
 		if (!plan) return;
 		quoteError = '';
-		// Prices typed a moment ago are saved first, so the quote sees them.
+		// A price still open in the cell editor (the click that submits this form doesn't always
+		// blur it first, e.g. Safari) is finished, then prices typed a moment ago are saved, so the
+		// quote sees them.
+		finishEditing();
 		await edits.flush();
 		try {
 			quoted = (
