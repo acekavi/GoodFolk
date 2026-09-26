@@ -9,7 +9,8 @@
 		{ href: resolve('/(app)/p/[property]', { property }), label: 'Overview' },
 		{ href: resolve('/(app)/p/[property]/room-types', { property }), label: 'Room types' },
 		{ href: resolve('/(app)/p/[property]/rooms', { property }), label: 'Rooms' },
-		{ href: resolve('/(app)/p/[property]/inventory', { property }), label: 'Inventory' }
+		{ href: resolve('/(app)/p/[property]/inventory', { property }), label: 'Inventory' },
+		{ href: resolve('/(app)/p/[property]/rate-plans', { property }), label: 'Rate plans' }
 	]);
 </script>
 
