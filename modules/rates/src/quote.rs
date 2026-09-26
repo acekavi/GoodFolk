@@ -98,6 +98,18 @@ fn nights(check_in: Date, check_out: Date) -> Vec<Date> {
         .collect()
 }
 
+/// Count nights in a stay in O(1) time. Rejects empty, backwards, or over-MAX_STAY_NIGHTS stays.
+fn stay_nights(check_in: Date, check_out: Date) -> Result<i64, String> {
+    if check_out <= check_in {
+        return Err("check-out is after check-in".into());
+    }
+    let night_count = (check_out - check_in).whole_days();
+    if night_count > MAX_STAY_NIGHTS {
+        return Err(format!("stay of {night_count} nights exceeds maximum of {MAX_STAY_NIGHTS}"));
+    }
+    Ok(night_count)
+}
+
 /// The room price for `adults` on `date`: the price for that occupancy, or else the nearest lower one plus
 /// the plan's extra-adult amount for each adult above it.
 fn room_price(plan: &RatePlan, prices: &[Price], date: Date, adults: i32) -> Option<i64> {
@@ -112,44 +124,14 @@ fn room_price(plan: &RatePlan, prices: &[Price], date: Date, adults: i32) -> Opt
 pub fn quote(request: &QuoteRequest, data: &QuoteData) -> Quote {
     let (plan, room_type) = (&data.plan, &data.room_type);
 
-    // Early exit for invalid stays: empty or too long
-    if request.check_out <= request.check_in {
+    // Early exit for invalid stays using O(1) helper
+    if let Err(msg) = stay_nights(request.check_in, request.check_out) {
         return Quote {
             nights: vec![],
             total: 0,
             currency: plan.currency.clone(),
             restrictions_ok: false,
-            violations: vec![Violation {
-                kind: ViolationKind::InvalidStay,
-                date: None,
-                message: "check-out must be after check-in".into(),
-            }],
-        };
-    }
-
-    // Count nights safely using next_day() to avoid Date::MAX panic
-    let mut night_count = 0i64;
-    let mut current = request.check_in;
-    while current < request.check_out {
-        night_count += 1;
-        if let Some(next) = current.next_day() {
-            current = next;
-        } else {
-            break;
-        }
-    }
-
-    if night_count > MAX_STAY_NIGHTS {
-        return Quote {
-            nights: vec![],
-            total: 0,
-            currency: plan.currency.clone(),
-            restrictions_ok: false,
-            violations: vec![Violation {
-                kind: ViolationKind::InvalidStay,
-                date: None,
-                message: format!("stay of {night_count} nights exceeds maximum of {MAX_STAY_NIGHTS}"),
-            }],
+            violations: vec![Violation { kind: ViolationKind::InvalidStay, date: None, message: msg }],
         };
     }
 
@@ -188,6 +170,7 @@ pub fn quote(request: &QuoteRequest, data: &QuoteData) -> Quote {
         violation(ViolationKind::MealPlanNotAllowed, None, format!("{} is not sold with {meal_plan}", plan.code));
     }
 
+    // Build stay only after bound check passes
     let stay = nights(request.check_in, request.check_out);
     let length = i32::try_from(stay.len()).unwrap_or(i32::MAX);
     let restriction = |date: Date| data.restrictions.iter().find(|r| r.date == date);
@@ -219,52 +202,25 @@ pub fn quote(request: &QuoteRequest, data: &QuoteData) -> Quote {
                     }
                 }
             };
-
-            if let Some(r) = restriction(date) {
-                if r.closed {
-                    violation(ViolationKind::Closed, Some(date), format!("{} is closed on {date}", plan.code));
-                }
-                if let Some(min) = r.min_stay.filter(|min| length < *min) {
-                    violation(
-                        ViolationKind::MinStay,
-                        Some(date),
-                        format!("stays over {date} are at least {min} nights"),
-                    );
-                }
-                if let Some(max) = r.max_stay.filter(|max| length > *max) {
-                    violation(
-                        ViolationKind::MaxStay,
-                        Some(date),
-                        format!("stays over {date} are at most {max} nights"),
-                    );
-                }
-            }
             quoted.push(QuoteNight { date, room, meal });
         }
-    } else {
-        // When occupancy is invalid, still check restrictions but don't price nights
-        for &date in &stay {
-            if let Some(r) = restriction(date) {
-                if r.closed {
-                    violation(ViolationKind::Closed, Some(date), format!("{} is closed on {date}", plan.code));
-                }
-                if let Some(min) = r.min_stay.filter(|min| length < *min) {
-                    violation(
-                        ViolationKind::MinStay,
-                        Some(date),
-                        format!("stays over {date} are at least {min} nights"),
-                    );
-                }
-                if let Some(max) = r.max_stay.filter(|max| length > *max) {
-                    violation(
-                        ViolationKind::MaxStay,
-                        Some(date),
-                        format!("stays over {date} are at most {max} nights"),
-                    );
-                }
+    }
+
+    // Check restrictions once, outside the occupancy branch
+    for &date in &stay {
+        if let Some(r) = restriction(date) {
+            if r.closed {
+                violation(ViolationKind::Closed, Some(date), format!("{} is closed on {date}", plan.code));
+            }
+            if let Some(min) = r.min_stay.filter(|min| length < *min) {
+                violation(ViolationKind::MinStay, Some(date), format!("stays over {date} are at least {min} nights"));
+            }
+            if let Some(max) = r.max_stay.filter(|max| length > *max) {
+                violation(ViolationKind::MaxStay, Some(date), format!("stays over {date} are at most {max} nights"));
             }
         }
     }
+
     if restriction(request.check_in).is_some_and(|r| r.closed_to_arrival) {
         let date = request.check_in;
         violation(ViolationKind::ClosedToArrival, Some(date), format!("arrivals are closed on {date}"));
@@ -285,25 +241,8 @@ pub fn quote(request: &QuoteRequest, data: &QuoteData) -> Quote {
 
 /// Reads what a quote needs and prices the stay.
 pub async fn load_quote(tx: &mut Tx, property: Uuid, request: &QuoteRequest) -> Result<Quote, RatesError> {
-    if request.check_out <= request.check_in {
-        return Err(RatesError::Invalid("check-out is after check-in".into()));
-    }
-
-    // Count nights safely before any queries
-    let mut night_count = 0i64;
-    let mut current = request.check_in;
-    while current < request.check_out {
-        night_count += 1;
-        if let Some(next) = current.next_day() {
-            current = next;
-        } else {
-            break;
-        }
-    }
-
-    if night_count > MAX_STAY_NIGHTS {
-        return Err(RatesError::Invalid(format!("stay of {night_count} nights exceeds maximum of {MAX_STAY_NIGHTS}")));
-    }
+    // Validate stay using O(1) helper before any queries
+    stay_nights(request.check_in, request.check_out).map_err(RatesError::Invalid)?;
     let plan = list_rate_plans(tx, property)
         .await?
         .into_iter()
