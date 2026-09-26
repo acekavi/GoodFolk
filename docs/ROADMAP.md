@@ -60,6 +60,12 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
   - **Scan-order locking (resolved).** `lock_days` locks every row a command will change in ascending `(room_type_id, date)` order before its first UPDATE, so the UPDATEs' plan order no longer matters; reservations must use it too.
   - Tests added in the Phase 2 plan: concurrent sign-in attempts against the throttle; REST cross-tenant POSTs of a room, a room range and a section.
   - Follow-ups done in the Phase 2 plan: replayed idempotent creates carry their `ETag`, and the OpenAPI document declares it; an update that names no field is a 422 and keeps the version; the rooms page disables only the row or form a command changes; `DateGrid` keeps its active cell when rows shrink and grow again.
+- Carried over from the Phase 2 reviews:
+  - **Before Phase 3:** decide whether a quote on an inactive room type is a violation (`quote` doesn't check `room_type.active`); `load_quote` loads the whole plan tree to find one plan (recheck at the Phase 9 search gate); the bulk-change gate measured 301–307 ms median against 300 ms on a laptop, so re-measure it on the server.
+  - **Hardening:** a `CatchPanicLayer` that turns a handler panic into a 500 problem; a per-transaction `statement_timeout` a little under the request timeout, so a dropped request stops its query.
+  - **UI:** the Restrictions dialog can't remove a minimum or maximum stay (the API takes `null`); the batcher has no `cancel()` on teardown; a failed refetch inside the rate plan editor's 412 path escapes without a message; tree nesting on Rate plans isn't exposed to screen readers.
+  - **Tests to add:** e2e for read-only rates screens, a 412 on a rate plan, and a failed cell save; GraphQL refusals (a 91-night quote, weekdays outside 1–7, an `INVALID_STAY` round trip); REST bodies naming another property's parent plan or cancellation policy; property-test siblings, moves and weekday, occupancy and `set` filters.
+  - **Tidying:** one helper for the four `rate_day_amount_check` mappings in `prices.rs`; document the `Reprice::Existing` invariant (a writer that creates parent cells must use `Added`); the supplement and policy UPDATEs could also match on `version`; `formula()` and `parseMoney` could guard a non-derived plan and unsafe integers.
 
 ## Phase 3 — Reservations ([spec](specs/phase-3-reservations.md))
 
