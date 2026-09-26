@@ -11,7 +11,8 @@
 		{ href: resolve('/(app)/p/[property]/rooms', { property }), label: 'Rooms' },
 		{ href: resolve('/(app)/p/[property]/inventory', { property }), label: 'Inventory' },
 		{ href: resolve('/(app)/p/[property]/rate-plans', { property }), label: 'Rate plans' },
-		{ href: resolve('/(app)/p/[property]/rates', { property }), label: 'Rates' }
+		{ href: resolve('/(app)/p/[property]/rates', { property }), label: 'Rates' },
+		{ href: resolve('/(app)/p/[property]/meal-plans', { property }), label: 'Meal plans' }
 	]);
 </script>
 

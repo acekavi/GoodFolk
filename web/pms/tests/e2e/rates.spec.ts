@@ -207,3 +207,66 @@ test('prices are edited in the grid, changed in bulk and quoted', async ({ page 
 	await expect(result).toContainText('Total 150.00 USD');
 	await expect(result).toContainText(`stays over ${today} are at least 2 nights`);
 });
+
+test('meal supplements are set per currency and added to a quote per person', async ({ page }) => {
+	await signUp(page);
+	await createProperty(page, 'GAL');
+	await page.getByRole('link', { name: 'Room types' }).click();
+	await addRoomType(page, 'DLX', 'Deluxe');
+	await page.getByRole('link', { name: 'Rate plans' }).click();
+	await page.getByRole('button', { name: 'New rate plan' }).click();
+	const editor = page.getByRole('form', { name: 'Rate plan' });
+	await editor.getByLabel('BB').check();
+	await savePlan(page, { code: 'BAR', name: 'Best available', currency: 'USD', segment: 'FIT_F' });
+
+	await page.getByRole('link', { name: 'Meal plans' }).click();
+	const today = (await page.getByTestId('business-date').textContent())!.trim();
+	const add = page.getByRole('form', { name: 'New meal supplement' });
+	for (const [mealPlan, adult, child] of [
+		['BB', '15', '7.50'],
+		['HB', '30', '15']
+	]) {
+		await add.getByLabel('Meal plan').selectOption(mealPlan);
+		await add.getByLabel('Currency').fill('USD');
+		await add.getByLabel('Per adult').fill(adult);
+		await add.getByLabel('Per child').fill(child);
+		await add.getByLabel('From').fill(today);
+		await add.getByRole('button', { name: 'Add supplement' }).click();
+		await expect(page.getByRole('row', { name: new RegExp(`^${mealPlan} `) })).toBeVisible();
+	}
+	const usd = page.getByRole('table', { name: 'Meal supplements in USD' });
+	await expect(usd.getByRole('row', { name: /^BB / })).toContainText('15.00');
+
+	// A second breakfast price for the same dates is refused.
+	await add.getByLabel('Meal plan').selectOption('BB');
+	await add.getByRole('button', { name: 'Add supplement' }).click();
+	await expect(page.getByRole('alert')).toContainText('already covers some of these dates');
+
+	await usd.getByRole('button', { name: 'Edit BB' }).click();
+	await usd.getByLabel('Per adult for BB').fill('18');
+	await usd.getByRole('button', { name: 'Save BB' }).click();
+	await expect(usd.getByRole('row', { name: /^BB / })).toContainText('18.00');
+
+	// Price a night and quote it bed and breakfast for two adults.
+	await page.getByRole('link', { name: 'Rates', exact: true }).click();
+	await page
+		.getByRole('grid', { name: 'Prices' })
+		.getByRole('gridcell', { name: `DLX · 2 adults ${today}: no price` })
+		.click();
+	await page.getByLabel(`Price for DLX · 2 adults on ${today}`).fill('100');
+	await page.keyboard.press('Enter');
+	const quote = page.getByRole('form', { name: 'Quote' });
+	await quote.getByLabel('Meal plan').selectOption('BB');
+	await quote.getByLabel('Check-in').fill(today);
+	await quote.getByLabel('Check-out').fill(addDays(today, 1));
+	await expect(
+		page
+			.getByRole('grid', { name: 'Prices' })
+			.getByRole('gridcell', { name: `DLX · 2 adults ${today}: 100.00` })
+	).toBeVisible();
+	await quote.getByRole('button', { name: 'Quote' }).click();
+	// 100.00 room + 2 × 18.00 breakfast.
+	await expect(page.getByRole('region', { name: 'Quote result' })).toContainText(
+		'Total 136.00 USD'
+	);
+});

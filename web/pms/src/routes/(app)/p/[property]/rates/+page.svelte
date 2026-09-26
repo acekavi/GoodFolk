@@ -399,6 +399,8 @@
 		event.preventDefault();
 		if (!plan) return;
 		quoteError = '';
+		// Prices typed a moment ago are saved first, so the quote sees them.
+		await edits.flush();
 		try {
 			quoted = (
 				await query(QuoteDocument, {
