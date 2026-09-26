@@ -20,7 +20,8 @@ type Role = Profile['grants'][number]['role'];
 /** Roles allowed each action, mirroring `identity::Permission` on the server. */
 const ACTIONS = {
 	manageRooms: ['owner', 'manager'],
-	blockRooms: ['owner', 'manager', 'front_desk']
+	blockRooms: ['owner', 'manager', 'front_desk'],
+	manageRates: ['owner', 'manager']
 } satisfies Record<string, Role[]>;
 
 /** UI hint only; the API enforces permissions. A grant counts tenant-wide or for `propertyId`. */

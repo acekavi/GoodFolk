@@ -25,4 +25,16 @@ describe('can', () => {
 		expect(can(desk, 'blockRooms', 'p1')).toBe(true);
 		expect(can(housekeeping, 'blockRooms', 'p1')).toBe(false);
 	});
+
+	it('lets owners and managers manage rates, and nobody else', () => {
+		const owner = profile([{ role: 'owner' }]);
+		const manager = profile([{ role: 'manager' }]);
+		const accountant = profile([{ role: 'accountant' }]);
+		const desk = profile([{ role: 'front_desk' }]);
+
+		expect(can(owner, 'manageRates', 'p1')).toBe(true);
+		expect(can(manager, 'manageRates', 'p1')).toBe(true);
+		expect(can(accountant, 'manageRates', 'p1')).toBe(false);
+		expect(can(desk, 'manageRates', 'p1')).toBe(false);
+	});
 });
