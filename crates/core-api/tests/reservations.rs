@@ -418,7 +418,8 @@ async fn id_numbers_never_appear_in_responses_stored_replays_or_logs(_: PgPoolOp
     let guest_path = format!("{}/{}", hotel.guests(), created.body["id"].as_str().unwrap());
     let renewed =
         patch(&app, &hotel.owner, &guest_path, 1, json!({"id_doc": {"type": "nic", "number": "991234567V"}})).await;
-    // Scan the database while the guest still has a document, to verify encrypted numbers are stored.
+    // Scan the database while the guest still has a document. The guest holds NIC "991234567V" which contains DIGITS.
+    // Verify the encrypted number is stored but the plaintext is not.
     let guest_id = uuid(&created.body["id"]);
     let (doc_type, doc_is_null): (Option<String>, bool) =
         sqlx::query_as("select id_doc_type, id_doc_number_enc is null from guest where id = $1")
@@ -428,6 +429,16 @@ async fn id_numbers_never_appear_in_responses_stored_replays_or_logs(_: PgPoolOp
             .unwrap();
     assert_eq!(doc_type, Some("nic".to_owned()), "the guest's document type is updated");
     assert!(!doc_is_null, "the guest's id_doc_number_enc is not null while a document is present");
+    // Now scan guest and audit_log rows to verify plaintext digits don't leak at rest.
+    for rows in ["select row::text from guest row", "select row::text from audit_log row"] {
+        for row in sqlx::query_scalar::<_, String>(rows).fetch_all(&hotel.superuser).await.unwrap() {
+            assert!(
+                !row.contains(DIGITS) && !row.contains(DIGITS_HEX),
+                "{rows} holds the NIC number at {}: {row}",
+                DIGITS
+            );
+        }
+    }
     let removed = patch(&app, &hotel.owner, &guest_path, 2, json!({"id_doc": null})).await;
     let booked = post(&app, &hotel.owner, &hotel.reservations(), hotel.booking(&created.body, 1, 3)).await;
     drop(guard);
@@ -489,11 +500,13 @@ async fn malformed_guest_bodies_do_not_echo_id_numbers(_: PgPoolOptions, opts: P
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts).await;
 
-    // POST with invalid id_doc type (string instead of object)
-    let response = post(
+    // POST with invalid id_doc type (string instead of object), tracking the idempotency key
+    let key1 = Uuid::now_v7().to_string();
+    let response = post_with_key(
         &app,
         &hotel.owner,
         &hotel.guests(),
+        &key1,
         json!({
             "first_name": "Test",
             "last_name": "Guest",
@@ -506,11 +519,13 @@ async fn malformed_guest_bodies_do_not_echo_id_numbers(_: PgPoolOptions, opts: P
     let body_text = response.body.to_string();
     assert!(!body_text.contains(PASSPORT_NUM), "error includes id_doc value: {body_text}");
 
-    // POST with invalid number type (int instead of string)
-    let response = post(
+    // POST with invalid number type (int instead of string), tracking the idempotency key
+    let key2 = Uuid::now_v7().to_string();
+    let response = post_with_key(
         &app,
         &hotel.owner,
         &hotel.guests(),
+        &key2,
         json!({
             "first_name": "Test",
             "last_name": "Guest",
@@ -533,14 +548,25 @@ async fn malformed_guest_bodies_do_not_echo_id_numbers(_: PgPoolOptions, opts: P
         "error message is fixed"
     );
 
-    // Verify the malformed requests are not stored with plaintext numbers
-    let stored_bodies: Vec<String> =
-        sqlx::query_scalar("select response_body::text from idempotency_key order by created_at")
-            .fetch_all(&app.state.pool)
-            .await
-            .unwrap();
-    for stored in &stored_bodies {
-        assert!(!stored.contains(PASSPORT_NUM), "idempotency cache contains passport: {stored}");
-        assert!(!stored.contains(&NIC_NUM.to_string()), "idempotency cache contains NIC: {stored}");
+    // Verify the malformed requests are stored safely through the superuser (not filtered by RLS).
+    // Use convert_from to properly decode the bytea, not ::text which would be hex.
+    let stored_bodies: Vec<String> = sqlx::query_scalar(
+        "select convert_from(response_body, 'UTF8') from idempotency_key where key in ($1, $2) and response_body is not null",
+    )
+    .bind(&key1)
+    .bind(&key2)
+    .fetch_all(&hotel.superuser)
+    .await
+    .unwrap();
+    assert_eq!(stored_bodies.len(), 2, "both 422 responses must be stored; got {}", stored_bodies.len());
+    for (i, stored) in stored_bodies.iter().enumerate() {
+        // Verify the response has the fixed detail message
+        assert!(
+            stored.contains("the request body does not have the expected shape"),
+            "response {i} missing fixed detail: {stored}"
+        );
+        // Verify plaintext numbers don't leak
+        assert!(!stored.contains(PASSPORT_NUM), "response {i} contains passport number: {stored}");
+        assert!(!stored.contains(&NIC_NUM.to_string()), "response {i} contains NIC number: {stored}");
     }
 }
