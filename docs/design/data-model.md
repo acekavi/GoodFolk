@@ -1,6 +1,6 @@
 # Data Model
 
-The reference schema for every phase. Phase 0 tables exist in `migrations/0001_foundation.sql`, Phase 1 tables in `migrations/0003_login_throttle.sql` and `migrations/0004_rooms_inventory.sql`, Phase 2 tables in `migrations/0006_rates.sql`. Tables for later phases are the target design: the migrations that create them are written in their phase and may refine columns, but must keep the rules below.
+The reference schema for every phase. Phase 0 tables exist in `migrations/0001_foundation.sql`, Phase 1 tables in `migrations/0003_login_throttle.sql` and `migrations/0004_rooms_inventory.sql`, Phase 2 tables in `migrations/0006_rates.sql`, the first Phase 3 tables (3a) in `migrations/0007_reservations.sql`. Tables for later phases are the target design: the migrations that create them are written in their phase and may refine columns, but must keep the rules below.
 
 Related: [ARCHITECTURE.md](../ARCHITECTURE.md) (why), [api-conventions.md](api-conventions.md) (how data leaves the API).
 
@@ -43,7 +43,7 @@ Created by `migrations/0004_rooms_inventory.sql`. Every table below carries `ten
 | `room_block` | `id`, `tenant_id`, `property_id`, `room_id`, `period daterange`, `kind` (`out_of_order` \| `out_of_service`), `reason_id`, `note`, `created_by`, `released_at null`, `version` | `room_block_no_overlap: exclude using gist (room_id with =, period with &&) where (released_at is null)`; GiST `(property_id, period)`. `released_at` marks a block cancelled before it started; shortening moves `upper(period)` |
 | `inventory_day` | `(property_id, room_type_id, date)`, `tenant_id`, `physical`, `sold`, `out_of_order` | `check (out_of_order between 0 and physical)`; index `(property_id, date)`. Counters updated in the same transaction as rooms, blocks and (from Phase 3) reservations. `available = physical − sold − out_of_order`. Rows exist from the business date for 730 days. A nightly job (Phase 7) recomputes them and alerts on drift (`rooms::find_drift`) |
 
-Extensions: `btree_gist` (needed by the exclusion constraints).
+Extensions: `btree_gist` (needed by the exclusion constraints) and, from Phase 3, `pg_trgm` (guest name search).
 
 | Global table | Key columns | Notes |
 |---|---|---|
@@ -66,15 +66,17 @@ Created by `migrations/0006_rates.sql` (`0005_idempotency_etag.sql` adds `idempo
 
 ## Phase 3: Reservations and guests
 
+Phase 3 ships in two slices. **3a** (`migrations/0007_reservations.sql`) creates `guest`, `property_counter`, `reservation`, `reservation_room` and `reservation_night` as below; **3b** adds `reservation_guest` and `account`. Channel columns (`channel_code`, `channel_ref`) arrive with channels (Phase 8) and `account_id` with accounts. Property-scoped tables reference their property through `(tenant_id, property_id)`, and rooms, room types, rate plans and reservations through `(property_id, id)`; guests are referenced through `(tenant_id, id)`. Amounts are minor units in the row's `currency`.
+
 | Table | Key columns | Constraints and indexes |
 |---|---|---|
-| `guest` | `id`, `tenant_id`, `first_name`, `last_name`, `email citext null`, `phone`, `country char(2)`, `residency` (`resident` \| `non_resident`), `id_doc_type`, `id_doc_number_enc bytea` (field-level encrypted), `notes`, `version` | Tenant-wide, so a chain shares guest history. Trigram index on names for search (`pg_trgm`) |
-| `account` | `id`, `tenant_id`, `kind` (`company` \| `travel_agent`), `name`, `contact jsonb`, `credit_limit bigint null`, `currency` | Companies and TAs (city ledger in Phase 7) |
-| `reservation` | `id`, `tenant_id`, `property_id`, `confirmation_no` (unique per property), `status`, `source` (`front_desk` \| `ibe` \| `channel` \| `phone` \| `email`), `channel_code null`, `channel_ref null`, `booker_guest_id`, `account_id null`, `segment`, `guarantee` (`none` \| `card` \| `deposit` \| `account`), `hold_expires_at null`, `notes`, `created_by`, `created_at`, `version` | `unique (property_id, channel_code, channel_ref)` where not null (idempotent channel ingestion) |
-| `reservation_room` | `id`, `tenant_id`, `property_id`, `reservation_id`, `room_type_id`, `room_id null`, `stay daterange`, `adults`, `children`, `rate_plan_id`, `meal_plan`, `status` (`tentative` \| `confirmed` \| `checked_in` \| `checked_out` \| `cancelled` \| `no_show`), `primary_guest_id`, `eta time null`, `version` | **`exclude using gist (room_id with =, stay with &&) where (room_id is not null and status not in ('cancelled','no_show'))`**, so double booking is impossible. GiST `(property_id, stay)` serves tape-chart tiles. Check-out early sets `upper(stay)` to the actual date |
-| `reservation_night` | `(reservation_room_id, date)`, `tenant_id`, `room_amount`, `meal_amount`, `currency` | Price snapshot at booking; later rate changes do not reprice existing bookings |
-| `reservation_guest` | `(reservation_room_id, guest_id)`, `tenant_id` | Additional occupants |
-| `property_counter` | `(property_id, name)`, `tenant_id`, `value bigint` | Gapless numbers (`confirmation`, later `invoice`), incremented with `update … returning` inside the posting transaction |
+| `guest` | `id`, `tenant_id`, `first_name` (empty for a single-name guest), `last_name`, `email citext null`, `phone null`, `country char(2) null`, `residency` (`resident` \| `non_resident`, required), `id_doc_type null` (`passport` \| `nic` \| `driving_licence` \| `other`), `id_doc_number_enc bytea null` (AES-256-GCM: nonce ‖ ciphertext ‖ tag, AAD = tenant id ‖ guest id), `id_doc_key_id null` (the key that sealed it, for rotation), `id_doc_last4 null` (plaintext tail, shown only masked), `notes`, `version`, `created_at` | Tenant-wide (no `property_id`), so a chain shares guest history; RLS on the tenant alone. `guest_id_doc_check`: the four `id_doc_*` columns are all set or all null. Trigram GIN index `guest_name_trgm_idx` on `lower(first_name \|\| ' ' \|\| last_name)` (`pg_trgm`; searches must use that expression); `(tenant_id, email)` and `(tenant_id, phone)` for exact matches |
+| `account` | `id`, `tenant_id`, `kind` (`company` \| `travel_agent`), `name`, `contact jsonb`, `credit_limit bigint null`, `currency` | Companies and TAs (city ledger in Phase 7). Not in 3a |
+| `reservation` | `id`, `tenant_id`, `property_id`, `confirmation_no`, `source` (`front_desk` \| `ibe` \| `channel` \| `phone` \| `email`), `booker_guest_id`, `guarantee` (`none` \| `card` \| `deposit` \| `account`, default `none`), `hold_expires_at null`, `notes`, `created_by`, `created_at`, `version`; later `channel_code null`, `channel_ref null`, `account_id null` | **No stored status**: it is derived from the rooms' statuses when read (`domain::reservation_status`). No `segment` either: it comes from each room's rate plan. `reservation_property_id_confirmation_no_key`: unique per property; `reservation_confirmation_prefix_idx` `(property_id, confirmation_no text_pattern_ops)` serves prefix search (`like 'GFK-00%'`). `reservation_confirmation_no_check`: `<PROPERTY CODE>-<sequence>`, zero-padded to 6 digits and growing past them (`GFK-000123`, `GFK-1000000`). Later `unique (property_id, channel_code, channel_ref)` where not null (idempotent channel ingestion) |
+| `reservation_room` | `id`, `tenant_id`, `property_id`, `reservation_id`, `room_type_id`, `room_id null`, `stay daterange`, `adults` (≥ 1), `children` (≥ 0), `rate_plan_id`, `meal_plan` (`RO` \| `BB` \| `HB` \| `FB`), `status` (`tentative` \| `confirmed` \| `checked_in` \| `checked_out` \| `cancelled` \| `no_show`), `primary_guest_id` (its residency prices the room), `currency` (the plan's), `cancellation_terms jsonb null` (the plan's policy at booking: `{rules, no_show}`), `cancelled_at null`, `cancelled_by null`, `cancellation_penalty bigint null`, `eta time null`, `version` | **`reservation_room_no_double_booking`: `exclude using gist (room_id with =, stay with &&) where (room_id is not null and status not in ('cancelled','no_show'))`**, so double booking is impossible. `reservation_room_stay_check`: non-empty, bounded, `[)`. `reservation_room_cancellation_check`: `cancelled_at` is set exactly when `status` is `cancelled`, `cancellation_penalty` exactly when `cancelled_at` is, and `cancelled_by` only then. GiST `(property_id, stay)` serves tape-chart tiles and date-range lists. Check-out early sets `upper(stay)` to the actual date |
+| `reservation_night` | `(reservation_room_id, date)`, `tenant_id`, `property_id`, `room_amount`, `meal_amount`, `currency` | Price snapshot at booking (amounts ≥ 0); later rate changes do not reprice existing bookings |
+| `reservation_guest` | `(reservation_room_id, guest_id)`, `tenant_id` | Additional occupants. 3b |
+| `property_counter` | `(property_id, name)`, `tenant_id`, `value bigint` | Gapless numbers (`confirmation`; `invoice` is added to the `name` check in Phase 7), taken with `insert … on conflict (property_id, name) do update set value = property_counter.value + 1 returning value` inside the transaction that uses the number |
 
 ## Phase 5: Housekeeping and laundry
 
@@ -139,4 +141,4 @@ Created by `migrations/0006_rates.sql` (`0005_idempotency_etag.sql` adds `idempo
 | Table | Key columns | Notes |
 |---|---|---|
 | `ibe_site` | `id`, `tenant_id`, `property_id`, `domain` (unique), `branding jsonb`, `published bool` | |
-| Holds | `reservation.status = 'tentative'` with `hold_expires_at` | A job releases expired holds (and their inventory) |
+| Holds | `reservation_room.status = 'tentative'` with `reservation.hold_expires_at` | A job releases expired holds (and their inventory) |

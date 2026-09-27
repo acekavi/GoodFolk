@@ -562,3 +562,102 @@ async fn meal_supplements_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConne
     )
     .await;
 }
+
+/// One row in every Phase 3 table, on top of [`seed_rates`], for `tenant`'s property: a guest booking room 101
+/// for two nights, with the first night's price.
+async fn seed_reservations(pool: &PgPool, tenant: TenantId) {
+    seed_rates(pool, tenant).await;
+    let (guest, reservation) = (Uuid::now_v7(), Uuid::now_v7());
+    let mut tx = begin(pool, Scope::tenant(tenant)).await.unwrap();
+    let statements = [
+        "insert into guest (id, tenant_id, first_name, last_name, residency) values ($2, $1, 'Ada', 'Silva', 'resident')",
+        "insert into property_counter (tenant_id, property_id, name, value) select $1, id, 'confirmation', 1 from property",
+        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id)
+         select $3, $1, id, 'MAIN-000001', 'front_desk', $2 from property",
+        "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, room_id, stay, adults,
+                                       children, rate_plan_id, meal_plan, status, primary_guest_id, currency)
+         select gen_random_uuid(), $1, r.property_id, $3, r.room_type_id, r.id, daterange(current_date, current_date + 2),
+                2, 0, p.id, 'RO', 'confirmed', $2, p.currency
+         from room r, rate_plan p",
+        "insert into reservation_night (tenant_id, property_id, reservation_room_id, date, room_amount, meal_amount, currency)
+         select $1, property_id, id, lower(stay), 12000, 0, currency from reservation_room",
+    ];
+    for statement in statements {
+        sqlx::query(statement).bind(tenant.0).bind(guest).bind(reservation).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+}
+
+/// Like [`assert_rates_table_isolated`], with every Phase 3 table seeded for both tenants.
+async fn assert_reservations_table_isolated(opts: PgConnectOptions, table: &str, insert: &'static str) {
+    let pool = app_pool(opts, 1).await;
+    let a = seed_tenant(&pool, "A").await;
+    let b = seed_tenant(&pool, "B").await;
+    seed_reservations(&pool, a).await;
+    seed_reservations(&pool, b).await;
+
+    let seen = visible_rows(&pool, b, table).await;
+    let err = foreign_insert_error(&pool, b, a, insert).await;
+
+    assert_eq!(seen, 1, "B sees only its own {table} row");
+    assert!(err.contains("row-level security"), "unexpected error: {err}");
+}
+
+/// Guests belong to the tenant, not to a property: the policy is the tenant's alone.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn guests_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_reservations_table_isolated(
+        opts,
+        "guest",
+        "insert into guest (id, tenant_id, first_name, last_name, residency)
+         values (gen_random_uuid(), $1, 'Eve', 'Perera', 'non_resident')",
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn property_counters_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_reservations_table_isolated(
+        opts,
+        "property_counter",
+        "insert into property_counter (tenant_id, property_id, name, value)
+         select $1, property_id, name, value + 1 from property_counter",
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn reservations_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_reservations_table_isolated(
+        opts,
+        "reservation",
+        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id)
+         select gen_random_uuid(), $1, property_id, 'MAIN-000002', 'phone', booker_guest_id from reservation",
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn reservation_rooms_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_reservations_table_isolated(
+        opts,
+        "reservation_room",
+        "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, stay, adults, children,
+                                       rate_plan_id, meal_plan, status, primary_guest_id, currency)
+         select gen_random_uuid(), $1, property_id, reservation_id, room_type_id, daterange(current_date + 5, current_date + 6),
+                1, 0, rate_plan_id, 'RO', 'confirmed', primary_guest_id, currency
+         from reservation_room",
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn reservation_nights_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_reservations_table_isolated(
+        opts,
+        "reservation_night",
+        "insert into reservation_night (tenant_id, property_id, reservation_room_id, date, room_amount, meal_amount, currency)
+         select $1, property_id, id, lower(stay) + 1, 12000, 0, currency from reservation_room",
+    )
+    .await;
+}
