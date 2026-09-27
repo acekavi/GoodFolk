@@ -227,6 +227,46 @@ async fn malformed_bookings_are_refused(_: PgPoolOptions, opts: PgConnectOptions
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_retired_room_type_cannot_be_booked(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let mut tx = hotel.tx().await;
+    let retired_room = rooms::RoomChanges { active: Some(false), ..Default::default() };
+    for room in rooms::list_rooms(&mut tx, hotel.property, Some(hotel.deluxe.id)).await.unwrap() {
+        rooms::update_room(
+            &mut tx,
+            hotel.tenant,
+            hotel.user,
+            hotel.property,
+            room.id,
+            room.version,
+            retired_room.clone(),
+        )
+        .await
+        .unwrap();
+    }
+    let retired_type = rooms::RoomTypeChanges { active: Some(false), ..Default::default() };
+    rooms::update_room_type(
+        &mut tx,
+        hotel.tenant,
+        hotel.user,
+        hotel.property,
+        hotel.deluxe.id,
+        hotel.deluxe.version,
+        retired_type,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let message = invalid(hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.rack, 2, 4)]).await);
+
+    assert_eq!(message, "DLX is no longer sold");
+    assert_eq!(hotel.confirmation_numbers().await, Vec::<String>::new());
+    assert_eq!(hotel.sold(hotel.deluxe.id, 0, 5).await, [0; 5]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn parallel_bookings_for_the_last_room_sell_it_once(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts.clone(), 2).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;

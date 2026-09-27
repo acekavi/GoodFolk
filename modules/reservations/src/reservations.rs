@@ -288,7 +288,9 @@ async fn residencies(tx: &mut Tx, input: &NewReservation) -> Result<HashMap<Uuid
         .collect()
 }
 
-/// The code of every requested room type, by id. `NotFound` if one is not in the property.
+/// The code of every requested room type, by id. `NotFound` if one is not in the property; `Invalid` if one is
+/// no longer sold (retired room types are never bookable, even though a quote on their own nights could still
+/// price them).
 async fn room_type_codes(
     tx: &mut Tx,
     property: Uuid,
@@ -296,8 +298,8 @@ async fn room_type_codes(
 ) -> Result<HashMap<Uuid, String>, ReservationsError> {
     let ids: BTreeSet<Uuid> = rooms.iter().map(|room| room.room_type_id).collect();
     let ids: Vec<Uuid> = ids.into_iter().collect();
-    let rows: Vec<(Uuid, String)> =
-        sqlx::query_as("select id, code from room_type where property_id = $1 and id = any($2)")
+    let rows: Vec<(Uuid, String, bool)> =
+        sqlx::query_as("select id, code, active from room_type where property_id = $1 and id = any($2)")
             .bind(property)
             .bind(&ids)
             .fetch_all(&mut **tx)
@@ -305,7 +307,10 @@ async fn room_type_codes(
     if rows.len() != ids.len() {
         return Err(ReservationsError::NotFound("room type"));
     }
-    Ok(rows.into_iter().collect())
+    if let Some((_, code, _)) = rows.iter().find(|(_, _, active)| !active) {
+        return Err(invalid(format!("{code} is no longer sold")));
+    }
+    Ok(rows.into_iter().map(|(id, code, _)| (id, code)).collect())
 }
 
 /// Refuses the booking if some night has no free room of a requested type left for it, counting the rooms
