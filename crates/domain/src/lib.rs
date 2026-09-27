@@ -130,13 +130,13 @@ pub fn transition(from: RoomStatus, action: Action) -> Result<RoomStatus, Invali
 }
 
 /// The reservation's overall status, derived from its rooms' statuses (the `reservation` table has no status
-/// column of its own): every room cancelled means cancelled; else any room checked in means checked in; else
-/// every room checked out or cancelled, with at least one checked out, means checked out; else every room a
-/// no-show or cancelled, with at least one no-show, means no-show; else any room confirmed means confirmed;
-/// else tentative.
-///
-/// `None` for an empty slice: every real reservation has at least one room, so an empty slice only reaches
-/// here through a caller bug.
+/// column of its own). Checked in order by precedence:
+/// 1. empty → `None` (caller bug; every real reservation has at least one room).
+/// 2. every room cancelled → cancelled.
+/// 3. any room checked in → checked in.
+/// 4. any room confirmed → confirmed.
+/// 5. any room tentative → tentative.
+/// 6. otherwise every room is checked out, no-show, or cancelled: any checked out → checked out, else no-show.
 pub fn reservation_status(rooms: &[RoomStatus]) -> Option<RoomStatus> {
     use RoomStatus::{Cancelled, CheckedIn, CheckedOut, Confirmed, NoShow, Tentative};
 
@@ -149,16 +149,16 @@ pub fn reservation_status(rooms: &[RoomStatus]) -> Option<RoomStatus> {
     if rooms.contains(&CheckedIn) {
         return Some(CheckedIn);
     }
-    if rooms.contains(&CheckedOut) && rooms.iter().all(|status| matches!(status, CheckedOut | Cancelled)) {
-        return Some(CheckedOut);
-    }
-    if rooms.contains(&NoShow) && rooms.iter().all(|status| matches!(status, NoShow | Cancelled)) {
-        return Some(NoShow);
-    }
     if rooms.contains(&Confirmed) {
         return Some(Confirmed);
     }
-    Some(Tentative)
+    if rooms.contains(&Tentative) {
+        return Some(Tentative);
+    }
+    if rooms.contains(&CheckedOut) {
+        return Some(CheckedOut);
+    }
+    Some(NoShow)
 }
 
 #[cfg(test)]
@@ -306,5 +306,29 @@ mod tests {
     #[test]
     fn all_tentative_is_tentative() {
         assert_eq!(reservation_status(&[RoomStatus::Tentative, RoomStatus::Tentative]), Some(RoomStatus::Tentative));
+    }
+
+    #[test]
+    fn checked_out_wins_over_no_show_when_all_rooms_are_closed() {
+        assert_eq!(reservation_status(&[RoomStatus::CheckedOut, RoomStatus::NoShow]), Some(RoomStatus::CheckedOut));
+        assert_eq!(
+            reservation_status(&[RoomStatus::CheckedOut, RoomStatus::NoShow, RoomStatus::Cancelled]),
+            Some(RoomStatus::CheckedOut)
+        );
+    }
+
+    #[test]
+    fn no_show_when_only_no_show_and_cancelled() {
+        assert_eq!(reservation_status(&[RoomStatus::NoShow, RoomStatus::Cancelled]), Some(RoomStatus::NoShow));
+    }
+
+    #[test]
+    fn tentative_takes_precedence_over_closed_rooms() {
+        assert_eq!(reservation_status(&[RoomStatus::Tentative, RoomStatus::CheckedOut]), Some(RoomStatus::Tentative));
+    }
+
+    #[test]
+    fn confirmed_takes_precedence_over_closed_rooms() {
+        assert_eq!(reservation_status(&[RoomStatus::Confirmed, RoomStatus::CheckedOut]), Some(RoomStatus::Confirmed));
     }
 }
