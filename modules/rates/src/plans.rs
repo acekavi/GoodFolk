@@ -11,29 +11,29 @@ use uuid::Uuid;
 /// Most levels of derived plans below a standard plan.
 pub const MAX_DEPTH: i32 = 3;
 
-text_enum!(
+db::text_enum!(
     /// `Standard` plans are priced by hand and may have derived plans; `Derived` plans are priced from their
     /// parent by a formula; `Custom` plans are priced by hand and stand alone.
     PlanKind { Standard = "standard", Derived = "derived", Custom = "custom" }
 );
 
-text_enum!(
+db::text_enum!(
     /// Where a plan is sold: foreign (`FIT_F`) or local (`FIT_L`) independent travellers, online travel
     /// agents, travel agent contracts, or the hotel's own booking engine.
     Segment { FitF = "FIT_F", FitL = "FIT_L", Ota = "OTA", Ta = "TA", Ibe = "IBE" }
 );
 
-text_enum!(
+db::text_enum!(
     /// Which guests a plan may be sold to.
     Residency { Resident = "resident", NonResident = "non_resident" }
 );
 
-text_enum!(
+db::text_enum!(
     /// How a price is changed: by basis points (`percent`, 1500 = +15 %) or by minor units (`amount`).
     ChangeMode { Percent = "percent", Amount = "amount" }
 );
 
-text_enum!(
+db::text_enum!(
     /// Room only, bed and breakfast, half board, full board.
     MealPlan { Ro = "RO", Bb = "BB", Hb = "HB", Fb = "FB" }
 );

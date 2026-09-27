@@ -1,5 +1,6 @@
 //! Database access shared by every module: pool setup, migrations, tenant-scoped
-//! transactions, change notifications and encryption of guest ID numbers.
+//! transactions, change notifications, encryption of guest ID numbers, and [`text_enum!`] for `text`
+//! columns with a fixed set of values.
 
 pub mod crypto;
 mod events;
@@ -7,6 +8,7 @@ mod guard;
 mod scope;
 #[cfg(feature = "testing")]
 pub mod testing;
+mod text_enum;
 
 pub use events::{CHANNEL, Event, notify};
 pub use guard::{RlsBypassed, assert_rls_applies};

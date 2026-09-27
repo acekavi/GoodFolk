@@ -13,6 +13,7 @@ domain = { path = "crates/domain" }
 identity = { path = "modules/identity" }
 property = { path = "modules/property" }
 rates = { path = "modules/rates" }
+reservations = { path = "modules/reservations" }
 rooms = { path = "modules/rooms" }
 
 anyhow = "1"

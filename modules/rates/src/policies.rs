@@ -3,7 +3,7 @@ use db::{TenantId, Tx, UserId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-text_enum!(
+db::text_enum!(
     /// `nights`: that many nights' room price; `percent`: basis points of the stay; `amount`: minor units in
     /// the plan's currency.
     PenaltyKind { Nights = "nights", Percent = "percent", Amount = "amount" }

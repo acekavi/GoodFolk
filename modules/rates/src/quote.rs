@@ -58,7 +58,7 @@ pub struct QuoteNight {
     pub meal: i64,
 }
 
-text_enum!(
+db::text_enum!(
     /// Why a stay cannot be sold as quoted.
     ViolationKind {
         InvalidStay = "invalid_stay",

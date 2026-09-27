@@ -18,7 +18,7 @@ pub struct Price {
     pub amount: i64,
 }
 
-text_enum!(
+db::text_enum!(
     /// A bulk change adds basis points (`percent`) or minor units (`amount`) to existing prices, rounded to
     /// the plan's step, or `set`s every selected price to the value.
     PriceChangeMode { Percent = "percent", Amount = "amount", Set = "set" }

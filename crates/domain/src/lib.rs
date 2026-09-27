@@ -11,8 +11,8 @@ use std::fmt;
 /// A `reservation_room`'s status, exactly per the diagram in `docs/specs/phase-3-reservations.md` § State
 /// machine.
 ///
-/// Convention: `modules/rates`' `text_enum!` macro (per-variant `#[serde(rename = "...")]`, `as_str`/`parse`)
-/// is private to that crate, and `domain` must not depend on `rates` (it stays pure). Every variant name here
+/// Convention: the `db::text_enum!` macro (per-variant `#[serde(rename = "...")]`, `as_str`/`parse`) lives in
+/// `db`, and `domain` must not depend on it (it stays pure). Every variant name here
 /// already lowercases to its database text with `snake_case`, so this instead follows the plainer convention
 /// already used by `identity::Role`: `#[serde(rename_all = "snake_case")]` plus hand-written `as_str`/`parse`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, utoipa::ToSchema)]
