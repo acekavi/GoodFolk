@@ -44,12 +44,21 @@ impl Role {
                     | InventoryBlock
                     | RatesView
                     | RatesManage
+                    | ReservationsView
+                    | ReservationsManage
             ),
-            Role::FrontDesk => {
-                matches!(permission, PropertiesView | RoomsView | InventoryView | InventoryBlock | RatesView)
-            }
+            Role::FrontDesk => matches!(
+                permission,
+                PropertiesView
+                    | RoomsView
+                    | InventoryView
+                    | InventoryBlock
+                    | RatesView
+                    | ReservationsView
+                    | ReservationsManage
+            ),
             Role::Housekeeping | Role::Accountant => {
-                matches!(permission, PropertiesView | RoomsView | InventoryView | RatesView)
+                matches!(permission, PropertiesView | RoomsView | InventoryView | RatesView | ReservationsView)
             }
         }
     }
@@ -74,6 +83,10 @@ pub enum Permission {
     RatesView,
     /// Create and change rate plans, prices, restrictions, meal supplements and cancellation policies.
     RatesManage,
+    /// See reservations, what is free to sell, and guests.
+    ReservationsView,
+    /// Create guests and reservations, change guests, cancel reservation rooms, and assign and unassign rooms.
+    ReservationsManage,
 }
 
 /// A role held tenant-wide (`property_id: None`) or for one property.

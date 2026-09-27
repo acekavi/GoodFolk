@@ -49,6 +49,8 @@ fn each_role_has_exactly_its_permissions() {
         InventoryBlock,
         RatesView,
         RatesManage,
+        ReservationsView,
+        ReservationsManage,
     ];
     let expected: [(Role, &[Permission]); 5] = [
         (Role::Owner, &all),
@@ -63,11 +65,24 @@ fn each_role_has_exactly_its_permissions() {
                 InventoryBlock,
                 RatesView,
                 RatesManage,
+                ReservationsView,
+                ReservationsManage,
             ],
         ),
-        (Role::FrontDesk, &[PropertiesView, RoomsView, InventoryView, InventoryBlock, RatesView]),
-        (Role::Housekeeping, &[PropertiesView, RoomsView, InventoryView, RatesView]),
-        (Role::Accountant, &[PropertiesView, RoomsView, InventoryView, RatesView]),
+        (
+            Role::FrontDesk,
+            &[
+                PropertiesView,
+                RoomsView,
+                InventoryView,
+                InventoryBlock,
+                RatesView,
+                ReservationsView,
+                ReservationsManage,
+            ],
+        ),
+        (Role::Housekeeping, &[PropertiesView, RoomsView, InventoryView, RatesView, ReservationsView]),
+        (Role::Accountant, &[PropertiesView, RoomsView, InventoryView, RatesView, ReservationsView]),
     ];
 
     for (role, permitted) in expected {

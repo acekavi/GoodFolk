@@ -39,7 +39,10 @@ async fn a_booking_takes_the_next_confirmation_number_fixes_its_prices_and_sells
         (room.room_type_id, room.rate_plan_id, room.meal_plan, room.check_in, room.check_out),
         (hotel.deluxe.id, plans.bar.id, MealPlan::Bb, hotel.day(2), hotel.day(5))
     );
-    assert_eq!((room.adults, room.children, room.total, room.currency.as_str()), (2, 0, 3 * 13_000, "USD"));
+    assert_eq!(
+        (room.adults, room.children, room.total, room.currency.as_str(), room.version),
+        (2, 0, 3 * 13_000, "USD", 1)
+    );
     assert_eq!(first.totals, vec![Total { currency: "USD".into(), amount: 39_000 }]);
 
     let request = QuoteRequest {

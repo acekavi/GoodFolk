@@ -55,6 +55,8 @@ pub struct CreatedRoom {
     pub children: i32,
     pub total: i64,
     pub currency: String,
+    /// The room's version, for `If-Match` on its commands (cancel, assign, unassign).
+    pub version: i32,
 }
 
 /// The sum of the rooms booked in one currency.
@@ -173,11 +175,12 @@ pub async fn create_reservation(
     let mut created = Vec::with_capacity(input.rooms.len());
     for (room, quote) in input.rooms.iter().zip(quotes) {
         let room_id = Uuid::now_v7();
-        sqlx::query(
+        let room_version: i32 = sqlx::query_scalar(
             "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, stay, adults,
                                            children, rate_plan_id, meal_plan, status, primary_guest_id, currency,
                                            cancellation_terms)
-             values ($1, $2, $3, $4, $5, daterange($6, $7), $8, $9, $10, $11, 'confirmed', $12, $13, $14)",
+             values ($1, $2, $3, $4, $5, daterange($6, $7), $8, $9, $10, $11, 'confirmed', $12, $13, $14)
+             returning version",
         )
         .bind(room_id)
         .bind(tenant.0)
@@ -193,7 +196,7 @@ pub async fn create_reservation(
         .bind(room.primary_guest_id.unwrap_or(input.booker_guest_id))
         .bind(&quote.currency)
         .bind(terms.get(&room.rate_plan_id))
-        .execute(&mut **tx)
+        .fetch_one(&mut **tx)
         .await?;
         let dates: Vec<Date> = quote.nights.iter().map(|night| night.date).collect();
         let room_amounts: Vec<i64> = quote.nights.iter().map(|night| night.room).collect();
@@ -235,6 +238,7 @@ pub async fn create_reservation(
             children: room.children,
             total: quote.total,
             currency: quote.currency,
+            version: room_version,
         });
     }
 

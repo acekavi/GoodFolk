@@ -1,9 +1,10 @@
 use crate::routes::{
-    BedRequest, BulkChangeRequest, BulkChangeResponse, CreateBlockReasonRequest, CreateBlockRequest,
-    CreateCancellationPolicyRequest, CreateMealSupplementRequest, CreatePropertyRequest, CreateRatePlanRequest,
-    CreateRoomRangeRequest, CreateRoomRequest, CreateRoomTypeRequest, LoginRequest, PriceChangeRequest, PriceRequest,
-    ReorderRequest, RestrictionsRequest, SectionRequest, SetPricesRequest, ShortenBlockRequest, SignupRequest,
-    SwitchTenantRequest, UpdateBlockReasonRequest, UpdateCancellationPolicyRequest, UpdateMealSupplementRequest,
+    AssignRoomRequest, BedRequest, BulkChangeRequest, BulkChangeResponse, CreateBlockReasonRequest, CreateBlockRequest,
+    CreateCancellationPolicyRequest, CreateGuestRequest, CreateMealSupplementRequest, CreatePropertyRequest,
+    CreateRatePlanRequest, CreateReservationRequest, CreateRoomRangeRequest, CreateRoomRequest, CreateRoomTypeRequest,
+    IdDocRequest, LoginRequest, PriceChangeRequest, PriceRequest, ReorderRequest, ReservationRoomRequest,
+    RestrictionsRequest, SectionRequest, SetPricesRequest, ShortenBlockRequest, SignupRequest, SwitchTenantRequest,
+    UpdateBlockReasonRequest, UpdateCancellationPolicyRequest, UpdateGuestRequest, UpdateMealSupplementRequest,
     UpdatePropertyRequest, UpdateRatePlanRequest, UpdateRoomRequest, UpdateRoomTypeRequest,
 };
 use utoipa::OpenApi;
@@ -41,6 +42,12 @@ use utoipa::OpenApi;
         crate::routes::rates::update_supplement,
         crate::routes::rates::create_policy,
         crate::routes::rates::update_policy,
+        crate::routes::reservations::create_guest,
+        crate::routes::reservations::update_guest,
+        crate::routes::reservations::create_reservation,
+        crate::routes::reservations::cancel_room,
+        crate::routes::reservations::assign_room,
+        crate::routes::reservations::unassign_room,
     ),
     components(schemas(
         SignupRequest,
@@ -72,6 +79,12 @@ use utoipa::OpenApi;
         UpdateMealSupplementRequest,
         CreateCancellationPolicyRequest,
         UpdateCancellationPolicyRequest,
+        IdDocRequest,
+        CreateGuestRequest,
+        UpdateGuestRequest,
+        ReservationRoomRequest,
+        CreateReservationRequest,
+        AssignRoomRequest,
         identity::Profile,
         identity::TenantSummary,
         identity::Grant,
@@ -96,6 +109,15 @@ use utoipa::OpenApi;
         rates::Penalty,
         rates::CancellationRule,
         rates::CancellationPolicy,
+        domain::RoomStatus,
+        reservations::IdDocType,
+        reservations::Guest,
+        reservations::Source,
+        reservations::CreatedRoom,
+        reservations::Total,
+        reservations::CreatedReservation,
+        reservations::CancelledRoom,
+        reservations::AssignedRoom,
     ))
 )]
 pub struct ApiDoc;

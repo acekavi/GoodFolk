@@ -3,6 +3,7 @@ pub(crate) mod blocks;
 mod health;
 pub(crate) mod properties;
 pub(crate) mod rates;
+pub(crate) mod reservations;
 pub(crate) mod room_types;
 pub(crate) mod rooms;
 
@@ -27,6 +28,10 @@ pub use rates::{
     CreateRatePlanRequest, PriceChangeRequest, PriceRequest, RestrictionsRequest, SetPricesRequest,
     UpdateCancellationPolicyRequest, UpdateMealSupplementRequest, UpdateRatePlanRequest,
 };
+pub use reservations::{
+    AssignRoomRequest, CreateGuestRequest, CreateReservationRequest, IdDocRequest, ReservationRoomRequest,
+    UpdateGuestRequest,
+};
 pub use room_types::{BedRequest, CreateRoomTypeRequest, UpdateRoomTypeRequest};
 pub use rooms::{CreateRoomRangeRequest, CreateRoomRequest, ReorderRequest, SectionRequest, UpdateRoomRequest};
 
@@ -50,6 +55,8 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/rate-plans/{{plan}}/bulk-change"), post(rates::bulk_change))
         .route(&format!("{PROPERTY}/meal-supplements"), post(rates::create_supplement))
         .route(&format!("{PROPERTY}/cancellation-policies"), post(rates::create_policy))
+        .route(&format!("{PROPERTY}/guests"), post(reservations::create_guest))
+        .route(&format!("{PROPERTY}/reservations"), post(reservations::create_reservation))
         .route_layer(from_fn_with_state(state.clone(), idempotency::idempotent));
 
     let requests = Router::new()
@@ -71,6 +78,10 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/rate-plans/{{plan}}/restrictions"), put(rates::set_restrictions))
         .route(&format!("{PROPERTY}/meal-supplements/{{supplement}}"), patch(rates::update_supplement))
         .route(&format!("{PROPERTY}/cancellation-policies/{{policy}}"), patch(rates::update_policy))
+        .route(&format!("{PROPERTY}/guests/{{guest}}"), patch(reservations::update_guest))
+        .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/cancel"), post(reservations::cancel_room))
+        .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/assign"), post(reservations::assign_room))
+        .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/unassign"), post(reservations::unassign_room))
         .route("/graphql", post(graphql::handler))
         .merge(commands)
         .layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)));

@@ -185,6 +185,38 @@ export interface paths {
         patch: operations["update_cancellation_policy"];
         trace?: never;
     };
+    "/api/v1/properties/{property}/guests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_guest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/guests/{guest}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["update_guest"];
+        trace?: never;
+    };
     "/api/v1/properties/{property}/meal-supplements": {
         parameters: {
             query?: never;
@@ -296,6 +328,79 @@ export interface paths {
         get?: never;
         put: operations["set_restrictions"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reservation-rooms/{room}/assign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Puts a confirmed stay in a room, or moves it to another. A room taken on any of the nights is 409, naming
+         *     the reservation that has it.
+         */
+        post: operations["assign_reservation_room"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reservation-rooms/{room}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancels a tentative or confirmed room, releases its nights from the business date on, and records what
+         *     its booked cancellation terms charge today.
+         */
+        post: operations["cancel_reservation_room"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reservation-rooms/{room}/unassign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Takes a confirmed stay out of its room; it stays booked. */
+        post: operations["unassign_reservation_room"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reservations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_reservation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -483,6 +588,25 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AssignRoomRequest: {
+            /**
+             * Format: uuid
+             * @description An active room of the booked type, free and unblocked on the stay's nights.
+             */
+            room_id: string;
+        };
+        /** @description A stay's room after assigning or unassigning it. */
+        AssignedRoom: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            reservation_id: string;
+            /** Format: uuid */
+            room_id?: string | null;
+            room_number?: string | null;
+            /** Format: int32 */
+            version: number;
+        };
         /** @description Beds of one kind in a room type, e.g. `{ "kind": "king", "count": 1 }`. */
         Bed: {
             /** Format: int32 */
@@ -575,6 +699,19 @@ export interface components {
             days_before_arrival: number;
             penalty: components["schemas"]["Penalty"];
         };
+        /** @description A cancelled room and what cancelling it cost, in its currency. */
+        CancelledRoom: {
+            currency: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            penalty: number;
+            /** Format: uuid */
+            reservation_id: string;
+            status: components["schemas"]["RoomStatus"];
+            /** Format: int32 */
+            version: number;
+        };
         /**
          * @description How a price is changed: by basis points (`percent`, 1500 = +15 %) or by minor units (`amount`).
          * @enum {string}
@@ -609,6 +746,20 @@ export interface components {
             no_show: components["schemas"]["Penalty"];
             /** @description Each with its own number of days before arrival. */
             rules: components["schemas"]["CancellationRule"][];
+        };
+        /** @description A guest of the tenant, usable by all its properties. */
+        CreateGuestRequest: {
+            /** @description ISO 3166-1 alpha-2, such as `LK`. */
+            country?: string | null;
+            email?: string | null;
+            /** @description Left out or empty for a guest with a single name. */
+            first_name?: string;
+            id_doc?: components["schemas"]["IdDocRequest"] | null;
+            last_name: string;
+            notes?: string;
+            phone?: string | null;
+            /** @description Prices the guest's stays: some plans sell only to residents or only to non-residents. */
+            residency: components["schemas"]["Residency"];
         };
         CreateMealSupplementRequest: {
             /**
@@ -683,6 +834,18 @@ export interface components {
             rounding_step?: number;
             segment: components["schemas"]["Segment"];
         };
+        /**
+         * @description Books every room, confirmed, or none: a night with no room left is 409, and a stay its plan does not sell
+         *     (a restriction, a missing price) is 422 with every reason.
+         */
+        CreateReservationRequest: {
+            /** Format: uuid */
+            booker_guest_id: string;
+            notes?: string;
+            rooms: components["schemas"]["ReservationRoomRequest"][];
+            /** @description `front_desk`, `phone` or `email`. */
+            source: components["schemas"]["Source"];
+        };
         /** @description Rooms `{prefix}{first}` to `{prefix}{last}`: `{"first": 101, "last": 120}` adds 101 to 120. */
         CreateRoomRangeRequest: {
             /** Format: int32 */
@@ -720,12 +883,84 @@ export interface components {
             max_occupancy: number;
             name: string;
         };
+        /**
+         * @description A new reservation. Rooms may be in different currencies, so `totals` has one entry per currency, in the
+         *     order the rooms first use them.
+         */
+        CreatedReservation: {
+            confirmation_no: string;
+            /** Format: uuid */
+            id: string;
+            rooms: components["schemas"]["CreatedRoom"][];
+            totals: components["schemas"]["Total"][];
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description A booked room and what its stay costs, in its plan's currency. */
+        CreatedRoom: {
+            /** Format: int32 */
+            adults: number;
+            /** Format: date */
+            check_in: string;
+            /** Format: date */
+            check_out: string;
+            /** Format: int32 */
+            children: number;
+            currency: string;
+            /** Format: uuid */
+            id: string;
+            meal_plan: components["schemas"]["MealPlan"];
+            /** Format: uuid */
+            rate_plan_id: string;
+            /** Format: uuid */
+            room_type_id: string;
+            /** Format: int64 */
+            total: number;
+            /**
+             * Format: int32
+             * @description The room's version, for `If-Match` on its commands (cancel, assign, unassign).
+             */
+            version: number;
+        };
         /** @description A role held tenant-wide (`property_id: None`) or for one property. */
         Grant: {
             /** Format: uuid */
             property_id?: string | null;
             role: components["schemas"]["Role"];
         };
+        /**
+         * @description A guest as the API shows it. The ID number appears only masked (`•••• 1234`): the sealed value and its key
+         *     id never leave the database, and nothing here decrypts it.
+         */
+        Guest: {
+            /** @description ISO 3166-1 alpha-2, such as `LK`. */
+            country?: string | null;
+            email?: string | null;
+            /** @description Empty for a guest with a single name. */
+            first_name: string;
+            /** Format: uuid */
+            id: string;
+            /** @description The ID number's last 4 characters behind a mask, such as `•••• 1234`. */
+            id_doc_masked?: string | null;
+            id_doc_type?: components["schemas"]["IdDocType"] | null;
+            last_name: string;
+            notes: string;
+            phone?: string | null;
+            residency: components["schemas"]["Residency"];
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description An identity document. `Debug` hides the number, which is sealed on arrival and never shown again. */
+        IdDocRequest: {
+            /** @description 1 to 50 characters. Responses show only its last 4 characters behind a mask, such as `•••• 1234`. */
+            number: string;
+            type: components["schemas"]["IdDocType"];
+        };
+        /**
+         * @description The kind of identity document a guest showed.
+         * @enum {string}
+         */
+        IdDocType: "passport" | "nic" | "driving_licence" | "other";
         LoginRequest: {
             email: string;
             password: string;
@@ -885,6 +1120,33 @@ export interface components {
             /** @description Every id of the collection, in the new display order. */
             ids: string[];
         };
+        /** @description One room of a booking: a room type on a rate plan and meal plan for `[check_in, check_out)`. */
+        ReservationRoomRequest: {
+            /** Format: int32 */
+            adults: number;
+            /**
+             * Format: date
+             * @description On or after the business date.
+             */
+            check_in: string;
+            /**
+             * Format: date
+             * @description The morning the guest leaves, at most 730 days after the business date.
+             */
+            check_out: string;
+            /** Format: int32 */
+            children?: number;
+            meal_plan: components["schemas"]["MealPlan"];
+            /**
+             * Format: uuid
+             * @description Who stays in the room; left out, the booker. The room is priced for this guest's residency.
+             */
+            primary_guest_id?: string | null;
+            /** Format: uuid */
+            rate_plan_id: string;
+            /** Format: uuid */
+            room_type_id: string;
+        };
         /**
          * @description Which guests a plan may be sold to.
          * @enum {string}
@@ -928,6 +1190,17 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        /**
+         * @description A `reservation_room`'s status, exactly per the diagram in `docs/specs/phase-3-reservations.md` § State
+         *     machine.
+         *
+         *     Convention: the `db::text_enum!` macro (per-variant `#[serde(rename = "...")]`, `as_str`/`parse`) lives in
+         *     `db`, and `domain` must not depend on it (it stays pure). Every variant name here
+         *     already lowercases to its database text with `snake_case`, so this instead follows the plainer convention
+         *     already used by `identity::Role`: `#[serde(rename_all = "snake_case")]` plus hand-written `as_str`/`parse`.
+         * @enum {string}
+         */
+        RoomStatus: "tentative" | "confirmed" | "checked_in" | "checked_out" | "cancelled" | "no_show";
         RoomType: {
             active: boolean;
             amenities: string[];
@@ -991,6 +1264,12 @@ export interface components {
             password: string;
             tenant_name: string;
         };
+        /**
+         * @description Where a booking came from. Staff create `front_desk`, `phone` and `email` bookings; `ibe` and `channel`
+         *     bookings arrive through the booking engine (Phase 9) and channels (Phase 8).
+         * @enum {string}
+         */
+        Source: "front_desk" | "ibe" | "channel" | "phone" | "email";
         SwitchTenantRequest: {
             /** Format: uuid */
             tenant_id: string;
@@ -999,6 +1278,12 @@ export interface components {
             /** Format: uuid */
             id: string;
             name: string;
+        };
+        /** @description The sum of the rooms booked in one currency. */
+        Total: {
+            /** Format: int64 */
+            amount: number;
+            currency: string;
         };
         /** @description Fields left out stay as they are. */
         UpdateBlockReasonRequest: {
@@ -1012,6 +1297,17 @@ export interface components {
             name?: string | null;
             no_show?: components["schemas"]["Penalty"] | null;
             rules?: components["schemas"]["CancellationRule"][] | null;
+        };
+        /** @description Fields left out stay as they are; `email`, `phone`, `country` and `id_doc` sent as `null` are cleared. */
+        UpdateGuestRequest: {
+            country?: string | null;
+            email?: string | null;
+            first_name?: string | null;
+            id_doc?: components["schemas"]["IdDocRequest"] | null;
+            last_name?: string | null;
+            notes?: string | null;
+            phone?: string | null;
+            residency?: components["schemas"]["Residency"] | null;
         };
         /** @description Fields left out stay as they are; `to` sent as `null` makes the supplement open-ended. */
         UpdateMealSupplementRequest: {
@@ -1609,6 +1905,113 @@ export interface operations {
             };
         };
     };
+    create_guest: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateGuestRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Guest"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_guest: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                guest: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateGuestRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Guest"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     create_meal_supplement: {
         parameters: {
             query?: never;
@@ -1964,6 +2367,237 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    assign_reservation_room: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssignRoomRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the reservation room's version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssignedRoom"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancel_reservation_room: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    /** @description the reservation room's version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CancelledRoom"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    unassign_reservation_room: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    /** @description the reservation room's version, e.g. "3" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssignedRoom"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_reservation: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateReservationRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    /** @description the reservation's version, e.g. "1" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedReservation"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
