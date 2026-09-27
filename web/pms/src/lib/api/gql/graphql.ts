@@ -190,10 +190,11 @@ export type ReservationListQueryVariables = Exact<{
   sort?: ReservationSort | null | undefined;
   first?: number | null | undefined;
   after?: string | null | undefined;
+  withCount: boolean;
 }>;
 
 
-export type ReservationListQuery = { reservations: { totalCount: number, nodes: Array<{ id: string, reservationId: string, confirmationNo: string, guestName: string, arrival: string, departure: string, nights: number, roomTypeCode: string, roomNumber: string | null, status: RoomStatus, source: Source, total: number, currency: string, version: number }>, pageInfo: { endCursor: string | null, hasNextPage: boolean } } };
+export type ReservationListQuery = { reservations: { totalCount?: number, nodes: Array<{ id: string, reservationId: string, confirmationNo: string, guestName: string, arrival: string, departure: string, nights: number, roomTypeCode: string, roomNumber: string | null, status: RoomStatus, source: Source, total: number, currency: string, version: number }>, pageInfo: { endCursor: string | null, hasNextPage: boolean } } };
 
 export type ReservationQueryVariables = Exact<{
   p: string;
@@ -440,7 +441,7 @@ export const AvailabilityDocument = new TypedDocumentString(`
 }
     `) as unknown as TypedDocumentString<AvailabilityQuery, AvailabilityQueryVariables>;
 export const ReservationListDocument = new TypedDocumentString(`
-    query ReservationList($p: UUID!, $filter: ReservationFilter, $sort: ReservationSort, $first: Int, $after: String) {
+    query ReservationList($p: UUID!, $filter: ReservationFilter, $sort: ReservationSort, $first: Int, $after: String, $withCount: Boolean!) {
   reservations(
     propertyId: $p
     filter: $filter
@@ -468,7 +469,7 @@ export const ReservationListDocument = new TypedDocumentString(`
       endCursor
       hasNextPage
     }
-    totalCount
+    totalCount @include(if: $withCount)
   }
 }
     `) as unknown as TypedDocumentString<ReservationListQuery, ReservationListQueryVariables>;

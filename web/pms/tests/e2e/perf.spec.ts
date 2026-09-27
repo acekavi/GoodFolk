@@ -1,22 +1,16 @@
-import { expect, test, type APIRequestContext } from '@playwright/test';
-import { createProperty, signUp } from './helpers';
+import { expect, test } from '@playwright/test';
+import { book, bookableHotel, createProperty, post, signUp } from './helpers';
 
 // Phase 1 gate: the inventory month grid of a 200-room, 12-type property renders in under 50 ms and
 // scrolls at 60 fps, with only the columns in view in the DOM. Timings on shared CI runners are noise,
 // so this test is left out of the default run. Run it locally with:
 //   E2E_PERF=1 bun run test:e2e --grep @perf
 
+// One test at a time: seeding one test's data beside another's timing skews it.
+test.describe.configure({ mode: 'default' });
+
 const ROOM_TYPES = 12;
 const ROOMS = 200;
-
-async function post(api: APIRequestContext, path: string, data: object) {
-	const response = await api.post(path, {
-		headers: { 'x-goodfolk-csrf': '1', 'Idempotency-Key': crypto.randomUUID() },
-		data
-	});
-	expect(response.status(), await response.text()).toBe(201);
-	return response.json();
-}
 
 test('the month grid renders under 50 ms and scrolls at 60 fps @perf', async ({ page }) => {
 	await signUp(page);
@@ -92,4 +86,73 @@ test('the month grid renders under 50 ms and scrolls at 60 fps @perf', async ({ 
 	expect(slow).toBeLessThanOrEqual(3);
 	// Only the columns in view, two of overscan on each side and the active one are in the DOM.
 	expect(cells).toBeLessThanOrEqual(ROOM_TYPES * (columnsInView + 2 * 2 + 1));
+});
+
+// Phase 3 gate: scrolling 10k reservation rooms stays at 60 fps with a fixed DOM row count.
+const NIGHTS = 50;
+const HOTEL_ROOMS = 200;
+const ROOMS_PER_BOOKING = 10;
+
+test('the reservations table scrolls 10k rows at 60 fps with a fixed DOM row count @perf', async ({
+	page
+}) => {
+	test.setTimeout(900_000);
+	await signUp(page);
+	await createProperty(page, 'BIG');
+	// 200 rooms, every one booked on each of 50 nights: 1,000 reservations of ten one-night rooms.
+	const hotel = await bookableHotel(page, HOTEL_ROOMS, NIGHTS);
+	const bookings = Array.from({ length: (NIGHTS * HOTEL_ROOMS) / ROOMS_PER_BOOKING }, (_, index) =>
+		Math.floor((index * ROOMS_PER_BOOKING) / HOTEL_ROOMS)
+	);
+	for (let start = 0; start < bookings.length; start += 8) {
+		await Promise.all(
+			bookings
+				.slice(start, start + 8)
+				.map((night) => book(page.request, hotel, Array(ROOMS_PER_BOOKING).fill(night)))
+		);
+	}
+	const total = NIGHTS * HOTEL_ROOMS;
+
+	await page.getByRole('link', { name: 'Reservations' }).click();
+	const table = page.getByRole('table', { name: 'Reservations' });
+	await expect(table).toHaveAttribute('aria-rowcount', String(total + 1));
+	// Load every page first, so the timing below measures scrolling, not the network.
+	await expect
+		.poll(
+			() =>
+				table.evaluate((scroller) => {
+					scroller.scrollTop = scroller.scrollHeight;
+					return scroller.scrollHeight;
+				}),
+			{ timeout: 300_000, intervals: [50] }
+		)
+		.toBeGreaterThanOrEqual(total * 36);
+	await table.evaluate((scroller) => (scroller.scrollTop = 0));
+
+	// 90 frames, five rows a frame, with the DOM row count sampled on every frame.
+	const { gaps, counts } = await table.evaluate(async (scroller) => {
+		const gaps: number[] = [];
+		const counts: number[] = [];
+		let last = performance.now();
+		for (let frame = 0; frame < 90; frame++) {
+			scroller.scrollTop += 5 * 36;
+			await new Promise((resolve) => requestAnimationFrame(resolve));
+			const now = performance.now();
+			gaps.push(now - last);
+			last = now;
+			counts.push(scroller.querySelectorAll('[role="row"]').length);
+		}
+		return { gaps, counts };
+	});
+	// Rows in view plus a partial one, five of overscan each side, the header and the focused row.
+	const bound = await table.evaluate((scroller) => Math.ceil(scroller.clientHeight / 36) + 1 + 12);
+
+	const slow = gaps.filter((gap) => gap > 25).length;
+	const sorted = [...gaps].sort((a, b) => a - b);
+	console.log(
+		`reservations table: ${slow}/90 slow frames, median frame ${sorted[45].toFixed(1)} ms, ` +
+			`DOM rows ${Math.min(...counts)}–${Math.max(...counts)} (bound ${bound})`
+	);
+	expect(slow).toBeLessThanOrEqual(3);
+	expect(Math.max(...counts)).toBeLessThanOrEqual(bound);
 });

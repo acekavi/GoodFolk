@@ -56,6 +56,7 @@ Run by hand, because shared CI machines make timings noisy, and one at a time (`
 DATABASE_URL=$DATABASE_OWNER_URL cargo test --release -p core-api --test perf -- --ignored --nocapture --test-threads=1
 
 # the month grid for the same property renders in under 50 ms and scrolls at 60 fps (see End-to-end tests)
+# the reservations table scrolls 10k reservation rooms at 60 fps with a fixed DOM row count (seeds for ~2 min)
 cd web/pms && E2E_PERF=1 E2E_DATABASE_URL=... bun run test:e2e --grep @perf
 ```
 

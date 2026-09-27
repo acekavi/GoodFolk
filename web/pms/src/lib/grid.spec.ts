@@ -4,6 +4,7 @@ import {
 	moveFocus,
 	resolveRow,
 	revealColumn,
+	revealRow,
 	visibleColumns,
 	visibleRows
 } from './grid';
@@ -45,6 +46,16 @@ describe('revealColumn', () => {
 
 	it('leaves the scroll position alone when the column is visible', () => {
 		expect(revealColumn(3, 56, 280, 56)).toBe(56);
+	});
+});
+
+describe('revealRow', () => {
+	it('scrolls a fixed-row-height list just enough to show a row, like revealColumn', () => {
+		// 36 px rows in a 360 px viewport: row 12 is below it, row 2 above it once scrolled 5 rows in.
+		expect(revealRow(12, 0, 360, 36)).toBe(13 * 36 - 360);
+		expect(revealRow(2, 5 * 36, 360, 36)).toBe(72);
+		expect(revealRow(6, 5 * 36, 360, 36)).toBe(5 * 36);
+		expect(revealRow).toBe(revealColumn);
 	});
 });
 

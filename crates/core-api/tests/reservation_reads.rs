@@ -36,14 +36,14 @@ async fn graphql(app: &TestApp, cookie: &str, query: &str, variables: Value) -> 
 
 /// The reservations table's query, as the SPA sends it.
 const LIST: &str = "query ReservationList($p: UUID!, $filter: ReservationFilter, $sort: ReservationSort, $first: Int,
-                                          $after: String) {
+                                          $after: String, $withCount: Boolean!) {
     reservations(propertyId: $p, filter: $filter, sort: $sort, first: $first, after: $after) {
         nodes {
             id reservationId confirmationNo guestName arrival departure nights roomTypeCode roomNumber status source
             total currency version
         }
         pageInfo { endCursor hasNextPage }
-        totalCount
+        totalCount @include(if: $withCount)
     }
 }";
 
@@ -207,7 +207,7 @@ impl Hotel {
 async fn walk(app: &TestApp, hotel: &Hotel, sort: Value, first: i64) -> (Vec<Value>, Vec<i64>) {
     let (mut nodes, mut counts, mut after) = (Vec::new(), Vec::new(), Value::Null);
     loop {
-        let variables = json!({"p": hotel.id, "sort": sort, "first": first, "after": after});
+        let variables = json!({"p": hotel.id, "sort": sort, "first": first, "after": after, "withCount": true});
         let page = graphql(app, &hotel.owner, LIST, variables).await;
         let page = &page["data"]["reservations"];
         assert!(page.is_object(), "{page:?}");
@@ -283,7 +283,7 @@ async fn the_list_pages_through_every_room_once_in_order_under_each_sort(_: PgPo
     let hotel = Hotel::new(&app, opts).await;
     hotel.bookings(&app).await;
 
-    let everything = graphql(&app, &hotel.owner, LIST, json!({"p": hotel.id, "first": 100})).await;
+    let everything = graphql(&app, &hotel.owner, LIST, json!({"p": hotel.id, "first": 100, "withCount": true})).await;
     let (by_arrival, arrival_counts) = walk(&app, &hotel, Value::Null, 3).await;
     let (by_guest, guest_counts) = walk(&app, &hotel, json!({"field": "GUEST", "direction": "DESC"}), 4).await;
     let (by_confirmation, _) = walk(&app, &hotel, json!({"field": "CONFIRMATION"}), 3).await;
@@ -351,10 +351,9 @@ async fn a_cursor_works_only_under_its_own_sort_and_pages_are_1_to_100(_: PgPool
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts).await;
     hotel.bookings(&app).await;
-    let page = graphql(&app, &hotel.owner, LIST, json!({"p": hotel.id, "first": 2})).await;
+    let page = graphql(&app, &hotel.owner, LIST, json!({"p": hotel.id, "first": 2, "withCount": true})).await;
     let cursor = page["data"]["reservations"]["pageInfo"]["endCursor"].clone();
-    let list =
-        |sort: Value, first: i64, after: Value| json!({"p": hotel.id, "sort": sort, "first": first, "after": after});
+    let list = |sort: Value, first: i64, after: Value| json!({"p": hotel.id, "sort": sort, "first": first, "after": after, "withCount": false});
 
     let other_sort = graphql(&app, &hotel.owner, LIST, list(json!({"field": "GUEST"}), 2, cursor.clone())).await;
     let other_direction =
@@ -371,6 +370,8 @@ async fn a_cursor_works_only_under_its_own_sort_and_pages_are_1_to_100(_: PgPool
         "the cursor belongs to another sort; start from the first page"
     );
     assert_eq!(same_sort["data"]["reservations"]["nodes"].as_array().map(Vec::len), Some(2), "{same_sort:?}");
+    // A later page asks for no count (`withCount: false`), and gets none.
+    assert_eq!(same_sort["data"]["reservations"].get("totalCount"), None, "{same_sort:?}");
     assert_eq!(garbage["errors"][0]["message"], "the cursor is not valid");
     assert_eq!(none["errors"][0]["message"], "first is 1 to 100");
     assert_eq!(too_many["errors"][0]["message"], "first is 1 to 100");
@@ -382,7 +383,7 @@ async fn the_list_filters_by_arrival_status_source_and_text(_: PgPoolOptions, op
     let hotel = Hotel::new(&app, opts).await;
     hotel.bookings(&app).await;
     let filtered = async |filter: Value| {
-        let page = graphql(&app, &hotel.owner, LIST, json!({"p": hotel.id, "filter": filter})).await;
+        let page = graphql(&app, &hotel.owner, LIST, json!({"p": hotel.id, "filter": filter, "withCount": true})).await;
         let page = &page["data"]["reservations"];
         assert!(page.is_object(), "{page:?}");
         let mut numbers: Vec<String> =
@@ -519,7 +520,7 @@ async fn every_role_reads_reservations_and_another_tenant_reads_nothing(_: PgPoo
     let mut by_housekeeping = Vec::new();
     let mut by_intruder = Vec::new();
     for (query, variables) in [
-        (LIST, json!({"p": hotel.id})),
+        (LIST, json!({"p": hotel.id, "withCount": true})),
         (DETAIL, detail),
         (GUESTS, json!({"p": hotel.id, "search": "Silva"})),
         (FREE_ROOMS, free),
@@ -547,7 +548,7 @@ async fn every_role_reads_reservations_and_another_tenant_reads_nothing(_: PgPoo
 #[tokio::test]
 async fn the_spa_s_list_and_detail_queries_fit_the_depth_and_complexity_limits() {
     let schema = build_schema(false);
-    let variables = json!({"p": Uuid::nil(), "id": Uuid::nil()});
+    let variables = json!({"p": Uuid::nil(), "id": Uuid::nil(), "withCount": true});
 
     for query in [LIST, DETAIL] {
         let request =

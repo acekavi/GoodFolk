@@ -47,6 +47,9 @@ export function revealColumn(
 	return scrollLeft;
 }
 
+/** `revealColumn`, named for a vertical list: the scroll position that shows `row`. */
+export const revealRow = revealColumn;
+
 export interface Cell {
 	row: number;
 	column: number;

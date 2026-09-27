@@ -69,6 +69,7 @@ export const ReservationsDocument = graphql(`
 		$sort: ReservationSort
 		$first: Int
 		$after: String
+		$withCount: Boolean!
 	) {
 		reservations(propertyId: $p, filter: $filter, sort: $sort, first: $first, after: $after) {
 			nodes {
@@ -91,7 +92,7 @@ export const ReservationsDocument = graphql(`
 				endCursor
 				hasNextPage
 			}
-			totalCount
+			totalCount @include(if: $withCount)
 		}
 	}
 `);
@@ -315,7 +316,8 @@ export async function fetchAvailability(
 	).availability;
 }
 
-/** A page of the reservations table. */
+/** A page of the reservations table. Only the first page (no cursor) asks for `totalCount`: the server
+ * counts every match only when it is selected, and later pages keep the first page's total. */
 export async function fetchReservations(
 	propertyId: string,
 	params: ReservationListParams = DEFAULT_LIST_PARAMS,
@@ -326,7 +328,14 @@ export async function fetchReservations(
 	return (
 		await query(
 			ReservationsDocument,
-			{ p: propertyId, filter: params.filter, sort: params.sort, first, after },
+			{
+				p: propertyId,
+				filter: params.filter,
+				sort: params.sort,
+				first,
+				after,
+				withCount: after === undefined
+			},
 			signal
 		)
 	).reservations;
@@ -397,6 +406,50 @@ const STATUS_LABELS: Record<RoomStatus, string> = {
 /** How a room's (or a reservation's derived) status reads in the UI. */
 export function statusLabel(status: RoomStatus): string {
 	return STATUS_LABELS[status];
+}
+
+/** Every room status, in the order the table's filter lists them. */
+export const STATUSES: readonly RoomStatus[] = [
+	'TENTATIVE',
+	'CONFIRMED',
+	'CHECKED_IN',
+	'CHECKED_OUT',
+	'CANCELLED',
+	'NO_SHOW'
+];
+
+const SOURCE_LABELS: Record<Source, string> = {
+	FRONT_DESK: 'Front desk',
+	PHONE: 'Phone',
+	EMAIL: 'Email',
+	IBE: 'Booking engine',
+	CHANNEL: 'Channel'
+};
+
+/** Every source, in the order the table's filter lists them. */
+export const SOURCES: readonly Source[] = ['FRONT_DESK', 'PHONE', 'EMAIL', 'IBE', 'CHANNEL'];
+
+/** How a reservation's source reads in the UI. */
+export function sourceLabel(source: Source): string {
+	return SOURCE_LABELS[source];
+}
+
+/**
+ * A checkbox group's filter after one box changes. `chosen` left out means every choice (no filter); the
+ * result is `undefined` again once every choice is on, otherwise the chosen values in `all`'s order, and
+ * `[]` (matches nothing) once every box is off.
+ */
+export function toggleChoice<T>(
+	all: readonly T[],
+	chosen: readonly T[] | null | undefined,
+	value: T,
+	on: boolean
+): T[] | undefined {
+	const set = new Set(chosen ?? all);
+	if (on) set.add(value);
+	else set.delete(value);
+	const next = all.filter((choice) => set.has(choice));
+	return next.length === all.length ? undefined : next;
 }
 
 /** Every violation's message, joined the way the server joins them in a 422 (`"; "`). */

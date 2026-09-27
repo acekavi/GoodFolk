@@ -8,7 +8,11 @@ import {
 	offerLabel,
 	reservationKey,
 	reservationsKey,
+	SOURCES,
+	sourceLabel,
+	STATUSES,
 	statusLabel,
+	toggleChoice,
 	violationsText,
 	type ReservationListParams,
 	type RoomTypeAvailability
@@ -165,6 +169,41 @@ describe('statusLabel', () => {
 		expect(statusLabel('TENTATIVE')).toBe('Tentative');
 		expect(statusLabel('CHECKED_IN')).toBe('Checked in');
 		expect(statusLabel('NO_SHOW')).toBe('No-show');
+	});
+});
+
+describe('sourceLabel', () => {
+	it('reads every source in plain words', () => {
+		expect(SOURCES.map(sourceLabel)).toEqual([
+			'Front desk',
+			'Phone',
+			'Email',
+			'Booking engine',
+			'Channel'
+		]);
+	});
+});
+
+describe('toggleChoice', () => {
+	it('starts from every choice when nothing is chosen yet (no filter means any)', () => {
+		expect(toggleChoice(STATUSES, undefined, 'CANCELLED', false)).toEqual([
+			'TENTATIVE',
+			'CONFIRMED',
+			'CHECKED_IN',
+			'CHECKED_OUT',
+			'NO_SHOW'
+		]);
+	});
+
+	it('goes back to no filter once every choice is on again', () => {
+		expect(toggleChoice(SOURCES, ['PHONE', 'EMAIL', 'IBE', 'CHANNEL'], 'FRONT_DESK', true)).toBe(
+			undefined
+		);
+	});
+
+	it("keeps the choices in the list's order, and an empty choice matches nothing", () => {
+		expect(toggleChoice(SOURCES, ['EMAIL'], 'PHONE', true)).toEqual(['PHONE', 'EMAIL']);
+		expect(toggleChoice(SOURCES, ['EMAIL'], 'EMAIL', false)).toEqual([]);
 	});
 });
 

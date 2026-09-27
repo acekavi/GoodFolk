@@ -3,7 +3,9 @@
 use crate::auth::TenantContext;
 use crate::error::ApiError;
 use crate::state::AppState;
-use async_graphql::{Context, EmptyMutation, EmptySubscription, Enum, InputObject, Json, Object, Schema, SimpleObject};
+use async_graphql::{
+    Context, EmptyMutation, EmptySubscription, Enum, InputObject, Json, Object, Schema, SimpleObject, Value,
+};
 use async_graphql_axum::rejection::GraphQLRejection;
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::extract::State;
@@ -713,6 +715,27 @@ fn reservations_error(err: reservations::ReservationsError) -> async_graphql::Er
     }
 }
 
+/// Whether the field being resolved selects `name`, honouring `@skip` and `@include` on it: async-graphql's
+/// look-ahead matches names only, so `totalCount @include(if: false)` would still run the count. Directives on
+/// fragments are not read (a fragment left out only costs the work, never a wrong answer).
+fn selected(ctx: &Context<'_>, name: &str) -> async_graphql::Result<bool> {
+    for field in ctx.look_ahead().field(name).selection_fields() {
+        let mut included = true;
+        for directive in field.directives()? {
+            let condition = matches!(directive.get_argument("if").map(|value| &value.node), Some(Value::Boolean(true)));
+            match directive.name.node.as_str() {
+                "skip" if condition => included = false,
+                "include" if !condition => included = false,
+                _ => {}
+            }
+        }
+        if included {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Search text is at most 100 characters.
 fn check_search(text: Option<&str>) -> async_graphql::Result<()> {
     if text.is_some_and(|text| text.chars().count() > 100) {
@@ -1133,7 +1156,7 @@ impl Query {
             }),
             first,
             after,
-            count: ctx.look_ahead().field("totalCount").exists(),
+            count: selected(ctx, "totalCount")?,
         };
         let mut tx = scoped(ctx, Permission::ReservationsView, property_id).await?;
         let page =
@@ -1174,7 +1197,7 @@ impl Query {
     ) -> async_graphql::Result<ReservationNode> {
         let mut tx = scoped(ctx, Permission::ReservationsView, property_id).await?;
         let detail = reservations::get_reservation(&mut tx, property_id, id).await.map_err(reservations_error)?;
-        let history = if ctx.look_ahead().field("history").exists() {
+        let history = if selected(ctx, "history")? {
             reservations::reservation_history(&mut tx, property_id, id).await.map_err(internal)?
         } else {
             Vec::new()
@@ -1232,12 +1255,59 @@ impl Query {
 
 #[cfg(test)]
 mod tests {
-    use super::internal;
+    use super::{internal, selected};
+    use async_graphql::{Context, EmptyMutation, EmptySubscription, Object, Request, Schema, Variables};
+    use serde_json::json;
 
     #[test]
     fn database_errors_reach_clients_as_a_bare_internal_error() {
         let err = internal(sqlx::Error::Protocol("relation \"property\" does not exist".into()));
 
         assert_eq!(err.message, "Internal error");
+    }
+
+    struct Probe(bool);
+
+    #[Object]
+    impl Probe {
+        async fn total(&self) -> i32 {
+            0
+        }
+
+        /// Whether the parent resolver saw `total` as selected.
+        async fn counted(&self) -> bool {
+            self.0
+        }
+    }
+
+    struct ProbeQuery;
+
+    #[Object]
+    impl ProbeQuery {
+        async fn probe(&self, ctx: &Context<'_>) -> async_graphql::Result<Probe> {
+            Ok(Probe(selected(ctx, "total")?))
+        }
+    }
+
+    async fn counted(query: &str, variables: serde_json::Value) -> bool {
+        let schema = Schema::new(ProbeQuery, EmptyMutation, EmptySubscription);
+        let response = schema.execute(Request::new(query).variables(Variables::from_json(variables))).await;
+        assert!(response.errors.is_empty(), "{:?}", response.errors);
+        response.data.into_json().unwrap()["probe"]["counted"].as_bool().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_field_left_out_by_skip_or_include_is_not_selected() {
+        let with = "query($with: Boolean!) { probe { counted total @include(if: $with) } }";
+        let without = "query($without: Boolean!) { probe { counted total @skip(if: $without) } }";
+
+        assert!(counted("{ probe { counted total } }", json!({})).await);
+        assert!(!counted("{ probe { counted } }", json!({})).await);
+        assert!(counted(with, json!({"with": true})).await);
+        assert!(!counted(with, json!({"with": false})).await);
+        assert!(counted(without, json!({"without": false})).await);
+        assert!(!counted(without, json!({"without": true})).await);
+        // Selected twice, once left out: still selected.
+        assert!(counted("{ probe { counted total @include(if: false) again: total } }", json!({})).await);
     }
 }
