@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { clampCell, moveFocus, resolveRow, revealColumn, visibleColumns } from './grid';
+import {
+	clampCell,
+	moveFocus,
+	resolveRow,
+	revealColumn,
+	visibleColumns,
+	visibleRows
+} from './grid';
 
 describe('visibleColumns', () => {
 	it('covers the columns in view plus overscan on both sides', () => {
@@ -11,6 +18,22 @@ describe('visibleColumns', () => {
 		expect(visibleColumns(0, 280, 56, 31, 2)).toEqual({ start: 0, end: 7 });
 		expect(visibleColumns(56 * 29, 280, 56, 31, 2)).toEqual({ start: 27, end: 31 });
 		expect(visibleColumns(0, 280, 56, 0, 2)).toEqual({ start: 0, end: 0 });
+	});
+});
+
+describe('visibleRows', () => {
+	it('is the same window math, applied down a fixed-row-height table', () => {
+		// 32 px rows, scrolled 10 rows in, a 15-row-tall viewport, 3 rows of overscan.
+		expect(visibleRows(320, 480, 32, 1000, 3)).toEqual({ start: 7, end: 28 });
+	});
+
+	it('is clamped to the rows that exist', () => {
+		expect(visibleRows(0, 480, 32, 10, 3)).toEqual({ start: 0, end: 10 });
+		expect(visibleRows(0, 480, 32, 0, 3)).toEqual({ start: 0, end: 0 });
+	});
+
+	it('is the exact same function as visibleColumns, just read for rows', () => {
+		expect(visibleRows).toBe(visibleColumns);
 	});
 });
 

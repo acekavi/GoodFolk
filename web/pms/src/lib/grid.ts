@@ -1,15 +1,20 @@
 /**
- * Layout math for horizontally virtualized date grids: the inventory calendar now, the tape chart later.
- * Only the columns returned by `visibleColumns` are rendered as DOM nodes.
+ * Layout math for virtualizing fixed-size runs: horizontally for date grids (the inventory calendar now,
+ * the tape chart later), vertically for long fixed-row-height tables (the reservations list). Only the
+ * indices returned by `visibleColumns` (or its `visibleRows` alias) are rendered as DOM nodes.
  */
 
-/** Columns `[start, end)` to render. */
+/** Columns `[start, end)` to render; the same shape reused for rows `[start, end)`. */
 export interface ColumnWindow {
 	start: number;
 	end: number;
 }
 
-/** The columns intersecting the viewport, plus `overscan` columns on each side. */
+/**
+ * The items intersecting the viewport, plus `overscan` items on each side. Takes the scroll offset,
+ * viewport size and item size along one axis, so it works unchanged for either a horizontal date grid's
+ * columns or a vertical table's rows.
+ */
 export function visibleColumns(
 	scrollLeft: number,
 	viewportWidth: number,
@@ -24,6 +29,9 @@ export function visibleColumns(
 		end: Math.max(0, Math.min(columnCount, last + overscan))
 	};
 }
+
+/** `visibleColumns`, named for a vertical list: the rows intersecting the viewport plus `overscan`. */
+export const visibleRows = visibleColumns;
 
 /** The scroll position that shows `column` with as little movement as possible. */
 export function revealColumn(

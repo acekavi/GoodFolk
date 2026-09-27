@@ -21,7 +21,9 @@ type Role = Profile['grants'][number]['role'];
 const ACTIONS = {
 	manageRooms: ['owner', 'manager'],
 	blockRooms: ['owner', 'manager', 'front_desk'],
-	manageRates: ['owner', 'manager']
+	manageRates: ['owner', 'manager'],
+	viewReservations: ['owner', 'manager', 'front_desk', 'housekeeping', 'accountant'],
+	manageReservations: ['owner', 'manager', 'front_desk']
 } satisfies Record<string, Role[]>;
 
 /** UI hint only; the API enforces permissions. A grant counts tenant-wide or for `propertyId`. */

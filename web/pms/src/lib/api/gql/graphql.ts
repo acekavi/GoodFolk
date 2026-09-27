@@ -14,11 +14,22 @@ export type ChangeMode =
   | 'AMOUNT'
   | 'PERCENT';
 
+export type IdDocType =
+  | 'DRIVING_LICENCE'
+  | 'NIC'
+  | 'OTHER'
+  | 'PASSPORT';
+
 export type MealPlan =
   | 'BB'
   | 'FB'
   | 'HB'
   | 'RO';
+
+export type PenaltyKind =
+  | 'AMOUNT'
+  | 'NIGHTS'
+  | 'PERCENT';
 
 export type PlanKind =
   | 'CUSTOM'
@@ -30,9 +41,43 @@ export type PriceChangeMode =
   | 'PERCENT'
   | 'SET';
 
+/**
+ * Which reservation rooms to list. Left out, a field does not filter; an empty `statuses` or `sources`
+ * matches nothing.
+ */
+export type ReservationFilter = {
+  arrivalFrom?: string | null | undefined;
+  /** Inclusive. */
+  arrivalTo?: string | null | undefined;
+  sources?: Array<Source> | null | undefined;
+  statuses?: Array<RoomStatus> | null | undefined;
+  /** The start of a confirmation number, in any case, or a guest's name, typos included. */
+  text?: string | null | undefined;
+};
+
+export type ReservationSort = {
+  direction?: SortDirection;
+  field: ReservationSortField;
+};
+
+/** What the reservations list is sorted by; ties go by the room's id. */
+export type ReservationSortField =
+  | 'ARRIVAL'
+  | 'CONFIRMATION'
+  | 'CREATED'
+  | 'GUEST';
+
 export type Residency =
   | 'NON_RESIDENT'
   | 'RESIDENT';
+
+export type RoomStatus =
+  | 'CANCELLED'
+  | 'CHECKED_IN'
+  | 'CHECKED_OUT'
+  | 'CONFIRMED'
+  | 'NO_SHOW'
+  | 'TENTATIVE';
 
 export type Segment =
   | 'FIT_F'
@@ -40,6 +85,17 @@ export type Segment =
   | 'IBE'
   | 'OTA'
   | 'TA';
+
+export type SortDirection =
+  | 'ASC'
+  | 'DESC';
+
+export type Source =
+  | 'CHANNEL'
+  | 'EMAIL'
+  | 'FRONT_DESK'
+  | 'IBE'
+  | 'PHONE';
 
 export type ViolationKind =
   | 'CLOSED'
@@ -115,6 +171,56 @@ export type QuoteQueryVariables = Exact<{
 
 
 export type QuoteQuery = { quote: { total: number, currency: string, restrictionsOk: boolean, nights: Array<{ date: string, room: number, meal: number }>, violations: Array<{ kind: ViolationKind, date: string | null, message: string }> } };
+
+export type AvailabilityQueryVariables = Exact<{
+  propertyId: string;
+  checkIn: string;
+  checkOut: string;
+  adults: number;
+  children: number;
+  residency: Residency;
+}>;
+
+
+export type AvailabilityQuery = { availability: Array<{ roomTypeId: string, code: string, name: string, free: number, offers: Array<{ ratePlanId: string, ratePlanCode: string, mealPlan: MealPlan, total: number, currency: string, restrictionsOk: boolean, violations: Array<{ kind: ViolationKind, message: string }>, nights: Array<{ date: string, room: number, meal: number }> }> }> };
+
+export type ReservationListQueryVariables = Exact<{
+  p: string;
+  filter?: ReservationFilter | null | undefined;
+  sort?: ReservationSort | null | undefined;
+  first?: number | null | undefined;
+  after?: string | null | undefined;
+}>;
+
+
+export type ReservationListQuery = { reservations: { totalCount: number, nodes: Array<{ id: string, reservationId: string, confirmationNo: string, guestName: string, arrival: string, departure: string, nights: number, roomTypeCode: string, roomNumber: string | null, status: RoomStatus, source: Source, total: number, currency: string, version: number }>, pageInfo: { endCursor: string | null, hasNextPage: boolean } } };
+
+export type ReservationQueryVariables = Exact<{
+  p: string;
+  id: string;
+}>;
+
+
+export type ReservationQuery = { reservation: { id: string, confirmationNo: string, status: RoomStatus, source: Source, notes: string, createdAt: string, version: number, booker: { id: string, firstName: string, lastName: string, email: string | null, phone: string | null, country: string | null, residency: Residency, idDocType: IdDocType | null, idDocMasked: string | null, notes: string, version: number }, totals: Array<{ currency: string, amount: number }>, rooms: Array<{ id: string, version: number, status: RoomStatus, checkIn: string, checkOut: string, adults: number, children: number, mealPlan: MealPlan, total: number, currency: string, cancellationPenalty: number | null, cancelledAt: string | null, recordedPenalty: number | null, roomType: { id: string, code: string, name: string }, room: { id: string, number: string } | null, ratePlan: { id: string, code: string }, primaryGuest: { id: string, firstName: string, lastName: string, residency: Residency, idDocType: IdDocType | null, idDocMasked: string | null }, nights: Array<{ date: string, room: number, meal: number }>, cancellationTerms: { rules: Array<{ daysBeforeArrival: number, penalty: { kind: PenaltyKind, value: number } }>, noShow: { kind: PenaltyKind, value: number } } | null }>, history: Array<{ action: string, at: string, actorName: string | null, data: unknown }> } };
+
+export type GuestsQueryVariables = Exact<{
+  propertyId: string;
+  search?: string | null | undefined;
+  first?: number | null | undefined;
+}>;
+
+
+export type GuestsQuery = { guests: Array<{ id: string, firstName: string, lastName: string, email: string | null, phone: string | null, country: string | null, residency: Residency, idDocType: IdDocType | null, idDocMasked: string | null, notes: string, version: number }> };
+
+export type FreeRoomsQueryVariables = Exact<{
+  propertyId: string;
+  roomTypeId: string;
+  checkIn: string;
+  checkOut: string;
+}>;
+
+
+export type FreeRoomsQuery = { freeRooms: Array<{ id: string, number: string, section: string | null }> };
 
 export type RoomTypesQueryVariables = Exact<{
   propertyId: string;
@@ -299,6 +405,194 @@ export const QuoteDocument = new TypedDocumentString(`
   }
 }
     `) as unknown as TypedDocumentString<QuoteQuery, QuoteQueryVariables>;
+export const AvailabilityDocument = new TypedDocumentString(`
+    query Availability($propertyId: UUID!, $checkIn: Date!, $checkOut: Date!, $adults: Int!, $children: Int!, $residency: Residency!) {
+  availability(
+    propertyId: $propertyId
+    checkIn: $checkIn
+    checkOut: $checkOut
+    adults: $adults
+    children: $children
+    residency: $residency
+  ) {
+    roomTypeId
+    code
+    name
+    free
+    offers {
+      ratePlanId
+      ratePlanCode
+      mealPlan
+      total
+      currency
+      restrictionsOk
+      violations {
+        kind
+        message
+      }
+      nights {
+        date
+        room
+        meal
+      }
+    }
+  }
+}
+    `) as unknown as TypedDocumentString<AvailabilityQuery, AvailabilityQueryVariables>;
+export const ReservationListDocument = new TypedDocumentString(`
+    query ReservationList($p: UUID!, $filter: ReservationFilter, $sort: ReservationSort, $first: Int, $after: String) {
+  reservations(
+    propertyId: $p
+    filter: $filter
+    sort: $sort
+    first: $first
+    after: $after
+  ) {
+    nodes {
+      id
+      reservationId
+      confirmationNo
+      guestName
+      arrival
+      departure
+      nights
+      roomTypeCode
+      roomNumber
+      status
+      source
+      total
+      currency
+      version
+    }
+    pageInfo {
+      endCursor
+      hasNextPage
+    }
+    totalCount
+  }
+}
+    `) as unknown as TypedDocumentString<ReservationListQuery, ReservationListQueryVariables>;
+export const ReservationDocument = new TypedDocumentString(`
+    query Reservation($p: UUID!, $id: UUID!) {
+  reservation(propertyId: $p, id: $id) {
+    id
+    confirmationNo
+    status
+    source
+    notes
+    createdAt
+    version
+    booker {
+      id
+      firstName
+      lastName
+      email
+      phone
+      country
+      residency
+      idDocType
+      idDocMasked
+      notes
+      version
+    }
+    totals {
+      currency
+      amount
+    }
+    rooms {
+      id
+      version
+      status
+      checkIn
+      checkOut
+      adults
+      children
+      mealPlan
+      total
+      currency
+      roomType {
+        id
+        code
+        name
+      }
+      room {
+        id
+        number
+      }
+      ratePlan {
+        id
+        code
+      }
+      primaryGuest {
+        id
+        firstName
+        lastName
+        residency
+        idDocType
+        idDocMasked
+      }
+      nights {
+        date
+        room
+        meal
+      }
+      cancellationTerms {
+        rules {
+          daysBeforeArrival
+          penalty {
+            kind
+            value
+          }
+        }
+        noShow {
+          kind
+          value
+        }
+      }
+      cancellationPenalty
+      cancelledAt
+      recordedPenalty
+    }
+    history {
+      action
+      at
+      actorName
+      data
+    }
+  }
+}
+    `) as unknown as TypedDocumentString<ReservationQuery, ReservationQueryVariables>;
+export const GuestsDocument = new TypedDocumentString(`
+    query Guests($propertyId: UUID!, $search: String, $first: Int) {
+  guests(propertyId: $propertyId, search: $search, first: $first) {
+    id
+    firstName
+    lastName
+    email
+    phone
+    country
+    residency
+    idDocType
+    idDocMasked
+    notes
+    version
+  }
+}
+    `) as unknown as TypedDocumentString<GuestsQuery, GuestsQueryVariables>;
+export const FreeRoomsDocument = new TypedDocumentString(`
+    query FreeRooms($propertyId: UUID!, $roomTypeId: UUID!, $checkIn: Date!, $checkOut: Date!) {
+  freeRooms(
+    propertyId: $propertyId
+    roomTypeId: $roomTypeId
+    checkIn: $checkIn
+    checkOut: $checkOut
+  ) {
+    id
+    number
+    section
+  }
+}
+    `) as unknown as TypedDocumentString<FreeRoomsQuery, FreeRoomsQueryVariables>;
 export const RoomTypesDocument = new TypedDocumentString(`
     query RoomTypes($propertyId: UUID!) {
   roomTypes(propertyId: $propertyId) {
