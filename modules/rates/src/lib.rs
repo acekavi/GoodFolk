@@ -6,6 +6,7 @@
 //! plans derived from it, and one lock per property is simpler than a lock order across all their rows.
 
 mod meals;
+mod offers;
 mod plans;
 mod policies;
 mod prices;
@@ -16,6 +17,7 @@ pub use meals::{
     MealSupplement, MealSupplementChanges, NewMealSupplement, create_meal_supplement, list_meal_supplements,
     update_meal_supplement,
 };
+pub use offers::{Offer, OfferRequest, load_offers};
 pub use plans::{
     ChangeMode, MealPlan, NewRatePlan, PlanKind, RatePlan, RatePlanChanges, Residency, Segment, create_rate_plan,
     list_rate_plans, update_rate_plan,

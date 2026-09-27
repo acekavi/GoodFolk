@@ -103,7 +103,7 @@ fn nights(check_in: Date, check_out: Date) -> Vec<Date> {
 }
 
 /// Count nights in a stay in O(1) time. Rejects empty, backwards, or over-MAX_STAY_NIGHTS stays.
-fn stay_nights(check_in: Date, check_out: Date) -> Result<i64, String> {
+pub(crate) fn stay_nights(check_in: Date, check_out: Date) -> Result<i64, String> {
     if check_out <= check_in {
         return Err("check-out is after check-in".into());
     }
@@ -254,48 +254,122 @@ pub async fn load_quote(tx: &mut Tx, property: Uuid, request: &QuoteRequest) -> 
         .into_iter()
         .find(|plan| plan.id == request.rate_plan_id)
         .ok_or(RatesError::NotFound("rate plan"))?;
-    let room_type: QuoteRoomType = sqlx::query_as(
-        "select id, code, max_adults, max_children, max_occupancy from room_type where id = $1 and property_id = $2",
+    let room_type =
+        read_room_types(tx, property, &[request.room_type_id]).await?.pop().ok_or(RatesError::NotFound("room type"))?;
+    let (plans, room_types) = ([plan.id], [room_type.id]);
+    let (check_in, check_out) = (request.check_in, request.check_out);
+    let prices = read_prices(tx, &plans, &room_types, check_in, check_out).await?;
+    let restrictions = read_restrictions(tx, &plans, &room_types, check_in, check_out).await?;
+    let currencies = [plan.currency.clone()];
+    let supplements = read_supplements(tx, property, &[request.meal_plan], &currencies, check_in, check_out).await?;
+    let data = QuoteData {
+        plan,
+        room_type,
+        prices: prices.into_iter().map(|row| row.price).collect(),
+        restrictions: restrictions.into_iter().map(|row| row.restriction).collect(),
+        supplements,
+    };
+    Ok(quote(request, &data))
+}
+
+/// A price and the plan it belongs to.
+#[derive(sqlx::FromRow)]
+pub(crate) struct PlanPrice {
+    pub(crate) rate_plan_id: Uuid,
+    #[sqlx(flatten)]
+    pub(crate) price: Price,
+}
+
+/// A restriction and the plan it belongs to.
+#[derive(sqlx::FromRow)]
+pub(crate) struct PlanRestriction {
+    pub(crate) rate_plan_id: Uuid,
+    #[sqlx(flatten)]
+    pub(crate) restriction: Restriction,
+}
+
+/// The property's room types among `ids`, in display order.
+pub(crate) async fn read_room_types(
+    tx: &mut Tx,
+    property: Uuid,
+    ids: &[Uuid],
+) -> Result<Vec<QuoteRoomType>, sqlx::Error> {
+    sqlx::query_as(
+        "select id, code, max_adults, max_children, max_occupancy from room_type
+         where property_id = $1 and id = any($2)
+         order by sort_order, code",
     )
-    .bind(request.room_type_id)
     .bind(property)
-    .fetch_optional(&mut **tx)
-    .await?
-    .ok_or(RatesError::NotFound("room type"))?;
-    let prices: Vec<Price> = sqlx::query_as(
-        "select room_type_id, date, occupancy, amount from rate_day
-         where rate_plan_id = $1 and room_type_id = $2 and date >= $3 and date < $4",
-    )
-    .bind(plan.id)
-    .bind(room_type.id)
-    .bind(request.check_in)
-    .bind(request.check_out)
+    .bind(ids)
     .fetch_all(&mut **tx)
-    .await?;
-    let restrictions: Vec<Restriction> = sqlx::query_as(
-        "select room_type_id, date, closed, min_stay, max_stay, closed_to_arrival, closed_to_departure
-         from rate_restriction where rate_plan_id = $1 and room_type_id = $2 and date >= $3 and date <= $4",
+    .await
+}
+
+/// `plans`' prices for `room_types` on the nights of `[check_in, check_out)`.
+pub(crate) async fn read_prices(
+    tx: &mut Tx,
+    plans: &[Uuid],
+    room_types: &[Uuid],
+    check_in: Date,
+    check_out: Date,
+) -> Result<Vec<PlanPrice>, sqlx::Error> {
+    sqlx::query_as(
+        "select rate_plan_id, room_type_id, date, occupancy, amount from rate_day
+         where rate_plan_id = any($1) and room_type_id = any($2) and date >= $3 and date < $4",
     )
-    .bind(plan.id)
-    .bind(room_type.id)
-    .bind(request.check_in)
-    .bind(request.check_out)
+    .bind(plans)
+    .bind(room_types)
+    .bind(check_in)
+    .bind(check_out)
     .fetch_all(&mut **tx)
-    .await?;
-    let supplements: Vec<MealSupplement> = sqlx::query_as(
+    .await
+}
+
+/// `plans`' restrictions for `room_types` from `check_in` to `check_out` inclusive: the nights and the
+/// departure date.
+pub(crate) async fn read_restrictions(
+    tx: &mut Tx,
+    plans: &[Uuid],
+    room_types: &[Uuid],
+    check_in: Date,
+    check_out: Date,
+) -> Result<Vec<PlanRestriction>, sqlx::Error> {
+    sqlx::query_as(
+        "select rate_plan_id, room_type_id, date, closed, min_stay, max_stay, closed_to_arrival, closed_to_departure
+         from rate_restriction
+         where rate_plan_id = any($1) and room_type_id = any($2) and date >= $3 and date <= $4",
+    )
+    .bind(plans)
+    .bind(room_types)
+    .bind(check_in)
+    .bind(check_out)
+    .fetch_all(&mut **tx)
+    .await
+}
+
+/// The property's supplements for `meal_plans` in `currencies` that apply on any night of `[check_in, check_out)`.
+pub(crate) async fn read_supplements(
+    tx: &mut Tx,
+    property: Uuid,
+    meal_plans: &[MealPlan],
+    currencies: &[String],
+    check_in: Date,
+    check_out: Date,
+) -> Result<Vec<MealSupplement>, sqlx::Error> {
+    let meal_plans: Vec<&str> = meal_plans.iter().map(|meal_plan| meal_plan.as_str()).collect();
+    sqlx::query_as(
         "select id, property_id, meal_plan, currency::text as currency, adult_amount, child_amount,
                 lower(valid) as \"from\", upper(valid) as \"to\", version
          from meal_supplement
-         where property_id = $1 and meal_plan = $2 and currency = $3 and valid && daterange($4, $5)",
+         where property_id = $1 and meal_plan = any($2) and currency = any($3) and valid && daterange($4, $5)",
     )
     .bind(property)
-    .bind(request.meal_plan.as_str())
-    .bind(&plan.currency)
-    .bind(request.check_in)
-    .bind(request.check_out)
+    .bind(&meal_plans)
+    .bind(currencies)
+    .bind(check_in)
+    .bind(check_out)
     .fetch_all(&mut **tx)
-    .await?;
-    Ok(quote(request, &QuoteData { plan, room_type, prices, restrictions, supplements }))
+    .await
 }
 
 #[cfg(test)]

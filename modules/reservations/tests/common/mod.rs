@@ -134,3 +134,60 @@ impl Hotel {
         reservations::search_guests(&mut self.tx().await, text, 20).await.unwrap()
     }
 }
+
+impl Hotel {
+    /// Rooms numbered `numbers`, all of `room_type`.
+    pub async fn rooms(&self, room_type: Uuid, numbers: &[&str]) -> Vec<rooms::Room> {
+        let mut tx = self.tx().await;
+        let mut created = Vec::new();
+        for number in numbers {
+            let room =
+                rooms::NewRoom { room_type_id: room_type, number: (*number).into(), floor: None, section_id: None };
+            created.push(rooms::create_room(&mut tx, self.tenant, self.user, self.property, room).await.unwrap());
+        }
+        tx.commit().await.unwrap();
+        created
+    }
+
+    /// A standard plan in `currency` for any guest, selling `room_types` room only or with breakfast.
+    pub fn rate_plan(&self, code: &str, currency: &str, room_types: &[Uuid]) -> rates::NewRatePlan {
+        rates::NewRatePlan {
+            code: code.into(),
+            name: format!("Plan {code}"),
+            kind: rates::PlanKind::Standard,
+            segment: rates::Segment::Ibe,
+            residency: None,
+            currency: currency.into(),
+            parent_id: None,
+            derive_mode: None,
+            derive_value: None,
+            rounding_step: 1,
+            extra_adult_amount: 0,
+            inherit_restrictions: false,
+            allowed_meal_plans: vec![rates::MealPlan::Ro, rates::MealPlan::Bb],
+            cancellation_policy_id: None,
+            room_type_ids: room_types.to_vec(),
+        }
+    }
+
+    /// Creates `input` and prices every room type it sells at `amount` for 2 adults on each day in `[from, to)`.
+    pub async fn priced_plan(&self, input: rates::NewRatePlan, from: i64, to: i64, amount: i64) -> rates::RatePlan {
+        let mut tx = self.tx().await;
+        let plan = rates::create_rate_plan(&mut tx, self.tenant, self.user, self.property, input).await.unwrap();
+        let prices: Vec<rates::Price> = plan
+            .room_type_ids
+            .iter()
+            .flat_map(|room_type| {
+                (from..to).map(|day| rates::Price {
+                    room_type_id: *room_type,
+                    date: self.day(day),
+                    occupancy: 2,
+                    amount,
+                })
+            })
+            .collect();
+        rates::set_prices(&mut tx, self.tenant, self.user, self.property, plan.id, &prices).await.unwrap();
+        tx.commit().await.unwrap();
+        plan
+    }
+}

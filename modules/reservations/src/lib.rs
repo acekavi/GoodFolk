@@ -1,15 +1,19 @@
-//! Guests, and later the reservations they book.
+//! Guests, what a property has free to sell them, and later the reservations they book.
 //!
 //! Every function takes a transaction scoped to the caller's tenant. Writes record an audit entry in the same
 //! transaction. Guests belong to the tenant, not to a property, so a chain shares guest history.
 
+mod availability;
 mod guests;
 
+pub use availability::{AvailabilityRequest, MAX_AVAILABILITY_NIGHTS, RoomTypeAvailability, availability};
 pub use guests::{
     Guest, GuestChanges, IdDocType, MAX_GUEST_SEARCH, NewGuest, create_guest, get_guest, search_guests, update_guest,
 };
 
 use db::{TenantId, Tx, UserId};
+use rates::RatesError;
+use time::Date;
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -28,6 +32,27 @@ pub enum ReservationsError {
     Invalid(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
+}
+
+impl From<RatesError> for ReservationsError {
+    fn from(err: RatesError) -> Self {
+        match err {
+            RatesError::NotFound(what) => ReservationsError::NotFound(what),
+            RatesError::VersionMismatch(what) => ReservationsError::VersionMismatch(what),
+            RatesError::Conflict(message) => ReservationsError::Conflict(message),
+            RatesError::Invalid(message) => ReservationsError::Invalid(message),
+            RatesError::Database(err) => ReservationsError::Database(err),
+        }
+    }
+}
+
+/// The property's business date. `NotFound` if the property is not in this tenant.
+async fn business_date(tx: &mut Tx, property: Uuid) -> Result<Date, ReservationsError> {
+    sqlx::query_scalar("select business_date from property where id = $1")
+        .bind(property)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(ReservationsError::NotFound("property"))
 }
 
 async fn audit(
