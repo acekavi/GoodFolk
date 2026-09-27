@@ -1,123 +1,15 @@
 mod common;
 
 use common::{Hotel, new_guest};
-use rates::{
-    CancellationRule, MealPlan, NewCancellationPolicy, NewMealSupplement, Penalty, PenaltyKind, QuoteRequest, RatePlan,
-    Residency, RestrictionChange,
-};
+use rates::{MealPlan, QuoteRequest, Residency, RestrictionChange};
 use reservations::{
-    CreatedReservation, Guest, NewGuest, NewReservation, NewReservationRoom, ReservationsError, Source, Total,
+    CreatedReservation, NewGuest, NewReservation, NewReservationRoom, ReservationsError, Source, Total,
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use uuid::Uuid;
 
 /// Parallel bookings racing for the last free room.
 const RACERS: usize = 20;
-
-/// Plans of [`Hotel::for_booking`].
-struct Plans {
-    /// USD, any guest, DLX and STD, RO or BB, with a cancellation policy.
-    bar: RatePlan,
-    /// USD, any guest, DLX only, without a cancellation policy.
-    rack: RatePlan,
-    /// USD, non-residents only, DLX only.
-    fit_f: RatePlan,
-}
-
-impl Hotel {
-    /// `deluxe` DLX rooms, one STD room, plans BAR, RACK and FIT-F priced at 10000 a night for 40 days, and a
-    /// 1500-per-adult breakfast supplement in USD.
-    async fn for_booking(opts: PgConnectOptions, deluxe: usize) -> (Self, Plans) {
-        let hotel = Hotel::new(opts).await;
-        let numbers: Vec<String> = (1..=deluxe).map(|n| format!("{}", 100 + n)).collect();
-        hotel.rooms(hotel.deluxe.id, &numbers.iter().map(String::as_str).collect::<Vec<_>>()).await;
-        hotel.rooms(hotel.standard.id, &["201"]).await;
-
-        let mut tx = hotel.tx().await;
-        let policy = NewCancellationPolicy {
-            name: "Flexible".into(),
-            rules: vec![CancellationRule {
-                days_before_arrival: 2,
-                penalty: Penalty { kind: PenaltyKind::Nights, value: 1 },
-            }],
-            no_show: Penalty { kind: PenaltyKind::Percent, value: 10_000 },
-        };
-        let policy =
-            rates::create_cancellation_policy(&mut tx, hotel.tenant, hotel.user, hotel.property, policy).await.unwrap();
-        let breakfast = NewMealSupplement {
-            meal_plan: MealPlan::Bb,
-            currency: "USD".into(),
-            adult_amount: 1_500,
-            child_amount: 500,
-            from: hotel.day(0),
-            to: None,
-        };
-        rates::create_meal_supplement(&mut tx, hotel.tenant, hotel.user, hotel.property, breakfast).await.unwrap();
-        tx.commit().await.unwrap();
-
-        let bar = rates::NewRatePlan {
-            cancellation_policy_id: Some(policy.id),
-            ..hotel.rate_plan("BAR", "USD", &[hotel.deluxe.id, hotel.standard.id])
-        };
-        let fit_f = rates::NewRatePlan {
-            residency: Some(Residency::NonResident),
-            ..hotel.rate_plan("FIT-F", "USD", &[hotel.deluxe.id])
-        };
-        let plans = Plans {
-            bar: hotel.priced_plan(bar, 0, 40, 10_000).await,
-            rack: hotel.priced_plan(hotel.rate_plan("RACK", "USD", &[hotel.deluxe.id]), 0, 40, 10_000).await,
-            fit_f: hotel.priced_plan(fit_f, 0, 40, 10_000).await,
-        };
-        (hotel, plans)
-    }
-
-    /// Two adults in a `room_type` room on `plan`, room only, for `[business date + from, business date + to)`.
-    fn room(&self, room_type: Uuid, plan: &RatePlan, from: i64, to: i64) -> NewReservationRoom {
-        NewReservationRoom {
-            room_type_id: room_type,
-            rate_plan_id: plan.id,
-            meal_plan: MealPlan::Ro,
-            check_in: self.day(from),
-            check_out: self.day(to),
-            adults: 2,
-            children: 0,
-            primary_guest_id: None,
-        }
-    }
-
-    /// Books `rooms` for `booker` in its own transaction, committed if it succeeds.
-    async fn try_book(
-        &self,
-        booker: &Guest,
-        rooms: Vec<NewReservationRoom>,
-    ) -> Result<CreatedReservation, ReservationsError> {
-        let mut tx = self.tx().await;
-        let input = NewReservation { booker_guest_id: booker.id, source: Source::Phone, notes: String::new(), rooms };
-        let created = reservations::create_reservation(&mut tx, self.tenant, self.user, self.property, input).await?;
-        tx.commit().await.unwrap();
-        Ok(created)
-    }
-
-    /// `sold` for `room_type` on each day in `[business date + from, business date + to)`.
-    async fn sold(&self, room_type: Uuid, from: i64, to: i64) -> Vec<i32> {
-        let days =
-            rooms::list_inventory(&mut self.tx().await, self.property, self.day(from), self.day(to)).await.unwrap();
-        days.into_iter().filter(|day| day.room_type_id == room_type).map(|day| day.sold).collect()
-    }
-
-    /// Every confirmation number of the property, in order.
-    async fn confirmation_numbers(&self) -> Vec<String> {
-        sqlx::query_scalar("select confirmation_no from reservation where property_id = $1 order by confirmation_no")
-            .bind(self.property)
-            .fetch_all(&mut *self.tx().await)
-            .await
-            .unwrap()
-    }
-
-    async fn drift(&self) -> Vec<rooms::InventoryDrift> {
-        rooms::find_drift(&mut self.tx().await, self.property).await.unwrap()
-    }
-}
 
 fn invalid(result: Result<CreatedReservation, ReservationsError>) -> String {
     match result {

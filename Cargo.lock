@@ -1852,7 +1852,9 @@ name = "reservations"
 version = "0.1.0"
 dependencies = [
  "db",
+ "domain",
  "property",
+ "proptest",
  "rates",
  "rooms",
  "serde",

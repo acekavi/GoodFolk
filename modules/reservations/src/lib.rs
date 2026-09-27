@@ -5,10 +5,12 @@
 //! a chain shares guest history.
 
 mod availability;
+mod cancellation;
 mod guests;
 mod reservations;
 
 pub use availability::{AvailabilityRequest, MAX_AVAILABILITY_NIGHTS, RoomTypeAvailability, availability};
+pub use cancellation::{CancellationTerms, CancelledRoom, cancel_room, cancellation_penalty};
 pub use guests::{
     Guest, GuestChanges, IdDocType, MAX_GUEST_SEARCH, NewGuest, create_guest, get_guest, search_guests, update_guest,
 };
