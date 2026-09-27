@@ -9,6 +9,7 @@ publish = false
 
 [workspace.dependencies]
 db = { path = "crates/db" }
+domain = { path = "crates/domain" }
 identity = { path = "modules/identity" }
 property = { path = "modules/property" }
 rates = { path = "modules/rates" }
