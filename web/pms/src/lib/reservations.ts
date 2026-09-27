@@ -3,7 +3,9 @@ import type {
 	AvailabilityQuery,
 	FreeRoomsQuery,
 	GuestsQuery,
+	IdDocType,
 	MealPlan,
+	PenaltyKind,
 	Residency,
 	ReservationListQuery,
 	ReservationQuery,
@@ -234,6 +236,8 @@ export type ReservationDetail = ReservationQuery['reservation'];
 export type ReservationRoom = ReservationDetail['rooms'][number];
 export type Guest = GuestsQuery['guests'][number];
 export type FreeRoom = FreeRoomsQuery['freeRooms'][number];
+export type CancellationTerms = NonNullable<ReservationRoom['cancellationTerms']>;
+export type HistoryEntry = ReservationDetail['history'][number];
 
 /** Which reservation rooms to list. Left out, a field does not filter; an empty `statuses`/`sources` matches
  * nothing (mirrors the server: "empty selections never mean everything"). */
@@ -281,6 +285,18 @@ export function reservationsKey(propertyId: string, params?: ReservationListPara
 /** Query key shared with the server's `reservation:<id>` event. */
 export function reservationKey(id: string) {
 	return [`reservation:${id}`] as const;
+}
+
+/**
+ * Query key for the assign picker's free rooms of one type for one stay. Not named by any server event;
+ * `freeRoomsKey(propertyId)` alone is the prefix of every such key, for invalidating them all after a room
+ * is assigned, unassigned or cancelled.
+ */
+export function freeRoomsKey(
+	propertyId: string,
+	...stay: [roomTypeId: string, checkIn: string, checkOut: string] | []
+) {
+	return ['freeRooms', propertyId, ...stay] as const;
 }
 
 /** Query key for one availability lookup. Not named by any server event: a stay's offers are refetched by
@@ -450,6 +466,88 @@ export function toggleChoice<T>(
 	else set.delete(value);
 	const next = all.filter((choice) => set.has(choice));
 	return next.length === all.length ? undefined : next;
+}
+
+/** A penalty in words: `1 night`, `12.5% of the stay` (the value is basis points) or `USD 150.00`. */
+export function describePenalty(
+	penalty: { kind: PenaltyKind; value: number },
+	currency: string
+): string {
+	switch (penalty.kind) {
+		case 'NIGHTS':
+			return `${penalty.value} night${penalty.value === 1 ? '' : 's'}`;
+		case 'PERCENT':
+			return `${penalty.value / 100}% of the stay`;
+		case 'AMOUNT':
+			return `${currency} ${formatMoney(penalty.value, currency)}`;
+	}
+}
+
+function daysBefore(days: number): string {
+	if (days === 0) return 'the day of arrival';
+	return `${days} day${days === 1 ? '' : 's'} before arrival`;
+}
+
+/**
+ * A room's cancellation terms in words, e.g. `Free until 7 days before arrival, then 1 night`. A rule costs
+ * its penalty from its number of days before arrival on, until a rule nearer arrival takes over (the server's
+ * `cancellation_penalty` applies the rule with the fewest days still at or above the days left), so the rules
+ * read from the furthest from arrival to the nearest. No terms, or no rules, means cancelling is free.
+ */
+export function describeTerms(
+	terms: CancellationTerms | null | undefined,
+	currency: string
+): string {
+	const rules = (terms?.rules ?? []).toSorted((a, b) => b.daysBeforeArrival - a.daysBeforeArrival);
+	if (rules.length === 0) return 'Free to cancel';
+	const [first, ...later] = rules;
+	return [
+		`Free until ${daysBefore(first.daysBeforeArrival)}, then ${describePenalty(first.penalty, currency)}`,
+		...later.map(
+			(rule) =>
+				`from ${daysBefore(rule.daysBeforeArrival)}, ${describePenalty(rule.penalty, currency)}`
+		)
+	].join('; ');
+}
+
+/** One history entry's action in words, with the room or the penalty its audit data recorded. */
+export function historyLabel(entry: Pick<HistoryEntry, 'action' | 'data'>): string {
+	const data = (entry.data ?? {}) as Record<string, unknown>;
+	switch (entry.action) {
+		case 'reservation.created':
+			return 'Booked';
+		case 'reservation_room.assigned':
+			return data.previous
+				? `Moved from room ${data.previous} to ${data.number}`
+				: `Room ${data.number} assigned`;
+		case 'reservation_room.unassigned':
+			return `Room ${data.number} unassigned`;
+		case 'reservation_room.cancelled': {
+			const penalty = Number(data.penalty ?? 0);
+			const currency = String(data.currency ?? '');
+			return penalty > 0
+				? `Room cancelled, costing ${currency} ${formatMoney(penalty, currency)}`
+				: 'Room cancelled at no cost';
+		}
+		default:
+			return entry.action;
+	}
+}
+
+const ID_DOC_LABELS: Record<IdDocType, string> = {
+	PASSPORT: 'Passport',
+	NIC: 'NIC',
+	DRIVING_LICENCE: 'Driving licence',
+	OTHER: 'ID'
+};
+
+/** A guest's ID document as the UI shows it: its kind and the masked number, never the number itself. */
+export function idDocText(guest: {
+	idDocType?: IdDocType | null;
+	idDocMasked?: string | null;
+}): string {
+	if (!guest.idDocType || !guest.idDocMasked) return 'None on file';
+	return `${ID_DOC_LABELS[guest.idDocType]} ${guest.idDocMasked}`;
 }
 
 /** Every violation's message, joined the way the server joins them in a 422 (`"; "`). */

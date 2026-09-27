@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
 	availabilityKey,
+	describePenalty,
+	describeTerms,
 	filterFromSearchParams,
 	filterToSearchParams,
 	formatStay,
+	freeRoomsKey,
 	groupOffers,
+	historyLabel,
+	idDocText,
 	offerLabel,
 	reservationKey,
 	reservationsKey,
@@ -14,6 +19,7 @@ import {
 	statusLabel,
 	toggleChoice,
 	violationsText,
+	type CancellationTerms,
 	type ReservationListParams,
 	type RoomTypeAvailability
 } from './reservations';
@@ -37,6 +43,17 @@ describe('keys', () => {
 
 	it("the reservation detail key matches the server's reservation:<id> event key exactly", () => {
 		expect(reservationKey('r1')).toEqual(['reservation:r1']);
+	});
+
+	it('the free rooms key carries the room type and the stay, under one prefix per property', () => {
+		expect(freeRoomsKey('p1', 't1', '2026-10-03', '2026-10-05')).toEqual([
+			'freeRooms',
+			'p1',
+			't1',
+			'2026-10-03',
+			'2026-10-05'
+		]);
+		expect(freeRoomsKey('p1')).toEqual(['freeRooms', 'p1']);
 	});
 
 	it('the availability key carries every argument that changes the answer', () => {
@@ -277,5 +294,91 @@ describe('groupOffers', () => {
 			sellable: false,
 			violations: 'closed'
 		});
+	});
+});
+
+describe('describePenalty', () => {
+	it('reads nights, percentages of the stay and amounts in the stay currency', () => {
+		expect(describePenalty({ kind: 'NIGHTS', value: 1 }, 'USD')).toBe('1 night');
+		expect(describePenalty({ kind: 'NIGHTS', value: 2 }, 'USD')).toBe('2 nights');
+		expect(describePenalty({ kind: 'PERCENT', value: 10_000 }, 'USD')).toBe('100% of the stay');
+		expect(describePenalty({ kind: 'PERCENT', value: 1_250 }, 'USD')).toBe('12.5% of the stay');
+		expect(describePenalty({ kind: 'AMOUNT', value: 15_000 }, 'USD')).toBe('USD 150.00');
+		expect(describePenalty({ kind: 'AMOUNT', value: 5_000 }, 'LKR')).toBe('LKR 50.00');
+	});
+});
+
+describe('describeTerms', () => {
+	const noShow = { kind: 'NIGHTS', value: 1 } as const;
+	const terms = (rules: CancellationTerms['rules']): CancellationTerms => ({ rules, noShow });
+
+	it('reads one rule as free until that many days before arrival, then its penalty', () => {
+		expect(
+			describeTerms(terms([{ daysBeforeArrival: 7, penalty: { kind: 'NIGHTS', value: 1 } }]), 'USD')
+		).toBe('Free until 7 days before arrival, then 1 night');
+	});
+
+	it('reads later rules from the furthest from arrival to the nearest, whatever order they are stored in', () => {
+		expect(
+			describeTerms(
+				terms([
+					{ daysBeforeArrival: 0, penalty: { kind: 'PERCENT', value: 10_000 } },
+					{ daysBeforeArrival: 30, penalty: { kind: 'AMOUNT', value: 5_000 } },
+					{ daysBeforeArrival: 1, penalty: { kind: 'NIGHTS', value: 2 } }
+				]),
+				'USD'
+			)
+		).toBe(
+			'Free until 30 days before arrival, then USD 50.00; from 1 day before arrival, 2 nights; from the day of arrival, 100% of the stay'
+		);
+	});
+
+	it('says a stay is free to cancel when it has no terms or no rules', () => {
+		expect(describeTerms(null, 'USD')).toBe('Free to cancel');
+		expect(describeTerms(undefined, 'USD')).toBe('Free to cancel');
+		expect(describeTerms(terms([]), 'USD')).toBe('Free to cancel');
+	});
+});
+
+describe('historyLabel', () => {
+	it('reads what was done, with the room number or the penalty the entry recorded', () => {
+		expect(historyLabel({ action: 'reservation.created', data: {} })).toBe('Booked');
+		expect(
+			historyLabel({ action: 'reservation_room.assigned', data: { number: '102', previous: null } })
+		).toBe('Room 102 assigned');
+		expect(
+			historyLabel({
+				action: 'reservation_room.assigned',
+				data: { number: '102', previous: '101' }
+			})
+		).toBe('Moved from room 101 to 102');
+		expect(historyLabel({ action: 'reservation_room.unassigned', data: { number: '101' } })).toBe(
+			'Room 101 unassigned'
+		);
+		expect(
+			historyLabel({
+				action: 'reservation_room.cancelled',
+				data: { penalty: 10_000, currency: 'USD' }
+			})
+		).toBe('Room cancelled, costing USD 100.00');
+		expect(
+			historyLabel({ action: 'reservation_room.cancelled', data: { penalty: 0, currency: 'USD' } })
+		).toBe('Room cancelled at no cost');
+	});
+
+	it('shows an action it does not know as it is', () => {
+		expect(historyLabel({ action: 'reservation.noted', data: null })).toBe('reservation.noted');
+	});
+});
+
+describe('idDocText', () => {
+	it('names the document and shows only its masked number', () => {
+		expect(idDocText({ idDocType: 'PASSPORT', idDocMasked: '•••• 5432' })).toBe(
+			'Passport •••• 5432'
+		);
+		expect(idDocText({ idDocType: 'DRIVING_LICENCE', idDocMasked: '•••• 0001' })).toBe(
+			'Driving licence •••• 0001'
+		);
+		expect(idDocText({ idDocType: null, idDocMasked: null })).toBe('None on file');
 	});
 });

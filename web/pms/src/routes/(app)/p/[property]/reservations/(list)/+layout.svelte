@@ -6,9 +6,10 @@
 	Rows have a fixed height and only those in view (plus overscan) are in the DOM; the scroller is as tall
 	as every loaded row. Pages come from the server's cursor, the next one fetched as the end comes near.
 	Filter and sort live in the URL's search params. ArrowUp and ArrowDown move between the row links.
+	Closing a reservation's modal puts focus back on the row that opened it, if it is still rendered.
 -->
 <script lang="ts">
-	import { goto } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { createInfiniteQuery, createQuery, useQueryClient } from '@tanstack/svelte-query';
@@ -181,6 +182,19 @@
 		// The row is now in the scroller's view; this brings that part of the scroller into the window.
 		link?.closest('[role="row"]')?.scrollIntoView({ block: 'nearest' });
 	}
+
+	// After the modal closes (and SvelteKit's own focus reset), focus returns to the row that opened it: the
+	// active row when it is that reservation's (a reservation with several rooms has several rows), else its
+	// first loaded row.
+	afterNavigate(({ from, to }) => {
+		const closed = from?.params?.id;
+		if (!closed || to?.route.id !== '/(app)/p/[property]/reservations/(list)') return;
+		const index =
+			rows[active]?.reservationId === closed
+				? active
+				: rows.findIndex((row) => row.reservationId === closed);
+		scroller?.querySelector<HTMLElement>(`a[data-row="${index}"]`)?.focus({ preventScroll: true });
+	});
 
 	function ariaSort(field: ReservationSortField | undefined) {
 		if (!field) return undefined;
