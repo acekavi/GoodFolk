@@ -3,9 +3,7 @@
 use crate::auth::TenantContext;
 use crate::error::ApiError;
 use crate::state::AppState;
-use async_graphql::{
-    Context, EmptyMutation, EmptySubscription, Enum, InputObject, Json, Object, Schema, SimpleObject, Value,
-};
+use async_graphql::{Context, EmptyMutation, EmptySubscription, Enum, InputObject, Json, Object, Schema, SimpleObject};
 use async_graphql_axum::rejection::GraphQLRejection;
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::extract::State;
@@ -715,25 +713,11 @@ fn reservations_error(err: reservations::ReservationsError) -> async_graphql::Er
     }
 }
 
-/// Whether the field being resolved selects `name`, honouring `@skip` and `@include` on it: async-graphql's
-/// look-ahead matches names only, so `totalCount @include(if: false)` would still run the count. Directives on
-/// fragments are not read (a fragment left out only costs the work, never a wrong answer).
+/// Whether the field being resolved selects `name`. async-graphql drops selections left out by `@skip` or
+/// `@include` (on fields and fragments) before resolving, so `totalCount @include(if: false)` is not selected;
+/// the unit test below keeps that true across upgrades.
 fn selected(ctx: &Context<'_>, name: &str) -> async_graphql::Result<bool> {
-    for field in ctx.look_ahead().field(name).selection_fields() {
-        let mut included = true;
-        for directive in field.directives()? {
-            let condition = matches!(directive.get_argument("if").map(|value| &value.node), Some(Value::Boolean(true)));
-            match directive.name.node.as_str() {
-                "skip" if condition => included = false,
-                "include" if !condition => included = false,
-                _ => {}
-            }
-        }
-        if included {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    Ok(ctx.look_ahead().field(name).exists())
 }
 
 /// Search text is at most 100 characters.
