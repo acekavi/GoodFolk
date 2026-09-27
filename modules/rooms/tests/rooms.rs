@@ -216,3 +216,35 @@ async fn room_updates_need_the_current_version(_: PgPoolOptions, opts: PgConnect
     assert!(matches!(stale, Err(RoomsError::VersionMismatch("room"))), "{stale:?}");
     assert_eq!((cleared.floor, cleared.section_id, cleared.version), (None, Some(section.id), 3));
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_room_with_a_stay_still_to_come_keeps_its_type_and_stays_active(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let std = hotel.room_type("STD").await;
+    let dlx = hotel.room_type("DLX").await;
+    let (room, other) = (hotel.room(std.id, "101").await, hotel.room(std.id, "102").await);
+    let upcoming = hotel.assigned_stay(&room, 2, 4, "confirmed").await;
+    // Stays that are over or were cancelled don't hold a room.
+    hotel.assigned_stay(&other, -3, 0, "checked_out").await;
+    hotel.assigned_stay(&other, 1, 3, "cancelled").await;
+
+    let deactivated = hotel.update_room(&room, RoomChanges { active: Some(false), ..RoomChanges::default() }).await;
+    let retyped = hotel.update_room(&room, RoomChanges { room_type_id: Some(dlx.id), ..RoomChanges::default() }).await;
+    let moved = hotel.update_room(&room, RoomChanges { floor: Some(Some("2".into())), ..RoomChanges::default() }).await;
+    let other = hotel.update_room(&other, RoomChanges { room_type_id: Some(dlx.id), ..RoomChanges::default() }).await;
+    let other = hotel.update_room(&other.unwrap(), RoomChanges { active: Some(false), ..RoomChanges::default() }).await;
+
+    let until = hotel.day(4);
+    let Err(RoomsError::Conflict(deactivated)) = deactivated else { panic!("expected a conflict: {deactivated:?}") };
+    assert_eq!(
+        deactivated,
+        format!("room 101 is assigned to {upcoming} until {until}; move that stay before deactivating the room")
+    );
+    let Err(RoomsError::Conflict(retyped)) = retyped else { panic!("expected a conflict: {retyped:?}") };
+    assert_eq!(
+        retyped,
+        format!("room 101 is assigned to {upcoming} until {until}; move that stay before changing the room's type")
+    );
+    assert_eq!(moved.unwrap().floor.as_deref(), Some("2"), "other changes are fine");
+    assert!(!other.unwrap().active);
+}

@@ -27,6 +27,7 @@ pub use rooms::{
 pub use sections::{Section, create_section, list_sections, rename_section};
 
 use db::{Event, TenantId, Tx, UserId};
+use time::Date;
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -37,7 +38,8 @@ pub enum RoomsError {
     /// `If-Match` named an older version of the named resource.
     #[error("the {0} was changed by someone else; reload and try again")]
     VersionMismatch(&'static str),
-    /// A uniqueness rule, such as a duplicate code or room number.
+    /// A uniqueness rule, such as a duplicate code or room number, or a change a stay assigned to the room
+    /// rules out.
     #[error("{0}")]
     Conflict(String),
     /// A business rule, such as a capacity that does not add up or an unknown room type.
@@ -63,6 +65,30 @@ pub fn rooms_key(property: Uuid) -> String {
 /// Whether `err` violated the named constraint.
 fn violates(err: &sqlx::Error, constraint: &str) -> bool {
     err.as_database_error().and_then(|db_err| db_err.constraint()).is_some_and(|name| name == constraint)
+}
+
+/// The earliest stay that holds `room` on a night of `[from, to)` (from `from` on when `to` is `None`), as its
+/// confirmation number and check-out. Stays live in the reservations crate, which depends on this one, so this
+/// reads `reservation_room` with SQL. Callers lock the room row first; assigning a room locks it too, so the
+/// answer holds until the caller commits.
+async fn assigned_stay(
+    tx: &mut Tx,
+    room: Uuid,
+    from: Date,
+    to: Option<Date>,
+) -> Result<Option<(String, Date)>, sqlx::Error> {
+    sqlx::query_as(
+        "select r.confirmation_no, upper(s.stay)
+         from reservation_room s join reservation r on r.id = s.reservation_id
+         where s.room_id = $1 and s.status not in ('cancelled', 'no_show') and s.stay && daterange($2, $3)
+         order by lower(s.stay)
+         limit 1",
+    )
+    .bind(room)
+    .bind(from)
+    .bind(to)
+    .fetch_optional(&mut **tx)
+    .await
 }
 
 async fn audit(

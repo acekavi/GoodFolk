@@ -287,3 +287,29 @@ async fn a_property_adds_and_retires_its_own_block_reasons(_: PgPoolOptions, opt
     assert!(matches!(duplicate, Err(RoomsError::Conflict(_))), "{duplicate:?}");
     assert!(matches!(use_retired, Err(RoomsError::Invalid(_))), "{use_retired:?}");
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_room_is_not_blocked_on_the_nights_a_stay_is_assigned_to_it(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let dlx = hotel.room_type("DLX").await;
+    let (room, occupied) = (hotel.room(dlx.id, "101").await, hotel.room(dlx.id, "102").await);
+    let confirmed = hotel.assigned_stay(&room, 2, 5, "confirmed").await;
+    hotel.assigned_stay(&room, 6, 8, "cancelled").await;
+    hotel.assigned_stay(&room, 8, 10, "no_show").await;
+    let checked_in = hotel.assigned_stay(&occupied, -1, 2, "checked_in").await;
+
+    let overlapping = hotel.block(&room, 4, 6, BlockKind::OutOfService).await;
+    let before_arrival = hotel.block(&room, 0, 3, BlockKind::OutOfOrder).await;
+    let in_house = hotel.block(&occupied, 0, 1, BlockKind::OutOfOrder).await;
+    // From the day the stay leaves, over a cancelled stay and a no-show.
+    let after = hotel.block(&room, 5, 10, BlockKind::OutOfOrder).await;
+
+    for (refused, confirmation, number) in
+        [(overlapping, &confirmed, "101"), (before_arrival, &confirmed, "101"), (in_house, &checked_in, "102")]
+    {
+        let Err(RoomsError::Conflict(message)) = refused else { panic!("expected a conflict, got {refused:?}") };
+        assert_eq!(message, format!("room {number} is assigned to {confirmation} on those nights"));
+    }
+    assert!(after.is_ok(), "{after:?}");
+    assert_eq!(hotel.out_of_order_days(dlx.id).await, vec![5, 6, 7, 8, 9]);
+}

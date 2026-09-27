@@ -1,5 +1,5 @@
 use crate::inventory::{WINDOW_DAYS, adjust, business_date, contribute, extend_window, lock_days, window_keys};
-use crate::{RoomsError, audit, notify, reorder, rooms_key, violates};
+use crate::{RoomsError, assigned_stay, audit, notify, reorder, rooms_key, violates};
 use db::{TenantId, Tx, UserId};
 use serde::Serialize;
 use time::{Date, Duration};
@@ -202,7 +202,8 @@ async fn insert_rooms(
 }
 
 /// Changes a room. Retyping, deactivating or reactivating moves its share of the inventory counters
-/// (including its out-of-order blocks) from the business date on.
+/// (including its out-of-order blocks) from the business date on. A room with a stay assigned to it that
+/// leaves after the business date keeps its type and stays active ([`RoomsError::Conflict`]).
 pub async fn update_room(
     tx: &mut Tx,
     tenant: TenantId,
@@ -229,6 +230,21 @@ pub async fn update_room(
     }
     let room_type = changes.room_type_id.unwrap_or(current.room_type_id);
     let active = changes.active.unwrap_or(current.active);
+    let blocked_by_stays = if current.active && !active {
+        Some("deactivating the room")
+    } else if room_type != current.room_type_id {
+        Some("changing the room's type")
+    } else {
+        None
+    };
+    if let Some(change) = blocked_by_stays
+        && let Some((confirmation, until)) = assigned_stay(tx, id, today, None).await?
+    {
+        return Err(RoomsError::Conflict(format!(
+            "room {} is assigned to {confirmation} until {until}; move that stay before {change}",
+            current.number
+        )));
+    }
     let type_to_check = (changes.room_type_id.is_some() || (active && !current.active)).then_some(room_type);
     check_references(tx, property, type_to_check, changes.section_id.flatten()).await?;
     let moves_counts = room_type != current.room_type_id || active != current.active;

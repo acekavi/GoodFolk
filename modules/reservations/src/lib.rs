@@ -4,11 +4,13 @@
 //! transaction, and reservation writes queue change events. Guests belong to the tenant, not to a property, so
 //! a chain shares guest history.
 
+mod assignment;
 mod availability;
 mod cancellation;
 mod guests;
 mod reservations;
 
+pub use assignment::{AssignedRoom, FreeRoom, assign_room, free_rooms, unassign_room};
 pub use availability::{AvailabilityRequest, MAX_AVAILABILITY_NIGHTS, RoomTypeAvailability, availability};
 pub use cancellation::{CancellationTerms, CancelledRoom, cancel_room, cancellation_penalty};
 pub use guests::{
@@ -63,6 +65,11 @@ pub fn reservations_key(property: Uuid) -> String {
 /// Cache key for one reservation's detail.
 pub fn reservation_key(reservation: Uuid) -> String {
     format!("reservation:{reservation}")
+}
+
+/// Whether `err` violated the named constraint.
+fn violates(err: &sqlx::Error, constraint: &str) -> bool {
+    err.as_database_error().and_then(|db_err| db_err.constraint()).is_some_and(|name| name == constraint)
 }
 
 /// The property's business date. `NotFound` if the property is not in this tenant.

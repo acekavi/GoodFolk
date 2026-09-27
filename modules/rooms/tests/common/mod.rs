@@ -80,6 +80,50 @@ impl Hotel {
         days.into_iter().filter(|day| day.room_type_id == room_type).collect()
     }
 
+    /// A stay of `status` in `room` for `[business date + from, business date + to)`, written straight into the
+    /// reservation tables as the reservations module leaves an assigned stay (this crate cannot depend on it),
+    /// with its own guest, rate plan and reservation. The counters are not touched. Returns the confirmation
+    /// number, `GAL-000001` for the first stay.
+    pub async fn assigned_stay(&self, room: &Room, from: i64, to: i64, status: &str) -> String {
+        let mut tx = self.tx().await;
+        let taken: i64 = sqlx::query_scalar("select count(*) from reservation").fetch_one(&mut *tx).await.unwrap();
+        let (guest, plan, reservation) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let confirmation = format!("GAL-{:06}", taken + 1);
+        let statements = [
+            "insert into guest (id, tenant_id, first_name, last_name, residency)
+             values ($3, $1, 'Ada', 'Silva', 'resident')",
+            "insert into rate_plan (id, tenant_id, property_id, code, name, kind, segment, currency)
+             values ($4, $1, $2, 'BAR' || $6, 'Best available', 'standard', 'IBE', 'USD')",
+            "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id)
+             values ($5, $1, $2, $7, 'front_desk', $3)",
+            "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, room_id, stay,
+                                           adults, children, rate_plan_id, meal_plan, status, primary_guest_id,
+                                           currency, cancelled_at, cancellation_penalty)
+             select gen_random_uuid(), $1, $2, $5, r.room_type_id, r.id, daterange($9, $10), 2, 0, $4, 'RO', $11,
+                    $3, 'USD', case when $11 = 'cancelled' then now() end, case when $11 = 'cancelled' then 0 end
+             from room r where r.id = $8",
+        ];
+        for statement in statements {
+            sqlx::query(statement)
+                .bind(self.tenant.0)
+                .bind(self.property)
+                .bind(guest)
+                .bind(plan)
+                .bind(reservation)
+                .bind(taken + 1)
+                .bind(&confirmation)
+                .bind(room.id)
+                .bind(self.day(from))
+                .bind(self.day(to))
+                .bind(status)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+        confirmation
+    }
+
     /// Counter rows that disagree with rooms, blocks and reservations; empty when the counters are right.
     pub async fn drift(&self) -> Vec<rooms::InventoryDrift> {
         let mut tx = self.tx().await;

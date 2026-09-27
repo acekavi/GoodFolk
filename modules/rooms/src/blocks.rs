@@ -1,5 +1,5 @@
 use crate::inventory::{WINDOW_DAYS, adjust, business_date, clamped_month_keys, extend_window, lock_days};
-use crate::{RoomsError, audit, notify, rooms_key, violates};
+use crate::{RoomsError, assigned_stay, audit, notify, rooms_key, violates};
 use db::{TenantId, Tx, UserId};
 use serde::{Deserialize, Serialize};
 use time::{Date, Duration};
@@ -238,9 +238,10 @@ async fn overlapping(tx: &mut Tx, room: Uuid, from: Date, to: Date) -> Result<Ve
     .await
 }
 
-/// Locks the room (serializing its blocks and retyping) and returns its type and whether it is active.
-async fn lock_room(tx: &mut Tx, property: Uuid, room: Uuid) -> Result<(Uuid, bool), RoomsError> {
-    sqlx::query_as("select room_type_id, active from room where id = $1 and property_id = $2 for update")
+/// Locks the room (serializing its blocks, retyping and assignments) and returns its type, whether it is
+/// active and its number.
+async fn lock_room(tx: &mut Tx, property: Uuid, room: Uuid) -> Result<(Uuid, bool, String), RoomsError> {
+    sqlx::query_as("select room_type_id, active, number from room where id = $1 and property_id = $2 for update")
         .bind(room)
         .bind(property)
         .fetch_optional(&mut **tx)
@@ -249,7 +250,8 @@ async fn lock_room(tx: &mut Tx, property: Uuid, room: Uuid) -> Result<(Uuid, boo
 }
 
 /// Blocks a room for `[from, to)`. Out-of-order blocks take it out of its type's availability on those days.
-/// Fails with [`RoomsError::Overlap`], listing the blocks in the way, if the room is already blocked then.
+/// Fails with [`RoomsError::Overlap`], listing the blocks in the way, if the room is already blocked then, and
+/// with [`RoomsError::Conflict`] if a stay is assigned to it on any of those days.
 pub async fn create_block(
     tx: &mut Tx,
     tenant: TenantId,
@@ -268,7 +270,7 @@ pub async fn create_block(
     if input.to > today + Duration::days(WINDOW_DAYS) {
         return Err(RoomsError::Invalid(format!("a block can end at most {WINDOW_DAYS} days after the business date")));
     }
-    let (room_type, active) = lock_room(tx, property, input.room_id).await?;
+    let (room_type, active, number) = lock_room(tx, property, input.room_id).await?;
     if !active {
         return Err(RoomsError::Invalid("the room is inactive".into()));
     }
@@ -284,6 +286,9 @@ pub async fn create_block(
     let conflicts = overlapping(tx, input.room_id, input.from, input.to).await?;
     if !conflicts.is_empty() {
         return Err(RoomsError::Overlap(conflicts));
+    }
+    if let Some((confirmation, _)) = assigned_stay(tx, input.room_id, input.from, Some(input.to)).await? {
+        return Err(RoomsError::Conflict(format!("room {number} is assigned to {confirmation} on those nights")));
     }
     extend_window(tx, property).await?;
     if input.kind == BlockKind::OutOfOrder {
@@ -349,7 +354,7 @@ pub async fn shorten_block(
             .fetch_optional(&mut **tx)
             .await?;
     let room = room.ok_or(RoomsError::NotFound("block"))?;
-    let (room_type, room_active) = lock_room(tx, property, room).await?;
+    let (room_type, room_active, _) = lock_room(tx, property, room).await?;
     let current: Block =
         sqlx::query_as(sqlx::AssertSqlSafe(format!("select {BLOCK_COLUMNS} from room_block where id = $1 for update")))
             .bind(id)
