@@ -11,6 +11,7 @@ Companion to [ARCHITECTURE.md](ARCHITECTURE.md). Each phase ends in something th
 | [superpowers/plans/2026-09-23-phase-0-foundations.md](superpowers/plans/2026-09-23-phase-0-foundations.md) | **Phase 0 implementation plan**: 15 test-first tasks with complete code, run in order on a clean repository before the plan was written |
 | [superpowers/plans/2026-09-24-phase-1-rooms-inventory.md](superpowers/plans/2026-09-24-phase-1-rooms-inventory.md) | **Phase 1 implementation plan**: 17 tasks with complete code, executed in order on the Phase 0 code before the plan was written |
 | [superpowers/plans/2026-09-25-phase-2-rates-meal-plans.md](superpowers/plans/2026-09-25-phase-2-rates-meal-plans.md) | **Phase 2 implementation plan**: 17 tasks with complete code, executed in order on the Phase 1 code before the plan was written |
+| [superpowers/plans/2026-09-27-phase-3a-reservations.md](superpowers/plans/2026-09-27-phase-3a-reservations.md) | **Phase 3a implementation plan**: 14 tasks with complete code, executed in order on the Phase 2 code before the plan was written |
 | [specs/](specs/) | Phases 1–9: scope, data, API, UI, rules, required tests and performance gates |
 
 Each later phase gets its step-by-step implementation plan at the start of that phase, written and verified against the code as it stands then (the same method as Phase 0). Writing code-level plans for Phase 7 now would mean guessing at code that Phases 1–6 have not written yet.
@@ -46,6 +47,7 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
     - an HTTP-level tenant switch followed by a create;
     - the `property.created` audit row.
   - Log a warning when `load_grants` skips a role it doesn't recognise.
+  - **SSE reconnect loop (resolved in Phase 3a).** `(app)/+layout.svelte`'s effect for connecting the event stream depended on `me.data`; every connection open triggers a `resync` refetch, which refetches `me`, which re-ran the effect, closing and reopening the stream — an infinite loop of opens and full refetches (observed at ~20 reconnects and hundreds of requests a second, present since Phase 1). Fixed by connecting once per sign-in (a derived boolean instead of the query data itself), with an `auth.spec` regression test.
   - Still open, not in the Phase 1 plan: check the SSE `?property=` filter against the user's grants (property-scoped grants exist now, but the stream only carries cache keys); a purge job for expired sessions, old idempotency keys and old `login_failure` rows (runs in `jobs-svc`, Phase 7).
 
 ## Phase 2 — Rates and meal plans ([spec](specs/phase-2-rates-meal-plans.md), [plan](superpowers/plans/2026-09-25-phase-2-rates-meal-plans.md))
@@ -61,19 +63,32 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
   - Tests added in the Phase 2 plan: concurrent sign-in attempts against the throttle; REST cross-tenant POSTs of a room, a room range and a section.
   - Follow-ups done in the Phase 2 plan: replayed idempotent creates carry their `ETag`, and the OpenAPI document declares it; an update that names no field is a 422 and keeps the version; the rooms page disables only the row or form a command changes; `DateGrid` keeps its active cell when rows shrink and grow again.
 - Carried over from the Phase 2 reviews:
-  - **Before Phase 3:** decide whether a quote on an inactive room type is a violation (`quote` doesn't check `room_type.active`); `load_quote` loads the whole plan tree to find one plan (recheck at the Phase 9 search gate); the bulk-change gate measured 301–307 ms median against 300 ms on a laptop, so re-measure it on the server.
+  - **Before Phase 3 (still open).** Decide whether a quote on an inactive room type is a violation: `quote` still doesn't check `room_type.active`, and Phase 3a's `create_reservation` doesn't either (`room_type_codes` selects by id only, with no `active` filter), so a reservation can still be booked on a room type that has since been deactivated. `load_quote` loads the whole plan tree to find one plan (recheck at the Phase 9 search gate); the bulk-change gate measured 301–307 ms median against 300 ms on a laptop, so re-measure it on the server.
   - **Hardening:** a `CatchPanicLayer` that turns a handler panic into a 500 problem; a per-transaction `statement_timeout` a little under the request timeout, so a dropped request stops its query.
   - **UI:** the Restrictions dialog can't remove a minimum or maximum stay (the API takes `null`); the batcher has no `cancel()` on teardown; a failed refetch inside the rate plan editor's 412 path escapes without a message; tree nesting on Rate plans isn't exposed to screen readers.
   - **Tests to add:** e2e for read-only rates screens, a 412 on a rate plan, and a failed cell save; GraphQL refusals (a 91-night quote, weekdays outside 1–7, an `INVALID_STAY` round trip); REST bodies naming another property's parent plan or cancellation policy; property-test siblings, moves and weekday, occupancy and `set` filters.
   - **Tidying:** one helper for the four `rate_day_amount_check` mappings in `prices.rs`; document the `Reprice::Existing` invariant (a writer that creates parent cells must use `Added`); the supplement and policy UPDATEs could also match on `version`; `formula()` and `parseMoney` could guard a non-derived plan and unsafe integers.
 
-## Phase 3 — Reservations ([spec](specs/phase-3-reservations.md))
+## Phase 3a — Reservations: booking core ([spec](specs/phase-3-reservations.md), [plan](superpowers/plans/2026-09-27-phase-3a-reservations.md))
 
-- Reservation, reservation_room (daterange + exclusion constraint), guests.
-- Availability and price quote service (shared later by the IBE).
-- REST commands: create, modify, cancel, assign/unassign room, check-in, check-out, with the state machine in `domain`.
-- Reservation grid (GraphQL, cursor pagination, virtualized rows), and a detail modal routed at `/reservations/:id` with prefetch on hover or focus.
-- New reservation flow.
+- `domain`: the reservation-room state machine (`RoomStatus`, `Action`, `transition`), pure and exhaustively tested, shared later by the night audit and the tape chart.
+- Guests: tenant-wide, `pg_trgm` name search, ID numbers sealed with AES-256-GCM under a rotatable `GUEST_ID_KEY`, shown only masked.
+- `reservation`, `reservation_room` (daterange + exclusion constraint), `reservation_night` (a price snapshot per night), `property_counter` (gapless confirmation numbers).
+- Availability and priced offers in a fixed number of queries (shared later by the IBE).
+- Create (idempotent, no overbooking allowance), cancel (with the plan's cancellation penalty), assign and unassign a room — all locked in the order [api-conventions.md](design/api-conventions.md) documents.
+- Reservations list (GraphQL, cursor pagination, virtualized table) and a detail modal routed at `/reservations/:id`, with prefetch on hover or focus.
+- New reservation flow: stay, priced offers, guest search or create, review, create.
+
+## Phase 3b — Reservations: modify, check-in/out, accounts ([spec](specs/phase-3-reservations.md))
+
+- Modify a reservation's dates or room type, with upgrades.
+- Check-in, undo check-in (same business date only), check-out.
+- Additional occupants (`reservation_guest`).
+- Accounts (billing groups across reservations).
+- Performance gates: reservation create p95, reservations list p95, availability p95.
+- Guest name search under row-level security: pg_trgm's `<%` isn't leakproof, so it scans the tenant's guests (~170 ms at 20k) — revisit then (see [api-conventions.md](design/api-conventions.md)).
+- An overbooking allowance (3a sells to exactly the physical count, no more).
+- No-show, as part of the night audit (Phase 7).
 
 ## Phase 4 — Front desk tape chart ([spec](specs/phase-4-tape-chart.md))
 
