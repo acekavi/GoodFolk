@@ -1944,6 +1944,12 @@ export interface operations {
                 };
                 content?: never;
             };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             422: {
                 headers: {
                     [name: string]: unknown;

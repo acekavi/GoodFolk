@@ -418,6 +418,16 @@ async fn id_numbers_never_appear_in_responses_stored_replays_or_logs(_: PgPoolOp
     let guest_path = format!("{}/{}", hotel.guests(), created.body["id"].as_str().unwrap());
     let renewed =
         patch(&app, &hotel.owner, &guest_path, 1, json!({"id_doc": {"type": "nic", "number": "991234567V"}})).await;
+    // Scan the database while the guest still has a document, to verify encrypted numbers are stored.
+    let guest_id = uuid(&created.body["id"]);
+    let (doc_type, doc_is_null): (Option<String>, bool) =
+        sqlx::query_as("select id_doc_type, id_doc_number_enc is null from guest where id = $1")
+            .bind(guest_id)
+            .fetch_one(&hotel.superuser)
+            .await
+            .unwrap();
+    assert_eq!(doc_type, Some("nic".to_owned()), "the guest's document type is updated");
+    assert!(!doc_is_null, "the guest's id_doc_number_enc is not null while a document is present");
     let removed = patch(&app, &hotel.owner, &guest_path, 2, json!({"id_doc": null})).await;
     let booked = post(&app, &hotel.owner, &hotel.reservations(), hotel.booking(&created.body, 1, 3)).await;
     drop(guard);
@@ -470,4 +480,67 @@ async fn id_numbers_never_appear_in_responses_stored_replays_or_logs(_: PgPoolOp
     let logged = logs.text();
     assert!(logged.contains(&hotel.guests()), "the capture saw the guest requests: {logged}");
     assert!(!logged.contains(DIGITS), "the logs show the ID number: {logged}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn malformed_guest_bodies_do_not_echo_id_numbers(_: PgPoolOptions, opts: PgConnectOptions) {
+    const PASSPORT_NUM: &str = "N1234567X";
+    const NIC_NUM: i32 = 1234567;
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts).await;
+
+    // POST with invalid id_doc type (string instead of object)
+    let response = post(
+        &app,
+        &hotel.owner,
+        &hotel.guests(),
+        json!({
+            "first_name": "Test",
+            "last_name": "Guest",
+            "residency": "non_resident",
+            "id_doc": PASSPORT_NUM
+        }),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", response.body);
+    let body_text = response.body.to_string();
+    assert!(!body_text.contains(PASSPORT_NUM), "error includes id_doc value: {body_text}");
+
+    // POST with invalid number type (int instead of string)
+    let response = post(
+        &app,
+        &hotel.owner,
+        &hotel.guests(),
+        json!({
+            "first_name": "Test",
+            "last_name": "Guest",
+            "residency": "non_resident",
+            "id_doc": {
+                "type": "nic",
+                "number": NIC_NUM
+            }
+        }),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", response.body);
+    let body_text = response.body.to_string();
+    assert!(!body_text.contains(&NIC_NUM.to_string()), "error includes number value: {body_text}");
+
+    // Verify error messages are fixed, not from serde
+    assert_eq!(
+        response.body["detail"].as_str(),
+        Some("the request body does not have the expected shape"),
+        "error message is fixed"
+    );
+
+    // Verify the malformed requests are not stored with plaintext numbers
+    let stored_bodies: Vec<String> =
+        sqlx::query_scalar("select response_body::text from idempotency_key order by created_at")
+            .fetch_all(&app.state.pool)
+            .await
+            .unwrap();
+    for stored in &stored_bodies {
+        assert!(!stored.contains(PASSPORT_NUM), "idempotency cache contains passport: {stored}");
+        assert!(!stored.contains(&NIC_NUM.to_string()), "idempotency cache contains NIC: {stored}");
+    }
 }

@@ -1,7 +1,7 @@
 use crate::auth::TenantContext;
 use crate::concurrency::{IfMatch, Versioned};
 use crate::error::{ApiError, Changes, validate, validate_changes};
-use crate::extract::{ApiJson, ApiPath};
+use crate::extract::{ApiJson, ApiPath, SensitiveJson};
 use crate::routes::rooms::present;
 use crate::state::AppState;
 use axum::extract::State;
@@ -182,12 +182,12 @@ pub struct AssignRoomRequest {
 #[utoipa::path(post, operation_id = "create_guest", path = "/api/v1/properties/{property}/guests", request_body = CreateGuestRequest,
     params(("property" = Uuid, Path), ("Idempotency-Key" = String, Header)),
     responses((status = 201, body = Guest,
-        headers(("ETag" = String, description = "the version, e.g. \"1\"; send it back as If-Match"))), (status = 403), (status = 404), (status = 422)))]
+        headers(("ETag" = String, description = "the version, e.g. \"1\"; send it back as If-Match"))), (status = 403), (status = 404), (status = 409), (status = 422)))]
 pub async fn create_guest(
     State(state): State<AppState>,
     ctx: TenantContext,
     ApiPath(property): ApiPath<Uuid>,
-    ApiJson(body): ApiJson<CreateGuestRequest>,
+    SensitiveJson(body): SensitiveJson<CreateGuestRequest>,
 ) -> Result<Versioned<Guest>, ApiError> {
     ctx.require(Permission::ReservationsManage, Some(property))?;
     validate(&body)?;
@@ -219,7 +219,7 @@ pub async fn update_guest(
     ctx: TenantContext,
     ApiPath((property, guest)): ApiPath<(Uuid, Uuid)>,
     IfMatch(version): IfMatch,
-    ApiJson(body): ApiJson<UpdateGuestRequest>,
+    SensitiveJson(body): SensitiveJson<UpdateGuestRequest>,
 ) -> Result<Versioned<Guest>, ApiError> {
     ctx.require(Permission::ReservationsManage, Some(property))?;
     validate_changes(&body)?;
