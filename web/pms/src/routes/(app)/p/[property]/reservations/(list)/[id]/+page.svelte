@@ -100,10 +100,11 @@
 			enabled: !!room
 		};
 	});
-	// Keep the choice on a room the picker offers, e.g. after a refused room drops out of it.
+	// Never leave the choice on a room the picker no longer offers, e.g. after a refused room drops out of
+	// it: back to no choice, so the user always picks again rather than Assign silently booking another room.
 	$effect(() => {
 		const rooms = free.data;
-		if (rooms && !rooms.some((room) => room.id === choice)) choice = rooms[0]?.id ?? '';
+		if (rooms && choice && !rooms.some((room) => room.id === choice)) choice = '';
 	});
 
 	function openPicker(room: ReservationRoom) {
@@ -328,6 +329,7 @@
 									<label>
 										Room
 										<select required bind:value={choice} disabled={!free.data}>
+											<option value="" disabled>Choose a room</option>
 											{#each free.data ?? [] as option (option.id)}
 												<option value={option.id}
 													>{option.number}{option.section ? ` · ${option.section}` : ''}</option

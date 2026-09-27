@@ -101,7 +101,7 @@ test('a reservation opens in a modal over the table, where rooms are assigned, u
 	});
 	await room.getByRole('button', { name: 'Assign room' }).click();
 	const picker = room.getByRole('combobox', { name: 'Room' });
-	await expect(picker.getByRole('option')).toHaveText(['101', '102', '103']);
+	await expect(picker.getByRole('option')).toHaveText(['Choose a room', '101', '102', '103']);
 	const assigned = await api.post(`${hotel.path}/reservation-rooms/${first.roomId}/assign`, {
 		headers: { 'x-goodfolk-csrf': '1', 'If-Match': `"${first.roomVersion}"` },
 		data: { room_id: await roomId(page, hotel, '101') }
@@ -113,7 +113,11 @@ test('a reservation opens in a modal over the table, where rooms are assigned, u
 	await expect(room.getByRole('alert')).toHaveText(
 		'room 101 is taken by DET-000001 on those nights'
 	);
-	await expect(picker.getByRole('option')).toHaveText(['102', '103']);
+	// The refused room drops out, but the picker never silently switches to another one: the user is back
+	// to choosing, not looking at a room they never picked.
+	await expect(picker.getByRole('option')).toHaveText(['Choose a room', '102', '103']);
+	await expect(picker).toHaveValue('');
+	await expect(room.getByRole('button', { name: 'Assign', exact: true })).toBeDisabled();
 
 	// Assigning a free room shows in the modal and in the table's row.
 	await picker.selectOption('102');
