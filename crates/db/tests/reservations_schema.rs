@@ -328,3 +328,95 @@ async fn guest_names_have_a_trigram_index(pool: PgPool) {
     assert!(definition.contains("gin_trgm_ops"), "{definition}");
     assert!(definition.contains("lower(((first_name || ' '::text) || last_name))"), "{definition}");
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn guest_emails_must_be_lowercased(pool: PgPool) {
+    let hotel = hotel(&pool, "GAL").await;
+
+    let uppercase = sqlx::query(
+        "insert into guest (id, tenant_id, first_name, last_name, residency, email)
+         values ($1, $2, 'Ada', 'Silva', 'resident', 'Ada@Example.Com')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(hotel.tenant)
+    .execute(&pool)
+    .await;
+
+    let lowercase = sqlx::query(
+        "insert into guest (id, tenant_id, first_name, last_name, residency, email)
+         values ($1, $2, 'Eve', 'Perera', 'resident', 'eve@example.com')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(hotel.tenant)
+    .execute(&pool)
+    .await;
+
+    assert!(uppercase.is_err(), "uppercase email should be rejected");
+    assert!(lowercase.is_ok(), "lowercase email should be accepted");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn id_document_encryption_must_be_minimum_length(pool: PgPool) {
+    let hotel = hotel(&pool, "GAL").await;
+
+    let too_short = sqlx::query(
+        "insert into guest (id, tenant_id, first_name, last_name, residency, id_doc_type, id_doc_number_enc,
+                            id_doc_key_id, id_doc_last4)
+         values ($1, $2, 'Ada', 'Silva', 'resident', 'passport', $3, 'k1', '4567')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(hotel.tenant)
+    .bind(vec![7_u8; 10])
+    .execute(&pool)
+    .await;
+
+    let sufficient = sqlx::query(
+        "insert into guest (id, tenant_id, first_name, last_name, residency, id_doc_type, id_doc_number_enc,
+                            id_doc_key_id, id_doc_last4)
+         values ($1, $2, 'Eve', 'Perera', 'resident', 'nic', $3, 'k1', '8901')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(hotel.tenant)
+    .bind(vec![7_u8; 40])
+    .execute(&pool)
+    .await;
+
+    assert!(too_short.is_err(), "10-byte encryption should be rejected");
+    assert!(sufficient.is_ok(), "40-byte encryption should be accepted");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn cancelled_by_cannot_be_set_on_non_cancelled_stays(pool: PgPool) {
+    let hotel = hotel(&pool, "GAL").await;
+    let room = stay(&pool, &hotel, None, 0, 2, "confirmed").await.unwrap();
+
+    let set_cancelled_by = sqlx::query("update reservation_room set cancelled_by = $2 where id = $1")
+        .bind(room)
+        .bind(Uuid::now_v7())
+        .execute(&pool)
+        .await;
+
+    assert_eq!(constraint(set_cancelled_by), "reservation_room_cancellation_check");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_stay_must_have_a_bounded_lower_bound(pool: PgPool) {
+    let hotel = hotel(&pool, "GAL").await;
+
+    let unbounded_lower = sqlx::query(
+        "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, stay, adults,
+                                       children, rate_plan_id, meal_plan, status, primary_guest_id, currency)
+         values ($1, $2, $3, $4, $5, daterange(null, current_date + 5), 2, 0, $6, 'RO', 'confirmed', $7, 'USD')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(hotel.tenant)
+    .bind(hotel.property)
+    .bind(hotel.reservation)
+    .bind(hotel.room_type)
+    .bind(hotel.plan)
+    .bind(hotel.guest)
+    .execute(&pool)
+    .await;
+
+    assert_eq!(constraint(unbounded_lower), "reservation_room_stay_check");
+}

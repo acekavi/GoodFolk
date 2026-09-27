@@ -12,12 +12,12 @@ create table guest (
   -- Empty for guests with a single name.
   first_name text not null default '' check (length(first_name) <= 100),
   last_name text not null check (length(last_name) between 1 and 100),
-  email citext check (length(email) between 3 and 254),
+  email text check (length(email) between 3 and 254 and email = lower(email)),
   phone text check (length(phone) between 3 and 30),
   country char(2) check (country ~ '^[A-Z]{2}$'),
   residency text not null check (residency in ('resident', 'non_resident')),
   id_doc_type text check (id_doc_type in ('passport', 'nic', 'driving_licence', 'other')),
-  id_doc_number_enc bytea,
+  id_doc_number_enc bytea check (octet_length(id_doc_number_enc) >= 28),
   id_doc_key_id text check (id_doc_key_id ~ '^[A-Za-z0-9_-]{1,16}$'),
   id_doc_last4 text check (length(id_doc_last4) between 1 and 4),
   notes text not null default '' check (length(notes) <= 2000),
@@ -68,7 +68,7 @@ create table reservation (
   unique (property_id, id)
 );
 create index reservation_booker_guest_idx on reservation (tenant_id, booker_guest_id);
--- Confirmation-number prefix search (`like 'GFK-00%'`), which the collation-aware unique index cannot serve.
+-- Confirmation-number prefix search (starts_with(confirmation_no, …)), which the collation-aware unique index cannot serve.
 create index reservation_confirmation_prefix_idx on reservation (property_id, confirmation_no text_pattern_ops);
 
 -- One room of a booking for [check-in, check-out). room_id is null until a room is assigned; an assigned room
