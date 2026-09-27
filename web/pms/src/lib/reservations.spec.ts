@@ -113,6 +113,33 @@ describe('search params round trip', () => {
 			sort: { field: 'ARRIVAL', direction: 'ASC' }
 		});
 	});
+
+	it('drops unknown enum values from statuses, keeping the known ones', () => {
+		const search = new URLSearchParams('statuses=CONFIRMED,BOGUS,CHECKED_IN');
+
+		expect(filterFromSearchParams(search)).toEqual({
+			filter: { statuses: ['CONFIRMED', 'CHECKED_IN'] },
+			sort: { field: 'ARRIVAL', direction: 'ASC' }
+		});
+	});
+
+	it('falls back to default sort field when the value is unknown', () => {
+		const search = new URLSearchParams('sort=NOPE');
+
+		expect(filterFromSearchParams(search)).toEqual({
+			filter: {},
+			sort: { field: 'ARRIVAL', direction: 'ASC' }
+		});
+	});
+
+	it('falls back to default sort direction when the value is unknown', () => {
+		const search = new URLSearchParams('dir=SIDEWAYS');
+
+		expect(filterFromSearchParams(search)).toEqual({
+			filter: {},
+			sort: { field: 'ARRIVAL', direction: 'ASC' }
+		});
+	});
 });
 
 describe('formatStay', () => {

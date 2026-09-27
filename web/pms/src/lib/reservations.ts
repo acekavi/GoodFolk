@@ -462,32 +462,58 @@ function listParam(params: URLSearchParams, name: string): string[] | undefined 
 	return (params.get(name) ?? '').split(',').filter((value) => value !== '');
 }
 
+/** Type guard: `value` is one of the allowed values. */
+const oneOf =
+	<T extends string>(allowed: readonly T[]) =>
+	(value: string): value is T =>
+		(allowed as readonly string[]).includes(value);
+
+const isRoomStatus = oneOf([
+	'CANCELLED',
+	'CHECKED_IN',
+	'CHECKED_OUT',
+	'CONFIRMED',
+	'NO_SHOW',
+	'TENTATIVE'
+] as const);
+const isSource = oneOf(['CHANNEL', 'EMAIL', 'FRONT_DESK', 'IBE', 'PHONE'] as const);
+const isSortField = oneOf(['ARRIVAL', 'CONFIRMATION', 'CREATED', 'GUEST'] as const);
+const isSortDirection = oneOf(['ASC', 'DESC'] as const);
+
 /**
  * The list's filter and sort out of the URL's search params, so a link or a reload keeps them. Unknown
- * params are ignored; a param equal to the default is treated the same as it being absent.
+ * params are ignored; a param equal to the default is treated the same as it being absent. Unknown enum
+ * values are dropped; the sort field and direction fall back to defaults when unknown.
  */
 export function filterFromSearchParams(params: URLSearchParams): ReservationListParams {
 	const arrivalFrom = params.get('arrivalFrom');
 	const arrivalTo = params.get('arrivalTo');
-	const statuses = listParam(params, 'statuses');
-	const sources = listParam(params, 'sources');
+	const statusesRaw = listParam(params, 'statuses');
+	const sourcesRaw = listParam(params, 'sources');
 	const text = params.get('text');
 	const field = params.get('sort');
 	const direction = params.get('dir');
 
+	const statuses =
+		statusesRaw !== undefined
+			? (statusesRaw.filter((s) => isRoomStatus(s)) as RoomStatus[])
+			: undefined;
+	const sources =
+		sourcesRaw !== undefined ? (sourcesRaw.filter((s) => isSource(s)) as Source[]) : undefined;
+
 	const filter: ReservationFilter = {
 		...(arrivalFrom ? { arrivalFrom } : {}),
 		...(arrivalTo ? { arrivalTo } : {}),
-		...(statuses !== undefined ? { statuses: statuses as RoomStatus[] } : {}),
-		...(sources !== undefined ? { sources: sources as Source[] } : {}),
+		...(statuses !== undefined ? { statuses } : {}),
+		...(sources !== undefined ? { sources } : {}),
 		...(text ? { text } : {})
 	};
 
 	return {
 		filter,
 		sort: {
-			field: (field as ReservationSortField | null) ?? DEFAULT_SORT.field,
-			direction: (direction as SortDirection | null) ?? DEFAULT_SORT.direction
+			field: field && isSortField(field) ? field : DEFAULT_SORT.field,
+			direction: direction && isSortDirection(direction) ? direction : DEFAULT_SORT.direction
 		}
 	};
 }
