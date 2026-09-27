@@ -15,6 +15,7 @@ import type {
 	Source
 } from './api/gql/graphql';
 import { query } from './api/graphql';
+import type { components } from './api/openapi';
 import { formatMoney } from './rates';
 
 /** The new-reservation screen's offers query: every active room type, free counts and priced offers. */
@@ -282,6 +283,14 @@ export function reservationsKey(propertyId: string, params?: ReservationListPara
 	return [`reservations:${propertyId}`, params ?? null] as const;
 }
 
+/**
+ * The prefix of every reservations list key of the property, whatever its filter and sort: the bare
+ * `reservations:<property>` event key, for invalidating every list after a command changes reservations.
+ */
+export function reservationListsKey(propertyId: string) {
+	return [`reservations:${propertyId}`] as const;
+}
+
 /** Query key shared with the server's `reservation:<id>` event. */
 export function reservationKey(id: string) {
 	return [`reservation:${id}`] as const;
@@ -299,18 +308,21 @@ export function freeRoomsKey(
 	return ['freeRooms', propertyId, ...stay] as const;
 }
 
-/** Query key for one availability lookup. Not named by any server event: a stay's offers are refetched by
- * asking again (new dates, new occupancy), never invalidated, so every argument that changes the answer is
- * part of the key. */
+/** Query key for one guest search. Not named by any server event; `guestsKey(propertyId)` alone is the
+ * prefix of every search, for refetching them after a guest is added. */
+export function guestsKey(propertyId: string, ...search: [search: string] | []) {
+	return ['guests', propertyId, ...search] as const;
+}
+
+/** Query key for one availability lookup. Not named by any server event: a stay's offers are asked for
+ * again (a new search, or after a booking), never kept, so every argument that changes the answer is part
+ * of the key. `availabilityKey(propertyId)` alone is the prefix of every lookup of the property. */
 export function availabilityKey(
 	propertyId: string,
-	checkIn: string,
-	checkOut: string,
-	adults: number,
-	children: number,
-	residency: Residency
+	...stay:
+		[checkIn: string, checkOut: string, adults: number, children: number, residency: Residency] | []
 ) {
-	return ['availability', propertyId, checkIn, checkOut, adults, children, residency] as const;
+	return ['availability', propertyId, ...stay] as const;
 }
 
 /** Every active room type's free count and priced offers for a stay of `[checkIn, checkOut)`. */
@@ -392,6 +404,15 @@ function splitDate(date: string): [number, number, number] {
 	return [year, month, day];
 }
 
+/** The nights of a stay of `[checkIn, checkOut)`. */
+export function nightsBetween(checkIn: string, checkOut: string): number {
+	const [inYear, inMonth, inDay] = splitDate(checkIn);
+	const [outYear, outMonth, outDay] = splitDate(checkOut);
+	return Math.round(
+		(Date.UTC(outYear, outMonth - 1, outDay) - Date.UTC(inYear, inMonth - 1, inDay)) / 86_400_000
+	);
+}
+
 /**
  * A stay's dates and length, e.g. `3 Oct – 5 Oct 2026 · 2 nights`. The year is shown once, at the end,
  * unless the stay crosses a new year, in which case both dates carry their own year.
@@ -400,11 +421,7 @@ export function formatStay(arrival: string, departure: string): string {
 	const [arrivalYear, arrivalMonth, arrivalDay] = splitDate(arrival);
 	const [departureYear, departureMonth, departureDay] = splitDate(departure);
 	const sameYear = arrivalYear === departureYear;
-	const nights = Math.round(
-		(Date.UTC(departureYear, departureMonth - 1, departureDay) -
-			Date.UTC(arrivalYear, arrivalMonth - 1, arrivalDay)) /
-			86_400_000
-	);
+	const nights = nightsBetween(arrival, departure);
 	const from = `${arrivalDay} ${MONTHS[arrivalMonth - 1]}${sameYear ? '' : ` ${arrivalYear}`}`;
 	const to = `${departureDay} ${MONTHS[departureMonth - 1]} ${departureYear}`;
 	return `${from} – ${to} · ${nights} night${nights === 1 ? '' : 's'}`;
@@ -550,6 +567,33 @@ export function idDocText(guest: {
 	return `${ID_DOC_LABELS[guest.idDocType]} ${guest.idDocMasked}`;
 }
 
+const RESIDENCY_LABELS: Record<Residency, string> = {
+	RESIDENT: 'Resident',
+	NON_RESIDENT: 'Non-resident'
+};
+
+/** How a guest's (or a stay's) residency reads in the UI. */
+export function residencyLabel(residency: Residency): string {
+	return RESIDENCY_LABELS[residency];
+}
+
+/** A guest as the REST API returns it (e.g. just created), read as the GraphQL guest search reads guests. */
+export function guestFromRest(guest: components['schemas']['Guest']): Guest {
+	return {
+		id: guest.id,
+		firstName: guest.first_name,
+		lastName: guest.last_name,
+		email: guest.email ?? null,
+		phone: guest.phone ?? null,
+		country: guest.country ?? null,
+		residency: guest.residency.toUpperCase() as Residency,
+		idDocType: (guest.id_doc_type?.toUpperCase() ?? null) as IdDocType | null,
+		idDocMasked: guest.id_doc_masked ?? null,
+		notes: guest.notes,
+		version: guest.version
+	};
+}
+
 /** Every violation's message, joined the way the server joins them in a 422 (`"; "`). */
 export function violationsText(violations: readonly { message: string }[]): string {
 	return violations.map((violation) => violation.message).join('; ');
@@ -584,6 +628,8 @@ export interface OfferRow {
 	sellable: boolean;
 	/** Why it can't be sold, when `sellable` is false; empty otherwise. */
 	violations: string;
+	/** The quote's prices night by night. */
+	nights: Offer['nights'];
 }
 
 /** Flattens `availability` into one row per offer, for the new-reservation screen's list. */
@@ -602,9 +648,127 @@ export function groupOffers(availability: readonly RoomTypeAvailability[]): Offe
 			currency: offer.currency,
 			totalLabel: formatMoney(offer.total, offer.currency),
 			sellable: offer.restrictionsOk && type.free > 0,
-			violations: violationsText(offer.violations)
+			violations: violationsText(offer.violations),
+			nights: offer.nights
 		}))
 	);
+}
+
+/** The most rooms one reservation takes (the server's `MAX_ROOMS_PER_RESERVATION`). */
+export const MAX_ROOMS_PER_RESERVATION = 10;
+
+/** What the new-reservation screen searches offers for: one room's stay and occupancy. */
+export interface Stay {
+	checkIn: string;
+	/** The morning the guest leaves. */
+	checkOut: string;
+	adults: number;
+	children: number;
+	/** Prices the offers; the guest booked must have the same residency. */
+	residency: Residency;
+}
+
+/**
+ * The new-reservation screen's progress. Each step is done once its field is set, in order: the stay
+ * searched, the offer picked, the guest chosen. Changing a step clears the steps after it, so what is
+ * booked is always what was shown.
+ */
+export interface Booking {
+	stay: Stay | null;
+	offer: OfferRow | null;
+	guest: Guest | null;
+	/** A guest picked whose residency differs from the stay's, held back until the offers are searched
+	 * again for their residency (the quote prices the stay for the guest's residency). */
+	mismatch: Guest | null;
+}
+
+export type BookingStep = 'stay' | 'offers' | 'guest' | 'review';
+
+export const NEW_BOOKING: Booking = { stay: null, offer: null, guest: null, mismatch: null };
+
+/** The step waiting to be done. */
+export function bookingStep(booking: Booking): BookingStep {
+	if (!booking.stay) return 'stay';
+	if (!booking.offer) return 'offers';
+	if (!booking.guest) return 'guest';
+	return 'review';
+}
+
+/** The stay searched: its offers come next, and nothing chosen for an earlier stay is kept. */
+export function searchStay(stay: Stay): Booking {
+	return { ...NEW_BOOKING, stay };
+}
+
+/** The stay being edited after its search: every later step is cleared until it is searched again. */
+export function editStay(booking: Booking): Booking {
+	return booking.stay ? NEW_BOOKING : booking;
+}
+
+/**
+ * An offer picked. Changing an offer already picked clears the guest chosen after it; a guest kept by
+ * `searchAsGuest` (chosen before this offer was) stays.
+ */
+export function pickOffer(booking: Booking, offer: OfferRow): Booking {
+	return { ...booking, offer, guest: booking.offer ? null : booking.guest, mismatch: null };
+}
+
+/** A guest picked: chosen when their residency is the stay's, otherwise held back as a mismatch. */
+export function chooseGuest(booking: Booking, guest: Guest): Booking {
+	if (booking.stay && booking.stay.residency !== guest.residency) {
+		return { ...booking, guest: null, mismatch: guest };
+	}
+	return { ...booking, guest, mismatch: null };
+}
+
+/** The offers searched again for the held-back guest's residency, keeping that guest for the review. */
+export function searchAsGuest(booking: Booking): Booking {
+	if (!booking.stay || !booking.mismatch) return booking;
+	return {
+		stay: { ...booking.stay, residency: booking.mismatch.residency },
+		offer: null,
+		guest: booking.mismatch,
+		mismatch: null
+	};
+}
+
+/** The booking refused (sold out meanwhile, or no longer sellable): back to the offers, keeping the
+ * stay and the guest. */
+export function offerRefused(booking: Booking): Booking {
+	return { ...booking, offer: null };
+}
+
+/** How many rooms of an offer one reservation can take: those free, up to `MAX_ROOMS_PER_RESERVATION`. */
+export function roomsAllowed(offer: Pick<OfferRow, 'free'>): number {
+	return Math.max(0, Math.min(offer.free, MAX_ROOMS_PER_RESERVATION));
+}
+
+/**
+ * The create request for a finished booking: `rooms` identical room lines on the chosen offer, each for
+ * the stay, with the chosen guest as the booker (and so every room's guest). Empty notes are left out.
+ */
+export function createReservationBody(
+	booking: Booking,
+	rooms: number,
+	source: Source,
+	notes: string
+): components['schemas']['CreateReservationRequest'] {
+	const { stay, offer, guest } = booking;
+	if (!stay || !offer || !guest) throw new Error('The booking is not finished.');
+	const trimmed = notes.trim();
+	return {
+		booker_guest_id: guest.id,
+		source: source.toLowerCase() as components['schemas']['Source'],
+		...(trimmed ? { notes: trimmed } : {}),
+		rooms: Array.from({ length: rooms }, () => ({
+			room_type_id: offer.roomTypeId,
+			rate_plan_id: offer.ratePlanId,
+			meal_plan: offer.mealPlan,
+			check_in: stay.checkIn,
+			check_out: stay.checkOut,
+			adults: stay.adults,
+			children: stay.children
+		}))
+	};
 }
 
 /** Comma-separated list params, split on commas and stripped of empty entries; `undefined` when absent. */

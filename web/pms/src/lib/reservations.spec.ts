@@ -1,6 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import {
 	availabilityKey,
+	bookingStep,
+	chooseGuest,
+	createReservationBody,
+	editStay,
+	guestFromRest,
+	guestsKey,
+	NEW_BOOKING,
+	nightsBetween,
+	offerRefused,
+	pickOffer,
+	reservationListsKey,
+	residencyLabel,
+	roomsAllowed,
+	searchAsGuest,
+	searchStay,
+	type Booking,
+	type Guest,
+	type OfferRow,
+	type Stay,
 	describePenalty,
 	describeTerms,
 	filterFromSearchParams,
@@ -41,6 +60,21 @@ describe('keys', () => {
 		expect(reservationsKey('p1')[0]).toBe('reservations:p1');
 	});
 
+	it('the list prefix key is the bare event key, so it matches every list of the property whatever its params', () => {
+		expect(reservationListsKey('p1')).toEqual(['reservations:p1']);
+		const list = reservationsKey('p1', {
+			filter: { text: 'smith' },
+			sort: { field: 'GUEST', direction: 'DESC' }
+		});
+		expect(list.slice(0, 1)).toEqual(reservationListsKey('p1'));
+		expect(reservationsKey('p1').slice(0, 1)).toEqual(reservationListsKey('p1'));
+	});
+
+	it('the guests key carries the search under one prefix per property', () => {
+		expect(guestsKey('p1', 'ada')).toEqual(['guests', 'p1', 'ada']);
+		expect(guestsKey('p1')).toEqual(['guests', 'p1']);
+	});
+
 	it("the reservation detail key matches the server's reservation:<id> event key exactly", () => {
 		expect(reservationKey('r1')).toEqual(['reservation:r1']);
 	});
@@ -66,6 +100,7 @@ describe('keys', () => {
 			1,
 			'RESIDENT'
 		]);
+		expect(availabilityKey('p1')).toEqual(['availability', 'p1']);
 	});
 });
 
@@ -380,5 +415,196 @@ describe('idDocText', () => {
 			'Driving licence •••• 0001'
 		);
 		expect(idDocText({ idDocType: null, idDocMasked: null })).toBe('None on file');
+	});
+});
+
+describe('nightsBetween', () => {
+	it('counts the nights of a stay, across a month and a year end', () => {
+		expect(nightsBetween('2026-10-03', '2026-10-05')).toBe(2);
+		expect(nightsBetween('2026-10-31', '2026-11-01')).toBe(1);
+		expect(nightsBetween('2026-12-30', '2027-01-02')).toBe(3);
+		expect(nightsBetween('2026-10-03', '2026-10-03')).toBe(0);
+	});
+});
+
+describe('residencyLabel', () => {
+	it('reads each residency', () => {
+		expect(residencyLabel('RESIDENT')).toBe('Resident');
+		expect(residencyLabel('NON_RESIDENT')).toBe('Non-resident');
+	});
+});
+
+describe('guestFromRest', () => {
+	it("reads a created guest as the search's guests read, masked ID included", () => {
+		expect(
+			guestFromRest({
+				id: 'g1',
+				first_name: 'Grace',
+				last_name: 'Hopper',
+				email: 'grace@example.com',
+				phone: null,
+				country: 'US',
+				residency: 'non_resident',
+				id_doc_type: 'driving_licence',
+				id_doc_masked: '•••• 5432',
+				notes: '',
+				version: 1
+			})
+		).toEqual({
+			id: 'g1',
+			firstName: 'Grace',
+			lastName: 'Hopper',
+			email: 'grace@example.com',
+			phone: null,
+			country: 'US',
+			residency: 'NON_RESIDENT',
+			idDocType: 'DRIVING_LICENCE',
+			idDocMasked: '•••• 5432',
+			notes: '',
+			version: 1
+		});
+	});
+
+	it('leaves the ID out when the guest has none', () => {
+		const guest = guestFromRest({
+			id: 'g1',
+			first_name: '',
+			last_name: 'Madonna',
+			residency: 'resident',
+			notes: '',
+			version: 1
+		});
+		expect(guest).toMatchObject({
+			residency: 'RESIDENT',
+			idDocType: null,
+			idDocMasked: null,
+			email: null
+		});
+	});
+});
+
+describe('the new-reservation flow', () => {
+	const stay: Stay = {
+		checkIn: '2026-10-03',
+		checkOut: '2026-10-05',
+		adults: 2,
+		children: 0,
+		residency: 'NON_RESIDENT'
+	};
+	const offer = (overrides: Partial<OfferRow> = {}): OfferRow => ({
+		roomTypeId: 'dlx',
+		roomTypeCode: 'DLX',
+		roomTypeName: 'Deluxe',
+		free: 3,
+		ratePlanId: 'bar',
+		ratePlanCode: 'BAR',
+		mealPlan: 'RO',
+		label: 'BAR · Room only',
+		total: 20000,
+		currency: 'USD',
+		totalLabel: '200.00',
+		sellable: true,
+		violations: '',
+		nights: [],
+		...overrides
+	});
+	const guest = (residency: Guest['residency'], id = 'g1'): Guest => ({
+		id,
+		firstName: 'Ada',
+		lastName: 'Silva',
+		email: null,
+		phone: null,
+		country: null,
+		residency,
+		idDocType: null,
+		idDocMasked: null,
+		notes: '',
+		version: 1
+	});
+	const booked = (): Booking =>
+		chooseGuest(pickOffer(searchStay(stay), offer()), guest('NON_RESIDENT'));
+
+	it('goes stay, offers, guest, review as each step is done', () => {
+		expect(bookingStep(NEW_BOOKING)).toBe('stay');
+		const searched = searchStay(stay);
+		expect(bookingStep(searched)).toBe('offers');
+		const picked = pickOffer(searched, offer());
+		expect(bookingStep(picked)).toBe('guest');
+		expect(bookingStep(chooseGuest(picked, guest('NON_RESIDENT')))).toBe('review');
+	});
+
+	it('editing the stay clears every later step', () => {
+		expect(editStay(booked())).toEqual(NEW_BOOKING);
+	});
+
+	it('searching again clears the offer and the guest', () => {
+		expect(searchStay({ ...stay, adults: 1 })).toEqual({
+			...NEW_BOOKING,
+			stay: { ...stay, adults: 1 }
+		});
+	});
+
+	it('changing the chosen offer clears the guest', () => {
+		const changed = pickOffer(booked(), offer({ mealPlan: 'BB' }));
+		expect(changed.guest).toBeNull();
+		expect(bookingStep(changed)).toBe('guest');
+	});
+
+	it('a guest of another residency than the stay is held back, not chosen', () => {
+		const picked = pickOffer(searchStay(stay), offer());
+		const mismatched = chooseGuest(picked, guest('RESIDENT'));
+		expect(mismatched.guest).toBeNull();
+		expect(mismatched.mismatch).toEqual(guest('RESIDENT'));
+		expect(bookingStep(mismatched)).toBe('guest');
+		// Choosing a matching guest instead drops the warning.
+		expect(chooseGuest(mismatched, guest('NON_RESIDENT', 'g2'))).toMatchObject({
+			guest: { id: 'g2' },
+			mismatch: null
+		});
+	});
+
+	it('searching again as the held-back guest prices the stay for their residency and keeps them for the review', () => {
+		const picked = pickOffer(searchStay(stay), offer());
+		const again = searchAsGuest(chooseGuest(picked, guest('RESIDENT')));
+		expect(again).toEqual({
+			stay: { ...stay, residency: 'RESIDENT' },
+			offer: null,
+			guest: guest('RESIDENT'),
+			mismatch: null
+		});
+		expect(bookingStep(again)).toBe('offers');
+		// Picking an offer for that stay goes straight to the review with the guest.
+		expect(bookingStep(pickOffer(again, offer()))).toBe('review');
+	});
+
+	it('a refused booking goes back to the offers, keeping the stay and the guest', () => {
+		const refused = offerRefused(booked());
+		expect(refused).toMatchObject({ stay, offer: null, guest: guest('NON_RESIDENT') });
+		expect(bookingStep(refused)).toBe('offers');
+	});
+
+	it('allows as many rooms as are free, up to the most one reservation takes', () => {
+		expect(roomsAllowed(offer({ free: 3 }))).toBe(3);
+		expect(roomsAllowed(offer({ free: 40 }))).toBe(10);
+		expect(roomsAllowed(offer({ free: 0 }))).toBe(0);
+		expect(roomsAllowed(offer({ free: -2 }))).toBe(0);
+	});
+
+	it('books one room line per room, each for the stay on the chosen offer, for the chosen guest', () => {
+		expect(createReservationBody(booked(), 2, 'PHONE', '  late arrival  ')).toEqual({
+			booker_guest_id: 'g1',
+			source: 'phone',
+			notes: 'late arrival',
+			rooms: [1, 2].map(() => ({
+				room_type_id: 'dlx',
+				rate_plan_id: 'bar',
+				meal_plan: 'RO',
+				check_in: '2026-10-03',
+				check_out: '2026-10-05',
+				adults: 2,
+				children: 0
+			}))
+		});
+		expect(createReservationBody(booked(), 1, 'FRONT_DESK', '')).not.toHaveProperty('notes');
 	});
 });

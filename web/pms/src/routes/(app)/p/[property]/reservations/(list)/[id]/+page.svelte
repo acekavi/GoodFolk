@@ -26,7 +26,7 @@
 		idDocText,
 		offerLabel,
 		reservationKey,
-		reservationsKey,
+		reservationListsKey,
 		sourceLabel,
 		statusLabel,
 		type ReservationRoom
@@ -148,7 +148,7 @@
 			await Promise.all([
 				client.invalidateQueries({ queryKey: reservationKey(id) }),
 				// Every list of the property, whatever its filter and sort.
-				client.invalidateQueries({ queryKey: reservationsKey(propertyId).slice(0, 1) }),
+				client.invalidateQueries({ queryKey: reservationListsKey(propertyId) }),
 				client.invalidateQueries({ queryKey: freeRoomsKey(propertyId) })
 			]);
 		}
