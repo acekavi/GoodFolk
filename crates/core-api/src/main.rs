@@ -21,7 +21,7 @@ async fn serve() -> anyhow::Result<()> {
     init_tracing(config.production);
     let pool = db::connect(&config.database_url, config.database_max_connections).await?;
     db::assert_rls_applies(&pool).await?;
-    let state = AppState::new(pool, config.production);
+    let state = AppState::new(pool, config.production, config.guest_id_key);
     // One direct connection, kept open, used only for LISTEN (and to reconnect it).
     let listen_pool = PgPoolOptions::new()
         .max_connections(1)

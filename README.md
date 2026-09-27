@@ -24,6 +24,8 @@ docker compose up -d postgres
 
 export DATABASE_OWNER_URL=postgres://goodfolk_owner:goodfolk_owner_dev@localhost:5432/goodfolk
 export DATABASE_URL=postgres://goodfolk_api:goodfolk_api_dev@localhost:5432/goodfolk
+# Local development only: a fixed key for guest ID numbers. Never use it for real guest data.
+export GUEST_ID_KEY=HU5/qSn58655epIBi671lsojvXir+VQZ0MzXdTrKk6o=
 
 cargo run -p core-api -- migrate   # as the schema owner
 cargo run -p core-api              # API on http://localhost:8080, as the goodfolk_api role
@@ -102,6 +104,8 @@ The API (`core-api serve`) reads:
 | `DATABASE_LISTEN_URL` | Direct, unpooled connection string used for `LISTEN` (transaction-mode poolers cannot listen). Required when `APP_ENV=production`; otherwise defaults to `DATABASE_URL`. |
 | `DATABASE_MAX_CONNECTIONS` | Pool size (default 10). |
 | `PORT` | Listen port (default 8080). |
+| `GUEST_ID_KEY` | Key that encrypts guest ID numbers: base64 of 32 random bytes, e.g. from `head -c32 /dev/urandom \| base64` (required; the API refuses to start without a valid key). |
+| `GUEST_ID_KEY_ID` | Name stored with each encrypted ID number so the key can be rotated: 1–16 letters, digits, `_` or `-` (default `k1`). |
 | `APP_ENV` | `production` sets `Secure` cookies, disables GraphQL introspection and requires `DATABASE_LISTEN_URL`. |
 
 `core-api migrate` reads `DATABASE_OWNER_URL` (the schema owner) instead.

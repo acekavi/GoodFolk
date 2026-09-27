@@ -1,5 +1,6 @@
 //! Test helpers. Enabled with the `testing` feature, for dev-dependencies only.
 
+use crate::crypto::GuestIdKey;
 use sqlx::Executor;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 
@@ -17,4 +18,12 @@ pub async fn app_pool(opts: PgConnectOptions, max_connections: u32) -> PgPool {
         .connect_with(opts)
         .await
         .expect("connect test pool")
+}
+
+/// A fixed guest ID key for tests (base64 of 32 bytes). Never use it outside tests.
+pub const GUEST_ID_KEY_B64: &str = "Yf4THKJZBZDCKBLLWmrVpNlpkAd/5Nfhti4iAx8xVSw=";
+
+/// The test guest ID key, with key id `k1`.
+pub fn guest_id_key() -> GuestIdKey {
+    GuestIdKey::from_base64("k1", GUEST_ID_KEY_B64).expect("valid test key")
 }

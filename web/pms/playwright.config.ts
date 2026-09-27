@@ -36,7 +36,13 @@ export default defineConfig({
 			command: 'cargo run -q -p core-api',
 			cwd: '../..',
 			url: `http://localhost:${API_PORT}/readyz`,
-			env: { PORT: String(API_PORT), DATABASE_URL: database, RUST_LOG: 'warn' },
+			// GUEST_ID_KEY is the README's local development key, never used for real guest data.
+			env: {
+				PORT: String(API_PORT),
+				DATABASE_URL: database,
+				GUEST_ID_KEY: 'HU5/qSn58655epIBi671lsojvXir+VQZ0MzXdTrKk6o=',
+				RUST_LOG: 'warn'
+			},
 			reuseExistingServer: !process.env.CI,
 			timeout: 600_000
 		},

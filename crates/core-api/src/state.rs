@@ -1,6 +1,8 @@
 use crate::events::LiveEvent;
 use crate::graphql::{GqlSchema, build_schema};
+use db::crypto::GuestIdKey;
 use sqlx::PgPool;
+use std::sync::Arc;
 use tokio::sync::broadcast;
 
 #[derive(Clone)]
@@ -11,11 +13,13 @@ pub struct AppState {
     pub events: broadcast::Sender<LiveEvent>,
     /// Production sets `Secure` cookies and disables GraphQL introspection.
     pub production: bool,
+    /// Seals guest ID numbers.
+    pub guest_id_key: Arc<GuestIdKey>,
 }
 
 impl AppState {
-    pub fn new(pool: PgPool, production: bool) -> Self {
+    pub fn new(pool: PgPool, production: bool, guest_id_key: GuestIdKey) -> Self {
         let (events, _) = broadcast::channel(1024);
-        Self { schema: build_schema(production), pool, events, production }
+        Self { schema: build_schema(production), pool, events, production, guest_id_key: Arc::new(guest_id_key) }
     }
 }

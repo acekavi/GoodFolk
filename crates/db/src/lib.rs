@@ -1,6 +1,7 @@
 //! Database access shared by every module: pool setup, migrations, tenant-scoped
-//! transactions and change notifications.
+//! transactions, change notifications and encryption of guest ID numbers.
 
+pub mod crypto;
 mod events;
 mod guard;
 mod scope;
