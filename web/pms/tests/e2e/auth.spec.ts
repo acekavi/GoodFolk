@@ -28,3 +28,15 @@ test('repeated wrong passwords lock sign-in for the email', async ({ page }) => 
 
 	await expect(page.getByRole('alert')).toContainText('too many failed sign-in attempts');
 });
+
+test('the event stream connects once per sign-in, not again on every resync', async ({ page }) => {
+	const connects: string[] = [];
+	page.on('request', (request) => {
+		if (new URL(request.url()).pathname === '/api/v1/events') connects.push(request.url());
+	});
+	await signUp(page);
+	// Each connect resyncs (refetching every query, the profile included); a reconnect on each profile
+	// refetch would connect again and again.
+	await page.waitForTimeout(2_000);
+	expect(connects).toHaveLength(1);
+});

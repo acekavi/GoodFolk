@@ -23,8 +23,11 @@
 		if (me.error instanceof ApiError && me.error.status === 401) void goto(resolve('/login'));
 	});
 
+	// Connected while signed in. A boolean, so refetching the profile (every event resync does) doesn't
+	// reconnect: a reconnect resyncs, which would refetch the profile again, in a loop.
+	const signedIn = $derived(!!me.data);
 	$effect(() => {
-		if (me.data) return connectEvents(client);
+		if (signedIn) return connectEvents(client);
 	});
 
 	let actionError = $state('');
