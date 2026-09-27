@@ -280,6 +280,37 @@ async fn audit_entries_name_the_id_document_by_type_and_last_4_only(_: PgPoolOpt
     );
 }
 
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_short_id_number_is_masked_correctly(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let short_id = "A123";
+    let guest = hotel
+        .guest(NewGuest { id_doc: Some((IdDocType::Other, short_id.into())), ..new_guest("Bob", "Builder") })
+        .await;
+
+    // 4 characters: reveal at most 4, never more than half (4/2=2), so last 2 chars
+    assert_eq!(guest.id_doc_masked.as_deref(), Some("•••• 23"));
+    assert_eq!(guest.id_doc_type, Some(IdDocType::Other));
+    assert_hidden(&[&guest], short_id);
+
+    // Check the audit log doesn't contain the full ID
+    let entries: Vec<String> =
+        sqlx::query_scalar("select action from audit_log where entity = 'guest' and entity_id = $1")
+            .bind(guest.id)
+            .fetch_all(&mut *hotel.tx().await)
+            .await
+            .unwrap();
+    assert_eq!(entries, ["guest.created"]);
+    let json: serde_json::Value =
+        sqlx::query_scalar("select data from audit_log where entity = 'guest' and entity_id = $1")
+            .bind(guest.id)
+            .fetch_one(&mut *hotel.tx().await)
+            .await
+            .unwrap();
+    let json_str = json.to_string();
+    assert!(!json_str.contains(short_id), "{json_str}");
+}
+
 #[test]
 fn debug_output_hides_the_id_number() {
     let input = with_passport(new_guest("Ada", "Perera"), PASSPORT);

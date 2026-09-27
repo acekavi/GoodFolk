@@ -100,16 +100,22 @@ pub fn guest_aad(tenant: Uuid, guest: Uuid) -> [u8; 32] {
     aad
 }
 
-/// The last 4 characters of an ID number, after trimming; all of it when shorter.
+/// The plaintext tail of an ID number: at most 4 characters, never more than half the number (chars after trimming).
+/// Examples: 10 chars → last 4; 6 → last 3; 5 → last 2; 4 → last 2; 3 → last 1; 1 → "".
 pub fn last4(id_number: &str) -> String {
     let trimmed = id_number.trim();
-    let start = trimmed.char_indices().rev().nth(3).map_or(0, |(i, _)| i);
+    let len = trimmed.chars().count();
+    let n = std::cmp::min(4, len / 2);
+    if n == 0 {
+        return String::new();
+    }
+    let start = trimmed.char_indices().rev().nth(n - 1).map_or(0, |(i, _)| i);
     trimmed[start..].to_owned()
 }
 
-/// How an ID number is shown: only its last 4 characters.
+/// How an ID number is shown: the plaintext tail masked with bullets. An empty tail shows just bullets.
 pub fn mask(last4: &str) -> String {
-    format!("•••• {last4}")
+    if last4.is_empty() { "••••".to_string() } else { format!("•••• {last4}") }
 }
 
 #[cfg(test)]
@@ -223,17 +229,32 @@ mod tests {
     }
 
     #[test]
-    fn last4_keeps_the_last_four_characters_after_trimming() {
+    fn last4_reveals_at_most_4_and_never_more_than_half() {
+        // Longer than 8: last 4
         assert_eq!(last4(" N1234567 "), "4567");
-        assert_eq!(last4("AB12"), "AB12");
-        assert_eq!(last4(" 12 "), "12");
+        // Exactly 6: half = 3
+        assert_eq!(last4("ABCDEF"), "DEF");
+        // Exactly 5: half = 2
+        assert_eq!(last4("ABCDE"), "DE");
+        // Exactly 4: half = 2
+        assert_eq!(last4("ABCD"), "CD");
+        // Exactly 3: half = 1
+        assert_eq!(last4("ABC"), "C");
+        // Exactly 2: half = 1
+        assert_eq!(last4(" 12 "), "2");
+        // Exactly 1: half = 0
+        assert_eq!(last4("X"), "");
+        // Empty: nothing
         assert_eq!(last4(""), "");
-        assert_eq!(last4("ÄÖÜßéè"), "Üßéè");
+        // Unicode: 6 chars, last 3
+        assert_eq!(last4("ÄÖÜßéè"), "ßéè");
     }
 
     #[test]
-    fn mask_shows_only_the_last_four() {
+    fn mask_shows_the_tail_or_bullets_alone() {
         assert_eq!(mask("1234"), "•••• 1234");
+        assert_eq!(mask("EF"), "•••• EF");
+        assert_eq!(mask(""), "••••");
         assert_eq!(mask(&last4("N1234567")), "•••• 4567");
     }
 }

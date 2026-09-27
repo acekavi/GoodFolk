@@ -19,7 +19,7 @@ create table guest (
   id_doc_type text check (id_doc_type in ('passport', 'nic', 'driving_licence', 'other')),
   id_doc_number_enc bytea check (octet_length(id_doc_number_enc) >= 28),
   id_doc_key_id text check (id_doc_key_id ~ '^[A-Za-z0-9_-]{1,16}$'),
-  id_doc_last4 text check (length(id_doc_last4) between 1 and 4),
+  id_doc_last4 text check (length(id_doc_last4) <= 4),
   notes text not null default '' check (length(notes) <= 2000),
   version integer not null default 1,
   created_at timestamptz not null default now(),

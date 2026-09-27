@@ -257,12 +257,16 @@ pub async fn update_guest(
     expected_version: i32,
     changes: GuestChanges,
 ) -> Result<Guest, ReservationsError> {
-    let current: Guest =
-        sqlx::query_as(sqlx::AssertSqlSafe(format!("select {COLUMNS} from guest where id = $1 for update")))
-            .bind(id)
-            .fetch_optional(&mut **tx)
-            .await?
-            .ok_or(ReservationsError::NotFound("guest"))?;
+    let row = sqlx::query("select tenant_id from guest where id = $1 for update")
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(ReservationsError::NotFound("guest"))?;
+    let row_tenant: Uuid = row.try_get("tenant_id")?;
+    let current: Guest = sqlx::query_as(sqlx::AssertSqlSafe(format!("select {COLUMNS} from guest where id = $1")))
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await?;
     if current.version != expected_version {
         return Err(ReservationsError::VersionMismatch("guest"));
     }
@@ -287,7 +291,11 @@ pub async fn update_guest(
     let notes = changes.notes.map(notes).transpose()?.unwrap_or(current.notes);
     let residency = changes.residency.unwrap_or(current.residency);
     // `None`: keep the stored document; `Some(None)`: remove it; `Some(Some(..))`: replace it.
-    let id_doc = changes.id_doc.map(|doc| doc.map(|doc| IdDoc::seal(key, tenant, id, doc)).transpose()).transpose()?;
+    // Seal with the row's tenant_id, not the argument, so a mismatched argument cannot make a number unopenable.
+    let id_doc = changes
+        .id_doc
+        .map(|doc| doc.map(|doc| IdDoc::seal(key, TenantId(row_tenant), id, doc)).transpose())
+        .transpose()?;
     let replaced = id_doc.as_ref().and_then(Option::as_ref);
     let updated: Guest = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "update guest set first_name = $2, last_name = $3, email = $4, phone = $5, country = $6, residency = $7,
@@ -345,15 +353,18 @@ pub async fn search_guests(tx: &mut Tx, text: &str, limit: i64) -> Result<Vec<Gu
         .await;
     }
     // `<%` (word similarity) matches a part of the name, such as a last name or its first letters, which `%`
-    // (whole-string similarity) misses; both are served by the trigram index.
+    // (whole-string similarity) misses; both are served by the trigram index. Under row-level security this
+    // query scans the tenant's guests (the trigram operator is not leakproof); see the plan's Decision 13.
+    let text_lower = text.to_lowercase();
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select {COLUMNS} from guest
-         where lower($1) <% {NAME} or email = lower($1) or phone = $1
-         order by (email = lower($1) or phone = $1) is true desc, word_similarity(lower($1), {NAME}) desc,
+         where lower($1) <% {NAME} or email = $2 or phone = $1
+         order by (email = $2 or phone = $1) is true desc, word_similarity(lower($1), {NAME}) desc,
                   similarity(lower($1), {NAME}) desc, id
-         limit $2"
+         limit $3"
     )))
     .bind(text)
+    .bind(text_lower)
     .bind(limit)
     .fetch_all(&mut **tx)
     .await
