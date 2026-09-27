@@ -298,8 +298,8 @@
 	async function create(event: SubmitEvent) {
 		event.preventDefault();
 		createError = '';
-		const body = createReservationBody(booking, rooms, source, notes);
 		try {
+			const body = createReservationBody(booking, rooms, source, notes);
 			const created = await pending.run('create', async () =>
 				unwrap(
 					await rest.POST('/api/v1/properties/{property}/reservations', {

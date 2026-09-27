@@ -53,6 +53,9 @@ test('a reservation is booked from the keyboard: stay, offer, a new guest with a
 	await page.keyboard.press('Tab');
 	await expect(offer).toBeFocused();
 	await page.keyboard.press('Space');
+	// Space only moves the radio's checked state; it must not also take the offer and skip ahead.
+	await expect(offer).toBeChecked();
+	await expect(page.getByLabel('Find a guest')).toBeHidden();
 	await page.keyboard.press('Enter');
 
 	// A new guest, with an ID number; residency comes prefilled from the stay.
