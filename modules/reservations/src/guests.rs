@@ -1,4 +1,4 @@
-use crate::{ReservationsError, audit};
+use crate::{ReservationsError, audit, decode_error};
 use db::crypto::{GuestIdKey, Sealed, guest_aad, last4, mask};
 use db::{TenantId, Tx, UserId};
 use rates::Residency;
@@ -67,7 +67,7 @@ pub struct GuestChanges {
 const NAME: &str = "lower(first_name || ' ' || last_name)";
 
 /// Never the sealed number or its key id: only the last 4 characters, for the mask.
-const COLUMNS: &str = "id, first_name, last_name, email, phone, country::text as country, residency, \
+pub(crate) const COLUMNS: &str = "id, first_name, last_name, email, phone, country::text as country, residency, \
                        id_doc_type, id_doc_last4, notes, version";
 
 impl sqlx::FromRow<'_, PgRow> for Guest {
@@ -91,10 +91,6 @@ impl sqlx::FromRow<'_, PgRow> for Guest {
             version: row.try_get("version")?,
         })
     }
-}
-
-fn decode_error(column: &str, value: &str) -> sqlx::Error {
-    sqlx::Error::ColumnDecode { index: column.into(), source: format!("unknown value {value:?}").into() }
 }
 
 fn invalid(message: &str) -> ReservationsError {

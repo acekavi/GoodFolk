@@ -64,6 +64,14 @@ type CancellationRuleNode {
 	penalty: PenaltyNode!
 }
 
+"""
+The cancellation policy a room was booked under.
+"""
+type CancellationTermsNode {
+	rules: [CancellationRuleNode!]!
+	noShow: PenaltyNode!
+}
+
 enum ChangeMode {
 	PERCENT
 	AMOUNT
@@ -81,6 +89,68 @@ Format: %Y-%m-%d
 scalar Date
 
 """
+A datetime with timezone offset.
+
+The input is a string in RFC3339 format, e.g. "2022-01-12T04:00:19.12345Z"
+or "2022-01-12T04:00:19+03:00". The output is also a string in RFC3339
+format, but it is always normalized to the UTC (Z) offset, e.g.
+"2022-01-12T04:00:19.12345Z".
+"""
+scalar DateTime
+
+"""
+A room a stay could be assigned.
+"""
+type FreeRoomNode {
+	id: UUID!
+	number: String!
+	"""
+	The housekeeping section's name.
+	"""
+	section: String
+}
+
+"""
+A guest. The ID number is only ever shown masked, such as `•••• 1234`.
+"""
+type GuestNode {
+	id: UUID!
+	firstName: String!
+	lastName: String!
+	email: String
+	phone: String
+	country: String
+	residency: Residency!
+	idDocType: IdDocType
+	idDocMasked: String
+	notes: String!
+	version: Int!
+}
+
+"""
+Something done to the reservation or one of its rooms.
+"""
+type HistoryEntryNode {
+	"""
+	Such as `reservation.created` or `reservation_room.assigned`.
+	"""
+	action: String!
+	at: DateTime!
+	"""
+	`null` once the user is deleted.
+	"""
+	actorName: String
+	data: JSON!
+}
+
+enum IdDocType {
+	PASSPORT
+	NIC
+	DRIVING_LICENCE
+	OTHER
+}
+
+"""
 One room type on one day. `available = physical - sold - outOfOrder`.
 """
 type InventoryDayNode {
@@ -91,6 +161,11 @@ type InventoryDayNode {
 	outOfOrder: Int!
 	available: Int!
 }
+
+"""
+A scalar that can represent any JSON value.
+"""
+scalar JSON
 
 enum MealPlan {
 	RO
@@ -111,6 +186,29 @@ type MealSupplementNode {
 	from: Date!
 	to: Date
 	version: Int!
+}
+
+"""
+One way to sell a room type for the stay: a rate plan and meal plan, priced. Unsellable offers carry the
+reasons in `violations`.
+"""
+type OfferNode {
+	ratePlanId: UUID!
+	ratePlanCode: String!
+	mealPlan: MealPlan!
+	total: Int!
+	currency: String!
+	restrictionsOk: Boolean!
+	violations: [ViolationNode!]!
+	nights: [QuoteNightNode!]!
+}
+
+type PageInfo {
+	"""
+	Pass as `after` for the next page; `null` on an empty page.
+	"""
+	endCursor: String
+	hasNextPage: Boolean!
 }
 
 enum PenaltyKind {
@@ -224,6 +322,41 @@ type Query {
 	Prices a stay of `[checkIn, checkOut)` (at most 90 nights) and lists every reason it cannot be sold.
 	"""
 	quote(propertyId: UUID!, roomTypeId: UUID!, ratePlanId: UUID!, mealPlan: MealPlan!, checkIn: Date!, checkOut: Date!, adults: Int!, children: Int!, residency: Residency!): QuoteNode!
+	"""
+	Every active room type, in display order, with its free rooms and every offer for a stay of
+	`[checkIn, checkOut)` (at most 30 nights) inside the booking window.
+	"""
+	availability(propertyId: UUID!, checkIn: Date!, checkOut: Date!, adults: Int!, children: Int!, residency: Residency!): [RoomTypeAvailabilityNode!]!
+	"""
+	The property's reservation rooms, one node per room, `first` (1 to 100) at a time after the cursor
+	`after`. Sorted by arrival unless `sort` says otherwise; a cursor works only under the sort it came from.
+	"""
+	reservations(		propertyId: UUID!,		filter: ReservationFilter,		sort: ReservationSort,
+		"""
+		Rows per page; 50 when left out or null.
+		"""
+		first: Int,		after: String
+	): ReservationRoomConnection!
+	"""
+	One reservation with its rooms and, newest first, its history.
+	"""
+	reservation(propertyId: UUID!, id: UUID!): ReservationNode!
+	"""
+	Up to `first` (1 to 50) of the tenant's guests whose name is like `search`, typos included, or whose
+	email or phone is exactly `search`, closest first; without `search`, the newest guests.
+	"""
+	guests(		propertyId: UUID!,		search: String,
+		"""
+		20 when left out or null.
+		"""
+		first: Int
+	): [GuestNode!]!
+	"""
+	Active rooms of the type that no stay holds and no block covers on any night of `[checkIn, checkOut)`
+	(at most the 730-night counter window), in display order: the rooms a stay on those nights could be
+	assigned.
+	"""
+	freeRooms(propertyId: UUID!, roomTypeId: UUID!, checkIn: Date!, checkOut: Date!): [FreeRoomNode!]!
 }
 
 type QuoteNightNode {
@@ -282,6 +415,11 @@ type RatePlanNode {
 	version: Int!
 }
 
+type RatePlanRefNode {
+	id: UUID!
+	code: String!
+}
+
 """
 A price for `occupancy` adults, in minor units of the plan's currency.
 """
@@ -290,6 +428,143 @@ type RatePriceNode {
 	date: Date!
 	occupancy: Int!
 	amount: Int!
+}
+
+"""
+Which reservation rooms to list. Left out, a field does not filter; an empty `statuses` or `sources`
+matches nothing.
+"""
+input ReservationFilter {
+	arrivalFrom: Date
+	"""
+	Inclusive.
+	"""
+	arrivalTo: Date
+	statuses: [RoomStatus!]
+	sources: [Source!]
+	"""
+	The start of a confirmation number, in any case, or a guest's name, typos included.
+	"""
+	text: String
+}
+
+type ReservationNode {
+	id: UUID!
+	confirmationNo: String!
+	"""
+	Derived from the rooms' statuses.
+	"""
+	status: RoomStatus!
+	source: Source!
+	notes: String!
+	createdAt: DateTime!
+	"""
+	Moves with every change to the reservation or its rooms.
+	"""
+	version: Int!
+	booker: GuestNode!
+	"""
+	What the rooms that are not cancelled cost, per currency.
+	"""
+	totals: [TotalNode!]!
+	"""
+	In the order they were booked.
+	"""
+	rooms: [ReservationRoomNode!]!
+	"""
+	Newest first.
+	"""
+	history: [HistoryEntryNode!]!
+}
+
+type ReservationRoomConnection {
+	nodes: [ReservationRoomRowNode!]!
+	pageInfo: PageInfo!
+	"""
+	Every room the filter matches, on every page.
+	"""
+	totalCount: Int!
+}
+
+"""
+A booked room. Amounts are minor units of `currency`.
+"""
+type ReservationRoomNode {
+	id: UUID!
+	"""
+	Send as `If-Match: "<version>"` with the room's commands.
+	"""
+	version: Int!
+	status: RoomStatus!
+	roomType: RoomTypeRefNode!
+	"""
+	`null` until a room is assigned.
+	"""
+	room: RoomRefNode
+	checkIn: Date!
+	checkOut: Date!
+	adults: Int!
+	children: Int!
+	ratePlan: RatePlanRefNode!
+	mealPlan: MealPlan!
+	primaryGuest: GuestNode!
+	"""
+	Each night's price as booked.
+	"""
+	nights: [QuoteNightNode!]!
+	total: Int!
+	currency: String!
+	"""
+	`null` when the plan had no cancellation policy.
+	"""
+	cancellationTerms: CancellationTermsNode
+	"""
+	What cancelling on the business date would cost; `null` when the room can't be cancelled.
+	"""
+	cancellationPenalty: Int
+	cancelledAt: DateTime
+	"""
+	The penalty recorded when the room was cancelled.
+	"""
+	recordedPenalty: Int
+}
+
+"""
+One room of a reservation in the list. `total` is the stay's price in minor units of `currency`.
+"""
+type ReservationRoomRowNode {
+	id: UUID!
+	reservationId: UUID!
+	confirmationNo: String!
+	"""
+	The primary guest's name.
+	"""
+	guestName: String!
+	arrival: Date!
+	departure: Date!
+	nights: Int!
+	roomTypeCode: String!
+	roomNumber: String
+	status: RoomStatus!
+	source: Source!
+	total: Int!
+	currency: String!
+	version: Int!
+}
+
+input ReservationSort {
+	field: ReservationSortField!
+	direction: SortDirection! = ASC
+}
+
+"""
+What the reservations list is sorted by; ties go by the room's id.
+"""
+enum ReservationSortField {
+	ARRIVAL
+	CONFIRMATION
+	GUEST
+	CREATED
 }
 
 enum Residency {
@@ -318,6 +593,32 @@ type RoomNode {
 	version: Int!
 }
 
+type RoomRefNode {
+	id: UUID!
+	number: String!
+}
+
+enum RoomStatus {
+	TENTATIVE
+	CONFIRMED
+	CHECKED_IN
+	CHECKED_OUT
+	CANCELLED
+	NO_SHOW
+}
+
+"""
+An active room type: the fewest rooms free on any night of the stay (negative when overbooked) and its
+offers, by plan code then meal plan.
+"""
+type RoomTypeAvailabilityNode {
+	roomTypeId: UUID!
+	code: String!
+	name: String!
+	free: Int!
+	offers: [OfferNode!]!
+}
+
 type RoomTypeNode {
 	id: UUID!
 	code: String!
@@ -333,6 +634,12 @@ type RoomTypeNode {
 	version: Int!
 }
 
+type RoomTypeRefNode {
+	id: UUID!
+	code: String!
+	name: String!
+}
+
 type SectionNode {
 	id: UUID!
 	name: String!
@@ -345,6 +652,24 @@ enum Segment {
 	OTA
 	TA
 	IBE
+}
+
+enum SortDirection {
+	ASC
+	DESC
+}
+
+enum Source {
+	FRONT_DESK
+	IBE
+	CHANNEL
+	PHONE
+	EMAIL
+}
+
+type TotalNode {
+	currency: String!
+	amount: Int!
 }
 
 """

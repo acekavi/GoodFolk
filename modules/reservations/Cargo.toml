@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+base64.workspace = true
 db.workspace = true
 domain.workspace = true
 rates.workspace = true

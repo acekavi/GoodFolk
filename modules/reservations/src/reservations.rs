@@ -252,7 +252,13 @@ pub async fn create_reservation(
     let keys = [reservations_key(property), reservation_key(id)].into_iter().chain(months).collect();
     notify(tx, tenant, property, keys).await?;
 
-    Ok(CreatedReservation { id, confirmation_no, version, totals: totals(&created), rooms: created })
+    Ok(CreatedReservation {
+        id,
+        confirmation_no,
+        version,
+        totals: totals(created.iter().map(|room| (room.currency.as_str(), room.total))),
+        rooms: created,
+    })
 }
 
 fn invalid(message: String) -> ReservationsError {
@@ -362,13 +368,13 @@ async fn cancellation_terms(
     Ok(rows.into_iter().collect())
 }
 
-/// The rooms' totals per currency, in the order the rooms first use each currency.
-fn totals(rooms: &[CreatedRoom]) -> Vec<Total> {
+/// Sums `(currency, amount)` pairs per currency, in the order each currency first appears.
+pub(crate) fn totals<'a>(amounts: impl IntoIterator<Item = (&'a str, i64)>) -> Vec<Total> {
     let mut totals: Vec<Total> = Vec::new();
-    for room in rooms {
-        match totals.iter_mut().find(|total| total.currency == room.currency) {
-            Some(total) => total.amount += room.total,
-            None => totals.push(Total { currency: room.currency.clone(), amount: room.total }),
+    for (currency, amount) in amounts {
+        match totals.iter_mut().find(|total| total.currency == currency) {
+            Some(total) => total.amount += amount,
+            None => totals.push(Total { currency: currency.to_owned(), amount }),
         }
     }
     totals

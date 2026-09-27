@@ -12,7 +12,7 @@ const config: CodegenConfig = {
 				// Documents are plain strings: no GraphQL parser is shipped to the browser.
 				documentMode: 'string',
 				useTypeImports: true,
-				scalars: { UUID: 'string', Date: 'string' }
+				scalars: { UUID: 'string', Date: 'string', DateTime: 'string', JSON: 'unknown' }
 			}
 		}
 	}

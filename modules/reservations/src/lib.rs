@@ -7,14 +7,24 @@
 mod assignment;
 mod availability;
 mod cancellation;
+mod detail;
 mod guests;
+mod list;
 mod reservations;
 
 pub use assignment::{AssignedRoom, FreeRoom, assign_room, free_rooms, unassign_room};
 pub use availability::{AvailabilityRequest, MAX_AVAILABILITY_NIGHTS, RoomTypeAvailability, availability};
 pub use cancellation::{CancellationTerms, CancelledRoom, cancel_room, cancellation_penalty};
+pub use detail::{
+    HistoryEntry, Night, RatePlanRef, ReservationDetail, RoomDetail, RoomRef, RoomTypeRef, get_reservation,
+    reservation_history,
+};
 pub use guests::{
     Guest, GuestChanges, IdDocType, MAX_GUEST_SEARCH, NewGuest, create_guest, get_guest, search_guests, update_guest,
+};
+pub use list::{
+    ListFilter, ListRequest, MAX_PAGE_SIZE, ReservationRoomPage, ReservationRoomRow, Sort, SortDirection, SortField,
+    list_reservation_rooms,
 };
 pub use reservations::{
     CreatedReservation, CreatedRoom, MAX_ROOMS_PER_RESERVATION, NewReservation, NewReservationRoom, Source, Total,
@@ -70,6 +80,11 @@ pub fn reservation_key(reservation: Uuid) -> String {
 /// Whether `err` violated the named constraint.
 fn violates(err: &sqlx::Error, constraint: &str) -> bool {
     err.as_database_error().and_then(|db_err| db_err.constraint()).is_some_and(|name| name == constraint)
+}
+
+/// A column value the code has no variant for.
+fn decode_error(column: &str, value: &str) -> sqlx::Error {
+    sqlx::Error::ColumnDecode { index: column.into(), source: format!("unknown value {value:?}").into() }
 }
 
 /// The property's business date. `NotFound` if the property is not in this tenant.

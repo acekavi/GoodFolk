@@ -83,6 +83,10 @@ create table reservation_room (
   room_type_id uuid not null,
   room_id uuid,
   stay daterange not null,
+  -- lower(stay), stored so the list's arrival filters and keyset use plain date comparisons: those are
+  -- leakproof, so under row-level security they can be index conditions, where lower(stay) can't. Never null:
+  -- reservation_room_stay_check refuses empty stays.
+  arrival date generated always as (lower(stay)) stored,
   adults integer not null check (adults between 1 and 50),
   children integer not null check (children between 0 and 50),
   rate_plan_id uuid not null,
@@ -120,6 +124,8 @@ create table reservation_room (
 -- Stays overlapping a date range (tape chart, lists by arrival).
 create index reservation_room_property_stay_idx on reservation_room using gist (property_id, stay);
 create index reservation_room_reservation_idx on reservation_room (reservation_id);
+-- The reservations list by arrival (its default sort), paged by (arrival, id).
+create index reservation_room_arrival_idx on reservation_room (property_id, arrival, id);
 
 -- The price of each night of a stay, fixed at booking: later rate changes do not reprice existing bookings.
 create table reservation_night (
@@ -134,6 +140,9 @@ create table reservation_night (
   foreign key (tenant_id, property_id) references property (tenant_id, id) on delete cascade,
   foreign key (property_id, reservation_room_id) references reservation_room (property_id, id) on delete cascade
 );
+
+-- A reservation's history: the audit entries of the reservation and of its rooms.
+create index audit_log_entity_idx on audit_log (entity_id, at desc) where entity_id is not null;
 
 do $$
 declare t text;

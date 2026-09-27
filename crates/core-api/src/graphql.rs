@@ -3,14 +3,14 @@
 use crate::auth::TenantContext;
 use crate::error::ApiError;
 use crate::state::AppState;
-use async_graphql::{Context, EmptyMutation, EmptySubscription, Enum, Object, Schema, SimpleObject};
+use async_graphql::{Context, EmptyMutation, EmptySubscription, Enum, InputObject, Json, Object, Schema, SimpleObject};
 use async_graphql_axum::rejection::GraphQLRejection;
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::extract::State;
 use db::{Scope, Tx};
 use identity::Permission;
 use sqlx::PgPool;
-use time::{Date, Duration};
+use time::{Date, Duration, OffsetDateTime};
 use uuid::Uuid;
 
 pub type GqlSchema = Schema<Query, EmptyMutation, EmptySubscription>;
@@ -179,7 +179,7 @@ pub struct InventoryDayNode {
     pub available: i32,
 }
 
-/// A GraphQL enum mirroring one of the rates module's enums, with conversions both ways.
+/// A GraphQL enum mirroring one of a module's enums, with conversions both ways.
 macro_rules! mirror_enum {
     ($(#[$meta:meta])* $node:ident as $name:literal from $source:path { $($variant:ident),+ $(,)? }) => {
         $(#[$meta])*
@@ -390,6 +390,335 @@ pub struct QuoteNode {
     pub currency: String,
     pub restrictions_ok: bool,
     pub violations: Vec<ViolationNode>,
+}
+
+mirror_enum!(RoomStatusNode as "RoomStatus" from domain::RoomStatus {
+    Tentative,
+    Confirmed,
+    CheckedIn,
+    CheckedOut,
+    Cancelled,
+    NoShow,
+});
+mirror_enum!(SourceNode as "Source" from reservations::Source { FrontDesk, Ibe, Channel, Phone, Email });
+mirror_enum!(IdDocTypeNode as "IdDocType" from reservations::IdDocType { Passport, Nic, DrivingLicence, Other });
+mirror_enum!(
+    /// What the reservations list is sorted by; ties go by the room's id.
+    ReservationSortFieldNode as "ReservationSortField" from reservations::SortField {
+        Arrival,
+        Confirmation,
+        Guest,
+        Created,
+    }
+);
+mirror_enum!(SortDirectionNode as "SortDirection" from reservations::SortDirection { Asc, Desc });
+
+/// One way to sell a room type for the stay: a rate plan and meal plan, priced. Unsellable offers carry the
+/// reasons in `violations`.
+#[derive(SimpleObject)]
+pub struct OfferNode {
+    pub rate_plan_id: Uuid,
+    pub rate_plan_code: String,
+    pub meal_plan: MealPlanNode,
+    pub total: i64,
+    pub currency: String,
+    pub restrictions_ok: bool,
+    pub violations: Vec<ViolationNode>,
+    pub nights: Vec<QuoteNightNode>,
+}
+
+/// An active room type: the fewest rooms free on any night of the stay (negative when overbooked) and its
+/// offers, by plan code then meal plan.
+#[derive(SimpleObject)]
+pub struct RoomTypeAvailabilityNode {
+    pub room_type_id: Uuid,
+    pub code: String,
+    pub name: String,
+    pub free: i32,
+    pub offers: Vec<OfferNode>,
+}
+
+/// A guest. The ID number is only ever shown masked, such as `•••• 1234`.
+#[derive(SimpleObject)]
+pub struct GuestNode {
+    pub id: Uuid,
+    pub first_name: String,
+    pub last_name: String,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub country: Option<String>,
+    pub residency: ResidencyNode,
+    pub id_doc_type: Option<IdDocTypeNode>,
+    pub id_doc_masked: Option<String>,
+    pub notes: String,
+    pub version: i32,
+}
+
+impl From<reservations::Guest> for GuestNode {
+    fn from(g: reservations::Guest) -> Self {
+        Self {
+            id: g.id,
+            first_name: g.first_name,
+            last_name: g.last_name,
+            email: g.email,
+            phone: g.phone,
+            country: g.country,
+            residency: g.residency.into(),
+            id_doc_type: g.id_doc_type.map(Into::into),
+            id_doc_masked: g.id_doc_masked,
+            notes: g.notes,
+            version: g.version,
+        }
+    }
+}
+
+/// Which reservation rooms to list. Left out, a field does not filter; an empty `statuses` or `sources`
+/// matches nothing.
+#[derive(InputObject)]
+#[graphql(name = "ReservationFilter")]
+pub struct ReservationFilterInput {
+    pub arrival_from: Option<Date>,
+    /// Inclusive.
+    pub arrival_to: Option<Date>,
+    pub statuses: Option<Vec<RoomStatusNode>>,
+    pub sources: Option<Vec<SourceNode>>,
+    /// The start of a confirmation number, in any case, or a guest's name, typos included.
+    pub text: Option<String>,
+}
+
+#[derive(InputObject)]
+#[graphql(name = "ReservationSort")]
+pub struct ReservationSortInput {
+    pub field: ReservationSortFieldNode,
+    #[graphql(default_with = "SortDirectionNode::Asc")]
+    pub direction: SortDirectionNode,
+}
+
+/// One room of a reservation in the list. `total` is the stay's price in minor units of `currency`.
+#[derive(SimpleObject)]
+pub struct ReservationRoomRowNode {
+    pub id: Uuid,
+    pub reservation_id: Uuid,
+    pub confirmation_no: String,
+    /// The primary guest's name.
+    pub guest_name: String,
+    pub arrival: Date,
+    pub departure: Date,
+    pub nights: i32,
+    pub room_type_code: String,
+    pub room_number: Option<String>,
+    pub status: RoomStatusNode,
+    pub source: SourceNode,
+    pub total: i64,
+    pub currency: String,
+    pub version: i32,
+}
+
+#[derive(SimpleObject)]
+pub struct PageInfo {
+    /// Pass as `after` for the next page; `null` on an empty page.
+    pub end_cursor: Option<String>,
+    pub has_next_page: bool,
+}
+
+#[derive(SimpleObject)]
+pub struct ReservationRoomConnection {
+    pub nodes: Vec<ReservationRoomRowNode>,
+    pub page_info: PageInfo,
+    /// Every room the filter matches, on every page.
+    pub total_count: i64,
+}
+
+#[derive(SimpleObject)]
+pub struct TotalNode {
+    pub currency: String,
+    pub amount: i64,
+}
+
+#[derive(SimpleObject)]
+pub struct RoomTypeRefNode {
+    pub id: Uuid,
+    pub code: String,
+    pub name: String,
+}
+
+#[derive(SimpleObject)]
+pub struct RoomRefNode {
+    pub id: Uuid,
+    pub number: String,
+}
+
+#[derive(SimpleObject)]
+pub struct RatePlanRefNode {
+    pub id: Uuid,
+    pub code: String,
+}
+
+/// The cancellation policy a room was booked under.
+#[derive(SimpleObject)]
+pub struct CancellationTermsNode {
+    pub rules: Vec<CancellationRuleNode>,
+    pub no_show: PenaltyNode,
+}
+
+/// A booked room. Amounts are minor units of `currency`.
+#[derive(SimpleObject)]
+pub struct ReservationRoomNode {
+    pub id: Uuid,
+    /// Send as `If-Match: "<version>"` with the room's commands.
+    pub version: i32,
+    pub status: RoomStatusNode,
+    pub room_type: RoomTypeRefNode,
+    /// `null` until a room is assigned.
+    pub room: Option<RoomRefNode>,
+    pub check_in: Date,
+    pub check_out: Date,
+    pub adults: i32,
+    pub children: i32,
+    pub rate_plan: RatePlanRefNode,
+    pub meal_plan: MealPlanNode,
+    pub primary_guest: GuestNode,
+    /// Each night's price as booked.
+    pub nights: Vec<QuoteNightNode>,
+    pub total: i64,
+    pub currency: String,
+    /// `null` when the plan had no cancellation policy.
+    pub cancellation_terms: Option<CancellationTermsNode>,
+    /// What cancelling on the business date would cost; `null` when the room can't be cancelled.
+    pub cancellation_penalty: Option<i64>,
+    pub cancelled_at: Option<OffsetDateTime>,
+    /// The penalty recorded when the room was cancelled.
+    pub recorded_penalty: Option<i64>,
+}
+
+/// Something done to the reservation or one of its rooms.
+#[derive(SimpleObject)]
+pub struct HistoryEntryNode {
+    /// Such as `reservation.created` or `reservation_room.assigned`.
+    pub action: String,
+    pub at: OffsetDateTime,
+    /// `null` once the user is deleted.
+    pub actor_name: Option<String>,
+    pub data: Json<serde_json::Value>,
+}
+
+#[derive(SimpleObject)]
+pub struct ReservationNode {
+    pub id: Uuid,
+    pub confirmation_no: String,
+    /// Derived from the rooms' statuses.
+    pub status: RoomStatusNode,
+    pub source: SourceNode,
+    pub notes: String,
+    pub created_at: OffsetDateTime,
+    /// Moves with every change to the reservation or its rooms.
+    pub version: i32,
+    pub booker: GuestNode,
+    /// What the rooms that are not cancelled cost, per currency.
+    pub totals: Vec<TotalNode>,
+    /// In the order they were booked.
+    pub rooms: Vec<ReservationRoomNode>,
+    /// Newest first.
+    pub history: Vec<HistoryEntryNode>,
+}
+
+impl ReservationNode {
+    fn new(r: reservations::ReservationDetail, history: Vec<reservations::HistoryEntry>) -> Self {
+        Self {
+            id: r.id,
+            confirmation_no: r.confirmation_no,
+            status: r.status.into(),
+            source: r.source.into(),
+            notes: r.notes,
+            created_at: r.created_at,
+            version: r.version,
+            booker: r.booker.into(),
+            totals: r.totals.into_iter().map(|t| TotalNode { currency: t.currency, amount: t.amount }).collect(),
+            rooms: r
+                .rooms
+                .into_iter()
+                .map(|room| ReservationRoomNode {
+                    id: room.id,
+                    version: room.version,
+                    status: room.status.into(),
+                    room_type: RoomTypeRefNode {
+                        id: room.room_type.id,
+                        code: room.room_type.code,
+                        name: room.room_type.name,
+                    },
+                    room: room.room.map(|assigned| RoomRefNode { id: assigned.id, number: assigned.number }),
+                    check_in: room.check_in,
+                    check_out: room.check_out,
+                    adults: room.adults,
+                    children: room.children,
+                    rate_plan: RatePlanRefNode { id: room.rate_plan.id, code: room.rate_plan.code },
+                    meal_plan: room.meal_plan.into(),
+                    primary_guest: room.primary_guest.into(),
+                    nights: room
+                        .nights
+                        .into_iter()
+                        .map(|n| QuoteNightNode { date: n.date, room: n.room, meal: n.meal })
+                        .collect(),
+                    total: room.total,
+                    currency: room.currency,
+                    cancellation_terms: room.cancellation_terms.map(|terms| CancellationTermsNode {
+                        rules: terms.rules.into_iter().map(CancellationRuleNode::from).collect(),
+                        no_show: terms.no_show.into(),
+                    }),
+                    cancellation_penalty: room.cancellation_penalty,
+                    cancelled_at: room.cancelled_at,
+                    recorded_penalty: room.recorded_penalty,
+                })
+                .collect(),
+            history: history
+                .into_iter()
+                .map(|h| HistoryEntryNode { action: h.action, at: h.at, actor_name: h.actor_name, data: Json(h.data) })
+                .collect(),
+        }
+    }
+}
+
+/// A room a stay could be assigned.
+#[derive(SimpleObject)]
+pub struct FreeRoomNode {
+    pub id: Uuid,
+    pub number: String,
+    /// The housekeeping section's name.
+    pub section: Option<String>,
+}
+
+impl From<rates::CancellationRule> for CancellationRuleNode {
+    fn from(rule: rates::CancellationRule) -> Self {
+        Self { days_before_arrival: rule.days_before_arrival, penalty: rule.penalty.into() }
+    }
+}
+
+impl From<rates::QuoteNight> for QuoteNightNode {
+    fn from(n: rates::QuoteNight) -> Self {
+        Self { date: n.date, room: n.room, meal: n.meal }
+    }
+}
+
+impl From<rates::Violation> for ViolationNode {
+    fn from(v: rates::Violation) -> Self {
+        Self { kind: v.kind.into(), date: v.date, message: v.message }
+    }
+}
+
+/// A reservations rule the query broke, as a GraphQL error; database errors stay hidden.
+fn reservations_error(err: reservations::ReservationsError) -> async_graphql::Error {
+    match err {
+        reservations::ReservationsError::Database(db_err) => internal(db_err),
+        other => async_graphql::Error::new(other.to_string()),
+    }
+}
+
+/// Search text is at most 100 characters.
+fn check_search(text: Option<&str>) -> async_graphql::Result<()> {
+    if text.is_some_and(|text| text.chars().count() > 100) {
+        return Err(async_graphql::Error::new("search text is at most 100 characters"));
+    }
+    Ok(())
 }
 
 /// A rates rule the query broke, as a GraphQL error; database errors stay hidden.
@@ -682,14 +1011,7 @@ impl Query {
             .map(|p| CancellationPolicyNode {
                 id: p.id,
                 name: p.name,
-                rules: p
-                    .rules
-                    .into_iter()
-                    .map(|rule| CancellationRuleNode {
-                        days_before_arrival: rule.days_before_arrival,
-                        penalty: rule.penalty.into(),
-                    })
-                    .collect(),
+                rules: p.rules.into_iter().map(CancellationRuleNode::from).collect(),
                 no_show: p.no_show.into(),
                 version: p.version,
             })
@@ -728,20 +1050,183 @@ impl Query {
         let quote = rates::load_quote(&mut tx, property_id, &request).await.map_err(rates_error)?;
         tx.commit().await.map_err(internal)?;
         Ok(QuoteNode {
-            nights: quote
-                .nights
-                .into_iter()
-                .map(|n| QuoteNightNode { date: n.date, room: n.room, meal: n.meal })
-                .collect(),
+            nights: quote.nights.into_iter().map(QuoteNightNode::from).collect(),
             total: quote.total,
             currency: quote.currency,
             restrictions_ok: quote.restrictions_ok,
-            violations: quote
-                .violations
-                .into_iter()
-                .map(|v| ViolationNode { kind: v.kind.into(), date: v.date, message: v.message })
-                .collect(),
+            violations: quote.violations.into_iter().map(ViolationNode::from).collect(),
         })
+    }
+
+    /// Every active room type, in display order, with its free rooms and every offer for a stay of
+    /// `[checkIn, checkOut)` (at most 30 nights) inside the booking window.
+    #[allow(clippy::too_many_arguments)]
+    async fn availability(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        check_in: Date,
+        check_out: Date,
+        adults: i32,
+        children: i32,
+        residency: ResidencyNode,
+    ) -> async_graphql::Result<Vec<RoomTypeAvailabilityNode>> {
+        check_range(check_in, check_out, reservations::MAX_AVAILABILITY_NIGHTS)?;
+        let request =
+            reservations::AvailabilityRequest { check_in, check_out, adults, children, residency: residency.into() };
+        let mut tx = scoped(ctx, Permission::ReservationsView, property_id).await?;
+        let types = reservations::availability(&mut tx, property_id, &request).await.map_err(reservations_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(types
+            .into_iter()
+            .map(|t| RoomTypeAvailabilityNode {
+                room_type_id: t.room_type_id,
+                code: t.code,
+                name: t.name,
+                free: t.free,
+                offers: t
+                    .offers
+                    .into_iter()
+                    .map(|o| OfferNode {
+                        rate_plan_id: o.rate_plan_id,
+                        rate_plan_code: o.rate_plan_code,
+                        meal_plan: o.meal_plan.into(),
+                        total: o.quote.total,
+                        currency: o.quote.currency,
+                        restrictions_ok: o.quote.restrictions_ok,
+                        violations: o.quote.violations.into_iter().map(ViolationNode::from).collect(),
+                        nights: o.quote.nights.into_iter().map(QuoteNightNode::from).collect(),
+                    })
+                    .collect(),
+            })
+            .collect())
+    }
+
+    /// The property's reservation rooms, one node per room, `first` (1 to 100) at a time after the cursor
+    /// `after`. Sorted by arrival unless `sort` says otherwise; a cursor works only under the sort it came from.
+    async fn reservations(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        filter: Option<ReservationFilterInput>,
+        sort: Option<ReservationSortInput>,
+        #[graphql(desc = "Rows per page; 50 when left out or null.")] first: Option<i64>,
+        after: Option<String>,
+    ) -> async_graphql::Result<ReservationRoomConnection> {
+        let first = first.unwrap_or(50);
+        if !(1..=reservations::MAX_PAGE_SIZE).contains(&first) {
+            return Err(async_graphql::Error::new(format!("first is 1 to {}", reservations::MAX_PAGE_SIZE)));
+        }
+        let filter = filter.map_or_else(reservations::ListFilter::default, |f| reservations::ListFilter {
+            arrival_from: f.arrival_from,
+            arrival_to: f.arrival_to,
+            statuses: f.statuses.map(|statuses| statuses.into_iter().map(Into::into).collect()),
+            sources: f.sources.map(|sources| sources.into_iter().map(Into::into).collect()),
+            text: f.text,
+        });
+        check_search(filter.text.as_deref())?;
+        let request = reservations::ListRequest {
+            filter,
+            sort: sort.map_or_else(reservations::Sort::default, |s| reservations::Sort {
+                field: s.field.into(),
+                direction: s.direction.into(),
+            }),
+            first,
+            after,
+            count: ctx.look_ahead().field("totalCount").exists(),
+        };
+        let mut tx = scoped(ctx, Permission::ReservationsView, property_id).await?;
+        let page =
+            reservations::list_reservation_rooms(&mut tx, property_id, &request).await.map_err(reservations_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(ReservationRoomConnection {
+            nodes: page
+                .rows
+                .into_iter()
+                .map(|r| ReservationRoomRowNode {
+                    id: r.id,
+                    reservation_id: r.reservation_id,
+                    confirmation_no: r.confirmation_no,
+                    guest_name: r.guest_name,
+                    arrival: r.arrival,
+                    departure: r.departure,
+                    nights: r.nights,
+                    room_type_code: r.room_type_code,
+                    room_number: r.room_number,
+                    status: r.status.into(),
+                    source: r.source.into(),
+                    total: r.total,
+                    currency: r.currency,
+                    version: r.version,
+                })
+                .collect(),
+            page_info: PageInfo { end_cursor: page.end_cursor, has_next_page: page.has_next_page },
+            total_count: page.total_count.unwrap_or(0),
+        })
+    }
+
+    /// One reservation with its rooms and, newest first, its history.
+    async fn reservation(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        id: Uuid,
+    ) -> async_graphql::Result<ReservationNode> {
+        let mut tx = scoped(ctx, Permission::ReservationsView, property_id).await?;
+        let detail = reservations::get_reservation(&mut tx, property_id, id).await.map_err(reservations_error)?;
+        let history = if ctx.look_ahead().field("history").exists() {
+            reservations::reservation_history(&mut tx, property_id, id).await.map_err(internal)?
+        } else {
+            Vec::new()
+        };
+        tx.commit().await.map_err(internal)?;
+        Ok(ReservationNode::new(detail, history))
+    }
+
+    /// Up to `first` (1 to 50) of the tenant's guests whose name is like `search`, typos included, or whose
+    /// email or phone is exactly `search`, closest first; without `search`, the newest guests.
+    async fn guests(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        search: Option<String>,
+        #[graphql(desc = "20 when left out or null.")] first: Option<i64>,
+    ) -> async_graphql::Result<Vec<GuestNode>> {
+        let first = first.unwrap_or(20);
+        if !(1..=reservations::MAX_GUEST_SEARCH).contains(&first) {
+            return Err(async_graphql::Error::new(format!("first is 1 to {}", reservations::MAX_GUEST_SEARCH)));
+        }
+        check_search(search.as_deref())?;
+        let mut tx = scoped(ctx, Permission::ReservationsView, property_id).await?;
+        // Guests belong to the tenant: reach them only through one of its properties.
+        let property = property::list_properties(&mut tx, Some(&[property_id])).await.map_err(internal)?;
+        let guests = if property.is_empty() {
+            Vec::new()
+        } else {
+            reservations::search_guests(&mut tx, search.as_deref().unwrap_or(""), first).await.map_err(internal)?
+        };
+        tx.commit().await.map_err(internal)?;
+        Ok(guests.into_iter().map(GuestNode::from).collect())
+    }
+
+    /// Active rooms of the type that no stay holds and no block covers on any night of `[checkIn, checkOut)`
+    /// (at most the 730-night counter window), in display order: the rooms a stay on those nights could be
+    /// assigned.
+    async fn free_rooms(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        room_type_id: Uuid,
+        check_in: Date,
+        check_out: Date,
+    ) -> async_graphql::Result<Vec<FreeRoomNode>> {
+        check_range(check_in, check_out, rooms::WINDOW_DAYS)?;
+        let mut tx = scoped(ctx, Permission::ReservationsView, property_id).await?;
+        let rooms = reservations::free_rooms(&mut tx, property_id, room_type_id, check_in, check_out)
+            .await
+            .map_err(reservations_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(rooms.into_iter().map(|r| FreeRoomNode { id: r.id, number: r.number, section: r.section }).collect())
     }
 }
 
