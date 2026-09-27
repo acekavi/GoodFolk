@@ -1,8 +1,9 @@
 //! `inventory_day` counters: one row per room type per day, from the business date for [`WINDOW_DAYS`].
 //!
 //! `physical` counts a type's active rooms; `out_of_order` counts its active rooms under an active
-//! out-of-order block that day. Writers adjust the counters in their own transaction; [`find_drift`]
-//! recomputes them from rooms and blocks, for tests and the nightly check (Phase 7).
+//! out-of-order block that day; `sold` counts its booked rooms that night (reservations). Writers adjust the
+//! counters in their own transaction; [`find_drift`] recomputes them from rooms, blocks and reservations, for
+//! tests and the nightly check (Phase 7).
 
 use crate::RoomsError;
 use db::Tx;
@@ -29,14 +30,16 @@ impl InventoryDay {
     }
 }
 
-/// A counter row that disagrees with a recomputation from rooms and blocks. `None` means the row is
-/// missing (expected) or should not exist (actual).
+/// A counter row that disagrees with a recomputation from rooms, blocks and reservations. `None` means the row
+/// is missing (expected) or should not exist (actual).
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct InventoryDrift {
     pub room_type_id: Uuid,
     pub date: Date,
     pub expected_physical: Option<i32>,
     pub actual_physical: Option<i32>,
+    pub expected_sold: Option<i32>,
+    pub actual_sold: Option<i32>,
     pub expected_out_of_order: Option<i32>,
     pub actual_out_of_order: Option<i32>,
 }
@@ -103,12 +106,13 @@ pub(crate) async fn adjust(
     Ok(())
 }
 
-/// Locks `room_types`' counter rows on each day in `[from, to)`, in one statement.
+/// Locks `room_types`' counter rows on each day in `[from, to)`, in one statement. For counter writers only
+/// (this crate and reservations): readers never lock counters.
 ///
 /// Lock order: every command that changes counters calls this once, after its room and block row locks and
 /// before its first counter update, covering every row it will change. Rows are locked in ascending
 /// (room_type_id, date) order, so two such commands never wait on each other in a cycle.
-pub(crate) async fn lock_days(
+pub async fn lock_days(
     tx: &mut Tx,
     property: Uuid,
     room_types: &[Uuid],
@@ -169,8 +173,9 @@ pub(crate) async fn contribute(
     Ok(())
 }
 
-/// Counter rows from the business date on that differ from a recomputation from rooms and blocks.
-/// `sold` is expected to be 0 until reservations exist (Phase 3).
+/// Counter rows from the business date on that differ from a recomputation from rooms, blocks and
+/// reservations. `sold` is expected to count the type's booked rooms whose stay covers the night and that are
+/// neither cancelled nor no-shows.
 pub async fn find_drift(tx: &mut Tx, property: Uuid) -> Result<Vec<InventoryDrift>, sqlx::Error> {
     sqlx::query_as(
         "with expected as (
@@ -178,7 +183,10 @@ pub async fn find_drift(tx: &mut Tx, property: Uuid) -> Result<Vec<InventoryDrif
                     (select count(*) from room r where r.room_type_id = rt.id and r.active)::integer as physical,
                     (select count(*) from room_block b join room r on r.id = b.room_id
                      where r.room_type_id = rt.id and r.active and b.kind = 'out_of_order'
-                       and b.released_at is null and b.period @> day.date)::integer as out_of_order
+                       and b.released_at is null and b.period @> day.date)::integer as out_of_order,
+                    (select count(*) from reservation_room rr
+                     where rr.property_id = rt.property_id and rr.room_type_id = rt.id
+                       and rr.status not in ('cancelled', 'no_show') and rr.stay @> day.date)::integer as sold
              from room_type rt
              join property p on p.id = rt.property_id
              cross join lateral (select p.business_date + offset_days as date
@@ -192,10 +200,11 @@ pub async fn find_drift(tx: &mut Tx, property: Uuid) -> Result<Vec<InventoryDrif
          )
          select coalesce(e.room_type_id, a.room_type_id) as room_type_id, coalesce(e.date, a.date) as date,
                 e.physical as expected_physical, a.physical as actual_physical,
+                e.sold as expected_sold, a.sold as actual_sold,
                 e.out_of_order as expected_out_of_order, a.out_of_order as actual_out_of_order
          from expected e full join actual a on a.room_type_id = e.room_type_id and a.date = e.date
-         where e.physical is distinct from a.physical or e.out_of_order is distinct from a.out_of_order
-            or a.sold is distinct from 0
+         where e.physical is distinct from a.physical or e.sold is distinct from a.sold
+            or e.out_of_order is distinct from a.out_of_order
          order by 2, 1",
     )
     .bind(property)

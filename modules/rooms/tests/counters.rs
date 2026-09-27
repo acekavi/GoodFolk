@@ -1,5 +1,5 @@
 //! Property-based check of the inventory counters: random sequences of room and block changes must leave
-//! `inventory_day` equal to a recomputation from rooms and blocks (`rooms::find_drift`).
+//! `inventory_day` equal to a recomputation from rooms, blocks and reservations (`rooms::find_drift`).
 
 mod common;
 
@@ -204,4 +204,35 @@ async fn opposite_retypes_and_block_changes_run_concurrently_without_deadlocking
 
     assert!(failures.is_empty(), "{} of {total} changes failed: {failures:?}", failures.len());
     assert_eq!(hotel.drift().await, vec![]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn sold_rooms_without_a_reservation_are_drift(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let room_type = hotel.room_type("A").await;
+    hotel.room(room_type.id, "101").await;
+    let mut tx = hotel.tx().await;
+    sqlx::query("update inventory_day set sold = 1 where room_type_id = $1 and date = $2")
+        .bind(room_type.id)
+        .bind(hotel.day(3))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let drift = hotel.drift().await;
+
+    assert_eq!(
+        drift,
+        vec![rooms::InventoryDrift {
+            room_type_id: room_type.id,
+            date: hotel.day(3),
+            expected_physical: Some(1),
+            actual_physical: Some(1),
+            expected_sold: Some(0),
+            actual_sold: Some(1),
+            expected_out_of_order: Some(0),
+            actual_out_of_order: Some(0),
+        }]
+    );
 }

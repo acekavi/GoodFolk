@@ -1,13 +1,12 @@
 //! What a property can sell for a stay: free rooms per room type from the inventory counters, and every offer
 //! priced by [`rates::load_offers`].
 
-use crate::{ReservationsError, business_date};
+use crate::{ReservationsError, business_date, check_window};
 use db::Tx;
 use rates::{Offer, OfferRequest, Residency};
-use rooms::WINDOW_DAYS;
 use serde::Serialize;
 use std::collections::HashMap;
-use time::{Date, Duration};
+use time::Date;
 use uuid::Uuid;
 
 /// Most nights one availability search covers.
@@ -64,11 +63,7 @@ pub async fn availability(
             "an availability search covers at most {MAX_AVAILABILITY_NIGHTS} nights"
         )));
     }
-    let first = business_date(tx, property).await?;
-    let last = first + Duration::days(WINDOW_DAYS);
-    if check_in < first || check_out > last {
-        return Err(ReservationsError::Invalid(format!("stays must arrive on or after {first} and leave by {last}")));
-    }
+    check_window(business_date(tx, property).await?, check_in, check_out)?;
 
     let rows: Vec<FreeRow> = sqlx::query_as(
         "select rt.id, rt.code, rt.name, count(i.date) as counted, min(i.physical - i.sold - i.out_of_order) as free

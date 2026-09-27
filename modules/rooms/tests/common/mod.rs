@@ -80,7 +80,7 @@ impl Hotel {
         days.into_iter().filter(|day| day.room_type_id == room_type).collect()
     }
 
-    /// Counter rows that disagree with rooms and blocks; empty when the counters are right.
+    /// Counter rows that disagree with rooms, blocks and reservations; empty when the counters are right.
     pub async fn drift(&self) -> Vec<rooms::InventoryDrift> {
         let mut tx = self.tx().await;
         rooms::find_drift(&mut tx, self.property).await.unwrap()

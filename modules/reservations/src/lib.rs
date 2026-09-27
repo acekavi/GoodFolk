@@ -1,19 +1,26 @@
-//! Guests, what a property has free to sell them, and later the reservations they book.
+//! Guests, what a property has free to sell them, and the reservations they book.
 //!
 //! Every function takes a transaction scoped to the caller's tenant. Writes record an audit entry in the same
-//! transaction. Guests belong to the tenant, not to a property, so a chain shares guest history.
+//! transaction, and reservation writes queue change events. Guests belong to the tenant, not to a property, so
+//! a chain shares guest history.
 
 mod availability;
 mod guests;
+mod reservations;
 
 pub use availability::{AvailabilityRequest, MAX_AVAILABILITY_NIGHTS, RoomTypeAvailability, availability};
 pub use guests::{
     Guest, GuestChanges, IdDocType, MAX_GUEST_SEARCH, NewGuest, create_guest, get_guest, search_guests, update_guest,
 };
+pub use reservations::{
+    CreatedReservation, CreatedRoom, MAX_ROOMS_PER_RESERVATION, NewReservation, NewReservationRoom, Source, Total,
+    create_reservation,
+};
 
-use db::{TenantId, Tx, UserId};
+use db::{Event, TenantId, Tx, UserId};
 use rates::RatesError;
-use time::Date;
+use rooms::WINDOW_DAYS;
+use time::{Date, Duration};
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -46,6 +53,16 @@ impl From<RatesError> for ReservationsError {
     }
 }
 
+/// Cache key for a property's reservation list.
+pub fn reservations_key(property: Uuid) -> String {
+    format!("reservations:{property}")
+}
+
+/// Cache key for one reservation's detail.
+pub fn reservation_key(reservation: Uuid) -> String {
+    format!("reservation:{reservation}")
+}
+
 /// The property's business date. `NotFound` if the property is not in this tenant.
 async fn business_date(tx: &mut Tx, property: Uuid) -> Result<Date, ReservationsError> {
     sqlx::query_scalar("select business_date from property where id = $1")
@@ -53,6 +70,18 @@ async fn business_date(tx: &mut Tx, property: Uuid) -> Result<Date, Reservations
         .fetch_optional(&mut **tx)
         .await?
         .ok_or(ReservationsError::NotFound("property"))
+}
+
+/// Refuses a stay outside the counter window, `[business date, business date + WINDOW_DAYS)`: it must arrive
+/// on or after the business date and leave by the window's end.
+fn check_window(business_date: Date, check_in: Date, check_out: Date) -> Result<(), ReservationsError> {
+    let last = business_date + Duration::days(WINDOW_DAYS);
+    if check_in < business_date || check_out > last {
+        return Err(ReservationsError::Invalid(format!(
+            "stays must arrive on or after {business_date} and leave by {last}"
+        )));
+    }
+    Ok(())
 }
 
 async fn audit(
@@ -78,4 +107,10 @@ async fn audit(
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+/// Queues one change event for `keys`. Reservation writes stay inside the counter window, so their inventory
+/// month keys (at most 25) keep the event well under the NOTIFY payload limit.
+async fn notify(tx: &mut Tx, tenant: TenantId, property: Uuid, keys: Vec<String>) -> Result<(), sqlx::Error> {
+    db::notify(tx, &Event { tenant_id: tenant, property_id: Some(property), keys }).await
 }

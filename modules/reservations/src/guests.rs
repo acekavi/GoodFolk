@@ -171,7 +171,7 @@ fn country(value: Option<String>) -> Result<Option<String>, ReservationsError> {
         .transpose()
 }
 
-fn notes(value: String) -> Result<String, ReservationsError> {
+pub(crate) fn notes(value: String) -> Result<String, ReservationsError> {
     if value.chars().count() <= 2000 { Ok(value) } else { Err(invalid("notes are at most 2000 characters")) }
 }
 
