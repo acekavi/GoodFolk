@@ -79,8 +79,9 @@ pub struct CreatedReservation {
 
 /// Books `input`'s rooms, confirmed, under the property's next confirmation number.
 ///
-/// Every stay must be inside the counter window and arrive on or after the business date, and every guest
-/// named must exist (`Invalid`). The counters of every requested room type are locked over all the stays at
+/// Every stay must be inside the counter window and arrive on or after the business date, and every guest,
+/// room type and rate plan named must exist (`Invalid`, like any other malformed request). The counters of
+/// every requested room type are locked over all the stays at
 /// once ([`rooms::lock_days`]); a night without a free room of the type, counting the rooms this request
 /// already takes, is a `Conflict` (no overbooking). Each room is priced by [`rates::load_quote`] for its
 /// primary guest's residency and its nights are stored as quoted; any reason the quote gives not to sell is
@@ -135,7 +136,10 @@ pub async fn create_reservation(
             children: room.children,
             residency: residencies[&room.primary_guest_id.unwrap_or(input.booker_guest_id)],
         };
-        let quote = rates::load_quote(tx, property, &request).await?;
+        let quote = match rates::load_quote(tx, property, &request).await {
+            Err(rates::RatesError::NotFound("rate plan")) => return Err(invalid("no such rate plan".into())),
+            other => other?,
+        };
         reasons.extend(quote.violations.iter().map(|violation| violation.message.clone()));
         quotes.push(quote);
     }
@@ -266,14 +270,17 @@ fn invalid(message: String) -> ReservationsError {
 }
 
 /// The residency of the booker and of every primary guest, by guest id. `Invalid` if one is not a guest of
-/// this tenant.
+/// this tenant. Reads the rows `for share`, so a residency this booking is about to price by cannot change
+/// under it before the transaction commits.
 async fn residencies(tx: &mut Tx, input: &NewReservation) -> Result<HashMap<Uuid, Residency>, ReservationsError> {
     let mut ids: Vec<Uuid> = input.rooms.iter().filter_map(|room| room.primary_guest_id).collect();
     ids.push(input.booker_guest_id);
     ids.sort_unstable();
     ids.dedup();
-    let rows: Vec<(Uuid, String)> =
-        sqlx::query_as("select id, residency from guest where id = any($1)").bind(&ids).fetch_all(&mut **tx).await?;
+    let rows: Vec<(Uuid, String)> = sqlx::query_as("select id, residency from guest where id = any($1) for share")
+        .bind(&ids)
+        .fetch_all(&mut **tx)
+        .await?;
     if rows.len() != ids.len() {
         return Err(invalid("no such guest".into()));
     }
@@ -288,9 +295,9 @@ async fn residencies(tx: &mut Tx, input: &NewReservation) -> Result<HashMap<Uuid
         .collect()
 }
 
-/// The code of every requested room type, by id. `NotFound` if one is not in the property; `Invalid` if one is
-/// no longer sold (retired room types are never bookable, even though a quote on their own nights could still
-/// price them).
+/// The code of every requested room type, by id. `Invalid` ("no such room type") if one is not in the
+/// property, like an unknown guest id; `Invalid` if one is no longer sold (retired room types are never
+/// bookable, even though a quote on their own nights could still price them).
 async fn room_type_codes(
     tx: &mut Tx,
     property: Uuid,
@@ -305,7 +312,7 @@ async fn room_type_codes(
             .fetch_all(&mut **tx)
             .await?;
     if rows.len() != ids.len() {
-        return Err(ReservationsError::NotFound("room type"));
+        return Err(invalid("no such room type".into()));
     }
     if let Some((_, code, _)) = rows.iter().find(|(_, _, active)| !active) {
         return Err(invalid(format!("{code} is no longer sold")));

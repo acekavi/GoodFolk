@@ -326,8 +326,20 @@ async fn another_tenants_guests_and_reservations_cannot_be_changed(_: PgPoolOpti
             command(&app, &intruder, &format!("{property}/reservation-rooms/{stay}/unassign"), 1, None).await,
             command(&app, &intruder, &format!("{property}/reservation-rooms/{stay}/cancel"), 1, None).await,
         ];
-        for (index, response) in responses.into_iter().enumerate() {
-            assert_eq!(response.status, StatusCode::NOT_FOUND, "{property}, case {index}: {:?}", response.body);
+        // Through the intruder's own property, the reservation resolves far enough to see the room type and
+        // rate plan are not theirs, which is 422 (an unknown id in the body), like an unknown guest; every
+        // other case, and every case through the other tenant's property, never gets that far: 404.
+        let reservation_status =
+            if property == own.as_str() { StatusCode::UNPROCESSABLE_ENTITY } else { StatusCode::NOT_FOUND };
+        let expected = [
+            StatusCode::NOT_FOUND,
+            reservation_status,
+            StatusCode::NOT_FOUND,
+            StatusCode::NOT_FOUND,
+            StatusCode::NOT_FOUND,
+        ];
+        for (index, (response, status)) in responses.into_iter().zip(expected).enumerate() {
+            assert_eq!(response.status, status, "{property}, case {index}: {:?}", response.body);
         }
     }
     let untouched: (i64, i64, i32, i32, i32, String, bool, i64) = sqlx::query_as(

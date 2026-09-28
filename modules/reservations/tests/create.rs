@@ -205,6 +205,20 @@ async fn malformed_bookings_are_refused(_: PgPoolOptions, opts: PgConnectOptions
             "no such guest".into(),
         ),
         (
+            NewReservation {
+                rooms: vec![NewReservationRoom { room_type_id: Uuid::now_v7(), ..room.clone() }],
+                ..valid.clone()
+            },
+            "no such room type".into(),
+        ),
+        (
+            NewReservation {
+                rooms: vec![NewReservationRoom { rate_plan_id: Uuid::now_v7(), ..room.clone() }],
+                ..valid.clone()
+            },
+            "no such rate plan".into(),
+        ),
+        (
             NewReservation { rooms: vec![hotel.room(hotel.deluxe.id, &plans.bar, -1, 2)], ..valid.clone() },
             window.clone(),
         ),
