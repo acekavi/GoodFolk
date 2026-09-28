@@ -418,6 +418,40 @@ async fn an_assignment_and_a_block_of_the_same_room_at_once_let_one_through(_: P
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_room_retyped_while_a_stay_is_being_assigned_to_it_is_a_wrong_type_conflict(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let (hotel, plans) = Hotel::for_booking(opts.clone(), 1).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let stay = hotel.stay(&booker, &plans, 1, 4).await.rooms[0].id;
+    let r101 = hotel.numbered("101").await;
+    let standard = hotel.standard.id;
+    let pool = db::testing::app_pool(opts, 2).await;
+    let (tenant, user, property) = (hotel.tenant, hotel.user, hotel.property);
+
+    // Retypes room 101 to STD and holds the transaction open, so its row stays locked while the assignment
+    // below is blocked waiting to lock it too.
+    let mut retyping = db::begin(&pool, db::Scope::tenant(tenant)).await.unwrap();
+    let retype = RoomChanges { room_type_id: Some(standard), ..RoomChanges::default() };
+    rooms::update_room(&mut retyping, tenant, user, property, r101.id, r101.version, retype).await.unwrap();
+
+    let (pool2, room_id) = (pool.clone(), r101.id);
+    let assigning = tokio::spawn(async move {
+        let mut tx = db::begin(&pool2, db::Scope::tenant(tenant)).await.unwrap();
+        reservations::assign_room(&mut tx, tenant, user, property, stay, 1, room_id).await
+    });
+    // Gives the spawned task time to reach its `select ... for update` and start waiting on the row lock
+    // `retyping` still holds, so the retype has genuinely committed while the assignment was in flight.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    retyping.commit().await.unwrap();
+
+    let result = assigning.await.unwrap();
+
+    assert_eq!(conflict(result), "room 101 is a STD, this booking is for DLX");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn free_rooms_leave_out_assigned_blocked_and_inactive_rooms(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 4).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;

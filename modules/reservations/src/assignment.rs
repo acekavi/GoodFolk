@@ -47,29 +47,32 @@ pub async fn assign_room(
     room: Uuid,
 ) -> Result<AssignedRoom, ReservationsError> {
     let stay = lock_confirmed_stay(tx, property, id, expected_version, "be assigned a room").await?;
-    let target: Option<RoomRow> = sqlx::query_as(
-        "select r.number, r.active, r.room_type_id, t.code as type_code
-         from room r join room_type t on t.id = r.room_type_id
-         where r.id = $1 and r.property_id = $2
-         for update of r",
-    )
-    .bind(room)
-    .bind(property)
-    .fetch_optional(&mut **tx)
-    .await?;
+    // Locks only `room`: joining `room_type` into the locked query risks the join condition being checked
+    // against a stale `room_type` row when a concurrent retype forces Postgres to re-evaluate it (EvalPlanQual),
+    // which can make a genuinely mismatched type look like no row at all. Reading the type code as a second,
+    // unlocked query avoids that, so a concurrent retype is correctly a wrong-type `Conflict`, not `NotFound`.
+    let target: Option<RoomRow> =
+        sqlx::query_as("select number, active, room_type_id from room where id = $1 and property_id = $2 for update")
+            .bind(room)
+            .bind(property)
+            .fetch_optional(&mut **tx)
+            .await?;
     let target = target.ok_or(ReservationsError::NotFound("room"))?;
     let number = &target.number;
     if !target.active {
         return Err(ReservationsError::Conflict(format!("room {number} is inactive")));
     }
     if target.room_type_id != stay.room_type_id {
+        let type_code: String = sqlx::query_scalar("select code from room_type where id = $1")
+            .bind(target.room_type_id)
+            .fetch_one(&mut **tx)
+            .await?;
         let booked: String = sqlx::query_scalar("select code from room_type where id = $1")
             .bind(stay.room_type_id)
             .fetch_one(&mut **tx)
             .await?;
         return Err(ReservationsError::Conflict(format!(
-            "room {number} is a {}, this booking is for {booked}",
-            target.type_code
+            "room {number} is a {type_code}, this booking is for {booked}"
         )));
     }
     if stay.room_id == Some(room) {
@@ -277,11 +280,10 @@ struct StayRow {
     version: i32,
 }
 
-/// The room being assigned and its type's code.
+/// The room being assigned, locked alone (see `assign_room`).
 #[derive(sqlx::FromRow)]
 struct RoomRow {
     number: String,
     active: bool,
     room_type_id: Uuid,
-    type_code: String,
 }
