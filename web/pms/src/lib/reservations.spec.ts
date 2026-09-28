@@ -728,4 +728,17 @@ describe('the new-reservation flow', () => {
 		});
 		expect(createReservationBody(booked(), 1, 'FRONT_DESK', '')).not.toHaveProperty('notes');
 	});
+
+	it('includes the account only when one was chosen', () => {
+		expect(createReservationBody(booked(), 1, 'FRONT_DESK', '', 'acc1')).toMatchObject({
+			account_id: 'acc1'
+		});
+		expect(createReservationBody(booked(), 1, 'FRONT_DESK', '')).not.toHaveProperty('account_id');
+		expect(createReservationBody(booked(), 1, 'FRONT_DESK', '', null)).not.toHaveProperty(
+			'account_id'
+		);
+		expect(createReservationBody(booked(), 1, 'FRONT_DESK', '', '')).not.toHaveProperty(
+			'account_id'
+		);
+	});
 });

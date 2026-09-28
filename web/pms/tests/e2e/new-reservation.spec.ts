@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { addDays, book, bookableHotel, createProperty, signUp } from './helpers';
+import { addDays, book, bookableHotel, createProperty, post, signUp } from './helpers';
 
 const ID_NUMBER = 'P98765432';
 
@@ -96,6 +96,9 @@ test('a reservation is booked from the keyboard: stay, offer, a new guest with a
 	await expect(page.getByLabel('Source')).toHaveValue('FRONT_DESK');
 	await tabTo(page, 'Notes');
 	await page.keyboard.type('Late arrival');
+	// The optional billing account comes after Notes, defaulting to None; Tab reaches Create next.
+	await tabTo(page, 'Bill to account');
+	await expect(page.getByLabel('Bill to account')).toHaveValue('');
 	await page.keyboard.press('Tab');
 	await expect(page.getByRole('button', { name: 'Create reservation' })).toBeFocused();
 	await page.keyboard.press('Enter');
@@ -167,4 +170,44 @@ test('a guest of another residency than the stay is caught, and a room sold mean
 	await expect(page.getByRole('alert')).toHaveText(`no DLX rooms left on ${hotel.businessDate}`);
 	await expect(review).toBeHidden();
 	await expect(page.getByRole('group', { name: 'DLX · Deluxe · Sold out' })).toBeVisible();
+});
+
+test('a reservation can be billed to an account chosen in the review step, shown in its modal and the list', async ({
+	page
+}) => {
+	await signUp(page);
+	await createProperty(page, 'BIL');
+	const hotel = await bookableHotel(page, 1, 2);
+	const account = await post(page.request, `${hotel.path}/accounts`, {
+		kind: 'company',
+		name: 'Acme Corp',
+		currency: 'USD'
+	});
+	await openNewReservation(page);
+
+	// A stay for Ada Silva (non-resident, seeded by `bookableHotel`), straight to the review.
+	await page.getByRole('radio', { name: 'Non-resident' }).check();
+	await page.getByRole('button', { name: 'Search' }).click();
+	await page.getByRole('radio', { name: /BAR · Room only/ }).click();
+	await page.getByLabel('Find a guest').fill('Silva');
+	await page.getByRole('button', { name: /Ada Silva/ }).click();
+
+	const review = page.getByRole('region', { name: '4. Review' });
+	await expect(review).toBeVisible();
+	const accountSelect = review.getByLabel('Bill to account');
+	await expect(accountSelect).toHaveValue('');
+	await accountSelect.selectOption({ label: 'Acme Corp · Company' });
+	await review.getByRole('button', { name: 'Create reservation' }).click();
+
+	// The new reservation's modal shows the account billed.
+	const dialog = page.getByRole('dialog', { name: 'BIL-000001 · Confirmed' });
+	await expect(dialog).toBeVisible();
+	await expect(dialog.getByLabel('Billed account')).toHaveValue(account.id);
+	await page.keyboard.press('Escape');
+	await expect(dialog).toBeHidden();
+
+	// The reservations list shows the account against its row, in the Account column.
+	const table = page.getByRole('table', { name: 'Reservations' });
+	const row = table.getByRole('row').filter({ hasText: 'BIL-000001' });
+	await expect(row).toContainText('Acme Corp');
 });

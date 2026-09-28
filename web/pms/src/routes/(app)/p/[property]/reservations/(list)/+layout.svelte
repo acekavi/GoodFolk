@@ -52,7 +52,8 @@
 		{ label: 'Room type / Room' },
 		{ label: 'Status' },
 		{ label: 'Source' },
-		{ label: 'Total' }
+		{ label: 'Total' },
+		{ label: 'Account' }
 	];
 
 	const propertyId = $derived(page.params.property ?? '');
@@ -364,6 +365,7 @@
 						{row.currency}
 						{formatMoney(row.total, row.currency)}
 					</div>
+					<div role="cell">{row.accountName ?? ''}</div>
 				</div>
 			{/each}
 		</div>
@@ -417,8 +419,10 @@
 	}
 	.cells {
 		display: grid;
-		grid-template-columns: 8rem minmax(10rem, 2fr) 7rem 7rem 4rem minmax(8rem, 1fr) 7rem 8rem 9rem;
-		min-width: 70rem;
+		grid-template-columns:
+			8rem minmax(10rem, 2fr) 7rem 7rem 4rem minmax(8rem, 1fr) 7rem 8rem 9rem
+			minmax(8rem, 1fr);
+		min-width: 78rem;
 		height: var(--row);
 		border-bottom: 1px solid var(--border);
 	}
@@ -447,7 +451,7 @@
 	}
 	.canvas {
 		position: relative;
-		min-width: 70rem;
+		min-width: 78rem;
 	}
 	.canvas .row {
 		position: absolute;

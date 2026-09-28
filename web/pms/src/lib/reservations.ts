@@ -837,13 +837,15 @@ export function roomsAllowed(offer: Pick<OfferRow, 'free'>): number {
 
 /**
  * The create request for a finished booking: `rooms` identical room lines on the chosen offer, each for
- * the stay, with the chosen guest as the booker (and so every room's guest). Empty notes are left out.
+ * the stay, with the chosen guest as the booker (and so every room's guest). Empty notes are left out;
+ * `accountId` is included as `account_id` only when a billing account was chosen.
  */
 export function createReservationBody(
 	booking: Booking,
 	rooms: number,
 	source: Source,
-	notes: string
+	notes: string,
+	accountId?: string | null
 ): components['schemas']['CreateReservationRequest'] {
 	const { stay, offer, guest } = booking;
 	if (!stay || !offer || !guest) throw new Error('The booking is not finished.');
@@ -852,6 +854,7 @@ export function createReservationBody(
 		booker_guest_id: guest.id,
 		source: source.toLowerCase() as components['schemas']['Source'],
 		...(trimmed ? { notes: trimmed } : {}),
+		...(accountId ? { account_id: accountId } : {}),
 		rooms: Array.from({ length: rooms }, () => ({
 			room_type_id: offer.roomTypeId,
 			rate_plan_id: offer.ratePlanId,
