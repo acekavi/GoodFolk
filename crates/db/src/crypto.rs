@@ -21,6 +21,8 @@ pub enum CryptoError {
     WrongKey,
     #[error("the value could not be decrypted")]
     Decrypt,
+    #[error("key ids must be unique")]
+    DuplicateKeyId,
 }
 
 /// An AES-256-GCM key and its id. `Debug` shows only the id.
@@ -91,6 +93,61 @@ impl fmt::Debug for GuestIdKey {
         f.debug_struct("GuestIdKey").field("id", &self.id).finish_non_exhaustive()
     }
 }
+
+/// A current key, used for every [`GuestIdKeys::seal`], plus any retired keys kept only so a number sealed
+/// before a rotation still opens (via [`GuestIdKeys::open`], which picks a key by id). `Debug` shows only the ids.
+#[derive(Clone)]
+pub struct GuestIdKeys {
+    current: GuestIdKey,
+    retired: Vec<GuestIdKey>,
+}
+
+impl GuestIdKeys {
+    /// Fails with [`CryptoError::DuplicateKeyId`] if `current`'s id repeats among `retired`, or two retired keys
+    /// share an id.
+    pub fn new(current: GuestIdKey, retired: Vec<GuestIdKey>) -> Result<Self, CryptoError> {
+        let mut ids: Vec<&str> = std::iter::once(current.id()).chain(retired.iter().map(GuestIdKey::id)).collect();
+        ids.sort_unstable();
+        if ids.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(CryptoError::DuplicateKeyId);
+        }
+        Ok(Self { current, retired })
+    }
+
+    /// The key every [`Self::seal`] uses.
+    pub fn current(&self) -> &GuestIdKey {
+        &self.current
+    }
+
+    /// Seals `plaintext` under the current key.
+    pub fn seal(&self, plaintext: &str, aad: &[u8]) -> Sealed {
+        self.current.seal(plaintext, aad)
+    }
+
+    /// Opens a value sealed under `key_id`: the current key or a retired one. An id neither of them holds is
+    /// [`CryptoError::WrongKey`].
+    pub fn open(&self, key_id: &str, bytes: &[u8], aad: &[u8]) -> Result<String, CryptoError> {
+        let key = std::iter::once(&self.current)
+            .chain(self.retired.iter())
+            .find(|key| key.id() == key_id)
+            .ok_or(CryptoError::WrongKey)?;
+        key.open(key_id, bytes, aad)
+    }
+}
+
+impl fmt::Debug for GuestIdKeys {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GuestIdKeys")
+            .field("current", &self.current.id())
+            .field("retired", &self.retired.iter().map(GuestIdKey::id).collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+/// The fixed key [`crate::testing::guest_id_key`] uses (mirrored there as `GUEST_ID_KEY_B64`). Kept here rather
+/// than behind the `testing` feature, so production config can refuse it as `GUEST_ID_KEY` without pulling in a
+/// test-only dependency. Never use it outside tests.
+pub const TEST_KEY_B64: &str = "Yf4THKJZBZDCKBLLWmrVpNlpkAd/5Nfhti4iAx8xVSw=";
 
 /// Prefixed to every [`guest_aad`], so the AAD is bound to this specific purpose and not just to a tenant and
 /// guest pair that some other, unrelated use of the same key might also key on.
@@ -282,5 +339,45 @@ mod tests {
         assert_eq!(mask("N1234567"), "•••• 4567");
         assert_eq!(mask("X"), "••••");
         assert_eq!(mask(""), "••••");
+    }
+
+    #[test]
+    fn a_keyring_seals_under_the_current_key_and_opens_a_retired_one() {
+        let retired = key(); // id "k1"
+        let current = GuestIdKey::from_base64("k2", &STANDARD.encode([9u8; 32])).unwrap();
+        let sealed_by_retired = retired.seal("N1234567", &aad());
+        let keys = GuestIdKeys::new(current, vec![retired]).unwrap();
+
+        let sealed = keys.seal("N7654321", &aad());
+        assert_eq!(sealed.key_id, "k2");
+        assert_eq!(keys.open(&sealed.key_id, &sealed.bytes, &aad()).unwrap(), "N7654321");
+        // A number sealed earlier, under the now-retired key, still opens through the keyring.
+        assert_eq!(keys.open(&sealed_by_retired.key_id, &sealed_by_retired.bytes, &aad()).unwrap(), "N1234567");
+    }
+
+    #[test]
+    fn a_keyring_refuses_an_unknown_key_id() {
+        let keys = GuestIdKeys::new(key(), vec![]).unwrap();
+        let sealed = keys.seal("N1234567", &aad());
+
+        assert_eq!(keys.open("nope", &sealed.bytes, &aad()), Err(CryptoError::WrongKey));
+    }
+
+    #[test]
+    fn a_keyring_refuses_duplicate_key_ids() {
+        let current = key(); // id "k1"
+        let same_id_retired = GuestIdKey::from_base64("k1", &STANDARD.encode([9u8; 32])).unwrap();
+        let other_retired = GuestIdKey::from_base64("k2", &STANDARD.encode([8u8; 32])).unwrap();
+
+        assert_eq!(GuestIdKeys::new(current, vec![same_id_retired]).unwrap_err(), CryptoError::DuplicateKeyId);
+
+        // Two retired keys sharing an id are refused too.
+        let current = key();
+        let retired_a = GuestIdKey::from_base64("k3", &STANDARD.encode([7u8; 32])).unwrap();
+        let retired_b = GuestIdKey::from_base64("k3", &STANDARD.encode([6u8; 32])).unwrap();
+        assert_eq!(GuestIdKeys::new(current, vec![retired_a, retired_b]).unwrap_err(), CryptoError::DuplicateKeyId);
+
+        // Distinct ids are accepted.
+        assert!(GuestIdKeys::new(key(), vec![other_retired]).is_ok());
     }
 }

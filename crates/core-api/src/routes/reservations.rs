@@ -203,7 +203,7 @@ pub async fn create_guest(
     };
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
     require_property(&mut tx, property).await?;
-    let created = reservations::create_guest(&mut tx, ctx.tenant, ctx.user, &state.guest_id_key, input)
+    let created = reservations::create_guest(&mut tx, ctx.tenant, ctx.user, state.guest_id_keys.current(), input)
         .await
         .map_err(reservations_error)?;
     tx.commit().await?;
@@ -235,10 +235,17 @@ pub async fn update_guest(
     };
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
     require_property(&mut tx, property).await?;
-    let updated =
-        reservations::update_guest(&mut tx, ctx.tenant, ctx.user, &state.guest_id_key, guest, version, changes)
-            .await
-            .map_err(reservations_error)?;
+    let updated = reservations::update_guest(
+        &mut tx,
+        ctx.tenant,
+        ctx.user,
+        state.guest_id_keys.current(),
+        guest,
+        version,
+        changes,
+    )
+    .await
+    .map_err(reservations_error)?;
     tx.commit().await?;
     Ok(Versioned::ok(updated.version, updated))
 }
