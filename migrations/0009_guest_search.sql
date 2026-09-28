@@ -83,9 +83,12 @@ $$;
 
 -- One trigger, all three events: a rename is `update of first_name, last_name` (an unrelated update, such as
 -- to `notes` or `email`, does not fire this trigger at all), a new guest is `insert`, a removed guest is
--- `delete`.
+-- `delete`. `tenant_id` is included too: `guest`'s row-level security policy already has a `with check` that
+-- blocks the application role from changing a row's tenant, so this can't fire under normal operation today --
+-- but keeping it here means a future move between tenants (done by a role that can bypass that check) stays
+-- correctly reflected in `guest_search` without this trigger needing a second look.
 create trigger guest_search_sync
-  after insert or update of first_name, last_name or delete on guest
+  after insert or update of first_name, last_name, tenant_id or delete on guest
   for each row execute function app.sync_guest_search();
 
 -- The only way `goodfolk_app` can search `guest_search`. SECURITY DEFINER (runs as the migration owner, the

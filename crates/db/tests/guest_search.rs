@@ -65,12 +65,23 @@ async fn another_tenants_guest_is_never_returned(_: PgPoolOptions, opts: PgConne
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn the_app_role_cannot_read_guest_search_directly(_: PgPoolOptions, opts: PgConnectOptions) {
-    let pool = app_pool(opts, 1).await;
+    let pool = app_pool(opts.clone(), 1).await;
+    let owner = PgPool::connect_with(opts).await.unwrap();
 
     let result = sqlx::query("select 1 from guest_search limit 1").fetch_optional(&pool).await;
-
     let err = result.unwrap_err().to_string();
     assert!(err.contains("permission denied"), "unexpected error: {err}");
+
+    // Not just SELECT: goodfolk_app has none of the CRUD privileges on guest_search at all (checked as the
+    // superuser, since the app role's own denial above only proves SELECT is blocked).
+    for privilege in ["SELECT", "INSERT", "UPDATE", "DELETE"] {
+        let has: bool = sqlx::query_scalar("select has_table_privilege('goodfolk_app', 'guest_search', $1)")
+            .bind(privilege)
+            .fetch_one(&owner)
+            .await
+            .unwrap();
+        assert!(!has, "goodfolk_app has {privilege} on guest_search");
+    }
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -101,6 +112,24 @@ async fn a_deletion_removes_the_guest_from_search(_: PgPoolOptions, opts: PgConn
     tx.commit().await.unwrap();
 
     assert!(search_ids(&pool, Some(tenant), "perera").await.is_empty());
+}
+
+/// A guest moved to another tenant -- done here by the owner/superuser pool, since `guest`'s row-level
+/// security policy already has a `with check` that blocks the application role from changing `tenant_id` --
+/// is no longer found by the old tenant's search, and is found by the new one's.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_tenant_change_moves_the_guest_between_tenants_search(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts.clone(), 1).await;
+    let owner = PgPool::connect_with(opts).await.unwrap();
+    let a = seed_tenant(&pool).await;
+    let b = seed_tenant(&pool).await;
+    let guest = insert_guest(&pool, a, "Ada", "Perera").await;
+    assert_eq!(search_ids(&pool, Some(a), "perera").await, vec![guest]);
+
+    sqlx::query("update guest set tenant_id = $1 where id = $2").bind(b.0).bind(guest).execute(&owner).await.unwrap();
+
+    assert!(search_ids(&pool, Some(a), "perera").await.is_empty(), "tenant A no longer finds the moved guest");
+    assert_eq!(search_ids(&pool, Some(b), "perera").await, vec![guest], "tenant B now does");
 }
 
 /// A change unrelated to the name (such as `notes`) must not need the trigger at all, but it must still leave
