@@ -349,8 +349,9 @@ pub async fn search_guests(tx: &mut Tx, text: &str, limit: i64) -> Result<Vec<Gu
         .await;
     }
     // `<%` (word similarity) matches a part of the name, such as a last name or its first letters, which `%`
-    // (whole-string similarity) misses; both are served by the trigram index. Under row-level security this
-    // query scans the tenant's guests (the trigram operator is not leakproof); see the plan's Decision 13.
+    // (whole-string similarity) misses. Under forced row-level security the trigram operator is not leakproof,
+    // so this query scans the tenant's guests rather than using the trigram index alone; see the plan's
+    // Decision 13.
     let text_lower = text.to_lowercase();
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select {COLUMNS} from guest
