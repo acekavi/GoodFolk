@@ -65,6 +65,15 @@ Where the spec left a choice open, this plan decided as follows.
 17. **A Phase 1 bug is fixed on the way (Task 14):** the app layout reconnected the event stream on every resync, about 20 times a second.
 18. **Retired room types cannot be booked (Task 17)**, which closes the Phase 2 carry-over; quotes stay as they are, since availability only lists active types.
 
+**Changed during execution.** The task reviews changed a few of these decisions after the plan was written; the code blocks below are the plan as verified, and the branch holds the reviewed versions (the SDD ledger lists every fix):
+- Decision 2: `reservation_status` checks open rooms first (checked in, then confirmed, then tentative); once every room has closed, it is checked out if anyone stayed, else no-show; all cancelled is cancelled.
+- Decision 3: the AAD is `b"guest-id-v1" ‖ tenant ‖ guest`; the mask shows at most the last 4 characters and never more than half the number; `mask` takes the full number (`mask_tail` formats a stored tail); a guest update seals with the row's own tenant.
+- Decision 4: guest emails are `text`, stored lowercased (`citext` equality is not leakproof, so its index was unusable under RLS).
+- Decision 7: an unknown room type or rate plan in a create body is a 422, like an unknown guest; residencies are read `for share`.
+- Decision 9: assigning locks the room row alone, then reads its type, so a concurrent retype is the wrong-type conflict.
+- Decision 12: `graphql::selected` is a one-line wrapper over look-ahead: async-graphql already drops `@skip`/`@include` selections before resolving.
+- Guest bodies use `SensitiveJson`, whose errors never quote request values; the list's arrival bounds use `coalesce` so generic plans keep the index; URL filter values are validated; the assign picker never switches to a room the user did not choose; Task 14 ran before Task 13's review closed.
+
 ## How to read the code blocks
 
 New files are shown in full. Changes to existing files are shown as unified diffs against the previous task's result; they are exact, so an engineer can apply them by hand or save one to a file and run `git apply`. Generated files are never shown: `Cargo.lock` (updated by any `cargo` command) and `web/pms/src/lib/api/{openapi.json,openapi.d.ts,schema.graphql,gql/}` (by `cd web/pms && bun run api:schemas && bun run codegen`, which each task that changes the API runs in its checks; commit the result).

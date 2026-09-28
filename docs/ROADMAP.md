@@ -90,6 +90,12 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
 - Guest name search under row-level security: pg_trgm's `<%` isn't leakproof, so it scans the tenant's guests (~170 ms at 20k) — revisit then (see [api-conventions.md](design/api-conventions.md)).
 - An overbooking allowance (3a sells to exactly the physical count, no more).
 - No-show, as part of the night audit (Phase 7).
+- Carried over from the Phase 3a reviews:
+  - **Check-out must shorten `stay`** (the spec says so): `rooms::assigned_stay` counts checked-out stays, so an early departure that leaves `upper(stay)` alone keeps blocks, deactivation and retyping of that room refused.
+  - **Re-baseline the Phase 1 month-grid gate.** It was measured while the event stream reconnected in a loop, so no invalidation ever reached the page; with events working, a month switch onto an invalidated month also starts its background refetch inside the timed window (37–41 ms before, 47–59 ms after, grid code unchanged). Measure with invalidations settled, or make the refetch cheaper.
+  - **Guest keys:** `GUEST_ID_KEY_ID` names the key, but `open` knows one key; rotation needs a keyring or a re-encryption job before production. Refuse the README development key when `APP_ENV=production`.
+  - **Tests to add:** opposite-order multi-type creates racing, create against a block, retype or deactivation racing an assignment; filter plus cursor paging, a single-name guest under the GUEST sort, an `EXPLAIN` check that the list uses `reservation_room_arrival_idx`; stale `If-Match` on assign, unassign and guest update; a reproducible seed and a moving business date in the cancel property test; the 412 path of the detail modal.
+  - **Tidying:** `business_date` and `violates` are copied across crates; `find_drift` counts `sold` with a correlated subquery per day (recheck before the Phase 7 nightly check); confirmation-number sort is textual past 999 999; `offers` clones each plan per combination (fine until the IBE); the `(list)` route id is written in two files; `new/+page.svelte` and `[id]/+page.svelte` are large enough to split.
 
 ## Phase 4 — Front desk tape chart ([spec](specs/phase-4-tape-chart.md))
 
