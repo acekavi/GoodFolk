@@ -98,9 +98,13 @@ impl Hotel {
              values ($5, $1, $2, $7, 'front_desk', $3)",
             "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, room_id, stay,
                                            adults, children, rate_plan_id, meal_plan, status, primary_guest_id,
-                                           currency, cancelled_at, cancellation_penalty)
+                                           currency, cancelled_at, cancellation_penalty, checked_in_at,
+                                           checked_in_business_date, checked_out_at)
              select gen_random_uuid(), $1, $2, $5, r.room_type_id, r.id, daterange($9, $10), 2, 0, $4, 'RO', $11,
-                    $3, 'USD', case when $11 = 'cancelled' then now() end, case when $11 = 'cancelled' then 0 end
+                    $3, 'USD', case when $11 = 'cancelled' then now() end, case when $11 = 'cancelled' then 0 end,
+                    case when $11 in ('checked_in', 'checked_out') then now() end,
+                    case when $11 in ('checked_in', 'checked_out') then $9 end,
+                    case when $11 = 'checked_out' then now() end
              from room r where r.id = $8",
         ];
         for statement in statements {

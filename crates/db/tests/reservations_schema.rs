@@ -57,7 +57,8 @@ async fn hotel(pool: &PgPool, code: &str) -> Hotel {
 }
 
 /// Books `hotel`'s room type for `[today + from, today + to)` on its reservation, in `room` (or unassigned). A
-/// cancelled stay is cancelled now with no penalty.
+/// cancelled stay is cancelled now with no penalty; a checked-in or checked-out stay carries the check-in/out
+/// columns 3b's checks require alongside that status.
 async fn stay(
     pool: &PgPool,
     hotel: &Hotel,
@@ -70,9 +71,13 @@ async fn stay(
     sqlx::query(
         "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, room_id, stay, adults,
                                        children, rate_plan_id, meal_plan, status, primary_guest_id, currency,
-                                       cancelled_at, cancellation_penalty)
+                                       cancelled_at, cancellation_penalty, checked_in_at, checked_in_business_date,
+                                       checked_out_at)
          values ($1, $2, $3, $4, $5, $6, daterange(current_date + $7, current_date + $8), 2, 0, $9, 'RO', $10, $11,
-                 'USD', case when $10 = 'cancelled' then now() end, case when $10 = 'cancelled' then 0 end)",
+                 'USD', case when $10 = 'cancelled' then now() end, case when $10 = 'cancelled' then 0 end,
+                 case when $10 in ('checked_in', 'checked_out') then now() end,
+                 case when $10 in ('checked_in', 'checked_out') then current_date end,
+                 case when $10 = 'checked_out' then now() end)",
     )
     .bind(id)
     .bind(hotel.tenant)

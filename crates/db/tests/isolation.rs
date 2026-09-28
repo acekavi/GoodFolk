@@ -661,3 +661,59 @@ async fn reservation_nights_are_isolated_by_tenant(_: PgPoolOptions, opts: PgCon
     )
     .await;
 }
+
+/// On top of [`seed_reservations`], for `tenant`: an account billed on the reservation, and a second guest
+/// added to its room as an additional occupant (3b).
+async fn seed_accounts_and_occupants(pool: &PgPool, tenant: TenantId) {
+    seed_reservations(pool, tenant).await;
+    let (account, occupant) = (Uuid::now_v7(), Uuid::now_v7());
+    let mut tx = begin(pool, Scope::tenant(tenant)).await.unwrap();
+    let statements = [
+        "insert into account (id, tenant_id, kind, name, currency) values ($2, $1, 'company', 'Acme Corp', 'USD')",
+        "update reservation set account_id = $2 where tenant_id = $1",
+        "insert into guest (id, tenant_id, first_name, last_name, residency) values ($3, $1, 'Nadia', 'Fernando', 'resident')",
+        "insert into reservation_guest (tenant_id, property_id, reservation_room_id, guest_id)
+         select $1, property_id, id, $3 from reservation_room where tenant_id = $1",
+    ];
+    for statement in statements {
+        sqlx::query(statement).bind(tenant.0).bind(account).bind(occupant).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+}
+
+/// Like [`assert_reservations_table_isolated`], with an account and an additional occupant seeded too (3b).
+async fn assert_accounts_table_isolated(opts: PgConnectOptions, table: &str, insert: &'static str) {
+    let pool = app_pool(opts, 1).await;
+    let a = seed_tenant(&pool, "A").await;
+    let b = seed_tenant(&pool, "B").await;
+    seed_accounts_and_occupants(&pool, a).await;
+    seed_accounts_and_occupants(&pool, b).await;
+
+    let seen = visible_rows(&pool, b, table).await;
+    let err = foreign_insert_error(&pool, b, a, insert).await;
+
+    assert_eq!(seen, 1, "B sees only its own {table} row");
+    assert!(err.contains("row-level security"), "unexpected error: {err}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn accounts_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_accounts_table_isolated(
+        opts,
+        "account",
+        "insert into account (id, tenant_id, kind, name, currency)
+         values (gen_random_uuid(), $1, 'travel_agent', 'Intruder Travel', 'USD')",
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn reservation_guests_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_accounts_table_isolated(
+        opts,
+        "reservation_guest",
+        "insert into reservation_guest (tenant_id, property_id, reservation_room_id, guest_id)
+         select $1, property_id, reservation_room_id, guest_id from reservation_guest",
+    )
+    .await;
+}
