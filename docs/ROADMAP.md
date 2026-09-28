@@ -87,7 +87,7 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
 - Additional occupants (`reservation_guest`).
 - Accounts (billing groups across reservations).
 - Performance gates: reservation create p95, reservations list p95, availability p95.
-- Guest name search under row-level security: pg_trgm's `<%` isn't leakproof, so it scans the tenant's guests (~170 ms at 20k) — revisit then (see [api-conventions.md](design/api-conventions.md)).
+- **Guest name search: done.** pg_trgm's `<%` isn't leakproof, so it couldn't use its index under forced row-level security (~150 ms at 20k guests, a full tenant scan). Fixed with `guest_search` (id + tenant + lowercased name, no RLS, no privileges for `goodfolk_app`) and `app.search_guest_ids`, a `SECURITY DEFINER` function that filters by `app.current_tenant()` and returns ids only, read back from `guest` under RLS as usual (~9 ms at 20k) — see "reading around RLS for index-only searches" in [api-conventions.md](design/api-conventions.md).
 - An overbooking allowance (3a sells to exactly the physical count, no more).
 - No-show, as part of the night audit (Phase 7).
 - Carried over from the Phase 3a reviews:
