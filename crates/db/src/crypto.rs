@@ -92,11 +92,17 @@ impl fmt::Debug for GuestIdKey {
     }
 }
 
-/// The additional data that binds a guest's sealed ID number to that guest: tenant id then guest id.
-pub fn guest_aad(tenant: Uuid, guest: Uuid) -> [u8; 32] {
-    let mut aad = [0u8; 32];
-    aad[..16].copy_from_slice(tenant.as_bytes());
-    aad[16..].copy_from_slice(guest.as_bytes());
+/// Prefixed to every [`guest_aad`], so the AAD is bound to this specific purpose and not just to a tenant and
+/// guest pair that some other, unrelated use of the same key might also key on.
+const GUEST_AAD_LABEL: &[u8] = b"guest-id-v1";
+
+/// The additional data that binds a guest's sealed ID number to that guest: the purpose label
+/// [`GUEST_AAD_LABEL`], then the tenant id, then the guest id.
+pub fn guest_aad(tenant: Uuid, guest: Uuid) -> [u8; 43] {
+    let mut aad = [0u8; 43];
+    aad[..GUEST_AAD_LABEL.len()].copy_from_slice(GUEST_AAD_LABEL);
+    aad[GUEST_AAD_LABEL.len()..GUEST_AAD_LABEL.len() + 16].copy_from_slice(tenant.as_bytes());
+    aad[GUEST_AAD_LABEL.len() + 16..].copy_from_slice(guest.as_bytes());
     aad
 }
 
@@ -123,7 +129,7 @@ mod tests {
     use super::*;
     use crate::testing::{GUEST_ID_KEY_B64 as B64, guest_id_key as key};
 
-    fn aad() -> [u8; 32] {
+    fn aad() -> [u8; 43] {
         guest_aad(Uuid::from_u128(1), Uuid::from_u128(2))
     }
 
@@ -220,12 +226,13 @@ mod tests {
     }
 
     #[test]
-    fn the_aad_is_tenant_then_guest() {
+    fn the_aad_is_the_label_then_tenant_then_guest() {
         let (tenant, guest) = (Uuid::now_v7(), Uuid::now_v7());
         let aad = guest_aad(tenant, guest);
 
-        assert_eq!(&aad[..16], tenant.as_bytes());
-        assert_eq!(&aad[16..], guest.as_bytes());
+        assert_eq!(&aad[..11], b"guest-id-v1");
+        assert_eq!(&aad[11..27], tenant.as_bytes());
+        assert_eq!(&aad[27..], guest.as_bytes());
     }
 
     #[test]
