@@ -119,8 +119,20 @@ pub fn last4(id_number: &str) -> String {
     trimmed[start..].to_owned()
 }
 
-/// How an ID number is shown: the plaintext tail masked with bullets. An empty tail shows just bullets.
-pub fn mask(last4: &str) -> String {
+/// How an ID number is shown: computes its plaintext tail (via [`last4`]) and masks it with bullets, such as
+/// `•••• 1234`. Takes the FULL number, never a value that might already be a tail, so a caller cannot show more
+/// of a number than [`last4`] allows by handing this the wrong thing.
+///
+/// A caller that only ever holds an already-computed tail — such as `guest.id_doc_last4`, a column that never
+/// stores more than [`last4`] returns — uses [`mask_tail`] instead.
+pub fn mask(id_number: &str) -> String {
+    mask_tail(&last4(id_number))
+}
+
+/// How an already-computed tail (not a full number) is shown: masked with bullets. An empty tail shows just
+/// bullets. Exists only for a caller holding a stored tail, never a full ID number; sealing or displaying a full
+/// number must go through [`mask`], which derives the tail itself.
+pub fn mask_tail(last4: &str) -> String {
     if last4.is_empty() { "••••".to_string() } else { format!("•••• {last4}") }
 }
 
@@ -258,10 +270,17 @@ mod tests {
     }
 
     #[test]
-    fn mask_shows_the_tail_or_bullets_alone() {
-        assert_eq!(mask("1234"), "•••• 1234");
-        assert_eq!(mask("EF"), "•••• EF");
+    fn mask_tail_shows_the_tail_or_bullets_alone() {
+        assert_eq!(mask_tail("1234"), "•••• 1234");
+        assert_eq!(mask_tail("EF"), "•••• EF");
+        assert_eq!(mask_tail(""), "••••");
+        assert_eq!(mask_tail(&last4("N1234567")), "•••• 4567");
+    }
+
+    #[test]
+    fn mask_computes_the_tail_from_the_full_number() {
+        assert_eq!(mask("N1234567"), "•••• 4567");
+        assert_eq!(mask("X"), "••••");
         assert_eq!(mask(""), "••••");
-        assert_eq!(mask(&last4("N1234567")), "•••• 4567");
     }
 }

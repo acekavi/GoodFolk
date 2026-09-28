@@ -1,5 +1,5 @@
 use crate::{ReservationsError, audit, decode_error};
-use db::crypto::{GuestIdKey, Sealed, guest_aad, last4, mask};
+use db::crypto::{GuestIdKey, Sealed, guest_aad, last4, mask_tail};
 use db::{TenantId, Tx, UserId};
 use rates::Residency;
 use serde::Serialize;
@@ -86,7 +86,7 @@ impl sqlx::FromRow<'_, PgRow> for Guest {
             id_doc_type: id_doc_type
                 .map(|value| IdDocType::parse(&value).ok_or_else(|| decode_error("id_doc_type", &value)))
                 .transpose()?,
-            id_doc_masked: last4.as_deref().map(mask),
+            id_doc_masked: last4.as_deref().map(mask_tail),
             notes: row.try_get("notes")?,
             version: row.try_get("version")?,
         })
