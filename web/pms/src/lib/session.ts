@@ -23,7 +23,9 @@ const ACTIONS = {
 	blockRooms: ['owner', 'manager', 'front_desk'],
 	manageRates: ['owner', 'manager'],
 	viewReservations: ['owner', 'manager', 'front_desk', 'housekeeping', 'accountant'],
-	manageReservations: ['owner', 'manager', 'front_desk']
+	manageReservations: ['owner', 'manager', 'front_desk'],
+	/** Check a room in, undo a same-day check-in, and check it out; mirrors `FrontDeskCheckIn`. */
+	frontDeskCheckIn: ['owner', 'manager', 'front_desk']
 } satisfies Record<string, Role[]>;
 
 /** UI hint only; the API enforces permissions. A grant counts tenant-wide or for `propertyId`. */

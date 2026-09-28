@@ -16,6 +16,7 @@ import type {
 } from './api/gql/graphql';
 import { query } from './api/graphql';
 import type { components } from './api/openapi';
+import { addDays } from './inventory';
 import { formatMoney } from './rates';
 
 /** The new-reservation screen's offers query: every active room type, free counts and priced offers. */
@@ -434,6 +435,26 @@ export function nightsBetween(checkIn: string, checkOut: string): number {
 }
 
 /**
+ * The nights an early check-out on `businessDate` would release, oldest first: empty for a late
+ * check-out (`businessDate >= stay.checkOut`). Mirrors the server's own rule (`check_out`): the stay
+ * shortens to `[checkIn, max(businessDate, checkIn + 1))`, so every night from there up to the old
+ * `checkOut` (exclusive) is released.
+ */
+export function nightsReleasedOnCheckout(
+	stay: { checkIn: string; checkOut: string },
+	businessDate: string
+): string[] {
+	if (businessDate >= stay.checkOut) return [];
+	const earliestCheckOut = addDays(stay.checkIn, 1);
+	const newCheckOut = businessDate > earliestCheckOut ? businessDate : earliestCheckOut;
+	const released: string[] = [];
+	for (let date = newCheckOut; date < stay.checkOut; date = addDays(date, 1)) {
+		released.push(date);
+	}
+	return released;
+}
+
+/**
  * A stay's dates and length, e.g. `3 Oct – 5 Oct 2026 · 2 nights`. The year is shown once, at the end,
  * unless the stay crosses a new year, in which case both dates carry their own year.
  */
@@ -672,6 +693,58 @@ export function groupOffers(availability: readonly RoomTypeAvailability[]): Offe
 			nights: offer.nights
 		}))
 	);
+}
+
+/**
+ * The offer for `roomTypeId`'s `ratePlanId` and `mealPlan` in an `availability` result, if the stay
+ * sells it. Used by the detail modal's Modify preview, which reprices for a room's own (unchangeable)
+ * plan and meal plan on the new stay and possibly new type.
+ */
+export function findOffer(
+	availability: readonly RoomTypeAvailability[],
+	roomTypeId: string,
+	ratePlanId: string,
+	mealPlan: MealPlan
+): Offer | undefined {
+	return availability
+		.find((type) => type.roomTypeId === roomTypeId)
+		?.offers.find((offer) => offer.ratePlanId === ratePlanId && offer.mealPlan === mealPlan);
+}
+
+/** What a booked room's modify form changes it from. */
+export interface ModifyRoomCurrent {
+	checkIn: string;
+	checkOut: string;
+	roomTypeId: string;
+	adults: number;
+	children: number;
+}
+
+/** The modify form's draft: `ModifyRoomCurrent`'s fields as edited, plus the two pricing flags. */
+export interface ModifyRoomDraft extends ModifyRoomCurrent {
+	keepPrice: boolean;
+	reprice: boolean;
+}
+
+/**
+ * The `modify_reservation_room` request for `draft` against `current`: only the fields that actually
+ * changed are sent (the server refuses an empty change unless `reprice` is set), `keep_price` and
+ * `reprice` are always sent as the form's explicit choice.
+ */
+export function modifyRoomBody(
+	current: ModifyRoomCurrent,
+	draft: ModifyRoomDraft
+): components['schemas']['ModifyRoomRequest'] {
+	const body: components['schemas']['ModifyRoomRequest'] = {
+		keep_price: draft.keepPrice,
+		reprice: draft.reprice
+	};
+	if (draft.checkIn !== current.checkIn) body.check_in = draft.checkIn;
+	if (draft.checkOut !== current.checkOut) body.check_out = draft.checkOut;
+	if (draft.roomTypeId !== current.roomTypeId) body.room_type_id = draft.roomTypeId;
+	if (draft.adults !== current.adults) body.adults = draft.adults;
+	if (draft.children !== current.children) body.children = draft.children;
+	return body;
 }
 
 /** The most rooms one reservation takes (the server's `MAX_ROOMS_PER_RESERVATION`). */
