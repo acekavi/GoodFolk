@@ -202,6 +202,28 @@ async fn an_account_is_active_by_default(pool: PgPool) {
     assert!(active);
 }
 
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn deleting_an_account_referenced_by_a_reservation_is_refused(pool: PgPool) {
+    let hotel = hotel(&pool, "GAL").await;
+    let account = Uuid::now_v7();
+    sqlx::query("insert into account (id, tenant_id, kind, name, currency) values ($1, $2, 'company', 'Acme', 'USD')")
+        .bind(account)
+        .bind(hotel.tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("update reservation set account_id = $1 where id = $2")
+        .bind(account)
+        .bind(hotel.reservation)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let delete = sqlx::query("delete from account where id = $1").bind(account).execute(&pool).await;
+
+    assert_eq!(code(&delete).as_deref(), Some("23503"));
+}
+
 // -- reservation_guest ------------------------------------------------------------------------------------------
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -209,7 +231,7 @@ async fn a_reservation_guest_cannot_use_another_propertys_room(pool: PgPool) {
     let galle = hotel(&pool, "GAL").await;
     let kandy = hotel(&pool, "KAN").await;
 
-    // kandy's room, but claimed under galle's property: the composite FK requires both to agree.
+    // galle's room, but claimed under kandy's property: the composite FK requires both to agree.
     let cross_property = sqlx::query(
         "insert into reservation_guest (tenant_id, property_id, reservation_room_id, guest_id)
          values ($1, $2, $3, $4)",
@@ -277,6 +299,32 @@ async fn deleting_the_room_cascades_to_its_additional_occupants(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(remaining, 0);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn deleting_a_guest_referenced_by_reservation_guest_is_refused(pool: PgPool) {
+    let hotel = hotel(&pool, "GAL").await;
+    let occupant = Uuid::now_v7();
+    sqlx::query("insert into guest (id, tenant_id, first_name, last_name, residency) values ($1, $2, 'Eve', 'Perera', 'resident')")
+        .bind(occupant)
+        .bind(hotel.tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into reservation_guest (tenant_id, property_id, reservation_room_id, guest_id) values ($1, $2, $3, $4)",
+    )
+    .bind(hotel.tenant)
+    .bind(hotel.property)
+    .bind(hotel.reservation_room)
+    .bind(occupant)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let delete = sqlx::query("delete from guest where id = $1").bind(occupant).execute(&pool).await;
+
+    assert_eq!(code(&delete).as_deref(), Some("23503"));
 }
 
 // -- room_type.overbooking --------------------------------------------------------------------------------------
