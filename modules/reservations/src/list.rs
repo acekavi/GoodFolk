@@ -192,9 +192,11 @@ pub async fn list_reservation_rooms(
     // $1 property, $2 arrival from, $3 arrival to, $4 statuses, $5 sources, $6 confirmation prefix, $7 name.
     // The text is a confirmation number's start (starts_with, which is leakproof, so the text_pattern_ops
     // index serves it under row-level security) or a guest's name; each is looked up once, not per row.
+    // The bounds are folded into the comparison (rather than `$n is null or …`) so the planner sees one plain
+    // range condition on `rr.arrival` and can still use `reservation_room_arrival_idx` when a bound is left out.
     let matches = "rr.property_id = $1
-         and ($2::date is null or rr.arrival >= $2)
-         and ($3::date is null or rr.arrival <= $3)
+         and rr.arrival >= coalesce($2, '-infinity'::date)
+         and rr.arrival <= coalesce($3, 'infinity'::date)
          and ($4::text[] is null or rr.status = any($4))
          and ($5::text[] is null or r.source = any($5))
          and ($6::text is null
