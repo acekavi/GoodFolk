@@ -258,6 +258,10 @@ async fn check_in_without_an_assigned_room_is_refused(_: PgPoolOptions, opts: Pg
     let refused = conflict(hotel.try_check_in(room, 1).await);
 
     assert_eq!(refused, "assign a room first");
+    let row = hotel.room_row(room).await;
+    assert_eq!(row.status, "confirmed");
+    assert_eq!(row.version, 1);
+    assert_eq!(hotel.reservation_version(booked.id).await, 1);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -330,6 +334,24 @@ async fn undo_check_in_after_the_business_date_moves_on_is_refused(_: PgPoolOpti
     let refused = conflict(hotel.try_undo_check_in(room, 3).await);
 
     assert_eq!(refused, "check-in can only be undone on the day it happened");
+    let row = hotel.room_row(room).await;
+    assert_eq!(row.status, "checked_in");
+    assert_eq!(row.version, 3);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn undo_check_in_with_a_stale_version_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
+    let room = booked.rooms[0].id;
+    let target = hotel.numbered("101").await;
+    hotel.try_assign(room, 1, target.id).await.unwrap();
+    hotel.try_check_in(room, 2).await.unwrap();
+
+    let stale = hotel.try_undo_check_in(room, 2).await;
+
+    assert!(matches!(stale, Err(ReservationsError::VersionMismatch("reservation room"))), "{stale:?}");
     let row = hotel.room_row(room).await;
     assert_eq!(row.status, "checked_in");
     assert_eq!(row.version, 3);
@@ -419,6 +441,24 @@ async fn a_late_check_out_changes_nothing(_: PgPoolOptions, opts: PgConnectOptio
     assert_eq!(hotel.nights(room).await, nights_before);
     assert_eq!(hotel.sold(hotel.deluxe.id, 0, 3).await, sold_before);
     assert_eq!(hotel.drift().await, vec![]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn check_out_with_a_stale_version_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
+    let room = booked.rooms[0].id;
+    let target = hotel.numbered("101").await;
+    hotel.try_assign(room, 1, target.id).await.unwrap();
+    hotel.try_check_in(room, 2).await.unwrap();
+
+    let stale = hotel.try_check_out(room, 2).await;
+
+    assert!(matches!(stale, Err(ReservationsError::VersionMismatch("reservation room"))), "{stale:?}");
+    let row = hotel.room_row(room).await;
+    assert_eq!(row.status, "checked_in");
+    assert_eq!(row.version, 3);
 }
 
 /// The Phase 3a carry-over this task resolves: `rooms::assigned_stay` used to see a checked-out room's stay as
