@@ -32,7 +32,8 @@ Simple single-object reads that bootstrap the app (`GET /api/v1/me`) may be REST
   | `PropertiesManage` (property settings), `RoomsManage` (room types, rooms, sections, block reasons) | ✓ | ✓ | | | |
   | `InventoryBlock` (block and release rooms) | ✓ | ✓ | ✓ | | |
   | `RatesManage` (rate plans, prices, bulk changes, restrictions, meal supplements, cancellation policies) | ✓ | ✓ | | | |
-  | `ReservationsManage` (guests, create reservations, cancel, assign and unassign rooms) | ✓ | ✓ | ✓ | | |
+  | `ReservationsManage` (guests, create reservations, cancel, assign and unassign rooms, modify a room, occupants, accounts) | ✓ | ✓ | ✓ | | |
+  | `FrontDeskCheckIn` (check in, undo a same-day check-in, check out) | ✓ | ✓ | ✓ | | |
 - Data access: `db::begin(&state.pool, Scope::tenant(ctx.tenant))` and never anything else. RLS is the safety net, but queries still filter by `property_id` explicitly.
 
 ## CSRF

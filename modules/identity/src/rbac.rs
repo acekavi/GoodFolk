@@ -46,6 +46,7 @@ impl Role {
                     | RatesManage
                     | ReservationsView
                     | ReservationsManage
+                    | FrontDeskCheckIn
             ),
             Role::FrontDesk => matches!(
                 permission,
@@ -56,6 +57,7 @@ impl Role {
                     | RatesView
                     | ReservationsView
                     | ReservationsManage
+                    | FrontDeskCheckIn
             ),
             Role::Housekeeping | Role::Accountant => {
                 matches!(permission, PropertiesView | RoomsView | InventoryView | RatesView | ReservationsView)
@@ -87,6 +89,8 @@ pub enum Permission {
     ReservationsView,
     /// Create guests and reservations, change guests, cancel reservation rooms, and assign and unassign rooms.
     ReservationsManage,
+    /// Check a reservation room in, undo a same-day check-in, and check it out.
+    FrontDeskCheckIn,
 }
 
 /// A role held tenant-wide (`property_id: None`) or for one property.

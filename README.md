@@ -123,5 +123,6 @@ The API (`core-api serve`) reads:
 | `GUEST_ID_KEY_ID` | Name stored with each encrypted ID number: 1–16 letters, digits, `_` or `-` (default `k1`). |
 | `GUEST_ID_RETIRED_KEYS` | Optional, for rotation: `id1:base64,id2:base64`, one or more retired keys that can still open ID numbers sealed under them, even though `GUEST_ID_KEY`/`GUEST_ID_KEY_ID` no longer seals with them. To rotate, add the current key here under its existing id, set `GUEST_ID_KEY`/`GUEST_ID_KEY_ID` to a new key and id, and restart; re-encrypting already-stored numbers under the new key is not automatic. |
 | `APP_ENV` | `production` sets `Secure` cookies, disables GraphQL introspection and requires `DATABASE_LISTEN_URL`. |
+| `CHECKIN_REQUIRES_CLEAN_ROOM` | `true` or `false` (default `false`). The room-condition gate for check-in; a no-op until Phase 5 adds a real room status. |
 
 `core-api migrate` reads `DATABASE_OWNER_URL` (the schema owner) instead.

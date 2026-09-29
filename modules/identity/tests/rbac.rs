@@ -51,6 +51,7 @@ fn each_role_has_exactly_its_permissions() {
         RatesManage,
         ReservationsView,
         ReservationsManage,
+        FrontDeskCheckIn,
     ];
     let expected: [(Role, &[Permission]); 5] = [
         (Role::Owner, &all),
@@ -67,6 +68,7 @@ fn each_role_has_exactly_its_permissions() {
                 RatesManage,
                 ReservationsView,
                 ReservationsManage,
+                FrontDeskCheckIn,
             ],
         ),
         (
@@ -79,6 +81,7 @@ fn each_role_has_exactly_its_permissions() {
                 RatesView,
                 ReservationsView,
                 ReservationsManage,
+                FrontDeskCheckIn,
             ],
         ),
         (Role::Housekeeping, &[PropertiesView, RoomsView, InventoryView, RatesView, ReservationsView]),

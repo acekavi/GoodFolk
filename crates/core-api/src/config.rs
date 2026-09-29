@@ -20,6 +20,9 @@ pub struct Config {
     /// Seals guest ID numbers with the current key; opens one sealed under it or a retired key. `Debug` shows
     /// only the key ids.
     pub guest_id_keys: GuestIdKeys,
+    /// The room-condition gate for check-in (Phase 5's `clean`/`inspected` status); a no-op until then. Default
+    /// `false`.
+    pub checkin_requires_clean_room: bool,
 }
 
 impl Config {
@@ -59,6 +62,10 @@ impl Config {
         };
         let guest_id_keys = GuestIdKeys::new(guest_id_key, retired_keys)
             .map_err(|err| anyhow!("GUEST_ID_KEY_ID and GUEST_ID_RETIRED_KEYS must have unique key ids: {err}"))?;
+        let checkin_requires_clean_room = match var("CHECKIN_REQUIRES_CLEAN_ROOM") {
+            Some(value) => value.parse().context("CHECKIN_REQUIRES_CLEAN_ROOM must be true or false")?,
+            None => false,
+        };
         Ok(Self {
             database_url,
             database_listen_url,
@@ -66,6 +73,7 @@ impl Config {
             bind_addr: SocketAddr::from(([0, 0, 0, 0], port)),
             production,
             guest_id_keys,
+            checkin_requires_clean_room,
         })
     }
 }
@@ -309,6 +317,28 @@ mod tests {
         .unwrap();
 
         assert!(config.production);
+    }
+
+    #[test]
+    fn checkin_requires_clean_room_defaults_to_false_and_is_parsed() {
+        let default =
+            Config::from_vars(vars(&[("DATABASE_URL", "postgres://localhost/db"), ("GUEST_ID_KEY", GUEST_ID_KEY_B64)]))
+                .unwrap();
+        let enabled = Config::from_vars(vars(&[
+            ("DATABASE_URL", "postgres://localhost/db"),
+            ("GUEST_ID_KEY", GUEST_ID_KEY_B64),
+            ("CHECKIN_REQUIRES_CLEAN_ROOM", "true"),
+        ]))
+        .unwrap();
+        let invalid = Config::from_vars(vars(&[
+            ("DATABASE_URL", "postgres://localhost/db"),
+            ("GUEST_ID_KEY", GUEST_ID_KEY_B64),
+            ("CHECKIN_REQUIRES_CLEAN_ROOM", "yes"),
+        ]));
+
+        assert!(!default.checkin_requires_clean_room);
+        assert!(enabled.checkin_requires_clean_room);
+        assert!(invalid.unwrap_err().to_string().contains("CHECKIN_REQUIRES_CLEAN_ROOM"));
     }
 
     #[test]

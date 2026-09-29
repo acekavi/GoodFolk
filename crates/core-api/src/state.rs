@@ -1,6 +1,7 @@
 use crate::events::LiveEvent;
 use crate::graphql::{GqlSchema, build_schema};
 use db::crypto::GuestIdKeys;
+use reservations::CheckInPolicy;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -15,11 +16,20 @@ pub struct AppState {
     pub production: bool,
     /// Seals guest ID numbers under the current key; opens one sealed under it or a retired key.
     pub guest_id_keys: Arc<GuestIdKeys>,
+    /// The room-condition gate for check-in, from `CHECKIN_REQUIRES_CLEAN_ROOM`.
+    pub checkin_policy: CheckInPolicy,
 }
 
 impl AppState {
-    pub fn new(pool: PgPool, production: bool, guest_id_keys: GuestIdKeys) -> Self {
+    pub fn new(pool: PgPool, production: bool, guest_id_keys: GuestIdKeys, checkin_policy: CheckInPolicy) -> Self {
         let (events, _) = broadcast::channel(1024);
-        Self { schema: build_schema(production), pool, events, production, guest_id_keys: Arc::new(guest_id_keys) }
+        Self {
+            schema: build_schema(production),
+            pool,
+            events,
+            production,
+            guest_id_keys: Arc::new(guest_id_keys),
+            checkin_policy,
+        }
     }
 }
