@@ -77,6 +77,31 @@ test('blocking a room reduces availability on the calendar until it is released'
 	await expect(grid.getByRole('gridcell', { name: `DLX ${today}: 5 available` })).toBeVisible();
 });
 
+test('the grid hints at rooms still sellable through the overbooking allowance', async ({
+	page
+}) => {
+	await signUp(page);
+	await createProperty(page, 'GAL');
+	await page.getByRole('link', { name: 'Room types' }).click();
+	await addRoomType(page, 'DLX', 'Deluxe', 2);
+	await addRoomType(page, 'STD', 'Standard');
+	await page.getByRole('link', { name: 'Rooms', exact: true }).click();
+	await addRooms(page, 'DLX', 101, 101);
+	await addRooms(page, 'STD', 201, 201);
+
+	await page.getByRole('link', { name: 'Inventory' }).click();
+	const today = (await page.getByTestId('business-date').textContent())!.trim();
+	const grid = page.getByRole('grid', { name: 'Availability' });
+	const dlxCell = grid.getByRole('gridcell', { name: `DLX ${today}: 1 available` });
+	await expect(dlxCell).toBeVisible();
+	await expect(dlxCell).toContainText('+2 over');
+	await expect(dlxCell).toHaveAccessibleName(/more sellable with the overbooking allowance/);
+
+	const stdCell = grid.getByRole('gridcell', { name: `STD ${today}: 1 available` });
+	await expect(stdCell).toBeVisible();
+	await expect(stdCell).not.toContainText('over');
+});
+
 test('a block made in one tab updates the availability another tab already has open', async ({
 	page,
 	context

@@ -132,7 +132,7 @@ export type InventoryQueryVariables = Exact<{
 }>;
 
 
-export type InventoryQuery = { inventory: Array<{ date: string, roomTypeId: string, physical: number, sold: number, outOfOrder: number, available: number }>, blocks: Array<{ id: string, roomId: string, from: string, to: string, kind: BlockKind, reasonId: string, note: string, version: number }> };
+export type InventoryQuery = { inventory: Array<{ date: string, roomTypeId: string, physical: number, sold: number, outOfOrder: number, available: number, sellable: number }>, blocks: Array<{ id: string, roomId: string, from: string, to: string, kind: BlockKind, reasonId: string, note: string, version: number }> };
 
 export type PropertiesQueryVariables = Exact<{ [key: string]: never; }>;
 
@@ -301,6 +301,7 @@ export const InventoryDocument = new TypedDocumentString(`
     sold
     outOfOrder
     available
+    sellable
   }
   blocks(propertyId: $propertyId, from: $from, to: $to) {
     id

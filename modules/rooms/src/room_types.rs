@@ -197,7 +197,12 @@ pub async fn update_room_type(
     .await?;
     audit(tx, tenant, actor, "room_type.updated", "room_type", id, serde_json::json!({ "active": changes.active }))
         .await?;
-    notify(tx, tenant, property, vec![room_types_key(property)]).await?;
+    let mut keys = vec![room_types_key(property)];
+    if changes.overbooking.is_some_and(|overbooking| overbooking != current.overbooking) {
+        let today = business_date(tx, property).await?;
+        keys.extend(window_keys(property, today));
+    }
+    notify(tx, tenant, property, keys).await?;
     Ok(updated)
 }
 

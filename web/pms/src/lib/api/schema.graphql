@@ -192,7 +192,8 @@ enum IdDocType {
 }
 
 """
-One room type on one day. `available = physical - sold - outOfOrder`.
+One room type on one day. `available = physical - sold - outOfOrder`; `sellable = available +` the room
+type's overbooking allowance, the true figure front desk may still sell.
 """
 type InventoryDayNode {
 	date: Date!
@@ -201,6 +202,7 @@ type InventoryDayNode {
 	sold: Int!
 	outOfOrder: Int!
 	available: Int!
+	sellable: Int!
 }
 
 """

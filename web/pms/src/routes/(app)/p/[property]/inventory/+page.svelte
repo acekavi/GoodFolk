@@ -95,9 +95,10 @@
 
 	function cellLabel(row: { id: string; code: string }, date: string): string {
 		const day = counts.get(row.id, date);
-		return day
-			? `${row.code} ${date}: ${day.available} available, ${day.sold} sold, ${day.outOfOrder} out of order`
-			: `${row.code} ${date}: not counted`;
+		if (!day) return `${row.code} ${date}: not counted`;
+		const over = day.sellable - Math.max(day.available, 0);
+		const overbooking = over > 0 ? `, ${over} more sellable with the overbooking allowance` : '';
+		return `${row.code} ${date}: ${day.available} available, ${day.sold} sold, ${day.outOfOrder} out of order${overbooking}`;
 	}
 
 	/** Ends a block as of the business date, or cancels it if it has not started. */
@@ -171,7 +172,13 @@
 			{#snippet cell(row, date)}
 				{@const day = counts.get(row.id, date)}
 				{#if day}
+					{@const over = day.sellable - Math.max(day.available, 0)}
 					<span class="count" class:full={day.available <= 0}>{day.available}</span>
+					{#if over > 0}
+						<small class="hint" aria-label="{over} more sellable with the overbooking allowance"
+							>+{over} over</small
+						>
+					{/if}
 					{#if day.outOfOrder > 0}<small class="blocked">{day.outOfOrder} OOO</small>{/if}
 				{:else}
 					<span class="hint">–</span>

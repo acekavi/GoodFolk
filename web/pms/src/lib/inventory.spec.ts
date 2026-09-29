@@ -44,7 +44,8 @@ describe('indexInventory', () => {
 			physical: 5,
 			sold: 0,
 			outOfOrder: 1,
-			available: 4
+			available: 4,
+			sellable: 4
 		};
 
 		const index = indexInventory([day]);

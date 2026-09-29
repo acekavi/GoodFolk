@@ -10,6 +10,7 @@ use axum::extract::State;
 use db::{Scope, Tx};
 use identity::Permission;
 use sqlx::PgPool;
+use std::collections::HashMap;
 use time::{Date, Duration, OffsetDateTime};
 use uuid::Uuid;
 
@@ -171,7 +172,8 @@ pub struct BlockNode {
     pub version: i32,
 }
 
-/// One room type on one day. `available = physical - sold - outOfOrder`.
+/// One room type on one day. `available = physical - sold - outOfOrder`; `sellable = available +` the room
+/// type's overbooking allowance, the true figure front desk may still sell.
 #[derive(SimpleObject)]
 pub struct InventoryDayNode {
     pub date: Date,
@@ -180,6 +182,7 @@ pub struct InventoryDayNode {
     pub sold: i32,
     pub out_of_order: i32,
     pub available: i32,
+    pub sellable: i32,
 }
 
 /// A GraphQL enum mirroring one of a module's enums, with conversions both ways.
@@ -960,16 +963,23 @@ impl Query {
         check_range(from, to, 93)?;
         let mut tx = scoped(ctx, Permission::InventoryView, property_id).await?;
         let days = rooms::list_inventory(&mut tx, property_id, from, to).await.map_err(internal)?;
+        let types = rooms::list_room_types(&mut tx, property_id).await.map_err(internal)?;
         tx.commit().await.map_err(internal)?;
+        let overbooking: HashMap<Uuid, i32> = types.into_iter().map(|t| (t.id, t.overbooking)).collect();
         Ok(days
             .into_iter()
-            .map(|d| InventoryDayNode {
-                date: d.date,
-                room_type_id: d.room_type_id,
-                physical: d.physical,
-                sold: d.sold,
-                out_of_order: d.out_of_order,
-                available: d.available(),
+            .map(|d| {
+                let available = d.available();
+                let sellable = available + overbooking.get(&d.room_type_id).copied().unwrap_or(0);
+                InventoryDayNode {
+                    date: d.date,
+                    room_type_id: d.room_type_id,
+                    physical: d.physical,
+                    sold: d.sold,
+                    out_of_order: d.out_of_order,
+                    available,
+                    sellable,
+                }
             })
             .collect())
     }

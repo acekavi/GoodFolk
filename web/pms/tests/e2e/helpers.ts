@@ -24,11 +24,17 @@ export async function createProperty(page: Page, code: string): Promise<void> {
 	await expect(page.getByRole('heading', { name: `Hotel ${code}` })).toBeVisible();
 }
 
-/** Adds a room type on the Room types page. */
-export async function addRoomType(page: Page, code: string, name: string): Promise<void> {
+/** Adds a room type on the Room types page, with an overbooking allowance of 0 unless given. */
+export async function addRoomType(
+	page: Page,
+	code: string,
+	name: string,
+	overbooking = 0
+): Promise<void> {
 	const form = page.getByRole('form', { name: 'New room type' });
 	await form.getByLabel('Code').fill(code);
 	await form.getByLabel('Name').fill(name);
+	if (overbooking) await form.getByLabel('Overbooking allowance').fill(String(overbooking));
 	await form.getByRole('button', { name: 'Add room type' }).click();
 	await expect(page.getByRole('cell', { name: code, exact: true })).toBeVisible();
 }
