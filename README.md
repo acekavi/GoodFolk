@@ -54,6 +54,9 @@ Run by hand, because shared CI machines make timings noisy, and one at a time (`
 # inventory(month) for a 200-room, 12-type property: p95 under 20 ms server time
 # rateGrid for 62 days, 12 room types, 2 occupancies: p95 under 30 ms
 # a bulk change of one year of 12 room types with 2 derived levels: median under 300 ms
+# create reservation, 1 room x 3 nights, a 12-type property with restrictions and BB/HB supplements: p95 under 60 ms
+# reservations list, 50 rows filtered by arrival and status out of 10k reservation rooms: p95 under 25 ms
+# availability for 7 nights x 12 room types x 5 rate plans (derived plans included): p95 under 40 ms
 DATABASE_URL=$DATABASE_OWNER_URL cargo test --release -p core-api --test perf -- --ignored --nocapture --test-threads=1
 
 # the month grid for the same property renders in under 50 ms and scrolls at 60 fps (see End-to-end tests)
