@@ -336,7 +336,10 @@ pub async fn update_reservation(
     .bind(&notes_value)
     .fetch_one(&mut **tx)
     .await?;
-    let data = serde_json::json!({ "fields": fields, "account_id": account_id });
+    let mut data = serde_json::json!({ "fields": fields });
+    if changes.account_id.is_some() {
+        data["account_id"] = serde_json::json!(account_id);
+    }
     audit(tx, tenant, actor, "reservation.updated", "reservation", id, data).await?;
     notify(tx, tenant, property, vec![reservations_key(property), reservation_key(id)]).await?;
     Ok(UpdatedReservation { id, version: updated_version, account_id, notes: notes_value })

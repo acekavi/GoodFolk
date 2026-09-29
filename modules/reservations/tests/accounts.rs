@@ -2,7 +2,8 @@ mod common;
 
 use common::{Hotel, new_account, new_guest};
 use reservations::{
-    Account, AccountChanges, AccountContact, AccountKind, NewAccount, ReservationChanges, ReservationsError,
+    Account, AccountChanges, AccountContact, AccountKind, MAX_ACCOUNT_LIST, NewAccount, ReservationChanges,
+    ReservationsError,
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use uuid::Uuid;
@@ -306,18 +307,48 @@ async fn an_account_can_be_set_and_cleared_on_a_reservation_and_a_stale_version_
     assert_eq!(cleared.account_id, None, "Some(None) clears the account");
     assert_eq!(cleared.notes, "billed to the agent", "notes is untouched when the change names only account_id");
 
+    let mut tx = hotel.tx().await;
+    let renoted = reservations::update_reservation(
+        &mut tx,
+        hotel.tenant,
+        hotel.user,
+        hotel.property,
+        booked.id,
+        cleared.version,
+        ReservationChanges { account_id: None, notes: Some("front desk note".into()) },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(renoted.account_id, None, "account_id is untouched when the change names only notes");
+    assert_eq!(renoted.notes, "front desk note");
+
     let detail = reservations::get_reservation(&mut hotel.tx().await, hotel.property, booked.id).await.unwrap();
     assert!(detail.account.is_none());
 
-    let audited: Vec<String> = sqlx::query_scalar(
-        "select action from audit_log where entity = 'reservation' and entity_id = $1 and action = 'reservation.updated'
-         order by at, id",
+    let audited: Vec<(String, serde_json::Value)> = sqlx::query_as(
+        "select action, data from audit_log where entity = 'reservation' and entity_id = $1
+         and action = 'reservation.updated' order by at, id",
     )
     .bind(booked.id)
     .fetch_all(&mut *hotel.tx().await)
     .await
     .unwrap();
-    assert_eq!(audited, ["reservation.updated", "reservation.updated"], "the failed stale attempt left no trace");
+    assert_eq!(
+        audited,
+        [
+            // account and notes together: account_id appears with its new value.
+            (
+                "reservation.updated".to_owned(),
+                serde_json::json!({ "fields": ["account_id", "notes"], "account_id": account.id }),
+            ),
+            // account-only change: account_id appears, cleared to null.
+            ("reservation.updated".to_owned(), serde_json::json!({ "fields": ["account_id"], "account_id": null })),
+            // notes-only change: account_id was not touched, so it is left out entirely.
+            ("reservation.updated".to_owned(), serde_json::json!({ "fields": ["notes"] })),
+        ],
+        "the failed stale attempt left no trace, and account_id appears only when the change touched it"
+    );
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -341,4 +372,60 @@ async fn the_detail_shows_the_billed_account_with_its_kind_and_name(_: PgPoolOpt
     let without_account =
         reservations::get_reservation(&mut hotel.tx().await, hotel.property, no_account.id).await.unwrap();
     assert!(without_account.account.is_none());
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_zero_limit_still_returns_one_and_a_limit_above_the_cap_is_clamped_to_it(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts).await;
+    // One statement, so seeding MAX_ACCOUNT_LIST + 1 rows stays fast.
+    let mut tx = hotel.tx().await;
+    sqlx::query(
+        "insert into account (id, tenant_id, kind, name, contact, currency)
+         select gen_random_uuid(), $1, 'company', 'Account ' || i, '{}'::jsonb, 'USD'
+         from generate_series(1, $2) as i",
+    )
+    .bind(hotel.tenant.0)
+    .bind(MAX_ACCOUNT_LIST + 1)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let zero_limit = reservations::list_accounts(&mut hotel.tx().await, "", false, 0).await.unwrap();
+    assert_eq!(zero_limit.len(), 1, "a limit of 0 still returns at least 1");
+
+    let over_cap = reservations::list_accounts(&mut hotel.tx().await, "", false, MAX_ACCOUNT_LIST + 100).await.unwrap();
+    assert_eq!(over_cap.len() as i64, MAX_ACCOUNT_LIST, "a limit above the cap returns at most the cap");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_real_account_of_another_tenant_is_no_such_account_to_create_and_update(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let (hotel, plans) = Hotel::for_booking(opts.clone(), 1).await;
+    let theirs = Hotel::new(opts).await;
+    let their_account = theirs.account(new_account("Their Account")).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+
+    let create_refused = hotel
+        .try_book_for_account(&booker, Some(their_account.id), vec![hotel.room(hotel.deluxe.id, &plans.bar, 2, 4)])
+        .await;
+    assert_eq!(invalid(create_refused), "no such account");
+
+    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 2, 4)]).await.unwrap();
+    let update_refused = reservations::update_reservation(
+        &mut hotel.tx().await,
+        hotel.tenant,
+        hotel.user,
+        hotel.property,
+        booked.id,
+        booked.version,
+        ReservationChanges { account_id: Some(Some(their_account.id)), notes: None },
+    )
+    .await;
+    assert_eq!(invalid(update_refused), "no such account");
 }
