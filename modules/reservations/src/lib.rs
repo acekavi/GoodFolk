@@ -4,19 +4,27 @@
 //! transaction, and reservation writes queue change events. Guests belong to the tenant, not to a property, so
 //! a chain shares guest history.
 
+mod accounts;
 mod assignment;
 mod availability;
 mod cancellation;
 mod detail;
 mod guests;
 mod list;
+mod modify;
+mod occupants;
 mod reservations;
+mod stay;
 
+pub use accounts::{
+    Account, AccountChanges, AccountContact, AccountKind, MAX_ACCOUNT_LIST, NewAccount, create_account, get_account,
+    list_accounts, update_account,
+};
 pub use assignment::{AssignedRoom, FreeRoom, assign_room, free_rooms, unassign_room};
 pub use availability::{AvailabilityRequest, MAX_AVAILABILITY_NIGHTS, RoomTypeAvailability, availability};
 pub use cancellation::{CancellationTerms, CancelledRoom, cancel_room, cancellation_penalty};
 pub use detail::{
-    HistoryEntry, Night, RatePlanRef, ReservationDetail, RoomDetail, RoomRef, RoomTypeRef, get_reservation,
+    AccountRef, HistoryEntry, Night, RatePlanRef, ReservationDetail, RoomDetail, RoomRef, RoomTypeRef, get_reservation,
     reservation_history,
 };
 pub use guests::{
@@ -26,10 +34,13 @@ pub use list::{
     ListFilter, ListRequest, MAX_PAGE_SIZE, ReservationRoomPage, ReservationRoomRow, Sort, SortDirection, SortField,
     list_reservation_rooms,
 };
+pub use modify::{ModifiedRoom, RoomChanges, modify_room};
+pub use occupants::{RemovedOccupant, RoomOccupant, add_occupant, remove_occupant};
 pub use reservations::{
-    CreatedReservation, CreatedRoom, MAX_ROOMS_PER_RESERVATION, NewReservation, NewReservationRoom, Source, Total,
-    create_reservation,
+    CreatedReservation, CreatedRoom, MAX_ROOMS_PER_RESERVATION, NewReservation, NewReservationRoom, ReservationChanges,
+    Source, Total, UpdatedReservation, create_reservation, update_reservation,
 };
+pub use stay::{CheckInPolicy, CheckedIn, CheckedOut, UndoneCheckIn, check_in, check_out, undo_check_in};
 
 use db::{Event, TenantId, Tx, UserId};
 use rates::RatesError;
@@ -77,6 +88,15 @@ pub fn reservation_key(reservation: Uuid) -> String {
     format!("reservation:{reservation}")
 }
 
+/// Cache key for a property's accounts. Accounts are tenant-wide, like guests, but reached (and so cached
+/// and invalidated) through the property whose route created or changed them, matching every other
+/// per-property key in this module (`reservations_key`, `rates::ratePlansKey`, ...) rather than the
+/// tenant-wide `property::PROPERTIES_KEY`. See `create_account`/`update_account` for the event this pairs
+/// with.
+pub fn accounts_key(property: Uuid) -> String {
+    format!("accounts:{property}")
+}
+
 /// Whether `err` violated the named constraint.
 fn violates(err: &sqlx::Error, constraint: &str) -> bool {
     err.as_database_error().and_then(|db_err| db_err.constraint()).is_some_and(|name| name == constraint)
@@ -95,6 +115,13 @@ async fn business_date(tx: &mut Tx, property: Uuid) -> Result<Date, Reservations
         .await?
         .ok_or(ReservationsError::NotFound("property"))
 }
+
+/// The SQL for a night's sellable rooms of a room type: the physical count, less what is sold or out of
+/// order, plus the type's overbooking allowance. Positive means at least one more room can be sold that
+/// night. `i` must alias `inventory_day` and `rt` the joined `room_type`; both [`availability`] and
+/// [`create_reservation`] read this figure, so it is written once here rather than copied.
+/// [`rooms::InventoryDay::available`] stays the plain physical figure and never includes this allowance.
+pub(crate) const SELLABLE: &str = "i.physical - i.sold - i.out_of_order + rt.overbooking";
 
 /// Refuses a stay outside the counter window, `[business date, business date + WINDOW_DAYS)`: it must arrive
 /// on or after the business date and leave by the window's end.

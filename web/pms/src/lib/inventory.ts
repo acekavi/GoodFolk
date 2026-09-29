@@ -13,6 +13,7 @@ export const InventoryDocument = graphql(`
 			sold
 			outOfOrder
 			available
+			sellable
 		}
 		blocks(propertyId: $propertyId, from: $from, to: $to) {
 			id

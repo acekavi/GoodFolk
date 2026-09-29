@@ -115,7 +115,9 @@ async fn the_inventory_calendar_counts_rooms_per_type_per_day(_: PgPoolOptions, 
         &app,
         &galle.owner,
         "query ($p: UUID!, $from: Date!, $to: Date!) {
-           inventory(propertyId: $p, from: $from, to: $to) { date roomTypeId physical sold outOfOrder available }
+           inventory(propertyId: $p, from: $from, to: $to) {
+             date roomTypeId physical sold outOfOrder available sellable
+           }
            blocks(propertyId: $p, from: $from, to: $to) { from to kind note }
          }",
         json!({"p": galle.id, "from": galle.day(0), "to": galle.day(4)}),
@@ -134,12 +136,47 @@ async fn the_inventory_calendar_counts_rooms_per_type_per_day(_: PgPoolOptions, 
     assert_eq!(
         dlx,
         &json!({"date": galle.day(0), "roomTypeId": galle.dlx["id"], "physical": 1, "sold": 0,
-                            "outOfOrder": 0, "available": 1})
+                            "outOfOrder": 0, "available": 1, "sellable": 1})
     );
     assert_eq!(
         body["data"]["blocks"],
         json!([{"from": galle.day(1), "to": galle.day(3), "kind": "OUT_OF_ORDER", "note": ""}])
     );
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn sellable_adds_the_room_types_overbooking_allowance_to_available(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    let property = json!({"code": "GAL", "name": "Galle", "timezone": "Asia/Colombo", "base_currency": "LKR"});
+    let property = post(&app, &owner, "/api/v1/properties", property).await.body;
+    let id = property["id"].as_str().unwrap().to_owned();
+    let business_date = Date::parse(property["business_date"].as_str().unwrap(), &Iso8601::DEFAULT).unwrap();
+    let path = format!("/api/v1/properties/{id}");
+    let dlx = post(
+        &app,
+        &owner,
+        &format!("{path}/room-types"),
+        json!({"code": "DLX", "name": "DLX", "base_occupancy": 2, "max_adults": 2, "max_children": 0,
+               "max_occupancy": 2, "overbooking": 2}),
+    )
+    .await
+    .body;
+    post(&app, &owner, &format!("{path}/rooms"), json!({"room_type_id": dlx["id"], "number": "201"})).await;
+
+    let body = graphql(
+        &app,
+        &owner,
+        "query ($p: UUID!, $from: Date!, $to: Date!) {
+           inventory(propertyId: $p, from: $from, to: $to) { available sellable }
+         }",
+        json!({"p": id, "from": business_date.to_string(), "to": (business_date + Duration::days(1)).to_string()}),
+    )
+    .await;
+
+    let day = &body["data"]["inventory"][0];
+    assert_eq!(day["available"], 1);
+    assert_eq!(day["sellable"], 3);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

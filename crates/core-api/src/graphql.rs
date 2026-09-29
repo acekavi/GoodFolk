@@ -10,6 +10,7 @@ use axum::extract::State;
 use db::{Scope, Tx};
 use identity::Permission;
 use sqlx::PgPool;
+use std::collections::HashMap;
 use time::{Date, Duration, OffsetDateTime};
 use uuid::Uuid;
 
@@ -67,6 +68,8 @@ pub struct RoomTypeNode {
     pub max_adults: i32,
     pub max_children: i32,
     pub max_occupancy: i32,
+    /// Rooms of this type that may be sold beyond the physical count.
+    pub overbooking: i32,
     pub beds: Vec<BedNode>,
     pub amenities: Vec<String>,
     pub sort_order: i32,
@@ -84,6 +87,7 @@ impl From<rooms::RoomType> for RoomTypeNode {
             max_adults: t.max_adults,
             max_children: t.max_children,
             max_occupancy: t.max_occupancy,
+            overbooking: t.overbooking,
             beds: t.bed_config.into_iter().map(|bed| BedNode { kind: bed.kind, count: bed.count }).collect(),
             amenities: t.amenities,
             sort_order: t.sort_order,
@@ -168,7 +172,8 @@ pub struct BlockNode {
     pub version: i32,
 }
 
-/// One room type on one day. `available = physical - sold - outOfOrder`.
+/// One room type on one day. `available = physical - sold - outOfOrder`; `sellable = available +` the room
+/// type's overbooking allowance, the true figure front desk may still sell.
 #[derive(SimpleObject)]
 pub struct InventoryDayNode {
     pub date: Date,
@@ -177,6 +182,7 @@ pub struct InventoryDayNode {
     pub sold: i32,
     pub out_of_order: i32,
     pub available: i32,
+    pub sellable: i32,
 }
 
 /// A GraphQL enum mirroring one of a module's enums, with conversions both ways.
@@ -454,6 +460,66 @@ pub struct GuestNode {
     pub version: i32,
 }
 
+mirror_enum!(AccountKindNode as "AccountKind" from reservations::AccountKind { Company, TravelAgent });
+
+/// How to reach an account: every field optional, filled in as known.
+#[derive(SimpleObject)]
+pub struct AccountContactNode {
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub address: Option<String>,
+    pub contact_name: Option<String>,
+}
+
+impl From<reservations::AccountContact> for AccountContactNode {
+    fn from(c: reservations::AccountContact) -> Self {
+        Self { email: c.email, phone: c.phone, address: c.address, contact_name: c.contact_name }
+    }
+}
+
+/// A company or travel agent a reservation can be billed to.
+#[derive(SimpleObject)]
+pub struct AccountNode {
+    pub id: Uuid,
+    pub kind: AccountKindNode,
+    pub name: String,
+    pub contact: AccountContactNode,
+    /// In minor units of `currency`; `null` for no limit.
+    pub credit_limit: Option<i64>,
+    pub currency: String,
+    pub active: bool,
+    pub version: i32,
+}
+
+impl From<reservations::Account> for AccountNode {
+    fn from(a: reservations::Account) -> Self {
+        Self {
+            id: a.id,
+            kind: a.kind.into(),
+            name: a.name,
+            contact: a.contact.into(),
+            credit_limit: a.credit_limit,
+            currency: a.currency,
+            active: a.active,
+            version: a.version,
+        }
+    }
+}
+
+/// The account a reservation is billed to.
+#[derive(SimpleObject)]
+pub struct AccountRefNode {
+    pub id: Uuid,
+    pub name: String,
+    pub kind: AccountKindNode,
+}
+
+impl From<reservations::AccountRef> for AccountRefNode {
+    fn from(a: reservations::AccountRef) -> Self {
+        Self { id: a.id, name: a.name, kind: a.kind.into() }
+    }
+}
+
 impl From<reservations::Guest> for GuestNode {
     fn from(g: reservations::Guest) -> Self {
         Self {
@@ -512,6 +578,8 @@ pub struct ReservationRoomRowNode {
     pub total: i64,
     pub currency: String,
     pub version: i32,
+    /// The account the reservation is billed to, if any; `null` when it is billed to the guest.
+    pub account_name: Option<String>,
 }
 
 #[derive(SimpleObject)]
@@ -578,6 +646,8 @@ pub struct ReservationRoomNode {
     pub rate_plan: RatePlanRefNode,
     pub meal_plan: MealPlanNode,
     pub primary_guest: GuestNode,
+    /// Other guests staying in the room, besides the primary guest, masked the same way.
+    pub occupants: Vec<GuestNode>,
     /// Each night's price as booked.
     pub nights: Vec<QuoteNightNode>,
     pub total: i64,
@@ -589,6 +659,17 @@ pub struct ReservationRoomNode {
     pub cancelled_at: Option<OffsetDateTime>,
     /// The penalty recorded when the room was cancelled.
     pub recorded_penalty: Option<i64>,
+    pub checked_in_at: Option<OffsetDateTime>,
+    pub checked_in_business_date: Option<Date>,
+    pub checked_out_at: Option<OffsetDateTime>,
+    /// Whether the check-in command would accept this room right now, computed server-side (status, business
+    /// date, room assignment) the same way the command itself checks it. It describes the room, not the
+    /// caller: the command also needs `FrontDeskCheckIn`, which the client checks from the session.
+    pub can_check_in: bool,
+    /// As `canCheckIn`, for undoing a same-day check-in.
+    pub can_undo_check_in: bool,
+    /// As `canCheckIn`, for checking the room out.
+    pub can_check_out: bool,
 }
 
 /// Something done to the reservation or one of its rooms.
@@ -614,6 +695,8 @@ pub struct ReservationNode {
     /// Moves with every change to the reservation or its rooms.
     pub version: i32,
     pub booker: GuestNode,
+    /// The company or travel agent this reservation is billed to; `null` if it is billed to the guest.
+    pub account: Option<AccountRefNode>,
     /// What the rooms that are not cancelled cost, per currency.
     pub totals: Vec<TotalNode>,
     /// In the order they were booked.
@@ -633,6 +716,7 @@ impl ReservationNode {
             created_at: r.created_at,
             version: r.version,
             booker: r.booker.into(),
+            account: r.account.map(AccountRefNode::from),
             totals: r.totals.into_iter().map(|t| TotalNode { currency: t.currency, amount: t.amount }).collect(),
             rooms: r
                 .rooms
@@ -654,6 +738,7 @@ impl ReservationNode {
                     rate_plan: RatePlanRefNode { id: room.rate_plan.id, code: room.rate_plan.code },
                     meal_plan: room.meal_plan.into(),
                     primary_guest: room.primary_guest.into(),
+                    occupants: room.occupants.into_iter().map(GuestNode::from).collect(),
                     nights: room
                         .nights
                         .into_iter()
@@ -668,6 +753,12 @@ impl ReservationNode {
                     cancellation_penalty: room.cancellation_penalty,
                     cancelled_at: room.cancelled_at,
                     recorded_penalty: room.recorded_penalty,
+                    checked_in_at: room.checked_in_at,
+                    checked_in_business_date: room.checked_in_business_date,
+                    checked_out_at: room.checked_out_at,
+                    can_check_in: room.can_check_in,
+                    can_undo_check_in: room.can_undo_check_in,
+                    can_check_out: room.can_check_out,
                 })
                 .collect(),
             history: history
@@ -719,6 +810,9 @@ fn reservations_error(err: reservations::ReservationsError) -> async_graphql::Er
 fn selected(ctx: &Context<'_>, name: &str) -> async_graphql::Result<bool> {
     Ok(ctx.look_ahead().field(name).exists())
 }
+
+/// Most accounts one `accounts` query returns.
+const MAX_ACCOUNT_QUERY: i64 = 100;
 
 /// Search text is at most 100 characters.
 fn check_search(text: Option<&str>) -> async_graphql::Result<()> {
@@ -869,16 +963,23 @@ impl Query {
         check_range(from, to, 93)?;
         let mut tx = scoped(ctx, Permission::InventoryView, property_id).await?;
         let days = rooms::list_inventory(&mut tx, property_id, from, to).await.map_err(internal)?;
+        let types = rooms::list_room_types(&mut tx, property_id).await.map_err(internal)?;
         tx.commit().await.map_err(internal)?;
+        let overbooking: HashMap<Uuid, i32> = types.into_iter().map(|t| (t.id, t.overbooking)).collect();
         Ok(days
             .into_iter()
-            .map(|d| InventoryDayNode {
-                date: d.date,
-                room_type_id: d.room_type_id,
-                physical: d.physical,
-                sold: d.sold,
-                out_of_order: d.out_of_order,
-                available: d.available(),
+            .map(|d| {
+                let available = d.available();
+                let sellable = available + overbooking.get(&d.room_type_id).copied().unwrap_or(0);
+                InventoryDayNode {
+                    date: d.date,
+                    room_type_id: d.room_type_id,
+                    physical: d.physical,
+                    sold: d.sold,
+                    out_of_order: d.out_of_order,
+                    available,
+                    sellable,
+                }
             })
             .collect())
     }
@@ -1165,6 +1266,7 @@ impl Query {
                     total: r.total,
                     currency: r.currency,
                     version: r.version,
+                    account_name: r.account_name,
                 })
                 .collect(),
             page_info: PageInfo { end_cursor: page.end_cursor, has_next_page: page.has_next_page },
@@ -1214,6 +1316,35 @@ impl Query {
         };
         tx.commit().await.map_err(internal)?;
         Ok(guests.into_iter().map(GuestNode::from).collect())
+    }
+
+    /// Up to `first` (1 to 100) of the tenant's accounts whose name contains `search` (case-insensitive), by
+    /// name; inactive accounts included only when `includeInactive`.
+    async fn accounts(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        search: Option<String>,
+        #[graphql(default)] include_inactive: bool,
+        #[graphql(desc = "100 when left out or null.")] first: Option<i64>,
+    ) -> async_graphql::Result<Vec<AccountNode>> {
+        let first = first.unwrap_or(MAX_ACCOUNT_QUERY);
+        if !(1..=MAX_ACCOUNT_QUERY).contains(&first) {
+            return Err(async_graphql::Error::new(format!("first is 1 to {MAX_ACCOUNT_QUERY}")));
+        }
+        check_search(search.as_deref())?;
+        let mut tx = scoped(ctx, Permission::ReservationsView, property_id).await?;
+        // Accounts belong to the tenant, like guests: reach them only through one of its properties.
+        let property = property::list_properties(&mut tx, Some(&[property_id])).await.map_err(internal)?;
+        let accounts = if property.is_empty() {
+            Vec::new()
+        } else {
+            reservations::list_accounts(&mut tx, search.as_deref().unwrap_or(""), include_inactive, first)
+                .await
+                .map_err(internal)?
+        };
+        tx.commit().await.map_err(internal)?;
+        Ok(accounts.into_iter().map(AccountNode::from).collect())
     }
 
     /// Active rooms of the type that no stay holds and no block covers on any night of `[checkIn, checkOut)`

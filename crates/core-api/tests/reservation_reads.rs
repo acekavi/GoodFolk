@@ -40,7 +40,7 @@ const LIST: &str = "query ReservationList($p: UUID!, $filter: ReservationFilter,
     reservations(propertyId: $p, filter: $filter, sort: $sort, first: $first, after: $after) {
         nodes {
             id reservationId confirmationNo guestName arrival departure nights roomTypeCode roomNumber status source
-            total currency version
+            total currency version accountName
         }
         pageInfo { endCursor hasNextPage }
         totalCount @include(if: $withCount)
@@ -52,6 +52,7 @@ const DETAIL: &str = "query Reservation($p: UUID!, $id: UUID!) {
     reservation(propertyId: $p, id: $id) {
         id confirmationNo status source notes createdAt version
         booker { id firstName lastName email phone country residency idDocType idDocMasked notes version }
+        account { id name kind }
         totals { currency amount }
         rooms {
             id version status checkIn checkOut adults children mealPlan total currency
@@ -59,9 +60,12 @@ const DETAIL: &str = "query Reservation($p: UUID!, $id: UUID!) {
             room { id number }
             ratePlan { id code }
             primaryGuest { id firstName lastName residency idDocType idDocMasked }
+            occupants { id firstName lastName residency idDocType idDocMasked }
             nights { date room meal }
             cancellationTerms { rules { daysBeforeArrival penalty { kind value } } noShow { kind value } }
             cancellationPenalty cancelledAt recordedPenalty
+            checkedInAt checkedInBusinessDate checkedOutAt
+            canCheckIn canUndoCheckIn canCheckOut
         }
         history { action at actorName data }
     }

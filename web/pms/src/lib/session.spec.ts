@@ -58,4 +58,19 @@ describe('can', () => {
 		expect(can(housekeeping, 'manageReservations', 'p1')).toBe(false);
 		expect(can(accountant, 'manageReservations', 'p1')).toBe(false);
 	});
+
+	it('lets owner, manager and front desk check in, undo and check out, mirroring FrontDeskCheckIn', () => {
+		const owner = profile([{ role: 'owner' }]);
+		const manager = profile([{ role: 'manager', property_id: 'p1' }]);
+		const desk = profile([{ role: 'front_desk' }]);
+		const housekeeping = profile([{ role: 'housekeeping' }]);
+		const accountant = profile([{ role: 'accountant' }]);
+
+		expect(can(owner, 'frontDeskCheckIn', 'p1')).toBe(true);
+		expect(can(manager, 'frontDeskCheckIn', 'p1')).toBe(true);
+		expect(can(manager, 'frontDeskCheckIn', 'p2')).toBe(false);
+		expect(can(desk, 'frontDeskCheckIn', 'p1')).toBe(true);
+		expect(can(housekeeping, 'frontDeskCheckIn', 'p1')).toBe(false);
+		expect(can(accountant, 'frontDeskCheckIn', 'p1')).toBe(false);
+	});
 });

@@ -7,8 +7,8 @@ use rates::{
     CancellationRule, MealPlan, NewCancellationPolicy, NewMealSupplement, Penalty, PenaltyKind, RatePlan, Residency,
 };
 use reservations::{
-    CreatedReservation, Guest, GuestChanges, IdDocType, NewGuest, NewReservation, NewReservationRoom,
-    ReservationsError, Source,
+    Account, AccountChanges, AccountContact, AccountKind, CreatedReservation, Guest, GuestChanges, IdDocType,
+    NewAccount, NewGuest, NewReservation, NewReservationRoom, ReservationsError, Source,
 };
 use rooms::{NewRoomType, RoomType};
 use sqlx::PgPool;
@@ -56,6 +56,7 @@ impl Hotel {
             max_adults: 2,
             max_children: 1,
             max_occupancy: 3,
+            overbooking: 0,
             bed_config: vec![],
             amenities: vec![],
         };
@@ -112,6 +113,17 @@ pub fn with_passport(guest: NewGuest, number: &str) -> NewGuest {
     NewGuest { id_doc: Some((IdDocType::Passport, number.into())), ..guest }
 }
 
+/// A company account named `name`, active by default, no contact details, USD, no credit limit.
+pub fn new_account(name: &str) -> NewAccount {
+    NewAccount {
+        kind: AccountKind::Company,
+        name: name.into(),
+        contact: AccountContact::default(),
+        credit_limit: None,
+        currency: "USD".into(),
+    }
+}
+
 impl Hotel {
     /// Creates a guest in its own transaction, committed if it succeeds.
     pub async fn try_guest(&self, input: NewGuest) -> Result<Guest, ReservationsError> {
@@ -137,6 +149,41 @@ impl Hotel {
 
     pub async fn search(&self, text: &str) -> Vec<Guest> {
         reservations::search_guests(&mut self.tx().await, text, 20).await.unwrap()
+    }
+}
+
+impl Hotel {
+    /// Creates an account in its own transaction, committed if it succeeds.
+    pub async fn try_account(&self, input: NewAccount) -> Result<Account, ReservationsError> {
+        let mut tx = self.tx().await;
+        let created = reservations::create_account(&mut tx, self.tenant, self.user, self.property, input).await?;
+        tx.commit().await.unwrap();
+        Ok(created)
+    }
+
+    pub async fn account(&self, input: NewAccount) -> Account {
+        self.try_account(input).await.unwrap()
+    }
+
+    /// Changes an account in its own transaction, committed if it succeeds.
+    pub async fn try_update_account(
+        &self,
+        account: &Account,
+        changes: AccountChanges,
+    ) -> Result<Account, ReservationsError> {
+        let mut tx = self.tx().await;
+        let updated = reservations::update_account(
+            &mut tx,
+            self.tenant,
+            self.user,
+            self.property,
+            account.id,
+            account.version,
+            changes,
+        )
+        .await?;
+        tx.commit().await.unwrap();
+        Ok(updated)
     }
 }
 
@@ -274,8 +321,24 @@ impl Hotel {
         booker: &Guest,
         rooms: Vec<NewReservationRoom>,
     ) -> Result<CreatedReservation, ReservationsError> {
+        self.try_book_for_account(booker, None, rooms).await
+    }
+
+    /// `try_book`, billed to `account` (`None` bills the guest, as `try_book` does).
+    pub async fn try_book_for_account(
+        &self,
+        booker: &Guest,
+        account: Option<Uuid>,
+        rooms: Vec<NewReservationRoom>,
+    ) -> Result<CreatedReservation, ReservationsError> {
         let mut tx = self.tx().await;
-        let input = NewReservation { booker_guest_id: booker.id, source: Source::Phone, notes: String::new(), rooms };
+        let input = NewReservation {
+            booker_guest_id: booker.id,
+            source: Source::Phone,
+            notes: String::new(),
+            account_id: account,
+            rooms,
+        };
         let created = reservations::create_reservation(&mut tx, self.tenant, self.user, self.property, input).await?;
         tx.commit().await.unwrap();
         Ok(created)
@@ -299,5 +362,37 @@ impl Hotel {
 
     pub async fn drift(&self) -> Vec<rooms::InventoryDrift> {
         rooms::find_drift(&mut self.tx().await, self.property).await.unwrap()
+    }
+
+    /// Sets `room_type`'s overbooking allowance, in its own transaction.
+    pub async fn set_overbooking(&self, room_type: &RoomType, allowance: i32) -> RoomType {
+        let mut tx = self.tx().await;
+        let changes = rooms::RoomTypeChanges { overbooking: Some(allowance), ..Default::default() };
+        let updated = rooms::update_room_type(
+            &mut tx,
+            self.tenant,
+            self.user,
+            self.property,
+            room_type.id,
+            room_type.version,
+            changes,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        updated
+    }
+
+    /// Availability's `free` for `room_type` over `[business date + from, business date + to)`, non-resident.
+    pub async fn free_for(&self, room_type: Uuid, from: i64, to: i64) -> i32 {
+        let request = reservations::AvailabilityRequest {
+            check_in: self.day(from),
+            check_out: self.day(to),
+            adults: 1,
+            children: 0,
+            residency: Residency::NonResident,
+        };
+        let found = reservations::availability(&mut self.tx().await, self.property, &request).await.unwrap();
+        found.into_iter().find(|found| found.room_type_id == room_type).expect("room type is active").free
     }
 }

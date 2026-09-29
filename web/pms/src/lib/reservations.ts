@@ -16,6 +16,7 @@ import type {
 } from './api/gql/graphql';
 import { query } from './api/graphql';
 import type { components } from './api/openapi';
+import { addDays } from './inventory';
 import { formatMoney } from './rates';
 
 /** The new-reservation screen's offers query: every active room type, free counts and priced offers. */
@@ -90,6 +91,7 @@ export const ReservationsDocument = graphql(`
 				total
 				currency
 				version
+				accountName
 			}
 			pageInfo {
 				endCursor
@@ -127,6 +129,11 @@ export const ReservationDocument = graphql(`
 				notes
 				version
 			}
+			account {
+				id
+				name
+				kind
+			}
 			totals {
 				currency
 				amount
@@ -163,6 +170,14 @@ export const ReservationDocument = graphql(`
 					idDocType
 					idDocMasked
 				}
+				occupants {
+					id
+					firstName
+					lastName
+					residency
+					idDocType
+					idDocMasked
+				}
 				nights {
 					date
 					room
@@ -184,6 +199,12 @@ export const ReservationDocument = graphql(`
 				cancellationPenalty
 				cancelledAt
 				recordedPenalty
+				checkedInAt
+				checkedInBusinessDate
+				checkedOutAt
+				canCheckIn
+				canUndoCheckIn
+				canCheckOut
 			}
 			history {
 				action
@@ -411,6 +432,26 @@ export function nightsBetween(checkIn: string, checkOut: string): number {
 	return Math.round(
 		(Date.UTC(outYear, outMonth - 1, outDay) - Date.UTC(inYear, inMonth - 1, inDay)) / 86_400_000
 	);
+}
+
+/**
+ * The nights an early check-out on `businessDate` would release, oldest first: empty for a late
+ * check-out (`businessDate >= stay.checkOut`). Mirrors the server's own rule (`check_out`): the stay
+ * shortens to `[checkIn, max(businessDate, checkIn + 1))`, so every night from there up to the old
+ * `checkOut` (exclusive) is released.
+ */
+export function nightsReleasedOnCheckout(
+	stay: { checkIn: string; checkOut: string },
+	businessDate: string
+): string[] {
+	if (businessDate >= stay.checkOut) return [];
+	const earliestCheckOut = addDays(stay.checkIn, 1);
+	const newCheckOut = businessDate > earliestCheckOut ? businessDate : earliestCheckOut;
+	const released: string[] = [];
+	for (let date = newCheckOut; date < stay.checkOut; date = addDays(date, 1)) {
+		released.push(date);
+	}
+	return released;
 }
 
 /**
@@ -654,6 +695,68 @@ export function groupOffers(availability: readonly RoomTypeAvailability[]): Offe
 	);
 }
 
+/**
+ * The offer for `roomTypeId`'s `ratePlanId` and `mealPlan` in an `availability` result, if the stay
+ * sells it. Used by the detail modal's Modify preview, which reprices for a room's own (unchangeable)
+ * plan and meal plan on the new stay and possibly new type.
+ */
+export function findOffer(
+	availability: readonly RoomTypeAvailability[],
+	roomTypeId: string,
+	ratePlanId: string,
+	mealPlan: MealPlan
+): Offer | undefined {
+	return availability
+		.find((type) => type.roomTypeId === roomTypeId)
+		?.offers.find((offer) => offer.ratePlanId === ratePlanId && offer.mealPlan === mealPlan);
+}
+
+/** What a booked room's modify form changes it from. */
+export interface ModifyRoomCurrent {
+	checkIn: string;
+	checkOut: string;
+	roomTypeId: string;
+	adults: number;
+	children: number;
+}
+
+/** The modify form's draft: `ModifyRoomCurrent`'s fields as edited, plus the two pricing flags. */
+export interface ModifyRoomDraft extends ModifyRoomCurrent {
+	keepPrice: boolean;
+	reprice: boolean;
+}
+
+/**
+ * The `modify_reservation_room` request for `draft` against `current`: only the fields that actually
+ * changed are sent (the server refuses an empty change unless `reprice` is set), `keep_price` and
+ * `reprice` are always sent as the form's explicit choice.
+ */
+export function modifyRoomBody(
+	current: ModifyRoomCurrent,
+	draft: ModifyRoomDraft
+): components['schemas']['ModifyRoomRequest'] {
+	const body: components['schemas']['ModifyRoomRequest'] = {
+		keep_price: draft.keepPrice,
+		reprice: draft.reprice
+	};
+	if (draft.checkIn !== current.checkIn) body.check_in = draft.checkIn;
+	if (draft.checkOut !== current.checkOut) body.check_out = draft.checkOut;
+	if (draft.roomTypeId !== current.roomTypeId) body.room_type_id = draft.roomTypeId;
+	if (draft.adults !== current.adults) body.adults = draft.adults;
+	if (draft.children !== current.children) body.children = draft.children;
+	return body;
+}
+
+/**
+ * Whether `modifyRoomBody(current, draft)` would actually change something, the same way the server decides
+ * (`modify_reservation_room`'s "nothing to change"): a field differs from `current`, or `reprice` itself is
+ * set. `keepPrice` alone changes nothing by itself. The modify form's Save button stays disabled while this
+ * is `false`.
+ */
+export function modifyRoomHasChanges(current: ModifyRoomCurrent, draft: ModifyRoomDraft): boolean {
+	return draft.reprice || Object.keys(modifyRoomBody(current, draft)).length > 2;
+}
+
 /** The most rooms one reservation takes (the server's `MAX_ROOMS_PER_RESERVATION`). */
 export const MAX_ROOMS_PER_RESERVATION = 10;
 
@@ -744,13 +847,15 @@ export function roomsAllowed(offer: Pick<OfferRow, 'free'>): number {
 
 /**
  * The create request for a finished booking: `rooms` identical room lines on the chosen offer, each for
- * the stay, with the chosen guest as the booker (and so every room's guest). Empty notes are left out.
+ * the stay, with the chosen guest as the booker (and so every room's guest). Empty notes are left out;
+ * `accountId` is included as `account_id` only when a billing account was chosen.
  */
 export function createReservationBody(
 	booking: Booking,
 	rooms: number,
 	source: Source,
-	notes: string
+	notes: string,
+	accountId?: string | null
 ): components['schemas']['CreateReservationRequest'] {
 	const { stay, offer, guest } = booking;
 	if (!stay || !offer || !guest) throw new Error('The booking is not finished.');
@@ -759,6 +864,7 @@ export function createReservationBody(
 		booker_guest_id: guest.id,
 		source: source.toLowerCase() as components['schemas']['Source'],
 		...(trimmed ? { notes: trimmed } : {}),
+		...(accountId ? { account_id: accountId } : {}),
 		rooms: Array.from({ length: rooms }, () => ({
 			room_type_id: offer.roomTypeId,
 			rate_plan_id: offer.ratePlanId,

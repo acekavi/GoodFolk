@@ -16,16 +16,20 @@
 	const manage = $derived(!!me.data && can(me.data, 'manageRooms', propertyId));
 
 	type Capacity = Pick<RoomType, 'baseOccupancy' | 'maxAdults' | 'maxChildren' | 'maxOccupancy'>;
+	type Overbooking = Pick<RoomType, 'overbooking'>;
 	const emptyDraft = () => ({
 		code: '',
 		name: '',
 		baseOccupancy: 2,
 		maxAdults: 2,
 		maxChildren: 0,
-		maxOccupancy: 2
+		maxOccupancy: 2,
+		overbooking: 0
 	});
 	let draft = $state(emptyDraft());
-	let editing = $state<({ id: string; version: number; name: string } & Capacity) | null>(null);
+	let editing = $state<
+		({ id: string; version: number; name: string } & Capacity & Overbooking) | null
+	>(null);
 	let dragged = $state<number | null>(null);
 	let error = $state('');
 	let busy = $state(false);
@@ -61,7 +65,12 @@
 
 	async function create(event: SubmitEvent) {
 		event.preventDefault();
-		const body = { code: draft.code.toUpperCase(), name: draft.name, ...capacity(draft) };
+		const body = {
+			code: draft.code.toUpperCase(),
+			name: draft.name,
+			...capacity(draft),
+			overbooking: draft.overbooking
+		};
 		await run(async () => {
 			unwrap(
 				await rest.POST('/api/v1/properties/{property}/room-types', {
@@ -78,7 +87,10 @@
 		}, createForm.failed);
 	}
 
-	function update(type: RoomType, body: { name?: string; active?: boolean } & object) {
+	function update(
+		type: RoomType,
+		body: { name?: string; active?: boolean; overbooking?: number } & object
+	) {
 		return run(async () => {
 			unwrap(
 				await rest.PATCH('/api/v1/properties/{property}/room-types/{room_type}', {
@@ -128,6 +140,7 @@
 				<th>Adults</th>
 				<th>Children</th>
 				<th>Max</th>
+				<th>Overbooking</th>
 				<th>Status</th>
 				{#if manage}<th><span class="visually-hidden">Actions</span></th>{/if}
 			</tr>
@@ -179,12 +192,22 @@
 								bind:value={editing.maxOccupancy}
 							/></td
 						>
+						<td
+							><input
+								aria-label="Overbooking allowance of {type.code}"
+								type="number"
+								min="0"
+								max="20"
+								bind:value={editing.overbooking}
+							/></td
+						>
 					{:else}
 						<td>{type.name}</td>
 						<td>{type.baseOccupancy}</td>
 						<td>{type.maxAdults}</td>
 						<td>{type.maxChildren}</td>
 						<td>{type.maxOccupancy}</td>
+						<td>{type.overbooking}</td>
 					{/if}
 					<td>{type.active ? 'Active' : 'Inactive'}</td>
 					{#if manage}
@@ -194,8 +217,12 @@
 									disabled={busy}
 									aria-label="Save {type.code}"
 									onclick={() =>
-										editing && update(type, { name: editing.name, ...capacity(editing) })}
-									>Save</button
+										editing &&
+										update(type, {
+											name: editing.name,
+											...capacity(editing),
+											overbooking: editing.overbooking
+										})}>Save</button
 								>
 								<button class="secondary" onclick={() => (editing = null)}>Cancel</button>
 							{:else}
@@ -229,7 +256,7 @@
 					{/if}
 				</tr>
 			{:else}
-				<tr><td colspan="8">No room types yet.</td></tr>
+				<tr><td colspan="9">No room types yet.</td></tr>
 			{/each}
 		</tbody>
 	</table>
@@ -243,6 +270,16 @@
 			<label>Children <input type="number" min="0" max="50" bind:value={draft.maxChildren} /></label
 			>
 			<label>Max <input type="number" min="1" max="50" bind:value={draft.maxOccupancy} /></label>
+			<label
+				>Overbooking allowance
+				<input
+					type="number"
+					min="0"
+					max="20"
+					title="rooms you may sell beyond the physical count"
+					bind:value={draft.overbooking}
+				/></label
+			>
 			<button disabled={busy}>Add room type</button>
 		</form>
 	{/if}

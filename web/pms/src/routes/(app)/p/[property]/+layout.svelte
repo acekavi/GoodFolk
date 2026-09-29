@@ -11,6 +11,7 @@
 			href: resolve('/(app)/p/[property]/reservations/(list)', { property }),
 			label: 'Reservations'
 		},
+		{ href: resolve('/(app)/p/[property]/accounts', { property }), label: 'Accounts' },
 		{ href: resolve('/(app)/p/[property]/room-types', { property }), label: 'Room types' },
 		{ href: resolve('/(app)/p/[property]/rooms', { property }), label: 'Rooms' },
 		{ href: resolve('/(app)/p/[property]/inventory', { property }), label: 'Inventory' },

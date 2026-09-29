@@ -105,6 +105,38 @@ export interface paths {
         patch: operations["update_property"];
         trace?: never;
     };
+    "/api/v1/properties/{property}/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_account"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/accounts/{account}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["update_account"];
+        trace?: never;
+    };
     "/api/v1/properties/{property}/block-reasons": {
         parameters: {
             query?: never;
@@ -374,6 +406,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/properties/{property}/reservation-rooms/{room}/check-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Checks a confirmed, assigned room in on its arrival date. */
+        post: operations["check_in_reservation_room"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reservation-rooms/{room}/check-out": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Checks a room out; an early departure shortens the stay and releases the nights it no longer holds. */
+        post: operations["check_out_reservation_room"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reservation-rooms/{room}/guests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Adds an additional occupant to a confirmed or checked-in room. */
+        post: operations["add_reservation_room_guest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reservation-rooms/{room}/guests/{guest}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Removes an occupant from a room. */
+        delete: operations["remove_reservation_room_guest"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reservation-rooms/{room}/modify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Changes a booked room's dates, type or occupancy, keeping booked prices unless the caller asks to reprice. */
+        post: operations["modify_reservation_room"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/reservation-rooms/{room}/unassign": {
         parameters: {
             query?: never;
@@ -385,6 +502,23 @@ export interface paths {
         put?: never;
         /** Takes a confirmed stay out of its room; it stays booked. */
         post: operations["unassign_reservation_room"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reservation-rooms/{room}/undo-check-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Undoes a same-day check-in, back to confirmed. */
+        post: operations["undo_check_in_reservation_room"];
         delete?: never;
         options?: never;
         head?: never;
@@ -405,6 +539,23 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reservations/{reservation}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Sets or clears the reservation's billed-to account, and its notes. */
+        patch: operations["update_reservation"];
         trace?: never;
     };
     "/api/v1/properties/{property}/room-types": {
@@ -588,6 +739,39 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description A company or travel agent a reservation can be billed to. */
+        Account: {
+            active: boolean;
+            contact: components["schemas"]["AccountContact"];
+            /**
+             * Format: int64
+             * @description In minor units of `currency`; `None` for no limit.
+             */
+            credit_limit?: number | null;
+            currency: string;
+            /** Format: uuid */
+            id: string;
+            kind: components["schemas"]["AccountKind"];
+            name: string;
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description How to reach an account: every field optional, filled in as known. */
+        AccountContact: {
+            address?: string | null;
+            contact_name?: string | null;
+            email?: string | null;
+            phone?: string | null;
+        };
+        /**
+         * @description Who a reservation may be billed to.
+         * @enum {string}
+         */
+        AccountKind: "company" | "travel_agent";
+        AddOccupantRequest: {
+            /** Format: uuid */
+            guest_id: string;
+        };
         AssignRoomRequest: {
             /**
              * Format: uuid
@@ -717,6 +901,47 @@ export interface components {
          * @enum {string}
          */
         ChangeMode: "percent" | "amount";
+        /** @description A room after [`check_in`]. */
+        CheckedIn: {
+            /** Format: date-time */
+            checked_in_at: string;
+            /** Format: date */
+            checked_in_business_date: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            reservation_id: string;
+            status: components["schemas"]["RoomStatus"];
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description A room after [`check_out`]. */
+        CheckedOut: {
+            /** Format: date-time */
+            checked_out_at: string;
+            /** Format: uuid */
+            id: string;
+            /** @description Nights an early departure released back onto the counters, oldest first; empty on a late check-out. */
+            released_nights: string[];
+            /** Format: uuid */
+            reservation_id: string;
+            status: components["schemas"]["RoomStatus"];
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description A company or travel agent, and how to reach it. */
+        CreateAccountRequest: {
+            contact?: components["schemas"]["AccountContact"];
+            /**
+             * Format: int64
+             * @description In minor units of `currency`; left out or `null` for no limit.
+             */
+            credit_limit?: number | null;
+            /** @description Three uppercase letters, such as `USD`. */
+            currency: string;
+            kind: components["schemas"]["AccountKind"];
+            name: string;
+        };
         CreateBlockReasonRequest: {
             /** @description Capital letters, digits and `_`, unique within the property. Cannot be changed later. */
             code: string;
@@ -839,6 +1064,12 @@ export interface components {
          *     (a restriction, a missing price) is 422 with every reason.
          */
         CreateReservationRequest: {
+            /**
+             * Format: uuid
+             * @description The company or travel agent this reservation is billed to, if any. Must be an active account of this
+             *     tenant.
+             */
+            account_id?: string | null;
             /** Format: uuid */
             booker_guest_id: string;
             notes?: string;
@@ -882,6 +1113,11 @@ export interface components {
             /** Format: int32 */
             max_occupancy: number;
             name: string;
+            /**
+             * Format: int32
+             * @description Rooms of this type that may be sold beyond the physical count, 0 to 20.
+             */
+            overbooking?: number;
         };
         /**
          * @description A new reservation. Rooms may be in different currencies, so `totals` has one entry per currency, in the
@@ -991,6 +1227,51 @@ export interface components {
             to?: string | null;
             /** Format: int32 */
             version: number;
+        };
+        /** @description A room after [`modify_room`]. */
+        ModifiedRoom: {
+            /** Format: date */
+            check_in: string;
+            /** Format: date */
+            check_out: string;
+            currency: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            reservation_id: string;
+            /** Format: uuid */
+            room_id?: string | null;
+            /** Format: uuid */
+            room_type_id: string;
+            /** Format: int64 */
+            total: number;
+            /** @description Whether a type change unassigned the room it had (the old room isn't of the new type). */
+            unassigned: boolean;
+            /** Format: int32 */
+            version: number;
+        };
+        /**
+         * @description A change to a booked room's stay, type or occupancy. At least one of `check_in`, `check_out`,
+         *     `room_type_id`, `adults` or `children` must actually change the room, or `reprice` must be set.
+         */
+        ModifyRoomRequest: {
+            /** Format: int32 */
+            adults?: number | null;
+            /** Format: date */
+            check_in?: string | null;
+            /** Format: date */
+            check_out?: string | null;
+            /** Format: int32 */
+            children?: number | null;
+            /**
+             * @description Keeps the amounts of nights the new stay still covers even across a type or occupancy change (an
+             *     upgrade keeps its price); added nights are always quoted.
+             */
+            keep_price?: boolean;
+            /** @description Requotes every night of the new stay regardless of what changed. */
+            reprice?: boolean;
+            /** Format: uuid */
+            room_type_id?: string | null;
         };
         Penalty: {
             kind: components["schemas"]["PenaltyKind"];
@@ -1116,6 +1397,17 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        /** @description A room after [`remove_occupant`]. */
+        RemovedOccupant: {
+            /** Format: uuid */
+            guest_id: string;
+            /** Format: uuid */
+            reservation_id: string;
+            /** Format: uuid */
+            room_id: string;
+            /** Format: int32 */
+            version: number;
+        };
         ReorderRequest: {
             /** @description Every id of the collection, in the new display order. */
             ids: string[];
@@ -1190,6 +1482,17 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        /** @description A room after [`add_occupant`]. */
+        RoomOccupant: {
+            /** @description The guest just added, masked exactly as [`crate::get_guest`] shows it. */
+            guest: components["schemas"]["Guest"];
+            /** Format: uuid */
+            reservation_id: string;
+            /** Format: uuid */
+            room_id: string;
+            /** Format: int32 */
+            version: number;
+        };
         /**
          * @description A `reservation_room`'s status, exactly per the diagram in `docs/specs/phase-3-reservations.md` § State
          *     machine.
@@ -1217,6 +1520,14 @@ export interface components {
             /** Format: int32 */
             max_occupancy: number;
             name: string;
+            /**
+             * Format: int32
+             * @description How many more rooms of this type may be sold than are physically available (0-20). A night is
+             *     sellable when `physical - sold - out_of_order + overbooking > 0`; `reservations` applies the rule
+             *     wherever a night is sold. [`InventoryDay::available`](crate::InventoryDay::available) stays the plain
+             *     physical figure and does not include this allowance.
+             */
+            overbooking: number;
             /** Format: uuid */
             property_id: string;
             /** Format: int32 */
@@ -1284,6 +1595,32 @@ export interface components {
             /** Format: int64 */
             amount: number;
             currency: string;
+        };
+        /** @description A room after [`undo_check_in`]. */
+        UndoneCheckIn: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            reservation_id: string;
+            status: components["schemas"]["RoomStatus"];
+            /** Format: int32 */
+            version: number;
+        };
+        /**
+         * @description Fields left out stay as they are; `email`, `phone`, `address`, `contact_name` and `credit_limit` sent as
+         *     `null` are cleared.
+         */
+        UpdateAccountRequest: {
+            active?: boolean | null;
+            address?: string | null;
+            contact_name?: string | null;
+            /** Format: int64 */
+            credit_limit?: number | null;
+            currency?: string | null;
+            email?: string | null;
+            kind?: components["schemas"]["AccountKind"] | null;
+            name?: string | null;
+            phone?: string | null;
         };
         /** @description Fields left out stay as they are. */
         UpdateBlockReasonRequest: {
@@ -1355,6 +1692,12 @@ export interface components {
             rounding_step?: number | null;
             segment?: components["schemas"]["Segment"] | null;
         };
+        /** @description Fields left out stay as they are; `account_id` sent as `null` clears it (bills no one). */
+        UpdateReservationRequest: {
+            /** Format: uuid */
+            account_id?: string | null;
+            notes?: string | null;
+        };
         /** @description Fields left out stay as they are; `floor` and `section_id` sent as `null` are cleared. */
         UpdateRoomRequest: {
             active?: boolean | null;
@@ -1380,6 +1723,21 @@ export interface components {
             /** Format: int32 */
             max_occupancy?: number | null;
             name?: string | null;
+            /**
+             * Format: int32
+             * @description Rooms of this type that may be sold beyond the physical count, 0 to 20.
+             */
+            overbooking?: number | null;
+        };
+        /** @description A reservation after [`update_reservation`]. */
+        UpdatedReservation: {
+            /** Format: uuid */
+            account_id?: string | null;
+            /** Format: uuid */
+            id: string;
+            notes: string;
+            /** Format: int32 */
+            version: number;
         };
     };
     responses: never;
@@ -1579,6 +1937,113 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Property"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_account: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateAccountRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Account"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_account: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                account: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateAccountRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Account"];
                 };
             };
             403: {
@@ -2508,6 +2973,301 @@ export interface operations {
             };
         };
     };
+    check_in_reservation_room: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    /** @description the reservation room's version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckedIn"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    check_out_reservation_room: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    /** @description the reservation room's version, e.g. "3" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckedOut"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    add_reservation_room_guest: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddOccupantRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the reservation room's version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoomOccupant"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remove_reservation_room_guest: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                room: string;
+                guest: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    /** @description the reservation room's version, e.g. "3" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemovedOccupant"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    modify_reservation_room: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModifyRoomRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the reservation room's version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModifiedRoom"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     unassign_reservation_room: {
         parameters: {
             query?: never;
@@ -2530,6 +3290,62 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AssignedRoom"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    undo_check_in_reservation_room: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    /** @description the reservation room's version, e.g. "3" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UndoneCheckIn"];
                 };
             };
             403: {
@@ -2610,6 +3426,66 @@ export interface operations {
                 content?: never;
             };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_reservation: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                reservation: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateReservationRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the reservation's version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdatedReservation"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -84,6 +84,8 @@ pub struct ReservationRoomRow {
     pub total: i64,
     pub currency: String,
     pub version: i32,
+    /// The account the reservation is billed to, if any; `None` when it is billed to the guest.
+    pub account_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,13 +223,14 @@ pub async fn list_reservation_rooms(
     let sql = format!(
         "select rr.id, rr.reservation_id, r.confirmation_no, g.first_name, g.last_name, rr.arrival,
                 upper(rr.stay) as departure, rt.code as room_type_code, room.number as room_number, rr.status,
-                r.source, rr.currency, rr.version, {key} as sort_key,
+                r.source, rr.currency, rr.version, a.name as account_name, {key} as sort_key,
                 (select coalesce(sum(n.room_amount + n.meal_amount), 0)::bigint
                  from reservation_night n where n.reservation_room_id = rr.id) as total
          from {rooms}
          join guest g on g.id = rr.primary_guest_id
          join room_type rt on rt.id = rr.room_type_id
          left join room on room.id = rr.room_id
+         left join account a on a.id = r.account_id
          where {matches} {keyset}
          order by {key} {order}, rr.id {order}
          limit $8"
@@ -302,5 +305,6 @@ fn parse_row(row: &PgRow) -> Result<ReservationRoomRow, sqlx::Error> {
         total: row.try_get("total")?,
         currency: row.try_get("currency")?,
         version: row.try_get("version")?,
+        account_name: row.try_get("account_name")?,
     })
 }

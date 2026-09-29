@@ -208,6 +208,32 @@ async fn another_tenants_guest_is_neither_found_nor_changed(_: PgPoolOptions, op
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn renaming_a_guest_changes_what_finds_them(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let guest = hotel.guest(new_guest("Ada", "Perera")).await;
+    assert_eq!(hotel.search("perera").await.iter().map(|g| g.id).collect::<Vec<_>>(), [guest.id]);
+
+    let changes = GuestChanges { last_name: Some("Fernando".into()), ..GuestChanges::default() };
+    let renamed = hotel.try_update_guest(&guest, changes).await.unwrap();
+
+    assert!(hotel.search("perera").await.is_empty(), "the old name no longer matches");
+    assert_eq!(hotel.search("fernando").await, [renamed]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn deleting_a_guest_removes_them_from_search(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let guest = hotel.guest(new_guest("Ada", "Perera")).await;
+    assert_eq!(hotel.search("perera").await.iter().map(|g| g.id).collect::<Vec<_>>(), [guest.id]);
+
+    let mut tx = hotel.tx().await;
+    sqlx::query("delete from guest where id = $1").bind(guest.id).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+
+    assert!(hotel.search("perera").await.is_empty());
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn a_guest_may_have_a_single_name(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;
 

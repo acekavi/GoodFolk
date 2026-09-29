@@ -86,6 +86,40 @@ async fn sold_rooms_are_not_free(_: PgPoolOptions, opts: PgConnectOptions) {
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_overbooking_allowance_adds_to_what_is_free(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, _) = Hotel::with_rooms(opts).await;
+    let mut tx = hotel.tx().await;
+    // Every physical DLX room sold on the middle night: free would be 0 without the allowance.
+    sqlx::query("update inventory_day set sold = 3 where room_type_id = $1 and date = $2")
+        .bind(hotel.deluxe.id)
+        .bind(hotel.day(2))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let mut tx = hotel.tx().await;
+    let changes = rooms::RoomTypeChanges { overbooking: Some(2), ..Default::default() };
+    rooms::update_room_type(
+        &mut tx,
+        hotel.tenant,
+        hotel.user,
+        hotel.property,
+        hotel.deluxe.id,
+        hotel.deluxe.version,
+        changes,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        hotel.free(0, 3).await,
+        free(&[("DLX", 2), ("STD", 2)]),
+        "3 of 3 physical rooms sold, plus a 2-room allowance"
+    );
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn a_night_without_counters_has_nothing_free(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, _) = Hotel::with_rooms(opts).await;
     let mut tx = hotel.tx().await;

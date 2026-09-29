@@ -110,22 +110,7 @@ pub async fn assign_room(
         }
         Err(err) if violates(&err, "reservation_room_no_double_booking") => {
             savepoint.rollback().await?;
-            let taken_by: Option<String> = sqlx::query_scalar(
-                "select r.confirmation_no
-                 from reservation_room s join reservation r on r.id = s.reservation_id
-                 where s.room_id = $1 and s.id <> $2 and s.status not in ('cancelled', 'no_show')
-                   and s.stay && daterange($3, $4)
-                 order by lower(s.stay)
-                 limit 1",
-            )
-            .bind(room)
-            .bind(id)
-            .bind(stay.check_in)
-            .bind(stay.check_out)
-            .fetch_optional(&mut **tx)
-            .await?;
-            let by = taken_by.map(|confirmation| format!(" by {confirmation}")).unwrap_or_default();
-            return Err(ReservationsError::Conflict(format!("room {number} is taken{by} on those nights")));
+            return Err(room_taken_conflict(tx, room, number, id, stay.check_in, stay.check_out).await?);
         }
         Err(err) => return Err(err.into()),
     };
@@ -246,6 +231,35 @@ async fn lock_confirmed_stay(
 
 async fn room_number(tx: &mut Tx, room: Uuid) -> Result<String, sqlx::Error> {
     sqlx::query_scalar("select number from room where id = $1").bind(room).fetch_one(&mut **tx).await
+}
+
+/// The `Conflict` naming the booking that already holds `room` on `[check_in, check_out)`, for the
+/// `reservation_room_no_double_booking` savepoint-failure branch `assign_room` and `modify_room` both hit: the
+/// stay `excluding` lost the room to whichever other stay got there first.
+pub(crate) async fn room_taken_conflict(
+    tx: &mut Tx,
+    room: Uuid,
+    number: &str,
+    excluding: Uuid,
+    check_in: Date,
+    check_out: Date,
+) -> Result<ReservationsError, sqlx::Error> {
+    let taken_by: Option<String> = sqlx::query_scalar(
+        "select r.confirmation_no
+         from reservation_room s join reservation r on r.id = s.reservation_id
+         where s.room_id = $1 and s.id <> $2 and s.status not in ('cancelled', 'no_show')
+           and s.stay && daterange($3, $4)
+         order by lower(s.stay)
+         limit 1",
+    )
+    .bind(room)
+    .bind(excluding)
+    .bind(check_in)
+    .bind(check_out)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let by = taken_by.map(|confirmation| format!(" by {confirmation}")).unwrap_or_default();
+    Ok(ReservationsError::Conflict(format!("room {number} is taken{by} on those nights")))
 }
 
 /// Bumps the reservation's version (its detail shows the room), audits and queues the list and detail events.

@@ -67,4 +67,4 @@ Events: `room-types:<p>`, `rooms:<p>`, `inventory:<p>:<yyyy-mm>` (one key per af
 ## Performance gates
 
 - `inventory(month)` for a 200-room / 12-type property: p95 < 20 ms server time (it is an indexed range scan of ≤ 372 rows).
-- Month grid renders < 50 ms and scrolls at 60 fps.
+- Month grid renders < 60 ms and scrolls at 60 fps (raised from 50 ms in Phase 3b, the owner's decision: to 55 ms after the event stream was fixed, then to 60 ms because single cold renders on a `powersave` CPU read up to ~58 ms).

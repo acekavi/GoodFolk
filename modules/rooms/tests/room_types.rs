@@ -1,8 +1,10 @@
 mod common;
 
 use common::{Hotel, room_type};
+use db::{CHANNEL, Event};
 use rooms::{RoomTypeChanges, RoomsError, WINDOW_DAYS};
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions};
+use std::time::Duration;
 use uuid::Uuid;
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -61,6 +63,39 @@ async fn capacities_must_add_up(_: PgPoolOptions, opts: PgConnectOptions) {
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_overbooking_allowance_must_be_0_to_20(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let mut tx = hotel.tx().await;
+
+    let too_high = rooms::NewRoomType { overbooking: 21, ..room_type("A") };
+    let created_high = rooms::create_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, too_high).await;
+    let too_low = rooms::NewRoomType { overbooking: -1, ..room_type("B") };
+    let created_low = rooms::create_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, too_low).await;
+    let min = rooms::NewRoomType { overbooking: 0, ..room_type("C") };
+    let created_min = rooms::create_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, min).await;
+    let max = rooms::NewRoomType { overbooking: 20, ..room_type("D") };
+    let created_max = rooms::create_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, max).await;
+
+    let dlx = hotel.room_type("DLX").await;
+    let mut tx = hotel.tx().await;
+    let high_changes = RoomTypeChanges { overbooking: Some(21), ..RoomTypeChanges::default() };
+    let updated_high =
+        rooms::update_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, dlx.id, dlx.version, high_changes)
+            .await;
+    let low_changes = RoomTypeChanges { overbooking: Some(-1), ..RoomTypeChanges::default() };
+    let updated_low =
+        rooms::update_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, dlx.id, dlx.version, low_changes)
+            .await;
+
+    assert!(matches!(created_high, Err(RoomsError::Invalid(_))), "{created_high:?}");
+    assert!(matches!(created_low, Err(RoomsError::Invalid(_))), "{created_low:?}");
+    assert_eq!(created_min.unwrap().overbooking, 0);
+    assert_eq!(created_max.unwrap().overbooking, 20);
+    assert!(matches!(updated_high, Err(RoomsError::Invalid(_))), "{updated_high:?}");
+    assert!(matches!(updated_low, Err(RoomsError::Invalid(_))), "{updated_low:?}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn an_unknown_property_is_not_found(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;
     let mut tx = hotel.tx().await;
@@ -109,6 +144,45 @@ async fn reordering_must_list_every_room_type_once(_: PgPoolOptions, opts: PgCon
     assert!(matches!(missing, Err(RoomsError::Invalid(_))), "{missing:?}");
     assert!(matches!(repeated, Err(RoomsError::Invalid(_))), "{repeated:?}");
     assert_eq!(listed.iter().map(|t| t.code.as_str()).collect::<Vec<_>>(), ["DLX", "STD"]);
+}
+
+/// A room type's `overbooking` is not per-day, so a change to it can make every day in the counter window
+/// sellable differently; a change that leaves `overbooking` alone touches no day's sellability and should not
+/// notify the inventory grid at all.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_overbooking_change_notifies_the_whole_window_and_a_plain_edit_does_not(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts).await;
+    let dlx = hotel.room_type("DLX").await;
+    let mut listener = PgListener::connect_with(&hotel.pool).await.unwrap();
+    listener.listen(CHANNEL).await.unwrap();
+
+    let mut tx = hotel.tx().await;
+    let overbooked = RoomTypeChanges { overbooking: Some(3), ..RoomTypeChanges::default() };
+    let updated =
+        rooms::update_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, dlx.id, dlx.version, overbooked)
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+
+    let received = tokio::time::timeout(Duration::from_secs(5), listener.recv()).await.unwrap().unwrap();
+    let event: Event = serde_json::from_str(received.payload()).unwrap();
+    let mut expected_keys = vec![rooms::room_types_key(hotel.property)];
+    expected_keys.extend(rooms::month_keys(hotel.property, hotel.day(0), hotel.day(WINDOW_DAYS)));
+    assert_eq!(event.keys, expected_keys);
+
+    let mut tx = hotel.tx().await;
+    let renamed = RoomTypeChanges { name: Some("Deluxe".into()), ..RoomTypeChanges::default() };
+    rooms::update_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, updated.id, updated.version, renamed)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let received = tokio::time::timeout(Duration::from_secs(5), listener.recv()).await.unwrap().unwrap();
+    let event: Event = serde_json::from_str(received.payload()).unwrap();
+    assert_eq!(event.keys, vec![rooms::room_types_key(hotel.property)]);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

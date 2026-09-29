@@ -217,6 +217,135 @@
         }
       }
     },
+    "/api/v1/properties/{property}/accounts": {
+      "post": {
+        "tags": [
+          "crate::routes::accounts"
+        ],
+        "operationId": "create_account",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Account"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/accounts/{account}": {
+      "patch": {
+        "tags": [
+          "crate::routes::accounts"
+        ],
+        "operationId": "update_account",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "account",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Account"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/block-reasons": {
       "post": {
         "tags": [
@@ -1223,6 +1352,341 @@
         }
       }
     },
+    "/api/v1/properties/{property}/reservation-rooms/{room}/check-in": {
+      "post": {
+        "tags": [
+          "crate::routes::reservations"
+        ],
+        "summary": "Checks a confirmed, assigned room in on its arrival date.",
+        "operationId": "check_in_reservation_room",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the reservation room's version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckedIn"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/reservation-rooms/{room}/check-out": {
+      "post": {
+        "tags": [
+          "crate::routes::reservations"
+        ],
+        "summary": "Checks a room out; an early departure shortens the stay and releases the nights it no longer holds.",
+        "operationId": "check_out_reservation_room",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the reservation room's version, e.g. \"3\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckedOut"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/reservation-rooms/{room}/guests": {
+      "post": {
+        "tags": [
+          "crate::routes::reservations"
+        ],
+        "summary": "Adds an additional occupant to a confirmed or checked-in room.",
+        "operationId": "add_reservation_room_guest",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddOccupantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the reservation room's version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoomOccupant"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/reservation-rooms/{room}/guests/{guest}": {
+      "delete": {
+        "tags": [
+          "crate::routes::reservations"
+        ],
+        "summary": "Removes an occupant from a room.",
+        "operationId": "remove_reservation_room_guest",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "guest",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the reservation room's version, e.g. \"3\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemovedOccupant"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "412": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/reservation-rooms/{room}/modify": {
+      "post": {
+        "tags": [
+          "crate::routes::reservations"
+        ],
+        "summary": "Changes a booked room's dates, type or occupancy, keeping booked prices unless the caller asks to reprice.",
+        "operationId": "modify_reservation_room",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModifyRoomRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the reservation room's version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModifiedRoom"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/reservation-rooms/{room}/unassign": {
       "post": {
         "tags": [
@@ -1272,6 +1736,67 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AssignedRoom"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/reservation-rooms/{room}/undo-check-in": {
+      "post": {
+        "tags": [
+          "crate::routes::reservations"
+        ],
+        "summary": "Undoes a same-day check-in, back to confirmed.",
+        "operationId": "undo_check_in_reservation_room",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the reservation room's version, e.g. \"3\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UndoneCheckIn"
                 }
               }
             }
@@ -1341,6 +1866,77 @@
           "404": {},
           "409": {},
           "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/reservations/{reservation}": {
+      "patch": {
+        "tags": [
+          "crate::routes::reservations"
+        ],
+        "summary": "Sets or clears the reservation's billed-to account, and its notes.",
+        "operationId": "update_reservation",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "reservation",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateReservationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the reservation's version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdatedReservation"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "412": {},
+          "422": {},
+          "428": {}
         }
       }
     },
@@ -1965,6 +2561,102 @@
   },
   "components": {
     "schemas": {
+      "Account": {
+        "type": "object",
+        "description": "A company or travel agent a reservation can be billed to.",
+        "required": [
+          "id",
+          "kind",
+          "name",
+          "contact",
+          "currency",
+          "active",
+          "version"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "contact": {
+            "$ref": "#/components/schemas/AccountContact"
+          },
+          "credit_limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "In minor units of `currency`; `None` for no limit."
+          },
+          "currency": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AccountKind"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "AccountContact": {
+        "type": "object",
+        "description": "How to reach an account: every field optional, filled in as known.",
+        "properties": {
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contact_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AccountKind": {
+        "type": "string",
+        "description": "Who a reservation may be billed to.",
+        "enum": [
+          "company",
+          "travel_agent"
+        ]
+      },
+      "AddOccupantRequest": {
+        "type": "object",
+        "required": [
+          "guest_id"
+        ],
+        "properties": {
+          "guest_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
       "AssignRoomRequest": {
         "type": "object",
         "required": [
@@ -2309,6 +3001,116 @@
           "amount"
         ]
       },
+      "CheckedIn": {
+        "type": "object",
+        "description": "A room after [`check_in`].",
+        "required": [
+          "id",
+          "reservation_id",
+          "status",
+          "version",
+          "checked_in_at",
+          "checked_in_business_date"
+        ],
+        "properties": {
+          "checked_in_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "checked_in_business_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reservation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RoomStatus"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "CheckedOut": {
+        "type": "object",
+        "description": "A room after [`check_out`].",
+        "required": [
+          "id",
+          "reservation_id",
+          "status",
+          "version",
+          "checked_out_at",
+          "released_nights"
+        ],
+        "properties": {
+          "checked_out_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "released_nights": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "Nights an early departure released back onto the counters, oldest first; empty on a late check-out."
+          },
+          "reservation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RoomStatus"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "CreateAccountRequest": {
+        "type": "object",
+        "description": "A company or travel agent, and how to reach it.",
+        "required": [
+          "kind",
+          "name",
+          "currency"
+        ],
+        "properties": {
+          "contact": {
+            "$ref": "#/components/schemas/AccountContact"
+          },
+          "credit_limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "In minor units of `currency`; left out or `null` for no limit."
+          },
+          "currency": {
+            "type": "string",
+            "description": "Three uppercase letters, such as `USD`."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AccountKind"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "CreateBlockReasonRequest": {
         "type": "object",
         "required": [
@@ -2619,6 +3421,14 @@
           "rooms"
         ],
         "properties": {
+          "account_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The company or travel agent this reservation is billed to, if any. Must be an active account of this\ntenant."
+          },
           "booker_guest_id": {
             "type": "string",
             "format": "uuid"
@@ -2754,6 +3564,11 @@
           },
           "name": {
             "type": "string"
+          },
+          "overbooking": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rooms of this type that may be sold beyond the physical count, 0 to 20."
           }
         }
       },
@@ -3047,6 +3862,114 @@
           "version": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "ModifiedRoom": {
+        "type": "object",
+        "description": "A room after [`modify_room`].",
+        "required": [
+          "id",
+          "reservation_id",
+          "version",
+          "check_in",
+          "check_out",
+          "room_type_id",
+          "unassigned",
+          "total",
+          "currency"
+        ],
+        "properties": {
+          "check_in": {
+            "type": "string",
+            "format": "date"
+          },
+          "check_out": {
+            "type": "string",
+            "format": "date"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reservation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "room_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "room_type_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "unassigned": {
+            "type": "boolean",
+            "description": "Whether a type change unassigned the room it had (the old room isn't of the new type)."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "ModifyRoomRequest": {
+        "type": "object",
+        "description": "A change to a booked room's stay, type or occupancy. At least one of `check_in`, `check_out`,\n`room_type_id`, `adults` or `children` must actually change the room, or `reprice` must be set.",
+        "properties": {
+          "adults": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "check_in": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "check_out": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "children": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "keep_price": {
+            "type": "boolean",
+            "description": "Keeps the amounts of nights the new stay still covers even across a type or occupancy change (an\nupgrade keeps its price); added nights are always quoted."
+          },
+          "reprice": {
+            "type": "boolean",
+            "description": "Requotes every night of the new stay regardless of what changed."
+          },
+          "room_type_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
           }
         }
       },
@@ -3358,6 +4281,34 @@
           }
         }
       },
+      "RemovedOccupant": {
+        "type": "object",
+        "description": "A room after [`remove_occupant`].",
+        "required": [
+          "room_id",
+          "reservation_id",
+          "version",
+          "guest_id"
+        ],
+        "properties": {
+          "guest_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reservation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "room_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
       "ReorderRequest": {
         "type": "object",
         "required": [
@@ -3561,6 +4512,34 @@
           }
         }
       },
+      "RoomOccupant": {
+        "type": "object",
+        "description": "A room after [`add_occupant`].",
+        "required": [
+          "room_id",
+          "reservation_id",
+          "version",
+          "guest"
+        ],
+        "properties": {
+          "guest": {
+            "$ref": "#/components/schemas/Guest",
+            "description": "The guest just added, masked exactly as [`crate::get_guest`] shows it."
+          },
+          "reservation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "room_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
       "RoomStatus": {
         "type": "string",
         "description": "A `reservation_room`'s status, exactly per the diagram in `docs/specs/phase-3-reservations.md` § State\nmachine.\n\nConvention: the `db::text_enum!` macro (per-variant `#[serde(rename = \"...\")]`, `as_str`/`parse`) lives in\n`db`, and `domain` must not depend on it (it stays pure). Every variant name here\nalready lowercases to its database text with `snake_case`, so this instead follows the plainer convention\nalready used by `identity::Role`: `#[serde(rename_all = \"snake_case\")]` plus hand-written `as_str`/`parse`.",
@@ -3584,6 +4563,7 @@
           "max_adults",
           "max_children",
           "max_occupancy",
+          "overbooking",
           "bed_config",
           "amenities",
           "sort_order",
@@ -3631,6 +4611,11 @@
           },
           "name": {
             "type": "string"
+          },
+          "overbooking": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many more rooms of this type may be sold than are physically available (0-20). A night is\nsellable when `physical - sold - out_of_order + overbooking > 0`; `reservations` applies the rule\nwherever a night is sold. [`InventoryDay::available`](crate::InventoryDay::available) stays the plain\nphysical figure and does not include this allowance."
           },
           "property_id": {
             "type": "string",
@@ -3800,6 +4785,98 @@
           },
           "currency": {
             "type": "string"
+          }
+        }
+      },
+      "UndoneCheckIn": {
+        "type": "object",
+        "description": "A room after [`undo_check_in`].",
+        "required": [
+          "id",
+          "reservation_id",
+          "status",
+          "version"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reservation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RoomStatus"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "UpdateAccountRequest": {
+        "type": "object",
+        "description": "Fields left out stay as they are; `email`, `phone`, `address`, `contact_name` and `credit_limit` sent as\n`null` are cleared.",
+        "properties": {
+          "active": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contact_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "credit_limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -4095,6 +5172,25 @@
           }
         }
       },
+      "UpdateReservationRequest": {
+        "type": "object",
+        "description": "Fields left out stay as they are; `account_id` sent as `null` clears it (bills no one).",
+        "properties": {
+          "account_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "UpdateRoomRequest": {
         "type": "object",
         "description": "Fields left out stay as they are; `floor` and `section_id` sent as `null` are cleared.",
@@ -4195,6 +5291,43 @@
               "string",
               "null"
             ]
+          },
+          "overbooking": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Rooms of this type that may be sold beyond the physical count, 0 to 20."
+          }
+        }
+      },
+      "UpdatedReservation": {
+        "type": "object",
+        "description": "A reservation after [`update_reservation`].",
+        "required": [
+          "id",
+          "version",
+          "notes"
+        ],
+        "properties": {
+          "account_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
           }
         }
       }

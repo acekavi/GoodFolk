@@ -5,10 +5,14 @@ import {
 	chooseGuest,
 	createReservationBody,
 	editStay,
+	findOffer,
 	guestFromRest,
 	guestsKey,
+	modifyRoomBody,
+	modifyRoomHasChanges,
 	NEW_BOOKING,
 	nightsBetween,
+	nightsReleasedOnCheckout,
 	offerRefused,
 	pickOffer,
 	reservationListsKey,
@@ -18,6 +22,8 @@ import {
 	searchStay,
 	type Booking,
 	type Guest,
+	type ModifyRoomCurrent,
+	type ModifyRoomDraft,
 	type OfferRow,
 	type Stay,
 	describePenalty,
@@ -427,6 +433,154 @@ describe('nightsBetween', () => {
 	});
 });
 
+describe('nightsReleasedOnCheckout', () => {
+	const stay = { checkIn: '2026-10-03', checkOut: '2026-10-06' };
+
+	it('releases every night from the day after check-in up to the old check-out, on the arrival day', () => {
+		expect(nightsReleasedOnCheckout(stay, '2026-10-03')).toEqual(['2026-10-04', '2026-10-05']);
+	});
+
+	it('the stay never shrinks below one night, so the day after arrival releases the same nights as the arrival day', () => {
+		expect(nightsReleasedOnCheckout(stay, '2026-10-04')).toEqual(['2026-10-04', '2026-10-05']);
+	});
+
+	it('releases fewer nights once the business date has moved past the floor of one night', () => {
+		expect(nightsReleasedOnCheckout(stay, '2026-10-05')).toEqual(['2026-10-05']);
+	});
+
+	it('releases nothing on a late check-out, on or after the booked check-out', () => {
+		expect(nightsReleasedOnCheckout(stay, '2026-10-06')).toEqual([]);
+		expect(nightsReleasedOnCheckout(stay, '2026-10-09')).toEqual([]);
+	});
+
+	it('releases nothing for a one-night stay checked out on its arrival day', () => {
+		expect(
+			nightsReleasedOnCheckout({ checkIn: '2026-10-03', checkOut: '2026-10-04' }, '2026-10-03')
+		).toEqual([]);
+	});
+});
+
+describe('modifyRoomBody', () => {
+	const current: ModifyRoomCurrent = {
+		checkIn: '2026-10-03',
+		checkOut: '2026-10-05',
+		roomTypeId: 'dlx',
+		adults: 2,
+		children: 0
+	};
+	const draft = (overrides: Partial<ModifyRoomDraft> = {}): ModifyRoomDraft => ({
+		...current,
+		keepPrice: false,
+		reprice: false,
+		...overrides
+	});
+
+	it('sends only the pricing flags when nothing else changed', () => {
+		expect(modifyRoomBody(current, draft())).toEqual({ keep_price: false, reprice: false });
+	});
+
+	it('sends every field that changed, leaving the rest out', () => {
+		expect(
+			modifyRoomBody(current, draft({ checkOut: '2026-10-06', adults: 3, keepPrice: true }))
+		).toEqual({
+			keep_price: true,
+			reprice: false,
+			check_out: '2026-10-06',
+			adults: 3
+		});
+	});
+
+	it('sends a room type change, e.g. an upgrade with the booked price kept', () => {
+		expect(modifyRoomBody(current, draft({ roomTypeId: 'sup', keepPrice: true }))).toEqual({
+			keep_price: true,
+			reprice: false,
+			room_type_id: 'sup'
+		});
+	});
+
+	it('always sends the explicit reprice choice even with nothing else to change', () => {
+		expect(modifyRoomBody(current, draft({ reprice: true }))).toEqual({
+			keep_price: false,
+			reprice: true
+		});
+	});
+});
+
+describe('modifyRoomHasChanges', () => {
+	const current: ModifyRoomCurrent = {
+		checkIn: '2026-10-03',
+		checkOut: '2026-10-05',
+		roomTypeId: 'dlx',
+		adults: 2,
+		children: 0
+	};
+	const draft = (overrides: Partial<ModifyRoomDraft> = {}): ModifyRoomDraft => ({
+		...current,
+		keepPrice: false,
+		reprice: false,
+		...overrides
+	});
+
+	it('is false with nothing changed, keeping Save disabled', () => {
+		expect(modifyRoomHasChanges(current, draft())).toBe(false);
+	});
+
+	it('is false for keepPrice alone: the server ignores it without another change', () => {
+		expect(modifyRoomHasChanges(current, draft({ keepPrice: true }))).toBe(false);
+	});
+
+	it('is true for an explicit reprice alone, which the server accepts', () => {
+		expect(modifyRoomHasChanges(current, draft({ reprice: true }))).toBe(true);
+	});
+
+	it('is true when a field actually differs from current', () => {
+		expect(modifyRoomHasChanges(current, draft({ adults: 3 }))).toBe(true);
+	});
+});
+
+describe('findOffer', () => {
+	const availability: RoomTypeAvailability[] = [
+		{
+			roomTypeId: 'dlx',
+			code: 'DLX',
+			name: 'Deluxe',
+			free: 2,
+			offers: [
+				{
+					ratePlanId: 'bar',
+					ratePlanCode: 'BAR',
+					mealPlan: 'RO',
+					total: 20000,
+					currency: 'USD',
+					restrictionsOk: true,
+					violations: [],
+					nights: [{ date: '2026-10-03', room: 10000, meal: 0 }]
+				},
+				{
+					ratePlanId: 'bar',
+					ratePlanCode: 'BAR',
+					mealPlan: 'BB',
+					total: 24000,
+					currency: 'USD',
+					restrictionsOk: true,
+					violations: [],
+					nights: []
+				}
+			]
+		}
+	];
+
+	it("finds the offer matching the room's own plan and meal plan on the new stay", () => {
+		expect(findOffer(availability, 'dlx', 'bar', 'RO')).toMatchObject({ total: 20000 });
+		expect(findOffer(availability, 'dlx', 'bar', 'BB')).toMatchObject({ total: 24000 });
+	});
+
+	it("returns undefined when the new stay's type or plan sells no such offer", () => {
+		expect(findOffer(availability, 'std', 'bar', 'RO')).toBeUndefined();
+		expect(findOffer(availability, 'dlx', 'bar', 'HB')).toBeUndefined();
+	});
+});
+
 describe('residencyLabel', () => {
 	it('reads each residency', () => {
 		expect(residencyLabel('RESIDENT')).toBe('Resident');
@@ -606,5 +760,18 @@ describe('the new-reservation flow', () => {
 			}))
 		});
 		expect(createReservationBody(booked(), 1, 'FRONT_DESK', '')).not.toHaveProperty('notes');
+	});
+
+	it('includes the account only when one was chosen', () => {
+		expect(createReservationBody(booked(), 1, 'FRONT_DESK', '', 'acc1')).toMatchObject({
+			account_id: 'acc1'
+		});
+		expect(createReservationBody(booked(), 1, 'FRONT_DESK', '')).not.toHaveProperty('account_id');
+		expect(createReservationBody(booked(), 1, 'FRONT_DESK', '', null)).not.toHaveProperty(
+			'account_id'
+		);
+		expect(createReservationBody(booked(), 1, 'FRONT_DESK', '', '')).not.toHaveProperty(
+			'account_id'
+		);
 	});
 });

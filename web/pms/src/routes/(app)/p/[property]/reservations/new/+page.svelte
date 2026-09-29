@@ -11,6 +11,7 @@
 	import { page } from '$app/state';
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { tick } from 'svelte';
+	import { accountKindLabel, accountsKey, fetchAccounts } from '$lib/accounts';
 	import type { Residency, Source } from '$lib/api/gql/graphql';
 	import type { components } from '$lib/api/openapi';
 	import { ApiError, errorMessage } from '$lib/api/problem';
@@ -74,6 +75,13 @@
 	const businessDate = $derived(
 		properties.data?.find((property) => property.id === propertyId)?.businessDate ?? ''
 	);
+	// The optional billing account, offered in the review step. A load failure must not block booking: the
+	// select is simply left out and a note says why, same as any other account-less booking.
+	const accounts = createQuery(() => ({
+		queryKey: accountsKey(propertyId),
+		queryFn: ({ signal }) => fetchAccounts(propertyId, undefined, false, signal),
+		enabled: manage
+	}));
 
 	let booking = $state.raw<Booking>(NEW_BOOKING);
 	const pending = new Pending();
@@ -292,6 +300,8 @@
 	let rooms = $state(1);
 	let source = $state<Source>('FRONT_DESK');
 	let notes = $state('');
+	/** The account billed, if any; "" (None) when left unset or when the account list failed to load. */
+	let accountId = $state('');
 	let createError = $state('');
 	const createForm = formKeys();
 
@@ -299,7 +309,7 @@
 		event.preventDefault();
 		createError = '';
 		try {
-			const body = createReservationBody(booking, rooms, source, notes);
+			const body = createReservationBody(booking, rooms, source, notes, accountId || null);
 			const created = await pending.run('create', async () =>
 				unwrap(
 					await rest.POST('/api/v1/properties/{property}/reservations', {
@@ -716,6 +726,20 @@
 					</select>
 				</label>
 				<label>Notes <textarea maxlength="2000" rows="3" bind:value={notes}></textarea></label>
+				{#if accounts.isError}
+					<p class="hint">Accounts couldn't be loaded; booking without one.</p>
+				{:else}
+					<label>
+						Bill to account
+						<select bind:value={accountId}>
+							<option value="">None</option>
+							{#each accounts.data ?? [] as account (account.id)}
+								<option value={account.id}>{account.name} · {accountKindLabel(account.kind)}</option
+								>
+							{/each}
+						</select>
+					</label>
+				{/if}
 				{#if createError}<p class="error" role="alert">{createError}</p>{/if}
 				<button disabled={pending.has('create')}>Create reservation</button>
 			</form>

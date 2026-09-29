@@ -63,9 +63,6 @@ pub struct GuestChanges {
     pub id_doc: Option<Option<(IdDocType, String)>>,
 }
 
-/// The indexed expression guest names are searched on (`guest_name_trgm_idx`).
-const NAME: &str = "lower(first_name || ' ' || last_name)";
-
 /// Never the sealed number or its key id: only the last 4 characters, for the mask.
 pub(crate) const COLUMNS: &str = "id, first_name, last_name, email, phone, country::text as country, residency, \
                        id_doc_type, id_doc_last4, notes, version";
@@ -128,7 +125,8 @@ fn looks_like_email(value: &str) -> bool {
         && domain.split('.').all(|label| !label.is_empty())
 }
 
-fn email(value: Option<String>) -> Result<Option<String>, ReservationsError> {
+/// Also used by [`crate::accounts`] for an account's contact email: same shape, same message.
+pub(crate) fn email(value: Option<String>) -> Result<Option<String>, ReservationsError> {
     value
         .map(|value| {
             let value = value.trim();
@@ -141,7 +139,8 @@ fn email(value: Option<String>) -> Result<Option<String>, ReservationsError> {
         .transpose()
 }
 
-fn phone(value: Option<String>) -> Result<Option<String>, ReservationsError> {
+/// Also used by [`crate::accounts`] for an account's contact phone: same shape, same message.
+pub(crate) fn phone(value: Option<String>) -> Result<Option<String>, ReservationsError> {
     value
         .map(|value| {
             let value = value.trim();
@@ -338,6 +337,17 @@ pub async fn get_guest(tx: &mut Tx, id: Uuid) -> Result<Guest, ReservationsError
 /// Up to `limit` guests (at most [`MAX_GUEST_SEARCH`]) whose name is like `text`, typos included, or whose
 /// email or phone is exactly `text`: exact matches first, then by how closely the name matches. Blank `text`
 /// lists the newest guests.
+///
+/// The name match comes from `app.search_guest_ids`, a `SECURITY DEFINER` function over `guest_search` (a
+/// tenant-filtered mirror of `guest`'s id and lowercased name, with no row-level security of its own and no
+/// privileges for the app role -- see `migrations/0009_guest_search.sql`). `<%` (word similarity, matching a
+/// part of the name such as a last name or its first letters, which `%` whole-string similarity misses) is not
+/// leakproof, so under forced row-level security a plain query against `guest` could not use its trigram index
+/// at all; the function instead filters `guest_search` by `app.current_tenant()` -- the very setting row-level
+/// security itself trusts -- and returns matching ids only. This then reads those ids, plus the exact
+/// email/phone matches (a plain, leakproof comparison, served by `guest`'s own indexes), back from `guest`,
+/// where forced row-level security still applies as usual: a name match can never surface another tenant's
+/// guest even if the function's own filter were somehow wrong.
 pub async fn search_guests(tx: &mut Tx, text: &str, limit: i64) -> Result<Vec<Guest>, sqlx::Error> {
     let (text, limit) = (text.trim(), limit.clamp(1, MAX_GUEST_SEARCH));
     if text.is_empty() {
@@ -348,20 +358,24 @@ pub async fn search_guests(tx: &mut Tx, text: &str, limit: i64) -> Result<Vec<Gu
         .fetch_all(&mut **tx)
         .await;
     }
-    // `<%` (word similarity) matches a part of the name, such as a last name or its first letters, which `%`
-    // (whole-string similarity) misses. Under forced row-level security the trigram operator is not leakproof,
-    // so this query scans the tenant's guests rather than using the trigram index alone; see the plan's
-    // Decision 13.
     let text_lower = text.to_lowercase();
+    // Already ordered by word similarity, then similarity, then id (the function's own ORDER BY); capped at
+    // `limit` name matches, which is always enough for the top `limit` rows overall once exact matches (never
+    // more than a couple) are layered on top below.
+    let name_matches: Vec<Uuid> = sqlx::query_scalar("select guest_id from app.search_guest_ids($1, $2)")
+        .bind(text)
+        .bind(i32::try_from(limit).expect("limit is clamped to at most MAX_GUEST_SEARCH"))
+        .fetch_all(&mut **tx)
+        .await?;
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select {COLUMNS} from guest
-         where lower($1) <% {NAME} or email = $2 or phone = $1
-         order by (email = $2 or phone = $1) is true desc, word_similarity(lower($1), {NAME}) desc,
-                  similarity(lower($1), {NAME}) desc, id
-         limit $3"
+         where id = any($1) or email = $2 or phone = $3
+         order by (email = $2 or phone = $3) is true desc, array_position($1::uuid[], id), id
+         limit $4"
     )))
-    .bind(text)
+    .bind(&name_matches)
     .bind(text_lower)
+    .bind(text)
     .bind(limit)
     .fetch_all(&mut **tx)
     .await

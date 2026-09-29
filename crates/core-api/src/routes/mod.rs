@@ -1,3 +1,4 @@
+pub(crate) mod accounts;
 pub(crate) mod auth;
 pub(crate) mod blocks;
 mod health;
@@ -14,12 +15,13 @@ use axum::Router;
 use axum::extract::Request;
 use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use std::time::Duration;
 use tower_http::compression::CompressionLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
 
+pub use accounts::{CreateAccountRequest, UpdateAccountRequest};
 pub use auth::{LoginRequest, SignupRequest, SwitchTenantRequest};
 pub use blocks::{CreateBlockReasonRequest, CreateBlockRequest, ShortenBlockRequest, UpdateBlockReasonRequest};
 pub use properties::{CreatePropertyRequest, UpdatePropertyRequest};
@@ -29,8 +31,8 @@ pub use rates::{
     UpdateCancellationPolicyRequest, UpdateMealSupplementRequest, UpdateRatePlanRequest,
 };
 pub use reservations::{
-    AssignRoomRequest, CreateGuestRequest, CreateReservationRequest, IdDocRequest, ReservationRoomRequest,
-    UpdateGuestRequest,
+    AddOccupantRequest, AssignRoomRequest, CreateGuestRequest, CreateReservationRequest, IdDocRequest,
+    ModifyRoomRequest, ReservationRoomRequest, UpdateGuestRequest, UpdateReservationRequest,
 };
 pub use room_types::{BedRequest, CreateRoomTypeRequest, UpdateRoomTypeRequest};
 pub use rooms::{CreateRoomRangeRequest, CreateRoomRequest, ReorderRequest, SectionRequest, UpdateRoomRequest};
@@ -57,6 +59,7 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/cancellation-policies"), post(rates::create_policy))
         .route(&format!("{PROPERTY}/guests"), post(reservations::create_guest))
         .route(&format!("{PROPERTY}/reservations"), post(reservations::create_reservation))
+        .route(&format!("{PROPERTY}/accounts"), post(accounts::create))
         .route_layer(from_fn_with_state(state.clone(), idempotency::idempotent));
 
     let requests = Router::new()
@@ -79,9 +82,20 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/meal-supplements/{{supplement}}"), patch(rates::update_supplement))
         .route(&format!("{PROPERTY}/cancellation-policies/{{policy}}"), patch(rates::update_policy))
         .route(&format!("{PROPERTY}/guests/{{guest}}"), patch(reservations::update_guest))
+        .route(&format!("{PROPERTY}/accounts/{{account}}"), patch(accounts::update))
+        .route(&format!("{PROPERTY}/reservations/{{reservation}}"), patch(reservations::update_reservation))
         .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/cancel"), post(reservations::cancel_room))
         .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/assign"), post(reservations::assign_room))
         .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/unassign"), post(reservations::unassign_room))
+        .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/modify"), post(reservations::modify_room))
+        .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/check-in"), post(reservations::check_in))
+        .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/undo-check-in"), post(reservations::undo_check_in))
+        .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/check-out"), post(reservations::check_out))
+        .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/guests"), post(reservations::add_occupant))
+        .route(
+            &format!("{PROPERTY}/reservation-rooms/{{room}}/guests/{{guest}}"),
+            delete(reservations::remove_occupant),
+        )
         .route("/graphql", post(graphql::handler))
         .merge(commands)
         .layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)));
