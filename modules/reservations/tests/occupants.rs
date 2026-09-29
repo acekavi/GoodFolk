@@ -242,6 +242,35 @@ async fn another_tenants_guest_cannot_be_added(_: PgPoolOptions, opts: PgConnect
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_room_of_another_property_is_not_found(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let extra = hotel.guest(new_guest("Ben", "Perera")).await;
+    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 2, 5)]).await.unwrap();
+    let room = booked.rooms[0].id;
+    let mut tx = hotel.tx().await;
+    let kandy = property::NewProperty {
+        code: "KDY".into(),
+        name: "Kandy".into(),
+        timezone: "Asia/Colombo".into(),
+        base_currency: "LKR".into(),
+    };
+    let kandy = property::create_property(&mut tx, hotel.tenant, hotel.user, kandy).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = hotel.tx().await;
+    let add_elsewhere =
+        reservations::add_occupant(&mut tx, hotel.tenant, hotel.user, kandy.id, room, 1, extra.id).await;
+    let remove_elsewhere =
+        reservations::remove_occupant(&mut tx, hotel.tenant, hotel.user, kandy.id, room, 1, extra.id).await;
+
+    assert!(matches!(add_elsewhere, Err(ReservationsError::NotFound("reservation room"))), "{add_elsewhere:?}");
+    assert!(matches!(remove_elsewhere, Err(ReservationsError::NotFound("reservation room"))), "{remove_elsewhere:?}");
+    assert!(hotel.occupant_guest_ids(room).await.is_empty(), "the wrong-property attempts wrote nothing");
+    assert_eq!(hotel.room_status_version(room).await, ("confirmed".into(), 1), "the room's version is untouched");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn detail_lists_occupants_as_masked_guests(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
