@@ -297,6 +297,19 @@ async fn confirmation_prefixes_have_a_pattern_index(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn unassigned_confirmed_stays_have_a_partial_gist_index(pool: PgPool) {
+    let definition: String = sqlx::query_scalar(
+        "select indexdef from pg_indexes where tablename = 'reservation_room' and indexname = 'reservation_room_unassigned_idx'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert!(definition.contains("USING gist (property_id, stay)"), "{definition}");
+    assert!(definition.contains("WHERE ((room_id IS NULL) AND (status = 'confirmed'::text))"), "{definition}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn confirmation_numbers_are_unique_per_property(pool: PgPool) {
     let galle = hotel(&pool, "GAL").await;
     let kandy = hotel(&pool, "KAN").await;
