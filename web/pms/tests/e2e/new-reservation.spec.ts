@@ -183,6 +183,17 @@ test('a reservation can be billed to an account chosen in the review step, shown
 		name: 'Acme Corp',
 		currency: 'USD'
 	});
+	// A deactivated account must not be offered to bill a new reservation to.
+	const retired = await post(page.request, `${hotel.path}/accounts`, {
+		kind: 'company',
+		name: 'Closed Ventures',
+		currency: 'USD'
+	});
+	const deactivated = await page.request.patch(`${hotel.path}/accounts/${retired.id}`, {
+		headers: { 'x-goodfolk-csrf': '1', 'If-Match': '"1"' },
+		data: { active: false }
+	});
+	expect(deactivated.status(), await deactivated.text()).toBe(200);
 	await openNewReservation(page);
 
 	// A stay for Ada Silva (non-resident, seeded by `bookableHotel`), straight to the review.
@@ -196,6 +207,10 @@ test('a reservation can be billed to an account chosen in the review step, shown
 	await expect(review).toBeVisible();
 	const accountSelect = review.getByLabel('Bill to account');
 	await expect(accountSelect).toHaveValue('');
+	await expect(accountSelect.getByRole('option', { name: 'Acme Corp · Company' })).toHaveCount(1);
+	await expect(
+		accountSelect.getByRole('option', { name: 'Closed Ventures · Company' })
+	).toHaveCount(0);
 	await accountSelect.selectOption({ label: 'Acme Corp · Company' });
 	await review.getByRole('button', { name: 'Create reservation' }).click();
 
