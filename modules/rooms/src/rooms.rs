@@ -1,5 +1,5 @@
 use crate::inventory::{WINDOW_DAYS, adjust, business_date, contribute, extend_window, lock_days, window_keys};
-use crate::{RoomsError, assigned_stay, audit, notify, reorder, rooms_key, violates};
+use crate::{RoomsError, assigned_stay, audit, notify, reorder, rooms_key, tape_keys, violates};
 use db::{TenantId, Tx, UserId};
 use serde::Serialize;
 use time::{Date, Duration};
@@ -230,6 +230,7 @@ pub async fn update_room(
     }
     let room_type = changes.room_type_id.unwrap_or(current.room_type_id);
     let active = changes.active.unwrap_or(current.active);
+    let active_changed = active != current.active;
     let blocked_by_stays = if current.active && !active {
         Some("deactivating the room")
     } else if room_type != current.room_type_id {
@@ -286,6 +287,10 @@ pub async fn update_room(
             contribute(tx, property, today, id, room_type, active, sign).await?;
         }
         keys.extend(window_keys(property, today));
+    }
+    // Only `active` moves a room on and off the tape chart; a retype or rename doesn't change what it shows.
+    if active_changed {
+        keys.extend(tape_keys(property, today, today + Duration::days(WINDOW_DAYS)));
     }
     audit(
         tx,

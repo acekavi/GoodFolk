@@ -263,7 +263,9 @@ pub async fn create_reservation(
     audit(tx, tenant, actor, "reservation.created", "reservation", id, data).await?;
     let months: BTreeSet<String> =
         input.rooms.iter().flat_map(|room| rooms::month_keys(property, room.check_in, room.check_out)).collect();
-    let keys = [reservations_key(property), reservation_key(id)].into_iter().chain(months).collect();
+    let tape: BTreeSet<String> =
+        input.rooms.iter().flat_map(|room| rooms::tape_keys(property, room.check_in, room.check_out)).collect();
+    let keys = [reservations_key(property), reservation_key(id)].into_iter().chain(months).chain(tape).collect();
     notify(tx, tenant, property, keys).await?;
 
     Ok(CreatedReservation {

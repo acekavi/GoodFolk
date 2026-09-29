@@ -279,7 +279,11 @@ async fn finish(
         .execute(&mut **tx)
         .await?;
     audit(tx, tenant, actor, action, "reservation_room", id, data).await?;
-    notify(tx, tenant, property, vec![reservations_key(property), reservation_key(stay.reservation_id)]).await
+    let keys = [reservations_key(property), reservation_key(stay.reservation_id)]
+        .into_iter()
+        .chain(rooms::tape_keys(property, stay.check_in, stay.check_out))
+        .collect();
+    notify(tx, tenant, property, keys).await
 }
 
 /// The parts of a `reservation_room` that assigning reads.

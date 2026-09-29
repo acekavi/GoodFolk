@@ -64,7 +64,8 @@ pub struct CheckedOut {
 /// at booking.
 ///
 /// Sets `checked_in_at` to now and `checked_in_business_date` to the business date, bumps both versions,
-/// audits `reservation_room.checked_in` and notifies the reservation list and this reservation's detail.
+/// audits `reservation_room.checked_in` and notifies the reservation list, this reservation's detail, and the
+/// stay's tape months.
 pub async fn check_in(
     tx: &mut Tx,
     tenant: TenantId,
@@ -75,7 +76,7 @@ pub async fn check_in(
     policy: CheckInPolicy,
 ) -> Result<CheckedIn, ReservationsError> {
     let row: Option<CheckInRow> = sqlx::query_as(
-        "select reservation_id, room_id, status, lower(stay) as check_in, version
+        "select reservation_id, room_id, status, lower(stay) as check_in, upper(stay) as check_out, version
          from reservation_room where id = $1 and property_id = $2
          for update",
     )
@@ -146,7 +147,11 @@ pub async fn check_in(
         "checked_in_business_date": today,
     });
     audit(tx, tenant, actor, "reservation_room.checked_in", "reservation_room", id, data).await?;
-    notify(tx, tenant, property, vec![reservations_key(property), reservation_key(row.reservation_id)]).await?;
+    let keys = [reservations_key(property), reservation_key(row.reservation_id)]
+        .into_iter()
+        .chain(rooms::tape_keys(property, row.check_in, row.check_out))
+        .collect();
+    notify(tx, tenant, property, keys).await?;
 
     Ok(CheckedIn {
         id,
@@ -173,8 +178,9 @@ pub async fn undo_check_in(
     id: Uuid,
     expected_version: i32,
 ) -> Result<UndoneCheckIn, ReservationsError> {
-    let row: Option<(Uuid, String, Option<Date>, i32)> = sqlx::query_as(
-        "select reservation_id, status, checked_in_business_date, version
+    let row: Option<(Uuid, String, Option<Date>, i32, Date, Date)> = sqlx::query_as(
+        "select reservation_id, status, checked_in_business_date, version, lower(stay) as check_in,
+                upper(stay) as check_out
          from reservation_room where id = $1 and property_id = $2
          for update",
     )
@@ -182,7 +188,7 @@ pub async fn undo_check_in(
     .bind(property)
     .fetch_optional(&mut **tx)
     .await?;
-    let (reservation_id, status, checked_in_business_date, version) =
+    let (reservation_id, status, checked_in_business_date, version, check_in, check_out) =
         row.ok_or(ReservationsError::NotFound("reservation room"))?;
     if version != expected_version {
         return Err(ReservationsError::VersionMismatch("reservation room"));
@@ -211,7 +217,11 @@ pub async fn undo_check_in(
 
     let data = serde_json::json!({ "reservation_id": reservation_id });
     audit(tx, tenant, actor, "reservation_room.check_in_undone", "reservation_room", id, data).await?;
-    notify(tx, tenant, property, vec![reservations_key(property), reservation_key(reservation_id)]).await?;
+    let keys = [reservations_key(property), reservation_key(reservation_id)]
+        .into_iter()
+        .chain(rooms::tape_keys(property, check_in, check_out))
+        .collect();
+    notify(tx, tenant, property, keys).await?;
 
     Ok(UndoneCheckIn { id, reservation_id, status: RoomStatus::Confirmed, version: new_version })
 }
@@ -229,7 +239,8 @@ pub async fn undo_check_in(
 /// this resolves).
 ///
 /// Bumps both versions, audits `reservation_room.checked_out` (recording the released nights, if any) and
-/// notifies the reservation list, this reservation's detail, and the released range's inventory months.
+/// notifies the reservation list, this reservation's detail, the released range's inventory months, and the
+/// original (unshortened) range's tape months.
 pub async fn check_out(
     tx: &mut Tx,
     tenant: TenantId,
@@ -302,6 +313,9 @@ pub async fn check_out(
     if !released_nights.is_empty() {
         keys.extend(rooms::month_keys(property, new_check_out, stay.check_out));
     }
+    // The original range, not the shortened one: an early departure still touches every month the booked
+    // stay used to cover.
+    keys.extend(rooms::tape_keys(property, stay.check_in, stay.check_out));
     notify(tx, tenant, property, keys).await?;
 
     Ok(CheckedOut {
@@ -375,6 +389,7 @@ struct CheckInRow {
     room_id: Option<Uuid>,
     status: String,
     check_in: Date,
+    check_out: Date,
     version: i32,
 }
 
