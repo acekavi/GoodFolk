@@ -77,6 +77,47 @@ test('blocking a room reduces availability on the calendar until it is released'
 	await expect(grid.getByRole('gridcell', { name: `DLX ${today}: 5 available` })).toBeVisible();
 });
 
+test('a block made in one tab updates the availability another tab already has open', async ({
+	page,
+	context
+}) => {
+	await signUp(page);
+	await createProperty(page, 'GAL');
+	await page.getByRole('link', { name: 'Room types' }).click();
+	await addRoomType(page, 'DLX', 'Deluxe');
+	await page.getByRole('link', { name: 'Rooms', exact: true }).click();
+	await addRooms(page, 'DLX', 101, 105);
+
+	// A second tab opens the same month's grid first, so its inventory query is fetched and cached
+	// (staleTime: Infinity — see api-conventions.md) before the block below invalidates it.
+	const viewer = await context.newPage();
+	await viewer.goto(page.url());
+	await viewer.getByRole('link', { name: 'Inventory' }).click();
+	const viewerGrid = viewer.getByRole('grid', { name: 'Availability' });
+	const today = (await viewer.getByTestId('business-date').textContent())!.trim();
+	await expect(
+		viewerGrid.getByRole('gridcell', { name: `DLX ${today}: 5 available` })
+	).toBeVisible();
+
+	await page.getByRole('link', { name: 'Inventory' }).click();
+	const grid = page.getByRole('grid', { name: 'Availability' });
+	await page.getByRole('button', { name: 'Block a room' }).click();
+	const dialog = page.getByRole('dialog', { name: 'Block a room' });
+	await dialog.getByLabel('Room').selectOption({ label: '101 · DLX' });
+	await dialog.getByLabel('From').fill(today);
+	await dialog.getByLabel('Until (first day back)').fill(addDays(today, 1));
+	await dialog.getByLabel('Reason').selectOption({ label: 'Maintenance' });
+	await dialog.getByRole('button', { name: 'Block room' }).click();
+	await expect(dialog).toBeHidden();
+	await expect(grid.getByRole('gridcell', { name: `DLX ${today}: 4 available` })).toBeVisible();
+
+	// The viewer tab never invalidated its own cache; only the server event does, so this shows the
+	// event stream — not a longer staleTime — is what keeps an already-open grid correct.
+	await expect(
+		viewerGrid.getByRole('gridcell', { name: `DLX ${today}: 4 available` })
+	).toBeVisible();
+});
+
 test('the active cell stays on its row when room types are retired and restored', async ({
 	page,
 	context

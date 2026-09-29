@@ -45,7 +45,11 @@
 	const inventory = createQuery(() => ({
 		queryKey: inventoryKey(propertyId, month),
 		queryFn: ({ signal }) => fetchMonth(propertyId, month, signal),
-		enabled: !!month
+		enabled: !!month,
+		// The event stream invalidates a month's key when it actually changes (a block, a booking, a
+		// resync), so a mount doesn't need to refetch just because 30s passed — see "queries kept fresh
+		// by server events" in api-conventions.md.
+		staleTime: Infinity
 	}));
 	const counts = $derived(indexInventory(inventory.data?.inventory ?? []));
 	const rows = $derived(

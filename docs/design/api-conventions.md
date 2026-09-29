@@ -123,6 +123,7 @@ Keep events small: `pg_notify` payloads must stay under 8000 bytes. Inventory mo
 - `bun run api:schemas && bun run codegen` regenerates `web/pms/src/lib/api/{openapi.json,openapi.d.ts,schema.graphql,gql/}`. Commit the result; CI fails if it is stale.
 - REST calls use `rest` (openapi-fetch), GraphQL uses `query(document)` with documents declared via `graphql(\`…\`)` in `src/lib/**/*.ts` (not in components).
 - Query keys match event keys. `connectEvents` applies `invalidate` and `resync`.
+- **Queries kept fresh by server events can use a long `staleTime` (`Infinity` is fine).** The default (`staleTime: 30_000` in `src/routes/+layout.svelte`) exists for queries nothing invalidates; a query whose key events cover doesn't need to refetch just because a mount happened 30s after the last one — the event stream already refetches it (or marks it to) the moment its data actually changes, and `resync` covers anything missed while disconnected. Set `staleTime` on the query itself (see `inventory` in `p/[property]/inventory/+page.svelte`), not globally, since not every query is event-covered yet.
 
 ## Versioning
 

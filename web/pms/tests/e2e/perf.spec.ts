@@ -1,10 +1,16 @@
 import { expect, test } from '@playwright/test';
 import { book, bookableHotel, createProperty, post, signUp } from './helpers';
 
-// Phase 1 gate: the inventory month grid of a 200-room, 12-type property renders in under 50 ms and
+// Phase 1 gate: the inventory month grid of a 200-room, 12-type property renders in under 55 ms and
 // scrolls at 60 fps, with only the columns in view in the DOM. Timings on shared CI runners are noise,
 // so this test is left out of the default run. Run it locally with:
 //   E2E_PERF=1 bun run test:e2e --grep @perf
+//
+// On a laptop with the `powersave` CPU governor this measures 41-58 ms: with the event stream connected once
+// (Phase 3a), nothing refetches inside the timed switches, and the old 37-41 ms reading depended on the
+// reconnect-loop bug keeping the CPU clocked up (see ROADMAP Phase 3b). The owner raised the gate from 50 ms to
+// 55 ms for this; a slow run on a `powersave` CPU can still exceed it, so measure with the `performance` governor
+// or on the server class when it matters.
 
 // One test at a time: seeding one test's data beside another's timing skews it.
 test.describe.configure({ mode: 'default' });
@@ -12,7 +18,7 @@ test.describe.configure({ mode: 'default' });
 const ROOM_TYPES = 12;
 const ROOMS = 200;
 
-test('the month grid renders under 50 ms and scrolls at 60 fps @perf', async ({ page }) => {
+test('the month grid renders under 55 ms and scrolls at 60 fps @perf', async ({ page }) => {
 	await signUp(page);
 	await createProperty(page, 'BIG');
 	const property = `/api/v1/properties/${page.url().split('/p/')[1]}`;
@@ -82,7 +88,7 @@ test('the month grid renders under 50 ms and scrolls at 60 fps @perf', async ({ 
 	console.log(
 		`month grid: render ${renderMs.toFixed(1)} ms, ${slow}/90 slow frames, ${cells} cells`
 	);
-	expect(renderMs).toBeLessThan(50);
+	expect(renderMs).toBeLessThan(55);
 	expect(slow).toBeLessThanOrEqual(3);
 	// Only the columns in view, two of overscan on each side and the active one are in the DOM.
 	expect(cells).toBeLessThanOrEqual(ROOM_TYPES * (columnsInView + 2 * 2 + 1));

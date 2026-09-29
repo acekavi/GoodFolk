@@ -92,7 +92,23 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
 - No-show, as part of the night audit (Phase 7).
 - Carried over from the Phase 3a reviews:
   - **Check-out must shorten `stay`** (the spec says so): `rooms::assigned_stay` counts checked-out stays, so an early departure that leaves `upper(stay)` alone keeps blocks, deactivation and retyping of that room refused.
-  - **Re-baseline the Phase 1 month-grid gate.** It was measured while the event stream reconnected in a loop, so no invalidation ever reached the page; with events working, a month switch onto an invalidated month also starts its background refetch inside the timed window (37–41 ms before, 47–59 ms after, grid code unchanged). Measure with invalidations settled, or make the refetch cheaper.
+  - **Re-baseline the Phase 1 month-grid gate: done.** Instrumented `fetch`/`EventSource` and took a CDP CPU
+    profile across the timed loop: with the event stream connected once (Phase 3a's fix), zero network
+    requests happen inside the ten-switch window — the "background refetch" theory didn't hold up. The old
+    37–41 ms number came from a bug, not from an absence of refetching: the pre-3a code's reconnect loop kept
+    tearing down and reopening the `EventSource` throughout the whole test (210+ fetches inside the 1.4 s
+    timed loop alone, from `resync` refetching `me`/`properties` on every reconnect), which happened to keep
+    this laptop's `powersave`-governed CPU clocked up; the fixed code's quieter, bursty click-then-idle
+    pattern pays a per-burst frequency ramp-up cost the old bug's continuous load didn't. Confirmed with a
+    cold-run A/B (old structure fast only when its real reconnect loop ran; stubbing `connectEvents` either
+    way, or waiting up to 1000 ms for invalidations to settle before timing, left it slow) — see task 12 in
+    the p3b notes for the full instrumentation and numbers. Set `staleTime: Infinity` on the inventory month
+    query regardless (events invalidate it when it changes, so a mount shouldn't refetch just because 30 s
+    passed — real win for long sessions, didn't move this test's numbers) and documented the rule in
+    api-conventions.md. The owner raised the gate from the spec's 50 ms to 55 ms: 15 pooled cold-run medians on this `powersave` laptop ranged
+    40.9–57.7 ms (mean ~50 ms), so measure it with the `performance` governor or on the server class before
+    relying on it. Added a two-tab inventory test proving a block in one tab updates
+    another tab's already-open grid through the event stream alone.
   - **Guest keys: done.** `GuestIdKeys` holds a current key plus retired ones (`GUEST_ID_RETIRED_KEYS`); `open` picks by key id, so a rotation keeps opening numbers sealed before it. `APP_ENV=production` refuses the README development key and the fixed test key as `GUEST_ID_KEY`.
   - **Tests to add:** opposite-order multi-type creates racing, create against a block, retype or deactivation racing an assignment; filter plus cursor paging, a single-name guest under the GUEST sort, an `EXPLAIN` check that the list uses `reservation_room_arrival_idx`; stale `If-Match` on assign, unassign and guest update; a reproducible seed and a moving business date in the cancel property test; the 412 path of the detail modal.
   - **Tidying:** `business_date` and `violates` are copied across crates; `find_drift` counts `sold` with a correlated subquery per day (recheck before the Phase 7 nightly check); confirmation-number sort is textual past 999 999; `offers` clones each plan per combination (fine until the IBE); the `(list)` route id is written in two files; `new/+page.svelte` and `[id]/+page.svelte` are large enough to split.
