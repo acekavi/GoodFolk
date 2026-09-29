@@ -1,6 +1,7 @@
 //! Reservations: booking one or more rooms under a confirmation number, with every night's price fixed at
 //! booking and the inventory counters kept exact under concurrent bookings.
 
+use crate::accounts::check_account;
 use crate::guests::notes;
 use crate::{ReservationsError, audit, check_window, notify, reservation_key, reservations_key};
 use db::{TenantId, Tx, UserId};
@@ -25,6 +26,9 @@ pub struct NewReservation {
     pub booker_guest_id: Uuid,
     pub source: Source,
     pub notes: String,
+    /// The company or travel agent this reservation is billed to, if any. Must be an active account of this
+    /// tenant.
+    pub account_id: Option<Uuid>,
     pub rooms: Vec<NewReservationRoom>,
 }
 
@@ -80,7 +84,8 @@ pub struct CreatedReservation {
 /// Books `input`'s rooms, confirmed, under the property's next confirmation number.
 ///
 /// Every stay must be inside the counter window and arrive on or after the business date, and every guest,
-/// room type and rate plan named must exist (`Invalid`, like any other malformed request). The counters of
+/// room type and rate plan named must exist (`Invalid`, like any other malformed request); a named
+/// `account_id` must be an active account of this tenant. The counters of
 /// every requested room type are locked over all the stays at
 /// once ([`rooms::lock_days`]); a night without a free room of the type, counting the rooms this request
 /// already takes, is a `Conflict` (no overbooking). Each room is priced by [`rates::load_quote`] for its
@@ -111,6 +116,9 @@ pub async fn create_reservation(
         .ok_or(ReservationsError::NotFound("property"))?;
     for room in &input.rooms {
         check_window(today, room.check_in, room.check_out)?;
+    }
+    if let Some(account) = input.account_id {
+        check_account(tx, account).await?;
     }
     let residencies = residencies(tx, &input).await?;
     let room_types = room_type_codes(tx, property, &input.rooms).await?;
@@ -161,8 +169,8 @@ pub async fn create_reservation(
     let id = Uuid::now_v7();
     let version: i32 = sqlx::query_scalar(
         "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id, notes,
-                                  created_by)
-         values ($1, $2, $3, $4, $5, $6, $7, $8)
+                                  created_by, account_id)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          returning version",
     )
     .bind(id)
@@ -173,6 +181,7 @@ pub async fn create_reservation(
     .bind(input.booker_guest_id)
     .bind(notes)
     .bind(actor.0)
+    .bind(input.account_id)
     .fetch_one(&mut **tx)
     .await?;
 
@@ -263,6 +272,74 @@ pub async fn create_reservation(
         totals: totals(created.iter().map(|room| (room.currency.as_str(), room.total))),
         rooms: created,
     })
+}
+
+/// A change to a reservation's account or notes. `None` leaves a field unchanged; `account_id` is nullable, so
+/// `Some(None)` clears it (bills no one) and `Some(Some(..))` sets or replaces it, as [`crate::GuestChanges`].
+#[derive(Debug, Clone, Default)]
+pub struct ReservationChanges {
+    pub account_id: Option<Option<Uuid>>,
+    pub notes: Option<String>,
+}
+
+/// A reservation after [`update_reservation`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct UpdatedReservation {
+    pub id: Uuid,
+    pub version: i32,
+    pub account_id: Option<Uuid>,
+    pub notes: String,
+}
+
+/// Sets or clears the reservation `id` of the property's billed-to account and notes, at `expected_version`.
+///
+/// Locks only the `reservation` row. Every reservation-room command (`cancel_room`, `assign_room`,
+/// `unassign_room`) takes `reservation` LAST, after `reservation_room` (and, for `assign_room`, `room`) --
+/// see "Room assignment lock order" in `docs/design/api-conventions.md`. This command never locks
+/// `reservation_room` or `room` at all, so taking `reservation` first (and only) here cannot form a cycle with
+/// those commands: nothing that holds `reservation_room` waits on this command, and this command waits on
+/// nothing after it takes `reservation`.
+pub async fn update_reservation(
+    tx: &mut Tx,
+    tenant: TenantId,
+    actor: UserId,
+    property: Uuid,
+    id: Uuid,
+    expected_version: i32,
+    changes: ReservationChanges,
+) -> Result<UpdatedReservation, ReservationsError> {
+    let row: Option<(i32, Option<Uuid>, String)> = sqlx::query_as(
+        "select version, account_id, notes from reservation where id = $1 and property_id = $2 for update",
+    )
+    .bind(id)
+    .bind(property)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let (version, current_account, current_notes) = row.ok_or(ReservationsError::NotFound("reservation"))?;
+    if version != expected_version {
+        return Err(ReservationsError::VersionMismatch("reservation"));
+    }
+    if let Some(Some(account)) = changes.account_id {
+        check_account(tx, account).await?;
+    }
+    let fields: Vec<&str> = [("account_id", changes.account_id.is_some()), ("notes", changes.notes.is_some())]
+        .into_iter()
+        .filter_map(|(field, changed)| changed.then_some(field))
+        .collect();
+    let account_id = changes.account_id.unwrap_or(current_account);
+    let notes_value = changes.notes.map(notes).transpose()?.unwrap_or(current_notes);
+    let updated_version: i32 = sqlx::query_scalar(
+        "update reservation set account_id = $2, notes = $3, version = version + 1 where id = $1 returning version",
+    )
+    .bind(id)
+    .bind(account_id)
+    .bind(&notes_value)
+    .fetch_one(&mut **tx)
+    .await?;
+    let data = serde_json::json!({ "fields": fields, "account_id": account_id });
+    audit(tx, tenant, actor, "reservation.updated", "reservation", id, data).await?;
+    notify(tx, tenant, property, vec![reservations_key(property), reservation_key(id)]).await?;
+    Ok(UpdatedReservation { id, version: updated_version, account_id, notes: notes_value })
 }
 
 fn invalid(message: String) -> ReservationsError {

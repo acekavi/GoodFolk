@@ -125,7 +125,8 @@ fn looks_like_email(value: &str) -> bool {
         && domain.split('.').all(|label| !label.is_empty())
 }
 
-fn email(value: Option<String>) -> Result<Option<String>, ReservationsError> {
+/// Also used by [`crate::accounts`] for an account's contact email: same shape, same message.
+pub(crate) fn email(value: Option<String>) -> Result<Option<String>, ReservationsError> {
     value
         .map(|value| {
             let value = value.trim();
@@ -138,7 +139,8 @@ fn email(value: Option<String>) -> Result<Option<String>, ReservationsError> {
         .transpose()
 }
 
-fn phone(value: Option<String>) -> Result<Option<String>, ReservationsError> {
+/// Also used by [`crate::accounts`] for an account's contact phone: same shape, same message.
+pub(crate) fn phone(value: Option<String>) -> Result<Option<String>, ReservationsError> {
     value
         .map(|value| {
             let value = value.trim();

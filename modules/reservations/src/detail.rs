@@ -1,6 +1,7 @@
 //! One reservation as its detail view shows it: its rooms with their nights and terms, what cancelling each
 //! would cost today, and its history.
 
+use crate::accounts::AccountKind;
 use crate::guests::COLUMNS as GUEST_COLUMNS;
 use crate::reservations::totals;
 use crate::{CancellationTerms, Guest, ReservationsError, Source, Total, business_date, cancellation_penalty};
@@ -23,6 +24,8 @@ pub struct ReservationDetail {
     pub created_at: OffsetDateTime,
     pub version: i32,
     pub booker: Guest,
+    /// The company or travel agent this reservation is billed to; `None` if it is billed to the guest.
+    pub account: Option<AccountRef>,
     /// What the rooms that are not cancelled cost, per currency, in the order the rooms first use each.
     pub totals: Vec<Total>,
     /// In the order they were booked.
@@ -76,6 +79,13 @@ pub struct RatePlanRef {
     pub code: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountRef {
+    pub id: Uuid,
+    pub name: String,
+    pub kind: AccountKind,
+}
+
 /// A night's price as booked, in minor units of the room's currency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Night {
@@ -102,6 +112,7 @@ struct ReservationRow {
     created_at: OffsetDateTime,
     version: i32,
     booker_guest_id: Uuid,
+    account_id: Option<Uuid>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -128,11 +139,11 @@ struct RoomRow {
     cancellation_penalty: Option<i64>,
 }
 
-/// The reservation `id` of the property, in five queries whatever its size. `NotFound` if the property has no
-/// such reservation.
+/// The reservation `id` of the property, in five queries whatever its size (six when it is billed to an
+/// account). `NotFound` if the property has no such reservation.
 pub async fn get_reservation(tx: &mut Tx, property: Uuid, id: Uuid) -> Result<ReservationDetail, ReservationsError> {
     let reservation: ReservationRow = sqlx::query_as(
-        "select confirmation_no, source, notes, created_at, version, booker_guest_id
+        "select confirmation_no, source, notes, created_at, version, booker_guest_id, account_id
          from reservation where id = $1 and property_id = $2",
     )
     .bind(id)
@@ -141,6 +152,20 @@ pub async fn get_reservation(tx: &mut Tx, property: Uuid, id: Uuid) -> Result<Re
     .await?
     .ok_or(ReservationsError::NotFound("reservation"))?;
     let today = business_date(tx, property).await?;
+    let account = match reservation.account_id {
+        Some(account_id) => {
+            let (name, kind): (String, String) = sqlx::query_as("select name, kind from account where id = $1")
+                .bind(account_id)
+                .fetch_one(&mut **tx)
+                .await?;
+            Some(AccountRef {
+                id: account_id,
+                name,
+                kind: AccountKind::parse(&kind).ok_or_else(|| crate::decode_error("kind", &kind))?,
+            })
+        }
+        None => None,
+    };
     let rooms: Vec<RoomRow> = sqlx::query_as(
         "select rr.id, rr.version, rr.status, rt.id as room_type_id, rt.code as room_type_code,
                 rt.name as room_type_name, room.id as room_id, room.number as room_number,
@@ -231,6 +256,7 @@ pub async fn get_reservation(tx: &mut Tx, property: Uuid, id: Uuid) -> Result<Re
         created_at: reservation.created_at,
         version: reservation.version,
         booker: guest(reservation.booker_guest_id)?,
+        account,
         totals,
         rooms: details,
     })

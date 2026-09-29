@@ -4,6 +4,7 @@
 //! transaction, and reservation writes queue change events. Guests belong to the tenant, not to a property, so
 //! a chain shares guest history.
 
+mod accounts;
 mod assignment;
 mod availability;
 mod cancellation;
@@ -12,11 +13,15 @@ mod guests;
 mod list;
 mod reservations;
 
+pub use accounts::{
+    Account, AccountChanges, AccountContact, AccountKind, MAX_ACCOUNT_LIST, NewAccount, create_account, get_account,
+    list_accounts, update_account,
+};
 pub use assignment::{AssignedRoom, FreeRoom, assign_room, free_rooms, unassign_room};
 pub use availability::{AvailabilityRequest, MAX_AVAILABILITY_NIGHTS, RoomTypeAvailability, availability};
 pub use cancellation::{CancellationTerms, CancelledRoom, cancel_room, cancellation_penalty};
 pub use detail::{
-    HistoryEntry, Night, RatePlanRef, ReservationDetail, RoomDetail, RoomRef, RoomTypeRef, get_reservation,
+    AccountRef, HistoryEntry, Night, RatePlanRef, ReservationDetail, RoomDetail, RoomRef, RoomTypeRef, get_reservation,
     reservation_history,
 };
 pub use guests::{
@@ -27,8 +32,8 @@ pub use list::{
     list_reservation_rooms,
 };
 pub use reservations::{
-    CreatedReservation, CreatedRoom, MAX_ROOMS_PER_RESERVATION, NewReservation, NewReservationRoom, Source, Total,
-    create_reservation,
+    CreatedReservation, CreatedRoom, MAX_ROOMS_PER_RESERVATION, NewReservation, NewReservationRoom, ReservationChanges,
+    Source, Total, UpdatedReservation, create_reservation, update_reservation,
 };
 
 use db::{Event, TenantId, Tx, UserId};

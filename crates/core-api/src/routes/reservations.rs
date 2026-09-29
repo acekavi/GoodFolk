@@ -266,6 +266,8 @@ pub async fn create_reservation(
         booker_guest_id: body.booker_guest_id,
         source: body.source,
         notes: body.notes,
+        // Accounts are not wired up to this route yet (a later task).
+        account_id: None,
         rooms: body
             .rooms
             .into_iter()

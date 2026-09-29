@@ -183,6 +183,7 @@ async fn malformed_bookings_are_refused(_: PgPoolOptions, opts: PgConnectOptions
         booker_guest_id: booker.id,
         source: Source::FrontDesk,
         notes: String::new(),
+        account_id: None,
         rooms: vec![room.clone()],
     };
     let (first, last) = (hotel.day(0), hotel.day(730));
@@ -297,6 +298,7 @@ async fn parallel_bookings_for_the_last_room_sell_it_once(_: PgPoolOptions, opts
             booker_guest_id: booker.id,
             source: Source::FrontDesk,
             notes: String::new(),
+            account_id: None,
             rooms: vec![hotel.room(hotel.deluxe.id, &plans.bar, 1, 4)],
         };
         tasks.spawn(async move {
