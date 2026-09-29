@@ -12,6 +12,7 @@ mod detail;
 mod guests;
 mod list;
 mod modify;
+mod occupants;
 mod reservations;
 mod stay;
 
@@ -34,6 +35,7 @@ pub use list::{
     list_reservation_rooms,
 };
 pub use modify::{ModifiedRoom, RoomChanges, modify_room};
+pub use occupants::{RemovedOccupant, RoomOccupant, add_occupant, remove_occupant};
 pub use reservations::{
     CreatedReservation, CreatedRoom, MAX_ROOMS_PER_RESERVATION, NewReservation, NewReservationRoom, ReservationChanges,
     Source, Total, UpdatedReservation, create_reservation, update_reservation,

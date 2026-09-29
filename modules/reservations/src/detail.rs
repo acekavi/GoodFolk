@@ -47,6 +47,8 @@ pub struct RoomDetail {
     pub rate_plan: RatePlanRef,
     pub meal_plan: MealPlan,
     pub primary_guest: Guest,
+    /// Other guests staying in the room, besides the primary guest, masked the same way.
+    pub occupants: Vec<Guest>,
     /// Each night's price as booked, by date.
     pub nights: Vec<Night>,
     pub total: i64,
@@ -139,7 +141,7 @@ struct RoomRow {
     cancellation_penalty: Option<i64>,
 }
 
-/// The reservation `id` of the property, in five queries whatever its size (six when it is billed to an
+/// The reservation `id` of the property, in six queries whatever its size (seven when it is billed to an
 /// account). `NotFound` if the property has no such reservation.
 pub async fn get_reservation(tx: &mut Tx, property: Uuid, id: Uuid) -> Result<ReservationDetail, ReservationsError> {
     let reservation: ReservationRow = sqlx::query_as(
@@ -195,8 +197,18 @@ pub async fn get_reservation(tx: &mut Tx, property: Uuid, id: Uuid) -> Result<Re
     for (room, date, room_amount, meal) in night_rows {
         nights.entry(room).or_default().push(Night { date, room: room_amount, meal });
     }
+    let occupant_links: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "select reservation_room_id, guest_id from reservation_guest
+         where reservation_room_id = any($1)
+         order by reservation_room_id, guest_id",
+    )
+    .bind(&room_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+
     let mut guest_ids: Vec<Uuid> = rooms.iter().map(|room| room.primary_guest_id).collect();
     guest_ids.push(reservation.booker_guest_id);
+    guest_ids.extend(occupant_links.iter().map(|(_, guest_id)| *guest_id));
     let guests: Vec<Guest> =
         sqlx::query_as(sqlx::AssertSqlSafe(format!("select {GUEST_COLUMNS} from guest where id = any($1)")))
             .bind(&guest_ids)
@@ -204,6 +216,10 @@ pub async fn get_reservation(tx: &mut Tx, property: Uuid, id: Uuid) -> Result<Re
             .await?;
     let guests: HashMap<Uuid, Guest> = guests.into_iter().map(|guest| (guest.id, guest)).collect();
     let guest = |id: Uuid| guests.get(&id).cloned().ok_or_else(|| crate::decode_error("guest", &id.to_string()));
+    let mut occupants_by_room: HashMap<Uuid, Vec<Guest>> = HashMap::new();
+    for (room_id, guest_id) in occupant_links {
+        occupants_by_room.entry(room_id).or_default().push(guest(guest_id)?);
+    }
 
     let mut details = Vec::with_capacity(rooms.len());
     for row in rooms {
@@ -229,6 +245,7 @@ pub async fn get_reservation(tx: &mut Tx, property: Uuid, id: Uuid) -> Result<Re
             rate_plan: RatePlanRef { id: row.rate_plan_id, code: row.rate_plan_code },
             meal_plan,
             primary_guest: guest(row.primary_guest_id)?,
+            occupants: occupants_by_room.remove(&row.id).unwrap_or_default(),
             total: nights.iter().map(|night| night.room + night.meal).sum(),
             nights,
             currency: row.currency,
