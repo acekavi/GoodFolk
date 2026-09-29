@@ -100,7 +100,7 @@ fn refuse_known_key(b64: &str) -> anyhow::Result<()> {
     let Ok(bytes) = STANDARD.decode(b64.trim()) else { return Ok(()) };
     let is_known = [README_DEV_KEY_B64, db::crypto::TEST_KEY_B64]
         .into_iter()
-        .filter_map(|known| STANDARD.decode(known).ok())
+        .map(|known| STANDARD.decode(known).expect("known-key literals are valid base64"))
         .any(|known| known == bytes);
     if is_known {
         bail!(
@@ -351,5 +351,66 @@ mod tests {
 
         assert!(!config.production);
         assert_eq!(config.guest_id_keys.current().id(), "k1");
+    }
+
+    #[test]
+    fn production_refuses_a_known_key_padded_with_whitespace() {
+        let padded: &'static str = Box::leak(format!("  {README_DEV_KEY_B64}\n").into_boxed_str());
+        let err = Config::from_vars(vars(&[
+            ("DATABASE_URL", "postgres://localhost/db"),
+            ("DATABASE_LISTEN_URL", "postgres://direct/db"),
+            ("GUEST_ID_KEY", padded),
+            ("APP_ENV", "production"),
+        ]))
+        .unwrap_err();
+        let shown = format!("{err:#}");
+
+        assert!(shown.contains("GUEST_ID_KEY"), "{shown}");
+        assert!(shown.contains("Secret Manager"), "{shown}");
+        assert!(!shown.contains(README_DEV_KEY_B64), "{shown}");
+    }
+
+    #[test]
+    fn a_malformed_retired_key_entrys_error_never_echoes_the_key_material() {
+        let bad_key = "k1:not-actually-base64-but-looks-like-key-material";
+        let err = Config::from_vars(vars(&[
+            ("DATABASE_URL", "postgres://localhost/db"),
+            ("GUEST_ID_KEY", GUEST_ID_KEY_B64),
+            ("GUEST_ID_RETIRED_KEYS", bad_key),
+        ]))
+        .unwrap_err();
+        let shown = format!("{err:#}");
+
+        assert!(shown.contains("GUEST_ID_RETIRED_KEYS"), "{shown}");
+        assert!(!shown.contains("not-actually-base64-but-looks-like-key-material"), "{shown}");
+    }
+
+    #[test]
+    fn a_retired_key_id_colliding_with_the_current_key_is_refused_at_config_load() {
+        let err = Config::from_vars(vars(&[
+            ("DATABASE_URL", "postgres://localhost/db"),
+            ("GUEST_ID_KEY", GUEST_ID_KEY_B64),
+            ("GUEST_ID_KEY_ID", "k1"),
+            ("GUEST_ID_RETIRED_KEYS", "k1:NpEboA4rVGSoMrLct/61QvK1sK9tarMjSlGbKhKWYfI="),
+        ]))
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("unique key ids"), "{err:#}");
+    }
+
+    #[test]
+    fn two_retired_keys_with_colliding_ids_are_refused_at_config_load() {
+        let err = Config::from_vars(vars(&[
+            ("DATABASE_URL", "postgres://localhost/db"),
+            ("GUEST_ID_KEY", PROD_KEY_B64),
+            ("GUEST_ID_KEY_ID", "k3"),
+            (
+                "GUEST_ID_RETIRED_KEYS",
+                "k1:NpEboA4rVGSoMrLct/61QvK1sK9tarMjSlGbKhKWYfI=,k1:Yf4THKJZBZDCKBLLWmrVpNlpkAd/5Nfhti4iAx8xVSw=",
+            ),
+        ]))
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("unique key ids"), "{err:#}");
     }
 }
