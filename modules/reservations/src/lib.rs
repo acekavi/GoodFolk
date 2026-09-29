@@ -6,6 +6,7 @@
 
 mod accounts;
 mod assignment;
+mod autoassign;
 mod availability;
 mod cancellation;
 mod detail;
@@ -21,6 +22,7 @@ pub use accounts::{
     list_accounts, update_account,
 };
 pub use assignment::{AssignedRoom, FreeRoom, assign_room, free_rooms, unassign_room};
+pub use autoassign::FIT_HORIZON_DAYS;
 pub use availability::{AvailabilityRequest, MAX_AVAILABILITY_NIGHTS, RoomTypeAvailability, availability};
 pub use cancellation::{CancellationTerms, CancelledRoom, cancel_room, cancellation_penalty};
 pub use detail::{

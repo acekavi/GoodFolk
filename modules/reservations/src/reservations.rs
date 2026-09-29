@@ -2,6 +2,7 @@
 //! booking and the inventory counters kept exact under concurrent bookings.
 
 use crate::accounts::check_account;
+use crate::autoassign::pick_room;
 use crate::guests::notes;
 use crate::{ReservationsError, SELLABLE, audit, check_window, notify, reservation_key, reservations_key};
 use db::{TenantId, Tx, UserId};
@@ -50,6 +51,12 @@ pub struct NewReservationRoom {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct CreatedRoom {
     pub id: Uuid,
+    /// The room auto-assigned to this stay (`autoassign::pick_room`'s tightest fit), or `None` when no room
+    /// of the booked type fit for the whole stay; a stay left unassigned here shows up in Needs a room.
+    /// Never a hand-assigned room: only `assign_room` and `modify_room`'s re-assignment can put a stay in a
+    /// room a person picked.
+    pub room_id: Option<Uuid>,
+    pub room_number: Option<String>,
     pub room_type_id: Uuid,
     pub rate_plan_id: Uuid,
     pub meal_plan: MealPlan,
@@ -92,7 +99,9 @@ pub struct CreatedReservation {
 /// room is priced by [`rates::load_quote`] for its
 /// primary guest's residency and its nights are stored as quoted; any reason the quote gives not to sell is
 /// `Invalid`, with every reason listed. Only then is the confirmation number taken, so a refused booking never
-/// uses one.
+/// uses one. Each room is then auto-assigned the tightest-fitting free room of its type (`autoassign::pick_room`,
+/// picked and inserted one room at a time, in input order); a room no free room fits is created unassigned
+/// rather than refused, and the response and audit name the room chosen, or none.
 pub async fn create_reservation(
     tx: &mut Tx,
     tenant: TenantId,
@@ -189,11 +198,18 @@ pub async fn create_reservation(
     let mut created = Vec::with_capacity(input.rooms.len());
     for (room, quote) in input.rooms.iter().zip(quotes) {
         let room_id = Uuid::now_v7();
+        // Picked room by room, in input order: a room this loop already assigned is inserted before the next
+        // pick, so that pick's own `not exists` checks see it and never double-assign it.
+        let assigned = pick_room(tx, property, room.room_type_id, room.check_in, room.check_out).await?;
+        let (assigned_room_id, assigned_room_number) = match assigned {
+            Some((room_id, number)) => (Some(room_id), Some(number)),
+            None => (None, None),
+        };
         let room_version: i32 = sqlx::query_scalar(
-            "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, stay, adults,
-                                           children, rate_plan_id, meal_plan, status, primary_guest_id, currency,
-                                           cancellation_terms)
-             values ($1, $2, $3, $4, $5, daterange($6, $7), $8, $9, $10, $11, 'confirmed', $12, $13, $14)
+            "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, room_id, stay,
+                                           adults, children, rate_plan_id, meal_plan, status, primary_guest_id,
+                                           currency, cancellation_terms)
+             values ($1, $2, $3, $4, $5, $6, daterange($7, $8), $9, $10, $11, $12, 'confirmed', $13, $14, $15)
              returning version",
         )
         .bind(room_id)
@@ -201,6 +217,7 @@ pub async fn create_reservation(
         .bind(property)
         .bind(id)
         .bind(room.room_type_id)
+        .bind(assigned_room_id)
         .bind(room.check_in)
         .bind(room.check_out)
         .bind(room.adults)
@@ -243,6 +260,8 @@ pub async fn create_reservation(
         .await?;
         created.push(CreatedRoom {
             id: room_id,
+            room_id: assigned_room_id,
+            room_number: assigned_room_number,
             room_type_id: room.room_type_id,
             rate_plan_id: room.rate_plan_id,
             meal_plan: room.meal_plan,
@@ -256,9 +275,12 @@ pub async fn create_reservation(
         });
     }
 
+    let assigned: serde_json::Map<String, serde_json::Value> =
+        created.iter().map(|room| (room.id.to_string(), serde_json::json!(room.room_id))).collect();
     let data = serde_json::json!({
         "confirmation_no": confirmation_no,
         "rooms": created.iter().map(|room| room.id).collect::<Vec<_>>(),
+        "assigned": assigned,
     });
     audit(tx, tenant, actor, "reservation.created", "reservation", id, data).await?;
     let months: BTreeSet<String> =
