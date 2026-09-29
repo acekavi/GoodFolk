@@ -123,12 +123,13 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
 
 ## Phase 4 — Front desk tape chart ([spec](specs/phase-4-tape-chart.md))
 
-- `tapeTile` GraphQL query (GiST-indexed range scan), tile keys, availability header.
-- 2D virtualized chart: aligned 14-day tiles, directional overscan, abort, LRU cache, sticky rail and header, CSS-gradient grid.
-- Drag to move, extend or reassign, with optimistic update and conflict rollback.
-- SSE tile invalidation, so other users' changes appear live.
+- Ten room rows per page, with a room picker (type, room, range chips) and paging; the view lives in the URL.
+- Automatic room assignment on booking (tightest fit, `SKIP LOCKED`), and a **Needs a room** list for overbooked or split-night stays.
+- `tapeWindow` and `unassignedStays` GraphQL queries (GiST range scans), 14-day tiles, directional overscan, abort, LRU cache, sticky rail and header, CSS-gradient grid.
+- Drag to reassign (instant, with undo) or to move or resize dates (price confirmation first), with conflict rollback.
+- Live updates over the existing server-sent events stream (`tape:<property>:<month>` keys); no WebSockets.
 - Persisted-query allowlist for GraphQL.
-- **Performance gate:** a 500-room seeded property (well above the largest expected property, to leave headroom), continuous horizontal scroll at 60 fps on a mid-range laptop, tile p95 under 10 ms server-side, DOM node count bounded.
+- **Performance gates:** a 500-room seeded property with 18 months of bookings: `tapeWindow` p95 under 5 ms, page or picker change under 50 ms, horizontal scroll at 58+ fps with no long task, first open under 400 ms, drag feedback within a frame, DOM under 3,000 nodes.
 
 ## Phase 5 — Housekeeping ([spec](specs/phase-5-housekeeping.md))
 
