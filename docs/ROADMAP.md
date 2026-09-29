@@ -105,7 +105,7 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
     the p3b notes for the full instrumentation and numbers. Set `staleTime: Infinity` on the inventory month
     query regardless (events invalidate it when it changes, so a mount shouldn't refetch just because 30 s
     passed — real win for long sessions, didn't move this test's numbers) and documented the rule in
-    api-conventions.md. The owner raised the gate from the spec's 50 ms to 55 ms: 15 pooled cold-run medians on this `powersave` laptop ranged
+    api-conventions.md. The owner raised the gate from the spec's 50 ms to 55 ms, then to 60 ms after single runs read 55.8–55.9 ms: 15 pooled cold-run medians on this `powersave` laptop ranged
     40.9–57.7 ms (mean ~50 ms), so measure it with the `performance` governor or on the server class before
     relying on it. Added a two-tab inventory test proving a block in one tab updates
     another tab's already-open grid through the event stream alone.
