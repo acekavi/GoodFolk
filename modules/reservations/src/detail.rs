@@ -60,6 +60,16 @@ pub struct RoomDetail {
     pub cancelled_at: Option<OffsetDateTime>,
     /// The penalty recorded when the room was cancelled.
     pub recorded_penalty: Option<i64>,
+    pub checked_in_at: Option<OffsetDateTime>,
+    pub checked_in_business_date: Option<Date>,
+    pub checked_out_at: Option<OffsetDateTime>,
+    /// Whether [`crate::check_in`] would accept this room right now, per [`crate::stay::can_check_in`] -- so
+    /// the SPA never has to re-derive the rule to decide whether to show the button.
+    pub can_check_in: bool,
+    /// As [`Self::can_check_in`], for [`crate::undo_check_in`] via [`crate::stay::can_undo_check_in`].
+    pub can_undo_check_in: bool,
+    /// As [`Self::can_check_in`], for [`crate::check_out`] via [`crate::stay::can_check_out`].
+    pub can_check_out: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +149,9 @@ struct RoomRow {
     cancellation_terms: Option<Json<CancellationTerms>>,
     cancelled_at: Option<OffsetDateTime>,
     cancellation_penalty: Option<i64>,
+    checked_in_at: Option<OffsetDateTime>,
+    checked_in_business_date: Option<Date>,
+    checked_out_at: Option<OffsetDateTime>,
 }
 
 /// The reservation `id` of the property, in six queries whatever its size (seven when it is billed to an
@@ -173,7 +186,8 @@ pub async fn get_reservation(tx: &mut Tx, property: Uuid, id: Uuid) -> Result<Re
                 rt.name as room_type_name, room.id as room_id, room.number as room_number,
                 lower(rr.stay) as check_in, upper(rr.stay) as check_out, rr.adults, rr.children,
                 rp.id as rate_plan_id, rp.code as rate_plan_code, rr.meal_plan, rr.primary_guest_id, rr.currency,
-                rr.cancellation_terms, rr.cancelled_at, rr.cancellation_penalty
+                rr.cancellation_terms, rr.cancelled_at, rr.cancellation_penalty,
+                rr.checked_in_at, rr.checked_in_business_date, rr.checked_out_at
          from reservation_room rr
          join room_type rt on rt.id = rr.room_type_id
          join rate_plan rp on rp.id = rr.rate_plan_id
@@ -232,6 +246,7 @@ pub async fn get_reservation(tx: &mut Tx, property: Uuid, id: Uuid) -> Result<Re
             let stay: Vec<(Date, i64, i64)> = nights.iter().map(|night| (night.date, night.room, night.meal)).collect();
             cancellation_penalty(terms.as_ref(), &stay, row.check_in, today)
         });
+        let room_assigned = row.room_id.is_some();
         details.push(RoomDetail {
             id: row.id,
             version: row.version,
@@ -253,6 +268,12 @@ pub async fn get_reservation(tx: &mut Tx, property: Uuid, id: Uuid) -> Result<Re
             cancellation_penalty,
             cancelled_at: row.cancelled_at,
             recorded_penalty: row.cancellation_penalty,
+            checked_in_at: row.checked_in_at,
+            checked_in_business_date: row.checked_in_business_date,
+            checked_out_at: row.checked_out_at,
+            can_check_in: crate::stay::can_check_in(status, row.check_in, today, room_assigned),
+            can_undo_check_in: crate::stay::can_undo_check_in(status, row.checked_in_business_date, today),
+            can_check_out: crate::stay::can_check_out(status),
         });
     }
 

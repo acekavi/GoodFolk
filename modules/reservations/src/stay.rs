@@ -91,7 +91,7 @@ pub async fn check_in(
     domain::transition(current, Action::CheckIn).map_err(|invalid| ReservationsError::Conflict(invalid.message))?;
 
     let today = business_date(tx, property).await?;
-    if row.check_in != today {
+    if !is_arrival_day(row.check_in, today) {
         return Err(ReservationsError::Conflict(format!("check-in is only on the arrival date ({})", row.check_in)));
     }
     let room = row.room_id.ok_or_else(|| ReservationsError::Conflict("assign a room first".into()))?;
@@ -191,7 +191,7 @@ pub async fn undo_check_in(
     domain::transition(current, Action::UndoCheckIn).map_err(|invalid| ReservationsError::Conflict(invalid.message))?;
 
     let today = business_date(tx, property).await?;
-    if checked_in_business_date != Some(today) {
+    if !same_business_day(checked_in_business_date, today) {
         return Err(ReservationsError::Conflict("check-in can only be undone on the day it happened".into()));
     }
 
@@ -312,6 +312,47 @@ pub async fn check_out(
         checked_out_at,
         released_nights,
     })
+}
+
+/// Whether `check_in` is the property's business date -- the day a room may check in. The one rule
+/// [`check_in`] adds on top of [`domain::transition`]; also used by [`can_check_in`] so the reservation
+/// detail's `canCheckIn` flag never drifts from what the command itself enforces.
+fn is_arrival_day(check_in: Date, business_date: Date) -> bool {
+    check_in == business_date
+}
+
+/// Whether `checked_in_business_date` is still the property's business date -- the one rule [`undo_check_in`]
+/// adds on top of [`domain::transition`]; also used by [`can_undo_check_in`] for the same reason
+/// [`is_arrival_day`] is.
+fn same_business_day(checked_in_business_date: Option<Date>, business_date: Date) -> bool {
+    checked_in_business_date == Some(business_date)
+}
+
+/// Whether a room in `status`, arriving `check_in`, with a room already assigned (`room_assigned`) could be
+/// checked in on `business_date` -- the same rule [`check_in`] itself checks, short of the assigned room's own
+/// active/blocked state (which needs a lock on that row and is only verified when the command actually runs).
+/// This is the one place the rule lives; the reservation detail's `canCheckIn` field calls this rather than
+/// re-deriving it.
+pub(crate) fn can_check_in(status: RoomStatus, check_in: Date, business_date: Date, room_assigned: bool) -> bool {
+    domain::transition(status, Action::CheckIn).is_ok() && is_arrival_day(check_in, business_date) && room_assigned
+}
+
+/// Whether a room in `status`, checked in on `checked_in_business_date`, could have that check-in undone on
+/// `business_date` -- the same rule [`undo_check_in`] itself checks. Used by the reservation detail's
+/// `canUndoCheckIn` field.
+pub(crate) fn can_undo_check_in(
+    status: RoomStatus,
+    checked_in_business_date: Option<Date>,
+    business_date: Date,
+) -> bool {
+    domain::transition(status, Action::UndoCheckIn).is_ok()
+        && same_business_day(checked_in_business_date, business_date)
+}
+
+/// Whether a room in `status` could be checked out -- the same rule [`check_out`] itself checks (a checked-in
+/// room may always be checked out, early or late). Used by the reservation detail's `canCheckOut` field.
+pub(crate) fn can_check_out(status: RoomStatus) -> bool {
+    domain::transition(status, Action::CheckOut).is_ok()
 }
 
 /// The dates of `[from, to)`, in order.

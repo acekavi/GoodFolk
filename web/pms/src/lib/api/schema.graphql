@@ -1,3 +1,44 @@
+"""
+How to reach an account: every field optional, filled in as known.
+"""
+type AccountContactNode {
+	email: String
+	phone: String
+	address: String
+	contactName: String
+}
+
+enum AccountKind {
+	COMPANY
+	TRAVEL_AGENT
+}
+
+"""
+A company or travel agent a reservation can be billed to.
+"""
+type AccountNode {
+	id: UUID!
+	kind: AccountKind!
+	name: String!
+	contact: AccountContactNode!
+	"""
+	In minor units of `currency`; `null` for no limit.
+	"""
+	creditLimit: Int
+	currency: String!
+	active: Boolean!
+	version: Int!
+}
+
+"""
+The account a reservation is billed to.
+"""
+type AccountRefNode {
+	id: UUID!
+	name: String!
+	kind: AccountKind!
+}
+
 type BedNode {
 	kind: String!
 	count: Int!
@@ -352,6 +393,16 @@ type Query {
 		first: Int
 	): [GuestNode!]!
 	"""
+	Up to `first` (1 to 100) of the tenant's accounts whose name contains `search` (case-insensitive), by
+	name; inactive accounts included only when `includeInactive`.
+	"""
+	accounts(		propertyId: UUID!,		search: String,		includeInactive: Boolean! = false,
+		"""
+		100 when left out or null.
+		"""
+		first: Int
+	): [AccountNode!]!
+	"""
 	Active rooms of the type that no stay holds and no block covers on any night of `[checkIn, checkOut)`
 	(at most the 730-night counter window), in display order: the rooms a stay on those nights could be
 	assigned.
@@ -464,6 +515,10 @@ type ReservationNode {
 	version: Int!
 	booker: GuestNode!
 	"""
+	The company or travel agent this reservation is billed to; `null` if it is billed to the guest.
+	"""
+	account: AccountRefNode
+	"""
 	What the rooms that are not cancelled cost, per currency.
 	"""
 	totals: [TotalNode!]!
@@ -509,6 +564,10 @@ type ReservationRoomNode {
 	mealPlan: MealPlan!
 	primaryGuest: GuestNode!
 	"""
+	Other guests staying in the room, besides the primary guest, masked the same way.
+	"""
+	occupants: [GuestNode!]!
+	"""
 	Each night's price as booked.
 	"""
 	nights: [QuoteNightNode!]!
@@ -527,6 +586,22 @@ type ReservationRoomNode {
 	The penalty recorded when the room was cancelled.
 	"""
 	recordedPenalty: Int
+	checkedInAt: DateTime
+	checkedInBusinessDate: Date
+	checkedOutAt: DateTime
+	"""
+	Whether the check-in command would accept this room right now, computed server-side (status, business
+	date, room assignment) the same way the command itself checks it.
+	"""
+	canCheckIn: Boolean!
+	"""
+	As `canCheckIn`, for undoing a same-day check-in.
+	"""
+	canUndoCheckIn: Boolean!
+	"""
+	As `canCheckIn`, for checking the room out.
+	"""
+	canCheckOut: Boolean!
 }
 
 """
@@ -550,6 +625,10 @@ type ReservationRoomRowNode {
 	total: Int!
 	currency: String!
 	version: Int!
+	"""
+	The account the reservation is billed to, if any; `null` when it is billed to the guest.
+	"""
+	accountName: String
 }
 
 input ReservationSort {

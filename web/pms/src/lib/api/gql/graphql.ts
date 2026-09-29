@@ -4,6 +4,10 @@ type Exact<T extends { [key: string]: unknown }> = { [K in keyof T]: T[K] };
 /** Internal type. DO NOT USE DIRECTLY. */
 export type Incremental<T> = T | { [P in keyof T]?: P extends ' $fragmentName' | '__typename' ? T[P] : never };
 import type { DocumentTypeDecoration } from '@graphql-typed-document-node/core';
+export type AccountKind =
+  | 'COMPANY'
+  | 'TRAVEL_AGENT';
+
 export type BlockKind =
   /** Out of inventory: reduces availability. */
   | 'OUT_OF_ORDER'
@@ -194,7 +198,7 @@ export type ReservationListQueryVariables = Exact<{
 }>;
 
 
-export type ReservationListQuery = { reservations: { totalCount?: number, nodes: Array<{ id: string, reservationId: string, confirmationNo: string, guestName: string, arrival: string, departure: string, nights: number, roomTypeCode: string, roomNumber: string | null, status: RoomStatus, source: Source, total: number, currency: string, version: number }>, pageInfo: { endCursor: string | null, hasNextPage: boolean } } };
+export type ReservationListQuery = { reservations: { totalCount?: number, nodes: Array<{ id: string, reservationId: string, confirmationNo: string, guestName: string, arrival: string, departure: string, nights: number, roomTypeCode: string, roomNumber: string | null, status: RoomStatus, source: Source, total: number, currency: string, version: number, accountName: string | null }>, pageInfo: { endCursor: string | null, hasNextPage: boolean } } };
 
 export type ReservationQueryVariables = Exact<{
   p: string;
@@ -202,7 +206,7 @@ export type ReservationQueryVariables = Exact<{
 }>;
 
 
-export type ReservationQuery = { reservation: { id: string, confirmationNo: string, status: RoomStatus, source: Source, notes: string, createdAt: string, version: number, booker: { id: string, firstName: string, lastName: string, email: string | null, phone: string | null, country: string | null, residency: Residency, idDocType: IdDocType | null, idDocMasked: string | null, notes: string, version: number }, totals: Array<{ currency: string, amount: number }>, rooms: Array<{ id: string, version: number, status: RoomStatus, checkIn: string, checkOut: string, adults: number, children: number, mealPlan: MealPlan, total: number, currency: string, cancellationPenalty: number | null, cancelledAt: string | null, recordedPenalty: number | null, roomType: { id: string, code: string, name: string }, room: { id: string, number: string } | null, ratePlan: { id: string, code: string }, primaryGuest: { id: string, firstName: string, lastName: string, residency: Residency, idDocType: IdDocType | null, idDocMasked: string | null }, nights: Array<{ date: string, room: number, meal: number }>, cancellationTerms: { rules: Array<{ daysBeforeArrival: number, penalty: { kind: PenaltyKind, value: number } }>, noShow: { kind: PenaltyKind, value: number } } | null }>, history: Array<{ action: string, at: string, actorName: string | null, data: unknown }> } };
+export type ReservationQuery = { reservation: { id: string, confirmationNo: string, status: RoomStatus, source: Source, notes: string, createdAt: string, version: number, booker: { id: string, firstName: string, lastName: string, email: string | null, phone: string | null, country: string | null, residency: Residency, idDocType: IdDocType | null, idDocMasked: string | null, notes: string, version: number }, account: { id: string, name: string, kind: AccountKind } | null, totals: Array<{ currency: string, amount: number }>, rooms: Array<{ id: string, version: number, status: RoomStatus, checkIn: string, checkOut: string, adults: number, children: number, mealPlan: MealPlan, total: number, currency: string, cancellationPenalty: number | null, cancelledAt: string | null, recordedPenalty: number | null, checkedInAt: string | null, checkedInBusinessDate: string | null, checkedOutAt: string | null, canCheckIn: boolean, canUndoCheckIn: boolean, canCheckOut: boolean, roomType: { id: string, code: string, name: string }, room: { id: string, number: string } | null, ratePlan: { id: string, code: string }, primaryGuest: { id: string, firstName: string, lastName: string, residency: Residency, idDocType: IdDocType | null, idDocMasked: string | null }, occupants: Array<{ id: string, firstName: string, lastName: string, residency: Residency, idDocType: IdDocType | null, idDocMasked: string | null }>, nights: Array<{ date: string, room: number, meal: number }>, cancellationTerms: { rules: Array<{ daysBeforeArrival: number, penalty: { kind: PenaltyKind, value: number } }>, noShow: { kind: PenaltyKind, value: number } } | null }>, history: Array<{ action: string, at: string, actorName: string | null, data: unknown }> } };
 
 export type GuestsQueryVariables = Exact<{
   propertyId: string;
@@ -464,6 +468,7 @@ export const ReservationListDocument = new TypedDocumentString(`
       total
       currency
       version
+      accountName
     }
     pageInfo {
       endCursor
@@ -495,6 +500,11 @@ export const ReservationDocument = new TypedDocumentString(`
       idDocMasked
       notes
       version
+    }
+    account {
+      id
+      name
+      kind
     }
     totals {
       currency
@@ -532,6 +542,14 @@ export const ReservationDocument = new TypedDocumentString(`
         idDocType
         idDocMasked
       }
+      occupants {
+        id
+        firstName
+        lastName
+        residency
+        idDocType
+        idDocMasked
+      }
       nights {
         date
         room
@@ -553,6 +571,12 @@ export const ReservationDocument = new TypedDocumentString(`
       cancellationPenalty
       cancelledAt
       recordedPenalty
+      checkedInAt
+      checkedInBusinessDate
+      checkedOutAt
+      canCheckIn
+      canUndoCheckIn
+      canCheckOut
     }
     history {
       action

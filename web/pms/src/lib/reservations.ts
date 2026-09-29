@@ -90,6 +90,7 @@ export const ReservationsDocument = graphql(`
 				total
 				currency
 				version
+				accountName
 			}
 			pageInfo {
 				endCursor
@@ -127,6 +128,11 @@ export const ReservationDocument = graphql(`
 				notes
 				version
 			}
+			account {
+				id
+				name
+				kind
+			}
 			totals {
 				currency
 				amount
@@ -163,6 +169,14 @@ export const ReservationDocument = graphql(`
 					idDocType
 					idDocMasked
 				}
+				occupants {
+					id
+					firstName
+					lastName
+					residency
+					idDocType
+					idDocMasked
+				}
 				nights {
 					date
 					room
@@ -184,6 +198,12 @@ export const ReservationDocument = graphql(`
 				cancellationPenalty
 				cancelledAt
 				recordedPenalty
+				checkedInAt
+				checkedInBusinessDate
+				checkedOutAt
+				canCheckIn
+				canUndoCheckIn
+				canCheckOut
 			}
 			history {
 				action
