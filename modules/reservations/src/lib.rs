@@ -13,6 +13,7 @@ mod guests;
 mod list;
 mod modify;
 mod reservations;
+mod stay;
 
 pub use accounts::{
     Account, AccountChanges, AccountContact, AccountKind, MAX_ACCOUNT_LIST, NewAccount, create_account, get_account,
@@ -37,6 +38,7 @@ pub use reservations::{
     CreatedReservation, CreatedRoom, MAX_ROOMS_PER_RESERVATION, NewReservation, NewReservationRoom, ReservationChanges,
     Source, Total, UpdatedReservation, create_reservation, update_reservation,
 };
+pub use stay::{CheckInPolicy, CheckedIn, CheckedOut, UndoneCheckIn, check_in, check_out, undo_check_in};
 
 use db::{Event, TenantId, Tx, UserId};
 use rates::RatesError;
