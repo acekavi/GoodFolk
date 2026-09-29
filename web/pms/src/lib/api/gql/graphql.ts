@@ -116,6 +116,15 @@ export type ViolationKind =
   | 'RESIDENCY'
   | 'ROOM_TYPE_NOT_SOLD';
 
+export type AccountsQueryVariables = Exact<{
+  propertyId: string;
+  search?: string | null | undefined;
+  includeInactive?: boolean | null | undefined;
+}>;
+
+
+export type AccountsQuery = { accounts: Array<{ id: string, kind: AccountKind, name: string, creditLimit: number | null, currency: string, active: boolean, version: number, contact: { email: string | null, phone: string | null, address: string | null, contactName: string | null } }> };
+
 export type InventoryQueryVariables = Exact<{
   propertyId: string;
   from: string;
@@ -260,6 +269,29 @@ export class TypedDocumentString<TResult, TVariables>
   }
 }
 
+export const AccountsDocument = new TypedDocumentString(`
+    query Accounts($propertyId: UUID!, $search: String, $includeInactive: Boolean = false) {
+  accounts(
+    propertyId: $propertyId
+    search: $search
+    includeInactive: $includeInactive
+  ) {
+    id
+    kind
+    name
+    contact {
+      email
+      phone
+      address
+      contactName
+    }
+    creditLimit
+    currency
+    active
+    version
+  }
+}
+    `) as unknown as TypedDocumentString<AccountsQuery, AccountsQueryVariables>;
 export const InventoryDocument = new TypedDocumentString(`
     query Inventory($propertyId: UUID!, $from: Date!, $to: Date!) {
   inventory(propertyId: $propertyId, from: $from, to: $to) {

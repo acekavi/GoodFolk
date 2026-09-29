@@ -105,8 +105,9 @@ pub async fn create(
     };
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
     require_property(&mut tx, property).await?;
-    let created =
-        reservations::create_account(&mut tx, ctx.tenant, ctx.user, input).await.map_err(reservations_error)?;
+    let created = reservations::create_account(&mut tx, ctx.tenant, ctx.user, property, input)
+        .await
+        .map_err(reservations_error)?;
     tx.commit().await?;
     Ok(Versioned::created(created.version, created))
 }
@@ -137,7 +138,7 @@ pub async fn update(
     };
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
     require_property(&mut tx, property).await?;
-    let updated = reservations::update_account(&mut tx, ctx.tenant, ctx.user, account, version, changes)
+    let updated = reservations::update_account(&mut tx, ctx.tenant, ctx.user, property, account, version, changes)
         .await
         .map_err(reservations_error)?;
     tx.commit().await?;

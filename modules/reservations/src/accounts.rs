@@ -1,10 +1,11 @@
 //! Companies and travel agents a reservation can be billed to (invoicing and the city ledger stay in Phase
 //! 7). Tenant-wide like [`crate::guests`], not scoped to a property: every function takes a transaction
 //! already scoped to the caller's tenant by row-level security, and the queries here name no `tenant_id`
-//! column of their own.
+//! column of their own. `create_account`/`update_account` also take the property the request named, used
+//! only to scope the change event to the screen that is likely watching (see [`crate::accounts_key`]).
 
 use crate::guests::{email, phone};
-use crate::{ReservationsError, audit};
+use crate::{ReservationsError, accounts_key, audit, notify};
 use db::{TenantId, Tx, UserId};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -156,10 +157,13 @@ fn validated_contact(contact: AccountContact) -> Result<AccountContact, Reservat
     })
 }
 
+/// `property` names the route the request came in through (accounts have no `property_id` column of their
+/// own); it only scopes the change event (see [`crate::accounts_key`]), not the row itself.
 pub async fn create_account(
     tx: &mut Tx,
     tenant: TenantId,
     actor: UserId,
+    property: Uuid,
     input: NewAccount,
 ) -> Result<Account, ReservationsError> {
     let id = Uuid::now_v7();
@@ -183,13 +187,16 @@ pub async fn create_account(
     .await?;
     let data = serde_json::json!({ "kind": created.kind.as_str(), "name": created.name });
     audit(tx, tenant, actor, "account.created", "account", id, data).await?;
+    notify(tx, tenant, property, vec![accounts_key(property)]).await?;
     Ok(created)
 }
 
+/// `property` names the route the request came in through, as [`create_account`]'s does.
 pub async fn update_account(
     tx: &mut Tx,
     tenant: TenantId,
     actor: UserId,
+    property: Uuid,
     id: Uuid,
     expected_version: i32,
     changes: AccountChanges,
@@ -247,6 +254,7 @@ pub async fn update_account(
     .await?;
     let data = serde_json::json!({ "fields": fields });
     audit(tx, tenant, actor, "account.updated", "account", id, data).await?;
+    notify(tx, tenant, property, vec![accounts_key(property)]).await?;
     Ok(updated)
 }
 

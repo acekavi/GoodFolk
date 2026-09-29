@@ -88,6 +88,15 @@ pub fn reservation_key(reservation: Uuid) -> String {
     format!("reservation:{reservation}")
 }
 
+/// Cache key for a property's accounts. Accounts are tenant-wide, like guests, but reached (and so cached
+/// and invalidated) through the property whose route created or changed them, matching every other
+/// per-property key in this module (`reservations_key`, `rates::ratePlansKey`, ...) rather than the
+/// tenant-wide `property::PROPERTIES_KEY`. See `create_account`/`update_account` for the event this pairs
+/// with.
+pub fn accounts_key(property: Uuid) -> String {
+    format!("accounts:{property}")
+}
+
 /// Whether `err` violated the named constraint.
 fn violates(err: &sqlx::Error, constraint: &str) -> bool {
     err.as_database_error().and_then(|db_err| db_err.constraint()).is_some_and(|name| name == constraint)

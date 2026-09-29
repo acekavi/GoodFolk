@@ -156,7 +156,7 @@ impl Hotel {
     /// Creates an account in its own transaction, committed if it succeeds.
     pub async fn try_account(&self, input: NewAccount) -> Result<Account, ReservationsError> {
         let mut tx = self.tx().await;
-        let created = reservations::create_account(&mut tx, self.tenant, self.user, input).await?;
+        let created = reservations::create_account(&mut tx, self.tenant, self.user, self.property, input).await?;
         tx.commit().await.unwrap();
         Ok(created)
     }
@@ -172,8 +172,16 @@ impl Hotel {
         changes: AccountChanges,
     ) -> Result<Account, ReservationsError> {
         let mut tx = self.tx().await;
-        let updated =
-            reservations::update_account(&mut tx, self.tenant, self.user, account.id, account.version, changes).await?;
+        let updated = reservations::update_account(
+            &mut tx,
+            self.tenant,
+            self.user,
+            self.property,
+            account.id,
+            account.version,
+            changes,
+        )
+        .await?;
         tx.commit().await.unwrap();
         Ok(updated)
     }

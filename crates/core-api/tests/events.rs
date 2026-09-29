@@ -81,6 +81,46 @@ async fn creating_a_property_pushes_an_invalidation_to_the_tenants_stream(_: PgP
     assert_eq!(text, "event: invalidate\ndata: [\"properties\"]\n\n");
 }
 
+/// Accounts are tenant-wide (like guests), but reached through a property's routes, and the SPA's
+/// `accountsKey` is keyed by property like every other list in this codebase (`reservations_key`,
+/// `rates::ratePlansKey`, ...); this proves the two sides agree on the literal key string.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn creating_an_account_pushes_an_invalidation_keyed_by_the_property_it_was_created_through(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let app = TestApp::new(opts.clone()).await;
+    spawn_listener(PgPool::connect_with(opts).await.unwrap(), app.state.events.clone()).await.unwrap();
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    let property = app
+        .send_with(
+            Method::POST,
+            "/api/v1/properties",
+            Some(&owner),
+            Some(json!({"code": "GAL", "name": "Galle", "timezone": "Asia/Colombo", "base_currency": "LKR"})),
+            &[("x-goodfolk-csrf", "1"), ("idempotency-key", "key-00000001")],
+        )
+        .await
+        .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut body = open_stream(&app, &owner).await;
+
+    app.send_with(
+        Method::POST,
+        &format!("/api/v1/properties/{property}/accounts"),
+        Some(&owner),
+        Some(json!({"kind": "company", "name": "Acme Corp", "currency": "USD"})),
+        &[("x-goodfolk-csrf", "1"), ("idempotency-key", "key-00000002")],
+    )
+    .await;
+
+    let frame = tokio::time::timeout(Duration::from_secs(5), body.frame()).await.unwrap().unwrap().unwrap();
+    let text = String::from_utf8(frame.into_data().unwrap().to_vec()).unwrap();
+    assert_eq!(text, format!("event: invalidate\ndata: [\"accounts:{property}\"]\n\n"));
+}
+
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn a_malformed_query_is_a_400_problem(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts).await;
