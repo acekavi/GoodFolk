@@ -28,8 +28,8 @@ its first requirement: every interaction has a measured gate (see "Performance g
   - **Today**;
   - the page position ("Rooms 11–20 of 47") with **Prev** / **Next**;
   - the **room picker**, top right.
-- **Room rail (left, sticky).** Room number and type code. Rows are sorted by the room type's sort order, then the room
-  number's natural order (`101` before `1010`). Inactive rooms are excluded.
+- **Room rail (left, sticky).** Room number and type code. Rows are sorted by the room type's sort order, then the room's own
+  sort order (set on the Rooms page), then its number. Inactive rooms are excluded.
 - **Date header (top, sticky).** One column per day. The business date and weekends are shaded.
 - **Opening view.** Business date − 2 days, 14 days wide.
 - **The URL carries the view:** picker selection, page, span and start date. A reload or a bookmark reopens the same
@@ -37,7 +37,8 @@ its first requirement: every interaction has a measured gate (see "Performance g
 - **Room picker.** An autocomplete combobox with multi-select chips:
   - typing `1` suggests rooms `101`, `102`, …;
   - typing a type code or name (`DLX`) suggests the type;
-  - typing `101-120` suggests that range, meaning rooms whose number sorts between the two, inclusive.
+  - typing `101-120` suggests that range, meaning rooms whose number falls between the two, inclusive, comparing
+    numbers naturally (`99` < `101` < `1010`), not as text.
   - Chips combine as a union: `DLX` + `201–205` shows both.
   - No chips means every active room.
   - The chosen rooms are sorted as above, then paged in tens.
@@ -53,7 +54,7 @@ its first requirement: every interaction has a measured gate (see "Performance g
   - The account name appears as a secondary line when the bar is wide enough.
   - Blocks show hatched, with their reason.
   - Nothing else goes on the bar; details load when the modal opens.
-- **Needs a room.** A panel listing the unassigned, non-cancelled stays that overlap the visible dates: guest, type,
+- **Needs a room.** A panel listing the unassigned, confirmed stays that overlap the visible dates: guest, type,
   dates and why ("overbooked" or "no single room free"). Each has **Assign…**, which opens the Phase 3 room picker
   limited to rooms free for the whole stay. Bookings left unassigned by Phase 3 appear here too.
 
@@ -65,7 +66,7 @@ its first requirement: every interaction has a measured gate (see "Performance g
   the whole stay.
 - **Tightest fit.** Rank the candidates by (the free nights between the previous stay or block on that room and this
   arrival) + (the free nights between this departure and the next stay or block). Look at most 60 days either way,
-  counting an open end as 60. Ties go to the lowest room by the rail's sort order.
+  counting an open end as 60. Ties go to the first room in the rail's order.
 - **Concurrency.** Candidates are locked with `FOR UPDATE SKIP LOCKED` in rank order:
   - two bookings racing for rooms of one type never wait on each other; each takes a different room or ends up
     unassigned;
@@ -117,7 +118,7 @@ query UnassignedStays($property: UUID!, $from: Date!, $to: Date!) {
   `reservation_room_no_double_booking` `(room_id, stay)`, and blocks on the one behind `room_block_no_overlap`
   `(room_id, period)`.
 - **`unassignedStays`.** Reads a new partial GiST index on `reservation_room (property_id, stay) where room_id is null
-  and status <> 'cancelled'`.
+  and status = 'confirmed'` (check-in needs a room, so only confirmed stays can be unassigned).
 - **Room list.** The rail and the picker reuse the existing rooms and room types reads. Filtering, sorting and paging
   happen in the browser, so changing a page or the picker makes no request for rooms.
 - **Writes.** Drags reuse the Phase 3 REST commands (`assign`, `modify`) with `If-Match`. There are no new write
@@ -170,7 +171,7 @@ query UnassignedStays($property: UUID!, $from: Date!, $to: Date!) {
 - For every command listed under "Events", the emitted `tape:` keys cover exactly the months of its old and new
   ranges.
 - Auto-assignment:
-  - tightest fit, with ties going to the lowest room;
+  - tightest fit, with ties going to the first room in the rail's order;
   - hand-assigned rooms are never moved;
   - overbooked → unassigned, with the reason "overbooked";
   - split nights → unassigned, with the reason "no single room free";
