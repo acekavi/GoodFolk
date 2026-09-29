@@ -67,6 +67,8 @@ pub struct RoomTypeNode {
     pub max_adults: i32,
     pub max_children: i32,
     pub max_occupancy: i32,
+    /// Rooms of this type that may be sold beyond the physical count.
+    pub overbooking: i32,
     pub beds: Vec<BedNode>,
     pub amenities: Vec<String>,
     pub sort_order: i32,
@@ -84,6 +86,7 @@ impl From<rooms::RoomType> for RoomTypeNode {
             max_adults: t.max_adults,
             max_children: t.max_children,
             max_occupancy: t.max_occupancy,
+            overbooking: t.overbooking,
             beds: t.bed_config.into_iter().map(|bed| BedNode { kind: bed.kind, count: bed.count }).collect(),
             amenities: t.amenities,
             sort_order: t.sort_order,

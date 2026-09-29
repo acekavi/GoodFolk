@@ -3,7 +3,7 @@
 
 use crate::accounts::check_account;
 use crate::guests::notes;
-use crate::{ReservationsError, audit, check_window, notify, reservation_key, reservations_key};
+use crate::{ReservationsError, SELLABLE, audit, check_window, notify, reservation_key, reservations_key};
 use db::{TenantId, Tx, UserId};
 use rates::{MealPlan, QuoteRequest, Residency};
 use serde::Serialize;
@@ -87,8 +87,9 @@ pub struct CreatedReservation {
 /// room type and rate plan named must exist (`Invalid`, like any other malformed request); a named
 /// `account_id` must be an active account of this tenant. The counters of
 /// every requested room type are locked over all the stays at
-/// once ([`rooms::lock_days`]); a night without a free room of the type, counting the rooms this request
-/// already takes, is a `Conflict` (no overbooking). Each room is priced by [`rates::load_quote`] for its
+/// once ([`rooms::lock_days`]); a night with no room left to sell of the type (`physical - sold -
+/// out_of_order + overbooking <= 0`), counting the rooms this request already takes, is a `Conflict`. Each
+/// room is priced by [`rates::load_quote`] for its
 /// primary guest's residency and its nights are stored as quoted; any reason the quote gives not to sell is
 /// `Invalid`, with every reason listed. Only then is the confirmation number taken, so a refused booking never
 /// uses one.
@@ -411,10 +412,10 @@ async fn check_free(
     rooms: &[NewReservationRoom],
     codes: &HashMap<Uuid, String>,
 ) -> Result<(), ReservationsError> {
-    let rows: Vec<(Uuid, Date, i32)> = sqlx::query_as(
-        "select room_type_id, date, physical - sold - out_of_order from inventory_day
-         where property_id = $1 and room_type_id = any($2) and date >= $3 and date < $4",
-    )
+    let rows: Vec<(Uuid, Date, i32)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select i.room_type_id, i.date, {SELLABLE} from inventory_day i join room_type rt on rt.id = i.room_type_id
+         where i.property_id = $1 and i.room_type_id = any($2) and i.date >= $3 and i.date < $4"
+    )))
     .bind(property)
     .bind(room_types)
     .bind(from)

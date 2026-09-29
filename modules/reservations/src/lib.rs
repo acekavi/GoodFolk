@@ -101,6 +101,13 @@ async fn business_date(tx: &mut Tx, property: Uuid) -> Result<Date, Reservations
         .ok_or(ReservationsError::NotFound("property"))
 }
 
+/// The SQL for a night's sellable rooms of a room type: the physical count, less what is sold or out of
+/// order, plus the type's overbooking allowance. Positive means at least one more room can be sold that
+/// night. `i` must alias `inventory_day` and `rt` the joined `room_type`; both [`availability`] and
+/// [`create_reservation`] read this figure, so it is written once here rather than copied.
+/// [`rooms::InventoryDay::available`] stays the plain physical figure and never includes this allowance.
+pub(crate) const SELLABLE: &str = "i.physical - i.sold - i.out_of_order + rt.overbooking";
+
 /// Refuses a stay outside the counter window, `[business date, business date + WINDOW_DAYS)`: it must arrive
 /// on or after the business date and leave by the window's end.
 fn check_window(business_date: Date, check_in: Date, check_out: Date) -> Result<(), ReservationsError> {

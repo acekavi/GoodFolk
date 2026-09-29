@@ -38,6 +38,10 @@ pub struct CreateRoomTypeRequest {
     pub max_children: i32,
     #[garde(range(min = 1, max = 50))]
     pub max_occupancy: i32,
+    /// Rooms of this type that may be sold beyond the physical count, 0 to 20.
+    #[serde(default)]
+    #[garde(range(min = 0, max = 20))]
+    pub overbooking: i32,
     #[serde(default)]
     #[garde(length(max = 10), dive)]
     pub bed_config: Vec<BedRequest>,
@@ -59,6 +63,9 @@ pub struct UpdateRoomTypeRequest {
     pub max_children: Option<i32>,
     #[garde(inner(range(min = 1, max = 50)))]
     pub max_occupancy: Option<i32>,
+    /// Rooms of this type that may be sold beyond the physical count, 0 to 20.
+    #[garde(inner(range(min = 0, max = 20)))]
+    pub overbooking: Option<i32>,
     #[garde(length(max = 10), dive)]
     pub bed_config: Option<Vec<BedRequest>>,
     #[garde(inner(length(max = 50), inner(length(chars, min = 1, max = 60))))]
@@ -75,6 +82,7 @@ impl Changes for UpdateRoomTypeRequest {
             && self.max_adults.is_none()
             && self.max_children.is_none()
             && self.max_occupancy.is_none()
+            && self.overbooking.is_none()
             && self.bed_config.is_none()
             && self.amenities.is_none()
             && self.active.is_none()
@@ -104,6 +112,7 @@ pub async fn create(
         max_adults: body.max_adults,
         max_children: body.max_children,
         max_occupancy: body.max_occupancy,
+        overbooking: body.overbooking,
         bed_config: beds(body.bed_config),
         amenities: body.amenities,
     };
@@ -132,6 +141,7 @@ pub async fn update(
         max_adults: body.max_adults,
         max_children: body.max_children,
         max_occupancy: body.max_occupancy,
+        overbooking: body.overbooking,
         bed_config: body.bed_config.map(beds),
         amenities: body.amenities,
         active: body.active,

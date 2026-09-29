@@ -88,7 +88,7 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
 - Accounts (billing groups across reservations).
 - Performance gates: reservation create p95, reservations list p95, availability p95.
 - **Guest name search: done.** pg_trgm's `<%` isn't leakproof, so it couldn't use its index under forced row-level security (~150 ms at 20k guests, a full tenant scan). Fixed with `guest_search` (id + tenant + lowercased name, no RLS, no privileges for `goodfolk_app`) and `app.search_guest_ids`, a `SECURITY DEFINER` function that filters by `app.current_tenant()` and returns ids only, read back from `guest` under RLS as usual (~9 ms at 20k) — see "reading around RLS for index-only searches" in [api-conventions.md](design/api-conventions.md).
-- An overbooking allowance (3a sells to exactly the physical count, no more).
+- **An overbooking allowance: done.** `room_type.overbooking` (0–20, default 0, `RoomsManage`); a night is sellable when `physical - sold - out_of_order + overbooking > 0`, applied in `reservations::availability`'s `free` and `create_reservation`'s per-night check, both through one shared SQL expression. `rooms::InventoryDay::available` stays the plain physical figure — see "the sellable rule" in [api-conventions.md](design/api-conventions.md).
 - No-show, as part of the night audit (Phase 7).
 - Carried over from the Phase 3a reviews:
   - **Check-out must shorten `stay`** (the spec says so): `rooms::assigned_stay` counts checked-out stays, so an early departure that leaves `upper(stay)` alone keeps blocks, deactivation and retyping of that room refused.

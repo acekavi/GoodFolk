@@ -302,6 +302,7 @@ fn deluxe_type() -> rooms::NewRoomType {
         max_adults: 2,
         max_children: 1,
         max_occupancy: 3,
+        overbooking: 0,
         bed_config: vec![],
         amenities: vec![],
     }

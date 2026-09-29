@@ -228,7 +228,7 @@ export type RoomTypesQueryVariables = Exact<{
 }>;
 
 
-export type RoomTypesQuery = { roomTypes: Array<{ id: string, code: string, name: string, baseOccupancy: number, maxAdults: number, maxChildren: number, maxOccupancy: number, amenities: Array<string>, sortOrder: number, active: boolean, version: number }> };
+export type RoomTypesQuery = { roomTypes: Array<{ id: string, code: string, name: string, baseOccupancy: number, maxAdults: number, maxChildren: number, maxOccupancy: number, overbooking: number, amenities: Array<string>, sortOrder: number, active: boolean, version: number }> };
 
 export type RoomsQueryVariables = Exact<{
   propertyId: string;
@@ -604,6 +604,7 @@ export const RoomTypesDocument = new TypedDocumentString(`
     maxAdults
     maxChildren
     maxOccupancy
+    overbooking
     amenities
     sortOrder
     active

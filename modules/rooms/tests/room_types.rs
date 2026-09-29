@@ -61,6 +61,24 @@ async fn capacities_must_add_up(_: PgPoolOptions, opts: PgConnectOptions) {
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_overbooking_allowance_must_be_0_to_20(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let mut tx = hotel.tx().await;
+
+    let too_high = rooms::NewRoomType { overbooking: 21, ..room_type("A") };
+    let created = rooms::create_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, too_high).await;
+
+    let dlx = hotel.room_type("DLX").await;
+    let mut tx = hotel.tx().await;
+    let changes = RoomTypeChanges { overbooking: Some(21), ..RoomTypeChanges::default() };
+    let updated =
+        rooms::update_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, dlx.id, dlx.version, changes).await;
+
+    assert!(matches!(created, Err(RoomsError::Invalid(_))), "{created:?}");
+    assert!(matches!(updated, Err(RoomsError::Invalid(_))), "{updated:?}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn an_unknown_property_is_not_found(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;
     let mut tx = hotel.tx().await;

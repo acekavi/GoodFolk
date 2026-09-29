@@ -18,6 +18,13 @@ fn invalid(result: Result<CreatedReservation, ReservationsError>) -> String {
     }
 }
 
+fn invalid_conflict(result: Result<CreatedReservation, ReservationsError>) -> String {
+    match result {
+        Err(ReservationsError::Conflict(message)) => message,
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+}
+
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn a_booking_takes_the_next_confirmation_number_fixes_its_prices_and_sells_its_nights(
     _: PgPoolOptions,
@@ -325,4 +332,71 @@ async fn parallel_bookings_for_the_last_room_sell_it_once(_: PgPoolOptions, opts
     assert_eq!(hotel.sold(hotel.deluxe.id, 0, 6).await, [0, 1, 2, 2, 1, 0], "both rooms sold on nights 2 and 3");
     assert_eq!(hotel.drift().await, vec![]);
     assert_eq!(hotel.confirmation_numbers().await, ["GAL-000001", "GAL-000002"]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_overbooking_allowance_sells_past_the_physical_count_then_refuses(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    // Fills the type's one physical room: no allowance yet, so it is exactly sold out.
+    hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 2, 4)]).await.unwrap();
+    hotel.set_overbooking(&hotel.deluxe, 1).await;
+
+    let before = hotel.free_for(hotel.deluxe.id, 2, 4).await;
+    let sold_past_physical = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 2, 4)]).await;
+    let after = hotel.free_for(hotel.deluxe.id, 2, 4).await;
+    let refused = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 2, 4)]).await;
+
+    assert_eq!(before, 1, "the allowance opens up one more room to sell, even though every physical room is sold");
+    assert!(sold_past_physical.is_ok(), "{sold_past_physical:?}");
+    assert_eq!(after, 0, "the allowance is now used up too");
+    assert_eq!(invalid_conflict(refused), format!("no DLX rooms left on {}", hotel.day(2)));
+    assert_eq!(hotel.sold(hotel.deluxe.id, 2, 4).await, [2, 2], "one physical room plus one overbooked");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn parallel_bookings_against_an_overbooking_allowance_sell_exactly_the_allowance(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    // No physical DLX rooms at all: every sellable night comes from the allowance alone, so this also proves
+    // the allowance is honoured even when the physical count is zero.
+    let (hotel, plans) = Hotel::for_booking(opts.clone(), 0).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    hotel.set_overbooking(&hotel.deluxe, 2).await;
+
+    let pool = db::testing::app_pool(opts, u32::try_from(RACERS).unwrap()).await;
+    let (tenant, user, property) = (hotel.tenant, hotel.user, hotel.property);
+    let start = std::sync::Arc::new(tokio::sync::Barrier::new(RACERS));
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..RACERS {
+        let (pool, start) = (pool.clone(), start.clone());
+        let input = NewReservation {
+            booker_guest_id: booker.id,
+            source: Source::FrontDesk,
+            notes: String::new(),
+            account_id: None,
+            rooms: vec![hotel.room(hotel.deluxe.id, &plans.bar, 1, 4)],
+        };
+        tasks.spawn(async move {
+            let mut tx = db::begin(&pool, db::Scope::tenant(tenant)).await.unwrap();
+            start.wait().await;
+            let created = reservations::create_reservation(&mut tx, tenant, user, property, input).await?;
+            tx.commit().await?;
+            Ok::<_, ReservationsError>(created)
+        });
+    }
+    let results = tasks.join_all().await;
+
+    let booked: Vec<&CreatedReservation> = results.iter().filter_map(|result| result.as_ref().ok()).collect();
+    let conflicts: Vec<String> = results
+        .iter()
+        .filter_map(|result| match result {
+            Err(ReservationsError::Conflict(message)) => Some(message.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(booked.len(), 2, "exactly the allowance sells, no more, no less: {results:?}");
+    assert_eq!(conflicts.len(), RACERS - 2, "{results:?}");
+    assert_eq!(hotel.sold(hotel.deluxe.id, 0, 5).await, [0, 2, 2, 2, 0], "both rooms sold on nights 1 to 3");
 }

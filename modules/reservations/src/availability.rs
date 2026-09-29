@@ -1,7 +1,7 @@
 //! What a property can sell for a stay: free rooms per room type from the inventory counters, and every offer
 //! priced by [`rates::load_offers`].
 
-use crate::{ReservationsError, business_date, check_window};
+use crate::{ReservationsError, SELLABLE, business_date, check_window};
 use db::Tx;
 use rates::{Offer, OfferRequest, Residency};
 use serde::Serialize;
@@ -28,8 +28,8 @@ pub struct RoomTypeAvailability {
     pub room_type_id: Uuid,
     pub code: String,
     pub name: String,
-    /// The fewest rooms free (`physical - sold - out_of_order`) on any night of the stay; negative when
-    /// overbooked.
+    /// The fewest rooms free (`physical - sold - out_of_order + overbooking`) on any night of the stay;
+    /// negative when overbooked past the allowance.
     pub free: i32,
     /// Sorted by plan code, then meal plan; unsellable offers carry their violations.
     pub offers: Vec<Offer>,
@@ -65,14 +65,14 @@ pub async fn availability(
     }
     check_window(business_date(tx, property).await?, check_in, check_out)?;
 
-    let rows: Vec<FreeRow> = sqlx::query_as(
-        "select rt.id, rt.code, rt.name, count(i.date) as counted, min(i.physical - i.sold - i.out_of_order) as free
+    let rows: Vec<FreeRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select rt.id, rt.code, rt.name, count(i.date) as counted, min({SELLABLE}) as free
          from room_type rt
          left join inventory_day i on i.room_type_id = rt.id and i.date >= $2 and i.date < $3
          where rt.property_id = $1 and rt.active
          group by rt.id
-         order by rt.sort_order, rt.code",
-    )
+         order by rt.sort_order, rt.code"
+    )))
     .bind(property)
     .bind(check_in)
     .bind(check_out)

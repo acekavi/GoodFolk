@@ -56,6 +56,7 @@ impl Hotel {
             max_adults: 2,
             max_children: 1,
             max_occupancy: 3,
+            overbooking: 0,
             bed_config: vec![],
             amenities: vec![],
         };
@@ -353,5 +354,37 @@ impl Hotel {
 
     pub async fn drift(&self) -> Vec<rooms::InventoryDrift> {
         rooms::find_drift(&mut self.tx().await, self.property).await.unwrap()
+    }
+
+    /// Sets `room_type`'s overbooking allowance, in its own transaction.
+    pub async fn set_overbooking(&self, room_type: &RoomType, allowance: i32) -> RoomType {
+        let mut tx = self.tx().await;
+        let changes = rooms::RoomTypeChanges { overbooking: Some(allowance), ..Default::default() };
+        let updated = rooms::update_room_type(
+            &mut tx,
+            self.tenant,
+            self.user,
+            self.property,
+            room_type.id,
+            room_type.version,
+            changes,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        updated
+    }
+
+    /// Availability's `free` for `room_type` over `[business date + from, business date + to)`, non-resident.
+    pub async fn free_for(&self, room_type: Uuid, from: i64, to: i64) -> i32 {
+        let request = reservations::AvailabilityRequest {
+            check_in: self.day(from),
+            check_out: self.day(to),
+            adults: 1,
+            children: 0,
+            residency: Residency::NonResident,
+        };
+        let found = reservations::availability(&mut self.tx().await, self.property, &request).await.unwrap();
+        found.into_iter().find(|found| found.room_type_id == room_type).expect("room type is active").free
     }
 }

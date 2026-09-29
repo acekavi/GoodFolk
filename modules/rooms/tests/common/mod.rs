@@ -144,6 +144,7 @@ pub fn room_type(code: &str) -> NewRoomType {
         max_adults: 2,
         max_children: 1,
         max_occupancy: 3,
+        overbooking: 0,
         bed_config: vec![rooms::Bed { kind: "queen".into(), count: 1 }],
         amenities: vec!["Air conditioning".into()],
     }

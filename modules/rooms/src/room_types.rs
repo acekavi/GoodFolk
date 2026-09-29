@@ -21,6 +21,11 @@ pub struct RoomType {
     pub max_adults: i32,
     pub max_children: i32,
     pub max_occupancy: i32,
+    /// How many more rooms of this type may be sold than are physically available (0-20). A night is
+    /// sellable when `physical - sold - out_of_order + overbooking > 0`; `reservations` applies the rule
+    /// wherever a night is sold. [`InventoryDay::available`](crate::InventoryDay::available) stays the plain
+    /// physical figure and does not include this allowance.
+    pub overbooking: i32,
     #[sqlx(json)]
     pub bed_config: Vec<Bed>,
     pub amenities: Vec<String>,
@@ -37,6 +42,7 @@ pub struct NewRoomType {
     pub max_adults: i32,
     pub max_children: i32,
     pub max_occupancy: i32,
+    pub overbooking: i32,
     pub bed_config: Vec<Bed>,
     pub amenities: Vec<String>,
 }
@@ -49,13 +55,14 @@ pub struct RoomTypeChanges {
     pub max_adults: Option<i32>,
     pub max_children: Option<i32>,
     pub max_occupancy: Option<i32>,
+    pub overbooking: Option<i32>,
     pub bed_config: Option<Vec<Bed>>,
     pub amenities: Option<Vec<String>>,
     pub active: Option<bool>,
 }
 
 const COLUMNS: &str = "id, property_id, code, name, base_occupancy, max_adults, max_children, max_occupancy, \
-                       bed_config, amenities, sort_order, active, version";
+                       overbooking, bed_config, amenities, sort_order, active, version";
 
 /// The capacity rules the database also enforces, checked first for a readable message.
 fn check_capacity(base: i32, adults: i32, children: i32, max: i32) -> Result<(), RoomsError> {
@@ -70,6 +77,15 @@ fn check_capacity(base: i32, adults: i32, children: i32, max: i32) -> Result<(),
     }
 }
 
+/// The bound the database also enforces (`room_type_overbooking_check`), checked first for a readable message.
+fn check_overbooking(value: i32) -> Result<(), RoomsError> {
+    if (0..=20).contains(&value) {
+        Ok(())
+    } else {
+        Err(RoomsError::Invalid("overbooking allowance must be between 0 and 20".into()))
+    }
+}
+
 pub async fn create_room_type(
     tx: &mut Tx,
     tenant: TenantId,
@@ -79,10 +95,11 @@ pub async fn create_room_type(
 ) -> Result<RoomType, RoomsError> {
     let today = business_date(tx, property).await?;
     check_capacity(input.base_occupancy, input.max_adults, input.max_children, input.max_occupancy)?;
+    check_overbooking(input.overbooking)?;
     let inserted = sqlx::query_as::<_, RoomType>(sqlx::AssertSqlSafe(format!(
         "insert into room_type (id, tenant_id, property_id, code, name, base_occupancy, max_adults, max_children,
-                                max_occupancy, bed_config, amenities, sort_order)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                                max_occupancy, overbooking, bed_config, amenities, sort_order)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                  (select coalesce(max(sort_order) + 1, 0) from room_type where property_id = $3))
          returning {COLUMNS}"
     )))
@@ -95,6 +112,7 @@ pub async fn create_room_type(
     .bind(input.max_adults)
     .bind(input.max_children)
     .bind(input.max_occupancy)
+    .bind(input.overbooking)
     .bind(sqlx::types::Json(&input.bed_config))
     .bind(&input.amenities)
     .fetch_one(&mut **tx)
@@ -141,6 +159,9 @@ pub async fn update_room_type(
         changes.max_children.unwrap_or(current.max_children),
         changes.max_occupancy.unwrap_or(current.max_occupancy),
     )?;
+    if let Some(overbooking) = changes.overbooking {
+        check_overbooking(overbooking)?;
+    }
     if changes.active == Some(false) && current.active {
         let rooms: i64 = sqlx::query_scalar("select count(*) from room where room_type_id = $1 and active")
             .bind(id)
@@ -155,8 +176,9 @@ pub async fn update_room_type(
     let updated: RoomType = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "update room_type set name = coalesce($3, name), base_occupancy = coalesce($4, base_occupancy),
                 max_adults = coalesce($5, max_adults), max_children = coalesce($6, max_children),
-                max_occupancy = coalesce($7, max_occupancy), bed_config = coalesce($8, bed_config),
-                amenities = coalesce($9, amenities), active = coalesce($10, active), version = version + 1
+                max_occupancy = coalesce($7, max_occupancy), overbooking = coalesce($8, overbooking),
+                bed_config = coalesce($9, bed_config),
+                amenities = coalesce($10, amenities), active = coalesce($11, active), version = version + 1
          where id = $1 and version = $2
          returning {COLUMNS}"
     )))
@@ -167,6 +189,7 @@ pub async fn update_room_type(
     .bind(changes.max_adults)
     .bind(changes.max_children)
     .bind(changes.max_occupancy)
+    .bind(changes.overbooking)
     .bind(changes.bed_config.as_ref().map(sqlx::types::Json))
     .bind(&changes.amenities)
     .bind(changes.active)

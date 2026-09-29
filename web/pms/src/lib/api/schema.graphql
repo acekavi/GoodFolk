@@ -627,6 +627,10 @@ type RoomTypeNode {
 	maxAdults: Int!
 	maxChildren: Int!
 	maxOccupancy: Int!
+	"""
+	Rooms of this type that may be sold beyond the physical count.
+	"""
+	overbooking: Int!
 	beds: [BedNode!]!
 	amenities: [String!]!
 	sortOrder: Int!

@@ -24,7 +24,10 @@ pub struct InventoryDay {
 }
 
 impl InventoryDay {
-    /// Rooms of this type that can still be sold that day.
+    /// Physical rooms of this type free that day (`physical - sold - out_of_order`). This is the plain
+    /// physical figure and never includes the room type's overbooking allowance; the `reservations` crate
+    /// applies the allowance itself wherever a night's sellability decides whether a booking succeeds
+    /// (`physical - sold - out_of_order + overbooking`).
     pub fn available(&self) -> i32 {
         self.physical - self.sold - self.out_of_order
     }

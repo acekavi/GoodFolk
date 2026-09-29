@@ -12,8 +12,11 @@ test('an owner sets up room types and rooms', async ({ page }) => {
 	await expect(page.getByRole('row').nth(1)).toContainText('DLX');
 	await page.getByRole('button', { name: 'Edit DLX' }).click();
 	await page.getByLabel('Name of DLX').fill('Deluxe Sea View');
+	await page.getByLabel('Overbooking allowance of DLX').fill('5');
 	await page.getByRole('button', { name: 'Save DLX' }).click();
 	await expect(page.getByRole('cell', { name: 'Deluxe Sea View' })).toBeVisible();
+	const dlxRow = page.getByRole('row', { name: /Deluxe Sea View/ });
+	await expect(dlxRow.getByRole('cell', { name: '5', exact: true })).toBeVisible();
 
 	await page.getByRole('link', { name: 'Rooms', exact: true }).click();
 	await addRooms(page, 'DLX', 101, 105);

@@ -2754,6 +2754,11 @@
           },
           "name": {
             "type": "string"
+          },
+          "overbooking": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rooms of this type that may be sold beyond the physical count, 0 to 20."
           }
         }
       },
@@ -3584,6 +3589,7 @@
           "max_adults",
           "max_children",
           "max_occupancy",
+          "overbooking",
           "bed_config",
           "amenities",
           "sort_order",
@@ -3631,6 +3637,11 @@
           },
           "name": {
             "type": "string"
+          },
+          "overbooking": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many more rooms of this type may be sold than are physically available (0-20). A night is\nsellable when `physical - sold - out_of_order + overbooking > 0`; `reservations` applies the rule\nwherever a night is sold. [`InventoryDay::available`](crate::InventoryDay::available) stays the plain\nphysical figure and does not include this allowance."
           },
           "property_id": {
             "type": "string",
@@ -4195,6 +4206,14 @@
               "string",
               "null"
             ]
+          },
+          "overbooking": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Rooms of this type that may be sold beyond the physical count, 0 to 20."
           }
         }
       }

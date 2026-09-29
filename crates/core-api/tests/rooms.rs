@@ -94,12 +94,39 @@ async fn room_type_rules_are_problems(_: PgPoolOptions, opts: PgConnectOptions) 
     .await;
     let unknown_property =
         post(&app, &owner, &format!("/api/v1/properties/{}/room-types", Uuid::now_v7()), deluxe()).await;
+    let overbooked = post(
+        &app,
+        &owner,
+        &path,
+        json!({"code": "OVR", "name": "Over", "base_occupancy": 1,
+        "max_adults": 1, "max_children": 0, "max_occupancy": 1, "overbooking": 21}),
+    )
+    .await;
 
     assert_eq!(duplicate.status, StatusCode::CONFLICT, "{:?}", duplicate.body);
     assert_eq!(too_many_guests.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", too_many_guests.body);
     assert_eq!(lower_case.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", lower_case.body);
     assert_eq!(unknown_property.status, StatusCode::NOT_FOUND, "{:?}", unknown_property.body);
+    assert_eq!(overbooked.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", overbooked.body);
     assert_eq!(duplicate.headers[header::CONTENT_TYPE], "application/problem+json");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_overbooking_allowance_is_set_and_bounded(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    let (owner, property) = hotel(&app).await;
+    let mut body = deluxe();
+    body["overbooking"] = json!(2);
+    let created = post(&app, &owner, &format!("{property}/room-types"), body).await;
+    let dlx = format!("{property}/room-types/{}", created.body["id"].as_str().unwrap());
+
+    let updated = patch(&app, &owner, &dlx, 1, json!({"overbooking": 5})).await;
+    let refused = patch(&app, &owner, &dlx, 2, json!({"overbooking": 21})).await;
+
+    assert_eq!(created.body["overbooking"], json!(2), "{:?}", created.body);
+    assert_eq!(updated.status, StatusCode::OK, "{:?}", updated.body);
+    assert_eq!(updated.body["overbooking"], json!(5), "{:?}", updated.body);
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", refused.body);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

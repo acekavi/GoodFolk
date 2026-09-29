@@ -882,6 +882,11 @@ export interface components {
             /** Format: int32 */
             max_occupancy: number;
             name: string;
+            /**
+             * Format: int32
+             * @description Rooms of this type that may be sold beyond the physical count, 0 to 20.
+             */
+            overbooking?: number;
         };
         /**
          * @description A new reservation. Rooms may be in different currencies, so `totals` has one entry per currency, in the
@@ -1217,6 +1222,14 @@ export interface components {
             /** Format: int32 */
             max_occupancy: number;
             name: string;
+            /**
+             * Format: int32
+             * @description How many more rooms of this type may be sold than are physically available (0-20). A night is
+             *     sellable when `physical - sold - out_of_order + overbooking > 0`; `reservations` applies the rule
+             *     wherever a night is sold. [`InventoryDay::available`](crate::InventoryDay::available) stays the plain
+             *     physical figure and does not include this allowance.
+             */
+            overbooking: number;
             /** Format: uuid */
             property_id: string;
             /** Format: int32 */
@@ -1380,6 +1393,11 @@ export interface components {
             /** Format: int32 */
             max_occupancy?: number | null;
             name?: string | null;
+            /**
+             * Format: int32
+             * @description Rooms of this type that may be sold beyond the physical count, 0 to 20.
+             */
+            overbooking?: number | null;
         };
     };
     responses: never;
