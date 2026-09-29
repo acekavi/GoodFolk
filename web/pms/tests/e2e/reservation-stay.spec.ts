@@ -84,8 +84,11 @@ test('the detail modal modifies, checks in and out, manages occupants and bills 
 	await expect(room).toContainText('USD 100.00');
 	await expect(room.getByRole('table', { name: 'Nights' }).getByRole('row')).toHaveCount(2);
 	await room.getByRole('button', { name: 'Modify…' }).click();
+	const save = room.getByRole('button', { name: 'Save', exact: true });
+	await expect(save).toBeDisabled();
 	await room.getByLabel('Check-out').fill(addDays(hotel.businessDate, 2));
-	await room.getByRole('button', { name: 'Save', exact: true }).click();
+	await expect(save).toBeEnabled();
+	await save.click();
 	await expect(room.getByRole('table', { name: 'Nights' }).getByRole('row')).toHaveCount(3);
 	await expect(room).toContainText('USD 200.00');
 	await dialog.getByRole('button', { name: 'Close' }).click();

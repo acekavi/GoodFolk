@@ -747,6 +747,16 @@ export function modifyRoomBody(
 	return body;
 }
 
+/**
+ * Whether `modifyRoomBody(current, draft)` would actually change something, the same way the server decides
+ * (`modify_reservation_room`'s "nothing to change"): a field differs from `current`, or `reprice` itself is
+ * set. `keepPrice` alone changes nothing by itself. The modify form's Save button stays disabled while this
+ * is `false`.
+ */
+export function modifyRoomHasChanges(current: ModifyRoomCurrent, draft: ModifyRoomDraft): boolean {
+	return draft.reprice || Object.keys(modifyRoomBody(current, draft)).length > 2;
+}
+
 /** The most rooms one reservation takes (the server's `MAX_ROOMS_PER_RESERVATION`). */
 export const MAX_ROOMS_PER_RESERVATION = 10;
 

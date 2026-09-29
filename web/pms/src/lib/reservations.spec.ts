@@ -9,6 +9,7 @@ import {
 	guestFromRest,
 	guestsKey,
 	modifyRoomBody,
+	modifyRoomHasChanges,
 	NEW_BOOKING,
 	nightsBetween,
 	nightsReleasedOnCheckout,
@@ -502,6 +503,38 @@ describe('modifyRoomBody', () => {
 			keep_price: false,
 			reprice: true
 		});
+	});
+});
+
+describe('modifyRoomHasChanges', () => {
+	const current: ModifyRoomCurrent = {
+		checkIn: '2026-10-03',
+		checkOut: '2026-10-05',
+		roomTypeId: 'dlx',
+		adults: 2,
+		children: 0
+	};
+	const draft = (overrides: Partial<ModifyRoomDraft> = {}): ModifyRoomDraft => ({
+		...current,
+		keepPrice: false,
+		reprice: false,
+		...overrides
+	});
+
+	it('is false with nothing changed, keeping Save disabled', () => {
+		expect(modifyRoomHasChanges(current, draft())).toBe(false);
+	});
+
+	it('is false for keepPrice alone: the server ignores it without another change', () => {
+		expect(modifyRoomHasChanges(current, draft({ keepPrice: true }))).toBe(false);
+	});
+
+	it('is true for an explicit reprice alone, which the server accepts', () => {
+		expect(modifyRoomHasChanges(current, draft({ reprice: true }))).toBe(true);
+	});
+
+	it('is true when a field actually differs from current', () => {
+		expect(modifyRoomHasChanges(current, draft({ adults: 3 }))).toBe(true);
 	});
 });
 

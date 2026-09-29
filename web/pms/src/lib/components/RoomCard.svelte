@@ -22,12 +22,14 @@
 		freeRoomsKey,
 		idDocText,
 		modifyRoomBody,
+		modifyRoomHasChanges,
 		nightsReleasedOnCheckout,
 		offerLabel,
 		reservationKey,
 		reservationListsKey,
 		statusLabel,
 		type Guest,
+		type ModifyRoomCurrent,
 		type ModifyRoomDraft,
 		type ReservationRoom
 	} from '$lib/reservations';
@@ -214,6 +216,14 @@
 
 	let draft = $state(draftFromRoom());
 	let previewOpen = $state(false);
+	const current: ModifyRoomCurrent = $derived({
+		checkIn: room.checkIn,
+		checkOut: room.checkOut,
+		roomTypeId: room.roomType.id,
+		adults: room.adults,
+		children: room.children
+	});
+	const noChange = $derived(!modifyRoomHasChanges(current, draft));
 
 	function openModify() {
 		closePanels();
@@ -260,16 +270,7 @@
 	async function saveModify(event: SubmitEvent) {
 		event.preventDefault();
 		const oldNumber = room.room?.number;
-		const body = modifyRoomBody(
-			{
-				checkIn: room.checkIn,
-				checkOut: room.checkOut,
-				roomTypeId: room.roomType.id,
-				adults: room.adults,
-				children: room.children
-			},
-			draft
-		);
+		const body = modifyRoomBody(current, draft);
 		const result = await command('modify', async () =>
 			unwrap(
 				await rest.POST('/api/v1/properties/{property}/reservation-rooms/{room}/modify', {
@@ -475,7 +476,7 @@
 					/>
 				</label>
 				{#if problem}<p class="error" role="alert">{problem}</p>{/if}
-				<button disabled={pending.has('modify')}>Save</button>
+				<button disabled={pending.has('modify') || noChange}>Save</button>
 				<button type="button" class="secondary" onclick={() => (modifying = false)}>Cancel</button>
 			</form>
 		{:else}
@@ -592,7 +593,7 @@
 					<button type="button" class="secondary" onclick={() => (previewOpen = true)}
 						>Preview</button
 					>
-					<button disabled={pending.has('modify')}>Save</button>
+					<button disabled={pending.has('modify') || noChange}>Save</button>
 					<button type="button" class="secondary" onclick={() => (modifying = false)}>Cancel</button
 					>
 				</div>
