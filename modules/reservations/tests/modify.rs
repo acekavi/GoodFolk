@@ -446,3 +446,119 @@ async fn parallel_modifies_racing_for_the_last_room_on_one_night_let_one_through
     assert_eq!(conflicts, [format!("no DLX rooms left on {night3}")]);
     assert_eq!(hotel.drift().await, vec![]);
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_modify_writes_an_audit_entry_naming_before_after_and_the_flags(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 2, 5)]).await.unwrap();
+    let room = booked.rooms[0].id;
+
+    hotel.try_modify(room, 1, RoomChanges { check_out: Some(hotel.day(6)), ..Default::default() }).await.unwrap();
+
+    let audited: Vec<(String, serde_json::Value)> =
+        sqlx::query_as("select action, data from audit_log where entity_id = $1 order by id")
+            .bind(room)
+            .fetch_all(&mut *hotel.tx().await)
+            .await
+            .unwrap();
+    assert_eq!(
+        audited,
+        vec![(
+            "reservation_room.modified".into(),
+            serde_json::json!({
+                "before": {
+                    "check_in": hotel.day(2), "check_out": hotel.day(5), "room_type": hotel.deluxe.id,
+                    "adults": 2, "children": 0,
+                },
+                "after": {
+                    "check_in": hotel.day(2), "check_out": hotel.day(6), "room_type": hotel.deluxe.id,
+                    "adults": 2, "children": 0,
+                },
+                "keep_price": false,
+                "reprice": false,
+                "unassigned": false,
+            })
+        )]
+    );
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn shortening_a_checked_in_stays_check_out_releases_only_the_dropped_nights(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 6)]).await.unwrap();
+    let room = booked.rooms[0].id;
+    // The business date has since moved two nights on; those nights are now history for a checked-in stay.
+    let mut tx = hotel.tx().await;
+    sqlx::query("update property set business_date = $2 where id = $1")
+        .bind(hotel.property)
+        .bind(hotel.day(2))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    hotel.set_checked_in(room).await;
+    let sold_before = hotel.sold(hotel.deluxe.id, 0, 6).await;
+
+    let modified =
+        hotel.try_modify(room, 1, RoomChanges { check_out: Some(hotel.day(4)), ..Default::default() }).await.unwrap();
+
+    assert_eq!(modified.check_out, hotel.day(4));
+    let sold_after = hotel.sold(hotel.deluxe.id, 0, 6).await;
+    assert_eq!(sold_after[0], sold_before[0], "night 0 is history, untouched");
+    assert_eq!(sold_after[1], sold_before[1], "night 1 is history, untouched");
+    assert_eq!(sold_after[2], sold_before[2], "night 2 is still held");
+    assert_eq!(sold_after[3], sold_before[3], "night 3 is still held");
+    assert_eq!(sold_after[4], sold_before[4] - 1, "night 4 was dropped and its counter released");
+    assert_eq!(sold_after[5], sold_before[5] - 1, "night 5 was dropped and its counter released");
+    assert_eq!(
+        hotel.nights(room).await,
+        vec![
+            (hotel.day(0), 10_000, 0),
+            (hotel.day(1), 10_000, 0),
+            (hotel.day(2), 10_000, 0),
+            (hotel.day(3), 10_000, 0),
+        ]
+    );
+    assert_eq!(hotel.drift().await, vec![]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_occupancy_change_with_keep_price_leaves_the_stored_amounts_unchanged(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let (hotel, plans) = Hotel::for_booking(opts, 2).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 2, 5)]).await.unwrap();
+    let room = booked.rooms[0].id;
+    let before_nights = hotel.nights(room).await;
+    let mut tx = hotel.tx().await;
+    let single: Vec<rates::Price> = (2..5)
+        .map(|offset| rates::Price {
+            room_type_id: hotel.deluxe.id,
+            date: hotel.day(offset),
+            occupancy: 1,
+            amount: 6_000,
+        })
+        .collect();
+    rates::set_prices(&mut tx, hotel.tenant, hotel.user, hotel.property, plans.bar.id, &single).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let modified = hotel
+        .try_modify(room, 1, RoomChanges { adults: Some(1), keep_price: true, ..Default::default() })
+        .await
+        .unwrap();
+
+    assert_eq!(modified.total, 3 * 10_000, "keep_price keeps the booked total, not the new occupancy's own price");
+    assert_eq!(
+        hotel.nights(room).await,
+        before_nights,
+        "keep_price keeps the booked amounts despite the new occupancy's own price"
+    );
+    assert_eq!(hotel.drift().await, vec![]);
+}

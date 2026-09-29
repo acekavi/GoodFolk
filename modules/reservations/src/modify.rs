@@ -1,6 +1,7 @@
 //! Changing a booked room's dates, type or occupancy: the stay stays inside the window, the inventory
 //! counters move to match, and every night's price is fixed as booking did unless the caller asks to reprice.
 
+use crate::assignment::room_taken_conflict;
 use crate::{
     ReservationsError, SELLABLE, audit, business_date, check_window, decode_error, notify, reservation_key,
     reservations_key, violates,
@@ -245,7 +246,43 @@ pub async fn modify_room(
         return Err(invalid(reasons.join("; ")));
     }
 
-    // Nothing has been written until here: every refusal above leaves the transaction with no changes.
+    // Nothing has been written until here: every refusal above leaves the transaction with no changes. This
+    // row's own update is the one write below that can still be refused (a conflicting
+    // `reservation_room_no_double_booking`), so it runs first, via the same savepoint pattern `assign_room`
+    // uses, before any counter or night write -- if it fails, none of those happen either. The reservation's
+    // own version bump comes last, once every other write here has succeeded.
+    let mut savepoint = tx.begin().await?;
+    let updated = sqlx::query_scalar(
+        "update reservation_room
+         set stay = daterange($2, $3), room_type_id = $4, adults = $5, children = $6, room_id = $7,
+             version = version + 1
+         where id = $1
+         returning version",
+    )
+    .bind(id)
+    .bind(new_check_in)
+    .bind(new_check_out)
+    .bind(new_room_type_id)
+    .bind(new_adults)
+    .bind(new_children)
+    .bind(new_room_id)
+    .fetch_one(&mut *savepoint)
+    .await;
+    let new_version: i32 = match updated {
+        Ok(version) => {
+            savepoint.commit().await?;
+            version
+        }
+        Err(err) if violates(&err, "reservation_room_no_double_booking") => {
+            savepoint.rollback().await?;
+            let room = new_room_id.expect("the exclusion constraint only fires when room_id is not null");
+            let number: String =
+                sqlx::query_scalar("select number from room where id = $1").bind(room).fetch_one(&mut **tx).await?;
+            return Err(room_taken_conflict(tx, room, &number, id, new_check_in, new_check_out).await?);
+        }
+        Err(err) => return Err(err.into()),
+    };
+
     if !released.is_empty() {
         sqlx::query(
             "update inventory_day set sold = sold - 1 where property_id = $1 and room_type_id = $2 and date = any($3)",
@@ -291,55 +328,6 @@ pub async fn modify_room(
             insert_nights(tx, tenant, property, id, &added_nights, &currency).await?;
         }
     }
-
-    // The final write to this row: a savepoint keeps the transaction usable if it loses the room to
-    // `reservation_room_no_double_booking`, exactly as `assign_room` does.
-    let mut savepoint = tx.begin().await?;
-    let updated = sqlx::query_scalar(
-        "update reservation_room
-         set stay = daterange($2, $3), room_type_id = $4, adults = $5, children = $6, room_id = $7,
-             version = version + 1
-         where id = $1
-         returning version",
-    )
-    .bind(id)
-    .bind(new_check_in)
-    .bind(new_check_out)
-    .bind(new_room_type_id)
-    .bind(new_adults)
-    .bind(new_children)
-    .bind(new_room_id)
-    .fetch_one(&mut *savepoint)
-    .await;
-    let new_version: i32 = match updated {
-        Ok(version) => {
-            savepoint.commit().await?;
-            version
-        }
-        Err(err) if violates(&err, "reservation_room_no_double_booking") => {
-            savepoint.rollback().await?;
-            let room = new_room_id.expect("the exclusion constraint only fires when room_id is not null");
-            let number: String =
-                sqlx::query_scalar("select number from room where id = $1").bind(room).fetch_one(&mut **tx).await?;
-            let taken_by: Option<String> = sqlx::query_scalar(
-                "select r.confirmation_no
-                 from reservation_room s join reservation r on r.id = s.reservation_id
-                 where s.room_id = $1 and s.id <> $2 and s.status not in ('cancelled', 'no_show')
-                   and s.stay && daterange($3, $4)
-                 order by lower(s.stay)
-                 limit 1",
-            )
-            .bind(room)
-            .bind(id)
-            .bind(new_check_in)
-            .bind(new_check_out)
-            .fetch_optional(&mut **tx)
-            .await?;
-            let by = taken_by.map(|confirmation| format!(" by {confirmation}")).unwrap_or_default();
-            return Err(ReservationsError::Conflict(format!("room {number} is taken{by} on those nights")));
-        }
-        Err(err) => return Err(err.into()),
-    };
 
     sqlx::query("update reservation set version = version + 1 where id = $1")
         .bind(reservation_id)
