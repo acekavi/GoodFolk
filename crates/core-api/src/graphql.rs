@@ -660,7 +660,8 @@ pub struct ReservationRoomNode {
     pub checked_in_business_date: Option<Date>,
     pub checked_out_at: Option<OffsetDateTime>,
     /// Whether the check-in command would accept this room right now, computed server-side (status, business
-    /// date, room assignment) the same way the command itself checks it.
+    /// date, room assignment) the same way the command itself checks it. It describes the room, not the
+    /// caller: the command also needs `FrontDeskCheckIn`, which the client checks from the session.
     pub can_check_in: bool,
     /// As `canCheckIn`, for undoing a same-day check-in.
     pub can_undo_check_in: bool,

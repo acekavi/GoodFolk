@@ -329,10 +329,12 @@ fn same_business_day(checked_in_business_date: Option<Date>, business_date: Date
 }
 
 /// Whether a room in `status`, arriving `check_in`, with a room already assigned (`room_assigned`) could be
-/// checked in on `business_date` -- the same rule [`check_in`] itself checks, short of the assigned room's own
-/// active/blocked state (which needs a lock on that row and is only verified when the command actually runs).
-/// This is the one place the rule lives; the reservation detail's `canCheckIn` field calls this rather than
-/// re-deriving it.
+/// checked in on `business_date` -- the same rule [`check_in`] itself checks. The assigned room's own
+/// active/blocked state is left out: an assigned stay's room cannot become inactive or blocked (the room and
+/// block commands refuse while a stay holds it, and `assign_room` refuses such a room, each under the room's
+/// lock), so [`check_in`]'s re-check under that lock is a backstop, not a rule this flag could disagree with.
+/// Permissions are not part of it either: the caller combines it with `FrontDeskCheckIn`. This is the one place
+/// the rule lives; the reservation detail's `canCheckIn` field calls this rather than re-deriving it.
 pub(crate) fn can_check_in(status: RoomStatus, check_in: Date, business_date: Date, room_assigned: bool) -> bool {
     domain::transition(status, Action::CheckIn).is_ok() && is_arrival_day(check_in, business_date) && room_assigned
 }

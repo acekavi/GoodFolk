@@ -591,7 +591,8 @@ type ReservationRoomNode {
 	checkedOutAt: DateTime
 	"""
 	Whether the check-in command would accept this room right now, computed server-side (status, business
-	date, room assignment) the same way the command itself checks it.
+	date, room assignment) the same way the command itself checks it. It describes the room, not the
+	caller: the command also needs `FrontDeskCheckIn`, which the client checks from the session.
 	"""
 	canCheckIn: Boolean!
 	"""
