@@ -367,6 +367,7 @@ async fn parallel_bookings_against_an_overbooking_allowance_sell_exactly_the_all
 
     let pool = db::testing::app_pool(opts, u32::try_from(RACERS).unwrap()).await;
     let (tenant, user, property) = (hotel.tenant, hotel.user, hotel.property);
+    // Every racer holds an open transaction before any of them books, so the bookings really overlap.
     let start = std::sync::Arc::new(tokio::sync::Barrier::new(RACERS));
     let mut tasks = tokio::task::JoinSet::new();
     for _ in 0..RACERS {

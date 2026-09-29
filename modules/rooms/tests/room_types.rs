@@ -66,16 +66,31 @@ async fn the_overbooking_allowance_must_be_0_to_20(_: PgPoolOptions, opts: PgCon
     let mut tx = hotel.tx().await;
 
     let too_high = rooms::NewRoomType { overbooking: 21, ..room_type("A") };
-    let created = rooms::create_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, too_high).await;
+    let created_high = rooms::create_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, too_high).await;
+    let too_low = rooms::NewRoomType { overbooking: -1, ..room_type("B") };
+    let created_low = rooms::create_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, too_low).await;
+    let min = rooms::NewRoomType { overbooking: 0, ..room_type("C") };
+    let created_min = rooms::create_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, min).await;
+    let max = rooms::NewRoomType { overbooking: 20, ..room_type("D") };
+    let created_max = rooms::create_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, max).await;
 
     let dlx = hotel.room_type("DLX").await;
     let mut tx = hotel.tx().await;
-    let changes = RoomTypeChanges { overbooking: Some(21), ..RoomTypeChanges::default() };
-    let updated =
-        rooms::update_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, dlx.id, dlx.version, changes).await;
+    let high_changes = RoomTypeChanges { overbooking: Some(21), ..RoomTypeChanges::default() };
+    let updated_high =
+        rooms::update_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, dlx.id, dlx.version, high_changes)
+            .await;
+    let low_changes = RoomTypeChanges { overbooking: Some(-1), ..RoomTypeChanges::default() };
+    let updated_low =
+        rooms::update_room_type(&mut tx, hotel.tenant, hotel.user, hotel.property, dlx.id, dlx.version, low_changes)
+            .await;
 
-    assert!(matches!(created, Err(RoomsError::Invalid(_))), "{created:?}");
-    assert!(matches!(updated, Err(RoomsError::Invalid(_))), "{updated:?}");
+    assert!(matches!(created_high, Err(RoomsError::Invalid(_))), "{created_high:?}");
+    assert!(matches!(created_low, Err(RoomsError::Invalid(_))), "{created_low:?}");
+    assert_eq!(created_min.unwrap().overbooking, 0);
+    assert_eq!(created_max.unwrap().overbooking, 20);
+    assert!(matches!(updated_high, Err(RoomsError::Invalid(_))), "{updated_high:?}");
+    assert!(matches!(updated_low, Err(RoomsError::Invalid(_))), "{updated_low:?}");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
