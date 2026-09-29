@@ -133,6 +133,7 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
 ## Phase 5 — Housekeeping ([spec](specs/phase-5-housekeeping.md))
 
 - Room condition state machine, and automation on check-out and check-in.
+- Enforce `CHECKIN_REQUIRES_CLEAN_ROOM` in `reservations::check_in` (today the flag is parsed into `CheckInPolicy` but is a no-op: there's no room condition to read), refusing check-in into a room that isn't clean/inspected when it's `true`, with a test for both settings.
 - Housekeeping board, assignments, and the housekeeper PWA (my rooms, offline queue).
 - Issue reports with photos (needs the Phase 6 upload path; a stub is acceptable until then).
 - Laundry: hotel linen (par levels, stock by location, sent/received batches, write-offs) and guest laundry orders that post charges to the folio.

@@ -59,7 +59,7 @@ Run by hand, because shared CI machines make timings noisy, and one at a time (`
 # availability for 7 nights x 12 room types x 5 rate plans (derived plans included): p95 under 40 ms
 DATABASE_URL=$DATABASE_OWNER_URL cargo test --release -p core-api --test perf -- --ignored --nocapture --test-threads=1
 
-# the month grid for the same property renders in under 55 ms and scrolls at 60 fps (see End-to-end tests;
+# the month grid for the same property renders in under 60 ms and scrolls at 60 fps (see End-to-end tests;
 # measure with the `performance` CPU governor, or on the server class -- a `powersave` laptop reads 41-58 ms)
 # the reservations table scrolls 10k reservation rooms at 60 fps with a fixed DOM row count (seeds for ~2 min)
 cd web/pms && E2E_PERF=1 E2E_DATABASE_URL=... bun run test:e2e --grep @perf
@@ -121,7 +121,7 @@ Check-in and check-out need a stay that arrives on the property's business date 
 2. On **Accounts** (the nav link after Reservations), **Add an account**: name `Acme Corp`, kind `Company`, currency `USD`, no credit limit. It appears in the table, active.
 3. **New reservation**: search today for 2 nights, 2 adults, non-resident. Take the `BAR · Room only` offer for `DLX` (`USD 200.00`). **New guest…**, add one, then in the review step set **Bill to account** to `Acme Corp · Company` and **Create reservation**: `STY-000001`. Its Account fact already reads `Acme Corp · Company` — no separate step needed to bill it.
 4. **Modify…** the room: change **Check-out** to one night later, **Save**. The Nights table grows from 2 rows to 3 and the total becomes `USD 300.00` — the added night is quoted at today's price, same as booking.
-5. Add a second room type `SUP` (same caps, no overbooking), one room `201`; edit `BAR` to also sell `SUP` and price it `100.00` a night for the same window. Back on the reservation, **Modify…** again: set **Room type** to `SUP`, tick **Keep the booked price (upgrade)**, **Save**. The room's heading becomes `SUP · Unassigned` and the total stays `USD 300.00`: the dates didn't change, so every night is "kept," and `keep_price` never touches an amount even though the type moved.
+5. Add a second room type `SUP` (same caps, no overbooking), one room `201`; edit `BAR` to also sell `SUP` and price it `150.00` a night for the same window. Back on the reservation, **Modify…** again: set **Room type** to `SUP`, tick **Keep the booked price (upgrade)**, **Save**. The room's heading becomes `SUP · Unassigned` and the total stays `USD 300.00`, not the `USD 450.00` `SUP` would cost: the dates didn't change, so every night is "kept," and `keep_price` never touches an amount even though the type moved. (Without the tick, every night would be requoted at `SUP`'s `150.00`.)
 6. **Assign room**, pick `201`, **Assign**. Click **Check in**: the room shows `Checked in`.
 7. Click **Check out…**: the confirmation reads `Checking out today releases 2 nights (<tomorrow>, <the day after>).` (an early departure, keeping only tonight). Click **Check out**: it shows `Checked out. Released 2 nights (<tomorrow>, <the day after>).` — and the released room can now be blocked or deactivated, which it couldn't while still held.
 8. Book a second reservation the same way (a fresh guest, 1 night, `DLX`, `BAR · Room only`, today). **Assign room** `102`, **Check in**, then **Undo check-in**: the room reverts to `Confirmed` and **Check in** reappears — undo only works the same business day the check-in happened.
