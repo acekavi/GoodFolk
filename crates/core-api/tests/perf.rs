@@ -32,6 +32,13 @@ const ROOM_TYPES: u32 = 12;
 const ROOMS: u32 = 200;
 const SAMPLES: usize = 200;
 
+/// The 0-indexed position of the 95th percentile in `n` sorted samples, by the nearest-rank method
+/// (`ceil(0.95 * n) - 1`). Plain truncating division (`n * 95 / 100`) rounds the rank down, which is invisible
+/// at `n = 200` (a multiple of 20) but at `n = 50` picks index 46 — the 94th percentile, not the 95th.
+fn p95_index(n: usize) -> usize {
+    (n * 95).div_ceil(100) - 1
+}
+
 async fn post(app: &TestApp, cookie: &str, path: &str, body: Value) -> TestResponse {
     let key = Uuid::now_v7().to_string();
     let response = app
@@ -311,12 +318,14 @@ async fn creating_a_reservation_is_served_under_60ms_at_p95(_: PgPoolOptions, op
 
     samples.sort();
     let p50 = samples[CREATES / 2];
-    let p95 = samples[CREATES * 95 / 100 - 1];
+    let p95 = samples[p95_index(CREATES)];
     println!("create reservation, 1 room x 3 nights, {ROOM_TYPES} types: p50 {p50:?}, p95 {p95:?}");
     assert!(p95 < Duration::from_millis(60), "p95 {p95:?} is over the 60 ms gate");
 }
 
-/// The SPA's reservations-list query, as `crates/core-api/tests/reservation_reads.rs`'s `LIST` sends it.
+/// The same field selection as `crates/core-api/tests/reservation_reads.rs`'s `LIST`, but this gate hardcodes
+/// `first: 50` in the document and never declares `$sort` or `$after`: it always reads the default-sorted
+/// first page, not a later one or a chosen sort.
 const RESERVATIONS_LIST: &str = "query ReservationList($p: UUID!, $filter: ReservationFilter, $withCount: Boolean!) {
     reservations(propertyId: $p, filter: $filter, first: 50) {
         nodes {
@@ -494,7 +503,7 @@ async fn a_filtered_50_row_reservations_list_is_served_under_25ms_at_p95(_: PgPo
 
     samples.sort();
     let p50 = samples[SAMPLES / 2];
-    let p95 = samples[SAMPLES * 95 / 100 - 1];
+    let p95 = samples[p95_index(SAMPLES)];
     println!("reservations list, 50 rows filtered out of {ROOMS_SEEDED}: p50 {p50:?}, p95 {p95:?}");
     assert!(p95 < Duration::from_millis(25), "p95 {p95:?} is over the 25 ms gate");
 }
@@ -564,7 +573,7 @@ async fn availability_for_7_nights_12_types_and_5_plans_is_served_under_40ms_at_
 
     samples.sort();
     let p50 = samples[SAMPLES / 2];
-    let p95 = samples[SAMPLES * 95 / 100 - 1];
+    let p95 = samples[p95_index(SAMPLES)];
     println!("availability, {NIGHTS} nights x {ROOM_TYPES} types x 5 plans: p50 {p50:?}, p95 {p95:?}");
     assert!(p95 < Duration::from_millis(40), "p95 {p95:?} is over the 40 ms gate");
 }
