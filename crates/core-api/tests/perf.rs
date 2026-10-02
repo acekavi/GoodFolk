@@ -860,17 +860,14 @@ impl TapeFixture {
     }
 }
 
-// Last measured (release), after Phase 4 Task 7 cut the round trips that authenticate a request: p50 3.4-4.2 ms,
-// p95 3.9-5.6 ms across eleven runs on a machine with another job on one core, so it passes and fails on noise.
-// Before, p50 was 4.3 ms and p95 6.1 ms (the statement is about 2 ms; the router and transaction setup are the rest).
-#[sqlx::test(migrator = "db::MIGRATOR")]
-#[ignore = "performance gate; run in release mode (see the module docs); borderline at 5 ms, see the comment above"]
-async fn tape_window_p95_under_5ms(_: PgPoolOptions, opts: PgConnectOptions) {
+/// Times `tapeWindow` requests for random pages of 10 rooms over `days`-day windows and asserts the p95 is under
+/// 5 ms.
+async fn tape_window_gate(opts: PgConnectOptions, days: i64) {
     let fixture = seed_tape_property(opts).await;
     let mut rng = Rng(0x2545_F491_4F6C_DD1D);
     let (samples, stays) = fixture
         .time_requests(
-            || fixture.random_tape_window(&mut rng, 14),
+            || fixture.random_tape_window(&mut rng, days),
             |body| body["data"]["tapeWindow"]["stays"].as_array().unwrap().len(),
         )
         .await;
@@ -878,9 +875,27 @@ async fn tape_window_p95_under_5ms(_: PgPoolOptions, opts: PgConnectOptions) {
     let p50 = samples[SAMPLES / 2];
     let p95 = samples[p95_index(SAMPLES)];
     println!(
-        "tapeWindow, 10 rooms x 14 days of {TAPE_ROOMS} rooms ({stays} stays over {SAMPLES} samples): p50 {p50:?}, p95 {p95:?}"
+        "tapeWindow, 10 rooms x {days} days of {TAPE_ROOMS} rooms ({stays} stays over {SAMPLES} samples): p50 {p50:?}, p95 {p95:?}"
     );
     assert!(p95 < Duration::from_millis(5), "p95 {p95:?} is over the 5 ms gate");
+}
+
+// Last measured (release, powersave governor), 2026-10-02: p95 3.91 and 4.20 ms, and in two later runs with nothing
+// else running 2.66 and 2.75 ms. Earlier runs on a machine with another job on one core ranged 3.9-5.6 ms, so a
+// loaded machine passes and fails on noise. The statement is about 2 ms; the router and transaction setup are the
+// rest.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs); borderline at 5 ms, see the comment above"]
+async fn tape_window_p95_under_5ms(_: PgPoolOptions, opts: PgConnectOptions) {
+    tape_window_gate(opts, 14).await;
+}
+
+/// The spec's gate: 10 rooms x 42 days, about three times the rows of a 14-day tile. Measured the same way:
+/// p95 4.48 and 4.12 ms (p50 3.5 and 3.4 ms), nothing else running.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn tape_window_42_days_p95_under_5ms(_: PgPoolOptions, opts: PgConnectOptions) {
+    tape_window_gate(opts, 42).await;
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
