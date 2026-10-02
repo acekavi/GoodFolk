@@ -14,6 +14,45 @@ use uuid::Uuid;
 pub const MAX_TAPE_ROOMS: usize = 10;
 /// Longest window, in days, either read serves.
 pub const MAX_TAPE_DAYS: i64 = 42;
+/// Stays and blocks of at most this many nights are found by arrival or start, longer ones through their own
+/// partial index (`reservation_room_long_stay_idx`, `room_block_long_idx`; see
+/// `migrations/0011_tape_stays_by_arrival.sql` and `0012_tape_blocks_by_start.sql`). Changing it needs a new
+/// migration for those indexes.
+const SHORT_STAY_NIGHTS: i32 = 31;
+
+/// Everything `tape_window` reads, in one statement. Rows are tagged by `kind` and share one column set, with
+/// nulls where a column doesn't apply:
+/// - `check`: one row, with `known` the number of `$1` rooms that belong to property `$6`;
+/// - `stay`: the stays of those rooms overlapping `[$2, $3)` (`reason` null);
+/// - `block`: their unreleased blocks overlapping it, with `reason` the block reason's label.
+///
+/// `&&` is not leakproof, so under row-level security it can't be an index condition: each stay and block
+/// branch bounds its scan with leakproof comparisons (arrival or start, and length: `$4` is the short limit, `$5`
+/// the earliest arrival or start of a short one that can still overlap) and `&&` only trims the result.
+const TAPE_WINDOW_SQL: &str = "
+    select * from (
+      select 'check'::text as kind, null::uuid as id, null::uuid as reservation_id, null::uuid as room_id,
+             null::uuid as room_type_id, null::date as start, null::date as \"end\", null::text as status,
+             null::text as guest_name, null::text as account_name, null::int as version, null::text as reason,
+             (select count(*) from room where id = any($1) and property_id = $6) as known
+      union all
+      select 'stay', a.id, a.reservation_id, a.room_id, a.room_type_id, lower(a.stay), upper(a.stay), a.status,
+             (select g.last_name || case when g.first_name = '' then '' else ', ' || left(g.first_name, 1) || '.' end
+              from guest g where g.id = a.primary_guest_id),
+             (select c.name from reservation r join account c on c.id = r.account_id where r.id = a.reservation_id),
+             a.version, null, null
+      from reservation_room a
+      where a.room_id = any($1) and a.status not in ('cancelled', 'no_show') and a.stay && daterange($2, $3)
+        and ((a.nights <= $4 and a.arrival >= $5 and a.arrival < $3) or a.nights > $4)
+      union all
+      select 'block', b.id, null, b.room_id, null, lower(b.period), upper(b.period), null, null, null, null,
+             (select br.label from block_reason br where br.property_id = b.property_id and br.id = b.reason_id),
+             null
+      from room_block b
+      where b.room_id = any($1) and b.released_at is null and b.period && daterange($2, $3)
+        and ((b.days <= $4 and b.starts >= $5 and b.starts < $3) or b.days > $4)
+    ) rows
+    order by room_id, start";
 
 /// A stay in one of the window's rooms.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,47 +144,34 @@ pub async fn tape_window(
         return Err(ReservationsError::Invalid(format!("name 1 to {MAX_TAPE_ROOMS} rooms")));
     }
     let distinct = rooms.iter().collect::<HashSet<_>>().len();
-    let known: i64 = sqlx::query_scalar("select count(*) from room where id = any($2) and property_id = $1")
-        .bind(property)
+    let rows = sqlx::query(TAPE_WINDOW_SQL)
         .bind(rooms)
-        .fetch_one(&mut **tx)
+        .bind(from)
+        .bind(to)
+        .bind(SHORT_STAY_NIGHTS)
+        .bind(from - Duration::days(i64::from(SHORT_STAY_NIGHTS)))
+        .bind(property)
+        .fetch_all(&mut **tx)
         .await?;
+    let mut known = 0;
+    let mut stays = Vec::new();
+    let mut blocks = Vec::new();
+    for row in &rows {
+        match row.try_get::<String, _>("kind")?.as_str() {
+            "check" => known = row.try_get("known")?,
+            "stay" => stays.push(stay_from_row(row)?),
+            _ => blocks.push(TapeBlock {
+                id: row.try_get("id")?,
+                room_id: row.try_get("room_id")?,
+                start: row.try_get("start")?,
+                end: row.try_get("end")?,
+                reason: row.try_get("reason")?,
+            }),
+        }
+    }
     if known != distinct as i64 {
         return Err(ReservationsError::Invalid("every room must belong to the property".into()));
     }
-
-    let stay_rows = sqlx::query(
-        "select a.id, a.reservation_id, a.room_id, a.room_type_id, lower(a.stay) as start, upper(a.stay) as \"end\",
-                a.status,
-                g.last_name || case when g.first_name = '' then '' else ', ' || left(g.first_name, 1) || '.' end
-                  as guest_name,
-                c.name as account_name, a.version
-         from reservation_room a
-         join reservation r on r.id = a.reservation_id
-         join guest g on g.id = a.primary_guest_id
-         left join account c on c.id = r.account_id
-         where a.room_id = any($1) and a.status not in ('cancelled', 'no_show') and a.stay && daterange($2, $3)
-         order by a.room_id, lower(a.stay)",
-    )
-    .bind(rooms)
-    .bind(from)
-    .bind(to)
-    .fetch_all(&mut **tx)
-    .await?;
-    let stays = stay_rows.iter().map(stay_from_row).collect::<Result<Vec<_>, _>>()?;
-
-    let blocks = sqlx::query_as(
-        "select b.id, b.room_id, lower(b.period) as start, upper(b.period) as \"end\", br.label as reason
-         from room_block b
-         join block_reason br on br.property_id = b.property_id and br.id = b.reason_id
-         where b.room_id = any($1) and b.released_at is null and b.period && daterange($2, $3)
-         order by b.room_id, lower(b.period)",
-    )
-    .bind(rooms)
-    .bind(from)
-    .bind(to)
-    .fetch_all(&mut **tx)
-    .await?;
     Ok(TapeWindow { stays, blocks })
 }
 

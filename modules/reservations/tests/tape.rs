@@ -334,3 +334,73 @@ async fn a_past_arrival_unassigned_stay_reports_no_single_room_without_error(_: 
     assert_eq!(found[0].start, hotel.day(0));
     assert_eq!(found[0].reason, NeedsRoomReason::NoSingleRoom);
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn long_and_short_stays_that_arrived_before_the_window_are_found_exactly_once(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let (hotel, plans) = Hotel::for_booking(opts, 3).await;
+    let silva = hotel.guest(new_guest("Anula", "Silva")).await;
+    // Three overlapping stays land in three different rooms.
+    let long = hotel.dlx(&silva, &plans, 0, 40).await;
+    let edge = hotel.dlx(&silva, &plans, 0, 31).await;
+    let short = hotel.dlx(&silva, &plans, 0, 2).await;
+    let rooms: Vec<Uuid> = hotel.all_rooms().await.into_iter().map(|room| room.id).collect();
+    let ids = |window: &TapeWindow| {
+        let mut ids: Vec<Uuid> = window.stays.iter().map(|stay| stay.id).collect();
+        ids.sort();
+        ids
+    };
+    let sorted = |mut ids: Vec<Uuid>| {
+        ids.sort();
+        ids
+    };
+
+    // A 40-night stay that arrived 35 days before the window is found through the long-stay branch.
+    let window = hotel.window(&rooms, 35, 49).await.unwrap();
+    assert_eq!(ids(&window), vec![long.rooms[0].id]);
+
+    // A 31-night stay that arrived 30 days before the window and overlaps it is the short branch's edge; the
+    // 40-night stay is in the window too, and each appears once.
+    let window = hotel.window(&rooms, 30, 44).await.unwrap();
+    assert_eq!(ids(&window), sorted(vec![long.rooms[0].id, edge.rooms[0].id]));
+
+    // A 2-night stay that arrived 32 days before the window is not in it.
+    let window = hotel.window(&rooms, 32, 46).await.unwrap();
+    assert!(!ids(&window).contains(&short.rooms[0].id));
+    assert_eq!(ids(&window), vec![long.rooms[0].id]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn blocks_that_started_before_the_window_are_found_by_start_and_length(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, _) = Hotel::for_booking(opts, 4).await;
+    let rooms = hotel.all_rooms().await;
+    let (long_room, edge_room, old_room, released_room) = (&rooms[0], &rooms[1], &rooms[2], &rooms[3]);
+    // Window [35, 49): a 40-day block from day 0 overlaps it; so does a released block, and a 2-day block from
+    // day 0 is long over. The 31-day edge block is added below.
+    let long = hotel.block(long_room, 0, 40).await;
+    let old = hotel.block(old_room, 0, 2).await;
+    let released = hotel.block(released_room, 36, 40).await;
+    let mut tx = hotel.tx().await;
+    sqlx::query("update room_block set released_at = now() where id = $1")
+        .bind(released)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let all: Vec<Uuid> = rooms.iter().map(|room| room.id).collect();
+
+    let window = hotel.window(&all, 35, 49).await.unwrap();
+    assert_eq!(window.blocks.iter().map(|block| block.id).collect::<Vec<_>>(), vec![long]);
+
+    // A 31-day block starting 30 days before the window and overlapping it by one day: the short branch's edge.
+    let edge = hotel.block(edge_room, 0, 31).await;
+    let window = hotel.window(&all, 30, 44).await.unwrap();
+    let mut found: Vec<Uuid> = window.blocks.iter().map(|block| block.id).collect();
+    found.sort();
+    let mut expected = vec![long, edge];
+    expected.sort();
+    assert_eq!(found, expected);
+    assert!(!found.contains(&old) && !found.contains(&released));
+}
