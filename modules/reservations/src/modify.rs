@@ -154,6 +154,7 @@ pub async fn modify_room(
                 || new_room_type_id != room_type_id
                 || new_adults != adults
                 || new_children != children
+                || changes.room_id.is_some_and(|target| Some(target) != room_id)
             {
                 return Err(ReservationsError::Conflict(
                     "a checked-in room can only have its check-out date changed".into(),
@@ -226,7 +227,7 @@ pub async fn modify_room(
         if let Some((target_id, target_number)) = &target {
             new_room_id = Some(*target_id);
             new_room_number = Some(target_number.clone());
-            if *target_id != rid {
+            if *target_id != rid || new_check_in != check_in || new_check_out != check_out {
                 check_not_blocked(tx, *target_id, target_number, new_check_in, new_check_out).await?;
             }
         } else {

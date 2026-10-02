@@ -52,6 +52,24 @@ impl Hotel {
         rooms.into_iter().find(|room| room.number == number).expect("a room with that number")
     }
 
+    /// Blocks `room` for `[business date + from, business date + to)`, in its own transaction.
+    async fn block(&self, room: &rooms::Room, from: i64, to: i64) {
+        let mut tx = self.tx().await;
+        let kind = rooms::BlockKind::OutOfOrder;
+        let leak = rooms::NewBlockReason { code: "LEAK".into(), label: "Leak".into(), default_kind: kind };
+        let reason = rooms::create_block_reason(&mut tx, self.tenant, self.user, self.property, leak).await.unwrap();
+        let block = rooms::NewBlock {
+            room_id: room.id,
+            from: self.day(from),
+            to: self.day(to),
+            kind,
+            reason_id: reason.id,
+            note: String::new(),
+        };
+        rooms::create_block(&mut tx, self.tenant, self.user, self.property, block).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
     /// Sets `room`'s status to `checked_in` directly (the check-in command itself is a later task), with a
     /// business date matching the property's own, as the real command would leave it.
     async fn set_checked_in(&self, room: Uuid) {
@@ -852,5 +870,87 @@ async fn two_modifies_swapping_each_others_rooms_do_not_deadlock(_: PgPoolOption
         a_room = a_target;
         assert_eq!((a_done.room_id, b_done.room_id), (Some(a_target), Some(b_target)));
     }
+    assert_eq!(hotel.drift().await, vec![]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn extending_with_the_current_room_named_is_refused_over_a_block_on_it(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 2).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let r101 = hotel.numbered("101").await;
+    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 1, 3)]).await.unwrap();
+    assert_eq!(booked.rooms[0].room_id, Some(r101.id));
+    hotel.block(&r101, 4, 6).await;
+    let before = hotel.room_row(booked.rooms[0].id).await;
+    let sold_before = hotel.sold(hotel.deluxe.id, 0, 10).await;
+
+    let refused = hotel
+        .try_modify(
+            booked.rooms[0].id,
+            booked.rooms[0].version,
+            RoomChanges { check_out: Some(hotel.day(5)), room_id: Some(r101.id), ..Default::default() },
+        )
+        .await;
+
+    assert_eq!(conflict(refused), format!("room 101 is blocked from {} to {}", hotel.day(4), hotel.day(6)));
+    assert_eq!(hotel.room_row(booked.rooms[0].id).await, before);
+    assert_eq!(hotel.sold(hotel.deluxe.id, 0, 10).await, sold_before);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_blocked_target_room_is_a_conflict(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 2).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let r102 = hotel.numbered("102").await;
+    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 1, 3)]).await.unwrap();
+    hotel.block(&r102, 5, 7).await;
+
+    let refused = hotel
+        .try_modify(
+            booked.rooms[0].id,
+            booked.rooms[0].version,
+            RoomChanges {
+                check_in: Some(hotel.day(5)),
+                check_out: Some(hotel.day(7)),
+                room_id: Some(r102.id),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    assert_eq!(conflict(refused), format!("room 102 is blocked from {} to {}", hotel.day(5), hotel.day(7)));
+    assert_eq!(hotel.drift().await, vec![]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_checked_in_stay_is_never_moved_by_a_named_room(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 2).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let r101 = hotel.numbered("101").await;
+    let r102 = hotel.numbered("102").await;
+    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 5)]).await.unwrap();
+    let room = booked.rooms[0].id;
+    assert_eq!(booked.rooms[0].room_id, Some(r101.id));
+    hotel.set_checked_in(room).await;
+
+    let moved = hotel
+        .try_modify(
+            room,
+            1,
+            RoomChanges { check_out: Some(hotel.day(7)), room_id: Some(r102.id), ..Default::default() },
+        )
+        .await;
+    assert_eq!(conflict(moved), "a checked-in room can only have its check-out date changed");
+    assert_eq!(hotel.room_row(room).await.5, Some(r101.id));
+
+    let extended = hotel
+        .try_modify(
+            room,
+            1,
+            RoomChanges { check_out: Some(hotel.day(7)), room_id: Some(r101.id), ..Default::default() },
+        )
+        .await
+        .unwrap();
+    assert_eq!((extended.check_out, extended.room_id), (hotel.day(7), Some(r101.id)));
     assert_eq!(hotel.drift().await, vec![]);
 }

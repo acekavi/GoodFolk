@@ -14,8 +14,8 @@
 //! stay rooms by the tightest fit: the free nights between the previous stay or block on that room and this
 //! arrival, plus the free nights between this departure and the next one, each capped at [`FIT_HORIZON_DAYS`]
 //! (an open end counts as the cap). Ties go to the room's rail order: room type sort order, then the room's
-//! own sort order, then its number the way the rail compares it, digit runs by value (`99` before `101`; a
-//! number that is only digits comes before one that is not, shorter before longer, then as text).
+//! own sort order, then its number: digits-only numbers by numeric value (`99` before `101`), then the others
+//! as text.
 //!
 //! **Locking.** [`pick_room`] then walks the ranked candidates in order and locks each in turn with `select
 //! ... for update skip locked`: a room another command already holds (a block, a retype, another assignment)
