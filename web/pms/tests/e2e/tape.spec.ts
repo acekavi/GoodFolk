@@ -7,6 +7,7 @@ import {
 	post,
 	runsQuery,
 	signUp,
+	unassign,
 	type Hotel
 } from './helpers';
 
@@ -392,4 +393,93 @@ test('Move to room… moves a bar to a room on the next page', async ({ page }) 
 
 	await page.getByRole('button', { name: 'Next' }).click();
 	await expect(page.locator('[data-room="111"]', { hasText: 'Silva, A.' })).toBeVisible();
+});
+
+test('the bar menu opens from the keyboard, Enter chooses Move to room…, and Escape closes it', async ({
+	page
+}) => {
+	await signUp(page);
+	await createProperty(page, 'KBD');
+	const hotel = await bookableHotel(page, 12, 1);
+	await bookTonight(page, hotel);
+	await page.getByRole('link', { name: 'Tape chart' }).click();
+	await expect(page.locator('[data-room="101"]', { hasText: 'Silva, A.' })).toBeVisible();
+	const chart = page.getByRole('group', { name: 'Tape chart' });
+	const tapeUrl = page.url();
+
+	await chart.focus();
+	await page.keyboard.press('ContextMenu');
+	const item = page.getByRole('menuitem', { name: 'Move to room…' });
+	await expect(item).toBeFocused();
+	await page.keyboard.press('Escape');
+	await expect(item).toHaveCount(0);
+	await expect(chart).toBeFocused();
+
+	await page.keyboard.press('Shift+F10');
+	await expect(item).toBeFocused();
+	await page.keyboard.press('Enter');
+	await expect(page.getByRole('dialog', { name: 'Move to room' })).toBeVisible();
+	// Enter chose the menu item; it did not open the reservation.
+	expect(page.url()).toBe(tapeUrl);
+});
+
+test('a room taken after the picker opened is refused with the server reason, and the picker refreshes', async ({
+	page
+}) => {
+	await signUp(page);
+	await createProperty(page, 'CNF');
+	const hotel = await bookableHotel(page, 1, 1);
+	// The unassigned stay still counts as sold, so the second booking needs an allowance.
+	await overbook(page, hotel, 1);
+	const stay = await bookTonight(page, hotel);
+	await unassign(page.request, hotel, stay.roomId, stay.version);
+	await page.getByRole('link', { name: 'Tape chart' }).click();
+
+	await page.getByRole('button', { name: /^Needs a room/ }).click();
+	const panel = page.getByRole('region', { name: 'Needs a room' });
+	await panel.getByRole('button', { name: 'Assign…' }).click();
+	await panel.getByRole('combobox').selectOption({ label: '101' });
+
+	// Another booking takes room 101 while the picker is open.
+	await bookTonight(page, hotel);
+	await expect(page.locator('[data-room="101"]', { hasText: 'Silva, A.' })).toBeVisible();
+	await panel.getByRole('button', { name: 'Assign', exact: true }).click();
+
+	await expect(panel.getByRole('alert')).toContainText('101');
+	await expect(panel.getByText('No DLX room is free for these nights.')).toBeVisible();
+	await expect(panel.getByRole('button', { name: 'Assign…' })).toBeVisible();
+});
+
+test('without manageReservations the chart has no Assign… and no bar menu', async ({ page }) => {
+	await signUp(page);
+	await createProperty(page, 'ROL');
+	const hotel = await bookableHotel(page, 2, 1);
+	await overbook(page, hotel, 1);
+	await bookTonight(page, hotel);
+	await bookTonight(page, hotel);
+	await bookTonight(page, hotel);
+	// The session as a housekeeper sees it; the API itself still enforces the permission.
+	await page.route('**/api/v1/me', async (route) => {
+		const response = await route.fetch();
+		const me = await response.json();
+		me.grants = me.grants.map((grant: object) => ({ ...grant, role: 'housekeeping' }));
+		await route.fulfill({ response, json: me });
+	});
+	await page.reload();
+	await page.getByRole('link', { name: 'Tape chart' }).click();
+
+	await expect(silva(page)).toHaveCount(2);
+	await expect(page.getByRole('group', { name: 'Tape chart' })).toHaveAttribute(
+		'data-editable',
+		'false'
+	);
+	await silva(page).first().hover();
+	await expect(page.getByRole('button', { name: /^Menu for/ })).toHaveCount(0);
+	await silva(page).first().click({ button: 'right' });
+	await expect(page.getByRole('menu')).toHaveCount(0);
+
+	// The list is still readable, but nothing in it assigns.
+	await page.getByRole('button', { name: /^Needs a room/ }).click();
+	await expect(page.getByRole('region', { name: 'Needs a room' })).toContainText('Overbooked');
+	await expect(page.getByRole('button', { name: 'Assign…' })).toHaveCount(0);
 });

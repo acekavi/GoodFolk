@@ -318,6 +318,8 @@
 
 	function keydown(event: KeyboardEvent) {
 		if (event.ctrlKey || event.metaKey || event.altKey) return;
+		// The menu is inside the chart; its keys are the menu's own (Enter chooses, Escape closes).
+		if ((event.target as Element).closest('.menu')) return;
 		const moves: Record<string, [number, number]> = {
 			ArrowLeft: [0, -1],
 			ArrowRight: [0, 1],
