@@ -39,7 +39,7 @@
   **Copy yesterday** copies the previous business date's assignments, skipping rooms now inactive or blocked and
   housekeepers no longer holding a housekeeping role. Assignments never change by themselves.
 - **Issues.** Room, severity (`low`, `medium`, `high`), description (1–2,000 characters), `open` or `resolved`, who
-  reported and resolved them and when. Anyone with `HousekeepingUpdate` reports; supervisors resolve. A `high` issue
+  reported and resolved them and when. Anyone with `RoomIssuesReport` reports; supervisors resolve. A `high` issue
   offers **Block room** (the Phase 1 block dialog, prefilled with the room). Photos come with Phase 6.
 
 ## Data
@@ -66,7 +66,8 @@ only `room_condition`.
 | Permission | Allows | Roles |
 |---|---|---|
 | `HousekeepingView` | Board, my rooms, issues | owner, manager, front_desk, housekeeping, hk_supervisor |
-| `HousekeepingUpdate` | Own assigned rooms `dirty → cleaning → clean`; report issues | owner, manager, hk_supervisor, housekeeping; front_desk (issues only) |
+| `HousekeepingUpdate` | Own assigned rooms `dirty → cleaning → clean` | owner, manager, hk_supervisor, housekeeping |
+| `RoomIssuesReport` | Report an issue | owner, manager, hk_supervisor, housekeeping, front_desk |
 | `HousekeepingSupervise` | Any condition, inspect, bulk, assign, copy yesterday, resolve issues | owner, manager, hk_supervisor |
 
 ## API
