@@ -33,6 +33,8 @@
 
 	const LIST_ROUTE = '/(app)/p/[property]/reservations/(list)';
 	const DETAIL_ROUTE = '/(app)/p/[property]/reservations/(list)/[id]';
+	/** The tape chart opens reservations too, so closing one goes Back to the chart. */
+	const TAPE_ROUTE = '/(app)/p/[property]/tape';
 
 	const propertyId = $derived(page.params.property ?? '');
 	const id = $derived(page.params.id ?? '');
@@ -70,11 +72,13 @@
 	);
 
 	let dialog = $state<HTMLDialogElement>();
-	/** Whether the previous history entry is the list, so closing can go Back to it. */
+	/** Whether the previous history entry is the list or the tape chart, so closing can go Back to it. */
 	let fromList = false;
 
 	afterNavigate(({ from }) => {
-		fromList = from?.route.id === LIST_ROUTE && from.params?.property === propertyId;
+		fromList =
+			(from?.route.id === LIST_ROUTE || from?.route.id === TAPE_ROUTE) &&
+			from.params?.property === propertyId;
 	});
 	onMount(() => dialog?.showModal());
 

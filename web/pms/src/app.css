@@ -6,6 +6,13 @@
 	--muted: #5b6570;
 	--accent: #1f5fbf;
 	--danger: #b42318;
+	--stay-tentative: #8a5a00;
+	--stay-confirmed: #1f5fbf;
+	--stay-checked-in: #1b7f4b;
+	--stay-checked-out: #5b6570;
+	--stay-text: #ffffff;
+	--shade-weekend: rgb(91 101 112 / 0.1);
+	--shade-today: rgb(31 95 191 / 0.14);
 	--radius: 6px;
 	--space: 0.75rem;
 	font-family:
@@ -28,6 +35,13 @@
 		--muted: #9aa4af;
 		--accent: #6ea2ff;
 		--danger: #ff7b72;
+		--stay-tentative: #e0a63c;
+		--stay-confirmed: #6ea2ff;
+		--stay-checked-in: #4cc38a;
+		--stay-checked-out: #9aa4af;
+		--stay-text: #0b1220;
+		--shade-weekend: rgb(154 164 175 / 0.1);
+		--shade-today: rgb(110 162 255 / 0.18);
 	}
 }
 

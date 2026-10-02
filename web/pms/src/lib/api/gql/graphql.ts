@@ -250,6 +250,16 @@ export type RoomsQueryVariables = Exact<{
 
 export type RoomsQuery = { rooms: Array<{ id: string, roomTypeId: string, number: string, floor: string | null, sectionId: string | null, active: boolean, sortOrder: number, version: number }>, sections: Array<{ id: string, name: string, version: number }>, blockReasons: Array<{ id: string, code: string, label: string, defaultKind: BlockKind, active: boolean }> };
 
+export type TapeWindowQueryVariables = Exact<{
+  property: string;
+  rooms: Array<string> | string;
+  from: string;
+  to: string;
+}>;
+
+
+export type TapeWindowQuery = { tapeWindow: { stays: Array<{ id: string, reservationId: string, roomId: string, roomTypeId: string, start: string, end: string, status: RoomStatus, guestName: string, accountName: string | null, version: number }>, blocks: Array<{ id: string, roomId: string, start: string, end: string, reason: string }> } };
+
 export class TypedDocumentString<TResult, TVariables>
   extends String
   implements DocumentTypeDecoration<TResult, TVariables>
@@ -695,3 +705,28 @@ export const RoomsDocument = new TypedDocumentString(`
   }
 }
     `, {"hash":"sha256:c0abb0a62c7991a6c1c5d92b40c5daccafac9290699b81d370c6c2f0a5ce0ca6"}) as unknown as TypedDocumentString<RoomsQuery, RoomsQueryVariables>;
+export const TapeWindowDocument = new TypedDocumentString(`
+    query TapeWindow($property: UUID!, $rooms: [UUID!]!, $from: Date!, $to: Date!) {
+  tapeWindow(propertyId: $property, roomIds: $rooms, from: $from, to: $to) {
+    stays {
+      id
+      reservationId
+      roomId
+      roomTypeId
+      start
+      end
+      status
+      guestName
+      accountName
+      version
+    }
+    blocks {
+      id
+      roomId
+      start
+      end
+      reason
+    }
+  }
+}
+    `, {"hash":"sha256:bc62e37b267ab6f2a849d6e4fc693f8e464217aa9a9a03dc9f54a095d509982c"}) as unknown as TypedDocumentString<TapeWindowQuery, TapeWindowQueryVariables>;

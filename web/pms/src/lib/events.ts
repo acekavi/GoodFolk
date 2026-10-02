@@ -1,4 +1,5 @@
 import type { QueryClient } from '@tanstack/svelte-query';
+import { tapeEventTiles } from './tape';
 
 /**
  * Applies one server-sent event to the query cache. `invalidate` carries the cache keys that
@@ -11,8 +12,27 @@ export function applyEvent(client: QueryClient, type: string, data: string): voi
 	}
 	if (type === 'invalidate') {
 		const keys: string[] = JSON.parse(data);
-		for (const key of keys) void client.invalidateQueries({ queryKey: [key] });
+		for (const key of keys) {
+			if (key.startsWith('tape:')) invalidateTape(client, key);
+			else void client.invalidateQueries({ queryKey: [key] });
+		}
 	}
+}
+
+/** Tape tiles are cached under `['tape', property, tileStart, pageKey]`; only those touching the event's month refetch. */
+function invalidateTape(client: QueryClient, eventKey: string): void {
+	const propertyId = eventKey.split(':')[1];
+	const tape = { queryKey: ['tape', propertyId] };
+	const cached = client
+		.getQueryCache()
+		.findAll(tape)
+		.map((query) => query.queryKey[2] as string);
+	const stale = new Set(tapeEventTiles(eventKey, propertyId, cached));
+	if (stale.size === 0) return;
+	void client.invalidateQueries({
+		...tape,
+		predicate: (query) => stale.has(query.queryKey[2] as string)
+	});
 }
 
 /** Keeps the cache fresh while the app is open. Returns a function that disconnects. */

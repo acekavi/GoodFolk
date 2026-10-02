@@ -7,6 +7,7 @@
 	const property = $derived(page.params.property ?? '');
 	const links = $derived([
 		{ href: resolve('/(app)/p/[property]', { property }), label: 'Overview' },
+		{ href: resolve('/(app)/p/[property]/tape', { property }), label: 'Tape chart' },
 		{
 			href: resolve('/(app)/p/[property]/reservations/(list)', { property }),
 			label: 'Reservations'

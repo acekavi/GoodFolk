@@ -1,3 +1,7 @@
+import type { QueryClient } from '@tanstack/svelte-query';
+import { graphql } from './api/gql';
+import type { TapeWindowQuery } from './api/gql/graphql';
+import { query } from './api/graphql';
 import { addDays } from './inventory';
 import type { Room, RoomType } from './rooms';
 
@@ -6,6 +10,8 @@ export const TILE_EPOCH = '2020-01-06'; // a Monday
 export const PAGE_SIZE = 10;
 export const LRU_TILES = 12;
 export type Span = 7 | 14 | 30;
+/** The chart opens this many days before the business date, so yesterday's departures show. */
+const OPENING_DAYS_BEFORE = 2;
 
 const SPANS: readonly Span[] = [7, 14, 30];
 const DEFAULT_SPAN: Span = 14;
@@ -325,4 +331,111 @@ export function barX(start: string, viewStart: string, dayWidth: number): number
 /** Pixels from `start` to the exclusive `end`. */
 export function barWidth(start: string, end: string, dayWidth: number): number {
 	return Math.max(dayNumber(end) - dayNumber(start), 0) * dayWidth;
+}
+
+export const TapeWindowDocument = graphql(`
+	query TapeWindow($property: UUID!, $rooms: [UUID!]!, $from: Date!, $to: Date!) {
+		tapeWindow(propertyId: $property, roomIds: $rooms, from: $from, to: $to) {
+			stays {
+				id
+				reservationId
+				roomId
+				roomTypeId
+				start
+				end
+				status
+				guestName
+				accountName
+				version
+			}
+			blocks {
+				id
+				roomId
+				start
+				end
+				reason
+			}
+		}
+	}
+`);
+
+export type TapeWindow = TapeWindowQuery['tapeWindow'];
+
+/** One tile (14 days from `tileStart`) of the stays and blocks of `roomIds`, at most ten rooms. */
+export async function fetchTapeTile(
+	propertyId: string,
+	tileStart: string,
+	roomIds: readonly string[],
+	signal?: AbortSignal
+): Promise<TapeTile> {
+	const { tapeWindow } = await query(
+		TapeWindowDocument,
+		{ property: propertyId, rooms: [...roomIds], from: tileStart, to: tileEnd(tileStart) },
+		signal
+	);
+	return tapeWindow;
+}
+
+/** The first visible day of the chart's opening view. */
+export function openingStart(businessDate: string): string {
+	return addDays(businessDate, -OPENING_DAYS_BEFORE);
+}
+
+/** A cached tape query as the LRU sees it: when it last got data, and whether it is observed or fetching. */
+export interface TapeEntry {
+	key: string;
+	updatedAt: number;
+	busy: boolean;
+}
+
+/** The keys to remove so at most `limit` entries remain: the least recently updated, never a busy one. */
+export function lruVictims(entries: readonly TapeEntry[], limit: number): string[] {
+	const surplus = entries.length - limit;
+	if (surplus <= 0) return [];
+	return entries
+		.filter((entry) => !entry.busy)
+		.sort((a, b) => a.updatedAt - b.updatedAt)
+		.slice(0, surplus)
+		.map((entry) => entry.key);
+}
+
+/** Removes the oldest cached tape tiles beyond `LRU_TILES`, keeping any that is observed or fetching. */
+export function pruneTape(client: QueryClient): void {
+	const cached = client.getQueryCache().findAll({ queryKey: ['tape'] });
+	const victims = new Set(
+		lruVictims(
+			cached.map((query) => ({
+				key: query.queryHash,
+				updatedAt: query.state.dataUpdatedAt,
+				busy: query.getObserversCount() > 0 || query.state.fetchStatus === 'fetching'
+			})),
+			LRU_TILES
+		)
+	);
+	if (victims.size > 0) {
+		client.removeQueries({
+			queryKey: ['tape'],
+			predicate: (query) => victims.has(query.queryHash)
+		});
+	}
+}
+
+/** Warms the cache with `tiles` of the room page `roomIds`, as the chart would fetch them. */
+export async function prefetchTapeTiles(
+	client: QueryClient,
+	propertyId: string,
+	tiles: readonly string[],
+	roomIds: readonly string[]
+): Promise<void> {
+	const key = pageKey(roomIds);
+	await Promise.all(
+		tiles.map((tile) =>
+			client.prefetchQuery({
+				queryKey: tapeKey(propertyId, tile, key),
+				queryFn: ({ signal }) => fetchTapeTile(propertyId, tile, roomIds, signal),
+				staleTime: Infinity
+			})
+		)
+	);
+	pruneTape(client);
 }

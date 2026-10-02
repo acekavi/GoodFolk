@@ -4,6 +4,8 @@ import {
 	barsFor,
 	barWidth,
 	barX,
+	lruVictims,
+	openingStart,
 	naturalCompare,
 	pageKey,
 	pageOf,
@@ -294,5 +296,35 @@ describe('bars', () => {
 		expect(barX('2026-01-01', '2025-12-31', 10)).toBe(10);
 		expect(barWidth('2026-01-17', '2026-01-22', 40)).toBe(200);
 		expect(barWidth('2026-01-17', '2026-01-17', 40)).toBe(0);
+	});
+});
+
+describe('openingStart', () => {
+	it('opens two days before the business date', () => {
+		expect(openingStart('2026-10-02')).toBe('2026-09-30');
+		expect(openingStart('2026-03-01')).toBe('2026-02-27');
+	});
+
+	it('is the start a URL without one opens at', () => {
+		const view = viewFromSearchParams(new URLSearchParams(), openingStart('2026-10-02'), [], []);
+		expect(view.start).toBe('2026-09-30');
+	});
+});
+
+describe('lruVictims', () => {
+	const entry = (key: string, updatedAt: number, busy = false) => ({ key, updatedAt, busy });
+
+	it('removes the least recently updated beyond the limit', () => {
+		const entries = [entry('a', 3), entry('b', 1), entry('c', 2), entry('d', 4)];
+		expect(lruVictims(entries, 2)).toEqual(['b', 'c']);
+	});
+
+	it('removes nothing within the limit', () => {
+		expect(lruVictims([entry('a', 1), entry('b', 2)], 2)).toEqual([]);
+	});
+
+	it('never removes a query in use or fetching, even when it is the oldest', () => {
+		const entries = [entry('a', 1, true), entry('b', 2), entry('c', 3), entry('d', 4)];
+		expect(lruVictims(entries, 2)).toEqual(['b', 'c']);
 	});
 });
