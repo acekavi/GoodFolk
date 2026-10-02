@@ -121,15 +121,43 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
   - **`assign_room`'s and `modify_room`'s "room is taken" queries are near-duplicates** (same shape, same message), left unextracted since each reads a different already-locked row; worth a shared helper if a third copy appears.
   - **Two protections were never shown to fail with their guard removed**, the phase's usual "temporarily remove it and watch the test fail" check: `update_reservation`'s stale-version refusal and `room_types::check_overbooking`'s 0–20 bound. Both edits were refused outright by the build sandbox's own security classifier ("Security Weaken" / "Security Test Removal") before either test could run against the weakened code. Both tests pass against the real, unmodified code; someone with the needed permission (or a run outside this sandbox) should still perform the demonstration.
 
-## Phase 4 — Front desk tape chart ([spec](specs/phase-4-tape-chart.md))
+## Phase 4 — Front desk tape chart ([spec](specs/phase-4-tape-chart.md), [plan](superpowers/plans/2026-09-29-phase-4-tape-chart.md))
 
-- Ten room rows per page, with a room picker (type, room, range chips) and paging; the view lives in the URL.
-- Automatic room assignment on booking (tightest fit, `SKIP LOCKED`), and a **Needs a room** list for overbooked or split-night stays.
-- `tapeWindow` and `unassignedStays` GraphQL queries (GiST range scans), 14-day tiles, directional overscan, abort, LRU cache, sticky rail and header, CSS-gradient grid.
-- Drag to reassign (instant, with undo) or to move or resize dates (price confirmation first), with conflict rollback.
-- Live updates over the existing server-sent events stream (`tape:<property>:<month>` keys); no WebSockets.
-- Persisted-query allowlist for GraphQL.
-- **Performance gates:** a 500-room seeded property with 18 months of bookings: `tapeWindow` p95 under 5 ms, page or picker change under 50 ms, horizontal scroll at 58+ fps with no long task, first open under 400 ms, drag feedback within a frame, DOM under 3,000 nodes.
+- **Ten room rows per page, a room picker and paging: done.** The picker (type, room and `101-120` range chips, a union) and **Prev** / **Next** appear once a property has more than 10 active rooms. The view (chips, page, span, first day) lives in the URL. Rooms, filtering, sorting and paging are all client-side, so a page change asks the server for no rooms. The reservation modal opens over the chart through shallow routing (`pushState`), so the chart stays mounted with its scroll and focus.
+- **Automatic room assignment: done.** `reservations::autoassign::pick_room`: the tightest fit (free nights before plus after the stay, each capped at 60 days, ties to the first room in the rail's order), candidates locked with `FOR UPDATE SKIP LOCKED` in rank order, and `active`, the room type and both overlap checks re-run once the lock is held. A booking no room fits is created unassigned and shows under **Needs a room**. `create_reservation` assigns every booked room; a Modify that changes the room type picks a room of the new type whether or not the stay had one, after releasing the old room and before `lock_days`. Lock order: `inventory_day` → `property_counter` → `room` (`SKIP LOCKED`), documented in [api-conventions.md](design/api-conventions.md). Migration `0010` adds the partial index behind **Needs a room**.
+- **`tapeWindow` and `unassignedStays`: done.** One statement per request. Migrations `0011` and `0012` add leakproof stored columns (`reservation_room.nights`, `room_block.starts` and `days`) and the indexes on them, since `stay && daterange(…)` is not leakproof and no index could serve it under row-level security (the first version read 1,156 stays to keep 29: 14 ms). The 31-night split between short and long stays is written into the SQL text, so the partial indexes match whatever plan the planner picks.
+- **Live updates: done.** Every command that changes a stay or a block emits `tape:<property>:<YYYY-MM>` keys (table in [api-conventions.md](design/api-conventions.md)); the client invalidates only the cached tiles that touch them, and the Needs a room lists. No WebSockets.
+- **Drag to reassign, move or resize: done.** Same-type room drops save at once with **Undo**; date and type changes confirm first with the old and new total (type changes offer **Keep the booked price (upgrade)**); a refusal rolls the cached tiles back and shows the server's reason. **Move to room…** and **Assign…** reach rooms on other pages.
+- **Persisted-query allowlist: done.** In production (`APP_ENV=production`) `/graphql` runs only the documents GraphQL Codegen generated (`web/pms/src/lib/api/gql/persisted-documents.json`, compiled into the API with `include_str!`), by id, parsed once at startup. An unknown id is a 400 `PersistedQueryNotFound`, and a request with no id is a 400. Outside production a raw `query` still runs, which is what `bun run dev` sends.
+- **Authenticating a request takes 4 round trips, down from 6** (Task 7's profiling for the 5 ms gate).
+- **Performance gates: done**, on `powersave` (the development laptop's CPU governor), with the other jobs on the machine idle:
+
+  | Gate | Spec | Measured |
+  |---|---|---|
+  | `tapeWindow`, 10 rooms × 14 days of a 500-room property with 18 months of stays, in-process through the router, release | p95 < 5 ms | p95 3.91 ms and 4.20 ms on two runs (p95 3.9–5.6 ms across eleven runs on a busy machine before the last fix, so run it with nothing else using a core) |
+  | `unassignedStays`, 42 days | p95 < 5 ms | p95 2.8–3.4 ms |
+  | `tapeWindow` payload, the busiest 14-day tile of the first page, gzipped | < 8 KB | 1.7 KB |
+  | Page change, tiles prefetched (browser, p90 of ten) | < 50 ms | p90 43.9, 37.0 and 38.9 ms on three runs; a picker change about 22 ms |
+  | First open to usable (median of five cold loads) | < 400 ms | medians 309, 242 and 272 ms |
+  | Horizontal scroll across six months in three seconds | ≥ 58 fps, no long task over 50 ms | 59.9 fps, no long task |
+  | DOM nodes after scrolling twelve months | < 3,000 | under 850 |
+  | Drag ghost, `pointermove` handler | within one frame (16 ms) | at most 0.7 ms |
+
+  The page and picker gates use the p90 of ten changes, not the median (half the turns could fail) and not the maximum (one slow `powersave` sample flakes it); the spec gave no percentile. `tapeWindow` is measured for the 14-day tile the client actually requests, not the 42-day maximum. The page-change margin is thin on this laptop (p90 49.4 ms in an earlier run before the profiling pass), so re-measure with the `performance` governor before relying on it.
+- Carried over from the Phase 4 reviews:
+  - **The API's build context must include `web/pms/src/lib/api/gql/persisted-documents.json`.** `crates/core-api/src/persisted.rs` reads it with `include_str!` across the crate boundary, so a Docker build or CI job that copies only `crates/`, `modules/` and `migrations/` will not compile. Settle it in the deploy phase.
+  - **A forced generic plan could save about 1 ms** of planning per `tapeWindow` request (its statement is planned with custom plans on every call). Not applied: the gate passes without it, and the long-stay and long-block branches depend on the literal 31 in the SQL text that a generic plan would also keep.
+  - **No role-grant e2e helper.** The read-only chart test rewrites `/api/v1/me` in the browser to cover UI gating; the server's permission checks are covered by the Rust tests only.
+  - **Stale `perf.rs` comment** above the `tapeWindow` gate still reports the borderline 3.9–5.6 ms of the run before the last fix.
+  - **Known gaps, none blocking:**
+    - the bar menu's dialog does not restore focus when it closes, and the menu doesn't close on Tab or blur;
+    - browser Back with the reservation modal open doesn't restore focus to the chart, and no e2e runs a modal action from the chart;
+    - there is no edge auto-scroll while dragging, and no e2e for a read-only user's drag;
+    - the guest-name `CASE` is written twice in `tape.rs`;
+    - the server breaks ties by room number as text where the client rail compares naturally;
+    - `isIsoDate` in `tape.ts` accepts impossible days such as `2026-02-30`;
+    - the type chip is labelled `DLX Deluxe` in suggestions but `DLX` once parsed from the URL;
+    - a few `tape_events` and drag tests cover only a partial shorten, a rename, or the first of two paths.
 
 ## Phase 5 — Housekeeping ([spec](specs/phase-5-housekeeping.md))
 
