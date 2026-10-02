@@ -81,19 +81,34 @@ async fn a_new_booking_gets_a_room_of_its_type(_: PgPoolOptions, opts: PgConnect
 async fn the_tightest_fit_is_chosen(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 3).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let room101 = hotel.numbered("101").await;
+    let room103 = hotel.numbered("103").await;
 
-    // Fill 101 with 0..2 and 5..8, leaving exactly 2..5 free on it; reassign by hand if auto-assign put either
-    // booking elsewhere, so the gap this test relies on is guaranteed regardless.
+    // Fill 103, which is last in rail order, with 0..2 and 5..8, leaving exactly 2..5 free on it; reassign by
+    // hand if auto-assign put either booking elsewhere, so the gap this test relies on is guaranteed regardless.
     let first = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 2)]).await.unwrap();
-    hotel.force_into(&first.rooms[0], room101.id).await;
+    hotel.force_into(&first.rooms[0], room103.id).await;
     let second = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 5, 8)]).await.unwrap();
-    hotel.force_into(&second.rooms[0], room101.id).await;
+    hotel.force_into(&second.rooms[0], room103.id).await;
 
     let third = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 2, 5)]).await.unwrap();
 
-    assert_eq!(third.rooms[0].room_number.as_deref(), Some("101"), "{third:?}");
+    assert_eq!(third.rooms[0].room_number.as_deref(), Some("103"), "not 101, which ties on rail order: {third:?}");
     assert_eq!(hotel.drift().await, vec![]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_shorter_gap_after_wins_when_the_gap_before_is_equal(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 3).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let room102 = hotel.numbered("102").await;
+    // Nothing comes before 2..4 on any room, so every gap_before is the horizon; only 102 has a stay soon
+    // after (5..7: one free night), and 102 is not first in rail order.
+    let later = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 5, 7)]).await.unwrap();
+    hotel.force_into(&later.rooms[0], room102.id).await;
+
+    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 2, 4)]).await.unwrap();
+
+    assert_eq!(booked.rooms[0].room_number.as_deref(), Some("102"), "{booked:?}");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -385,4 +400,49 @@ async fn the_audit_names_the_assigned_room(_: PgPoolOptions, opts: PgConnectOpti
         };
         assert_eq!(assigned[&room.id.to_string()], expected, "{data}");
     }
+}
+
+/// How long a booking may take when it must not wait on a held room lock.
+const NO_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_room_locked_by_another_transaction_is_skipped_not_waited_for(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 2).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let room101 = hotel.numbered("101").await;
+    // Another command holds 101 uncommitted, as a block or retype in flight would.
+    let mut holder = hotel.tx().await;
+    sqlx::query("select 1 from room where id = $1 for update").bind(room101.id).execute(&mut *holder).await.unwrap();
+
+    let booked =
+        tokio::time::timeout(NO_WAIT, hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 1, 3)]))
+            .await
+            .expect("booking must not wait on the held room")
+            .unwrap();
+    holder.commit().await.unwrap();
+
+    assert_eq!(booked.rooms[0].room_number.as_deref(), Some("102"), "101 would rank first: {booked:?}");
+    assert_eq!(hotel.drift().await, vec![]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_only_free_room_being_locked_leaves_the_booking_unassigned_not_waiting(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let room101 = hotel.numbered("101").await;
+    let mut holder = hotel.tx().await;
+    sqlx::query("select 1 from room where id = $1 for update").bind(room101.id).execute(&mut *holder).await.unwrap();
+
+    let booked =
+        tokio::time::timeout(NO_WAIT, hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 1, 3)]))
+            .await
+            .expect("booking must not wait on the held room")
+            .unwrap();
+    holder.commit().await.unwrap();
+
+    assert_eq!(booked.rooms[0].room_id, None, "the one room was held: {booked:?}");
+    assert_eq!(hotel.drift().await, vec![]);
 }

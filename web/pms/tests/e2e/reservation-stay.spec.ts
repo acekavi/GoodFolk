@@ -113,7 +113,8 @@ test('the detail modal modifies, checks in and out, manages occupants and bills 
 	await room.getByLabel('Room type').selectOption({ label: 'SUP · Superior' });
 	await room.getByLabel('Keep the booked price (upgrade)').check();
 	await room.getByRole('button', { name: 'Save', exact: true }).click();
-	const upgraded = dialog.getByRole('region', { name: 'SUP · Unassigned' });
+	// The stay had no room, and a type change picks one of the new type: the only SUP room, 201.
+	const upgraded = dialog.getByRole('region', { name: 'SUP · 201' });
 	await expect(upgraded).toBeVisible();
 	await expect(upgraded).toContainText('USD 200.00');
 	await dialog.getByRole('button', { name: 'Close' }).click();

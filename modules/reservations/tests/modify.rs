@@ -392,6 +392,13 @@ async fn a_type_change_reassigns_a_room_of_the_new_type(_: PgPoolOptions, opts: 
     assert_eq!(modified.room_id, Some(r201.id));
     assert_eq!(modified.room_number.as_deref(), Some("201"));
     assert_eq!(hotel.room_row(room).await.5, Some(r201.id));
+    let audited: serde_json::Value =
+        sqlx::query_scalar("select data from audit_log where entity_id = $1 and action = 'reservation_room.modified'")
+            .bind(room)
+            .fetch_one(&mut *hotel.tx().await)
+            .await
+            .unwrap();
+    assert_eq!((audited["unassigned"].clone(), audited["room_id"].clone()), (true.into(), serde_json::json!(r201.id)));
     assert_eq!(hotel.drift().await, vec![]);
 }
 
@@ -415,6 +422,30 @@ async fn a_type_change_with_no_free_room_leaves_it_unassigned(_: PgPoolOptions, 
     assert_eq!(modified.room_id, None);
     assert_eq!(modified.room_number, None);
     assert_eq!(hotel.room_row(room).await.5, None);
+    assert_eq!(hotel.drift().await, vec![]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_type_change_on_an_unassigned_stay_picks_a_room_of_the_new_type(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 2, 5)]).await.unwrap();
+    let room = booked.rooms[0].id;
+    let r201 = hotel.numbered("201").await;
+
+    let modified = hotel
+        .try_modify(
+            room,
+            booked.rooms[0].version,
+            RoomChanges { room_type_id: Some(hotel.standard.id), ..Default::default() },
+        )
+        .await
+        .unwrap();
+
+    assert!(!modified.unassigned, "there was no room to drop");
+    assert_eq!(modified.room_id, Some(r201.id));
+    assert_eq!(modified.room_number.as_deref(), Some("201"));
+    assert_eq!(hotel.room_row(room).await.5, Some(r201.id));
     assert_eq!(hotel.drift().await, vec![]);
 }
 
@@ -531,6 +562,7 @@ async fn a_modify_writes_an_audit_entry_naming_before_after_and_the_flags(_: PgP
                 "keep_price": false,
                 "reprice": false,
                 "unassigned": false,
+                "room_id": booked.rooms[0].room_id,
             })
         )]
     );

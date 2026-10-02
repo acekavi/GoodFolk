@@ -136,14 +136,19 @@ test('a reservation opens in a modal over the table, where rooms are assigned, u
 	const assignedRoom = dialog.getByRole('region', { name: 'DLX · 102' });
 	await expect(assignedRoom).toBeVisible();
 	await expect(row('DET-000002')).toContainText('DLX · 102');
-	await expect(history).toContainText('Room 102 assigned');
+	// The setup unassign already left "unassigned" rows (naming whichever room booking picked), so the step's own
+	// entry is the count going up by one, not the text appearing.
+	const unassignedRows = history.getByRole('row').filter({ hasText: /Room \d+ unassigned/ });
+	await expect(history.getByRole('row').filter({ hasText: 'Room 102 assigned' })).toHaveCount(1);
+	const unassignedBefore = await unassignedRows.count();
 
 	// Unassigning puts it back.
 	await assignedRoom.getByRole('button', { name: 'Unassign' }).click();
 	const unassigned = dialog.getByRole('region', { name: 'DLX · Unassigned' });
 	await expect(unassigned).toBeVisible();
 	await expect(row('DET-000002')).toContainText('DLX · unassigned');
-	await expect(history).toContainText('Room 102 unassigned');
+	await expect(unassignedRows).toHaveCount(unassignedBefore + 1);
+	await expect(unassignedRows.first()).toContainText('Room 102 unassigned');
 
 	// Cancelling shows what it costs before it is done, then what was recorded.
 	await unassigned.getByRole('button', { name: 'Cancel room…' }).click();

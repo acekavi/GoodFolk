@@ -76,10 +76,11 @@ pub struct ModifiedRoom {
 ///
 /// A type change drops the room if it isn't of the new type (`unassigned: true` in the result) and then
 /// re-assigns the tightest-fitting free room of the new type, as booking does, or leaves the stay unassigned if
-/// none fits (`room_id` in the result says which); a room
-/// kept assigned across a date change may lose the room to `reservation_room_no_double_booking` (a
-/// `Conflict` naming the booking that holds it, via the savepoint pattern `assign_room` uses) or to a block
-/// over the new stay (`Conflict`, as `assign_room` checks).
+/// none fits; a stay with no room that changes type gets the same pick (`unassigned` stays false). The result's
+/// `room_id` and the audit entry's `room_id` name the room after the change. A room kept assigned across a date
+/// change may lose the room to `reservation_room_no_double_booking` (a `Conflict` naming the booking that
+/// holds it, via the savepoint pattern `assign_room` uses) or to a block over the new stay (`Conflict`, as
+/// `assign_room` checks).
 pub async fn modify_room(
     tx: &mut Tx,
     tenant: TenantId,
@@ -218,6 +219,15 @@ pub async fn modify_room(
             if let Some((from, to)) = block {
                 return Err(ReservationsError::Conflict(format!("room {number} is blocked from {from} to {to}")));
             }
+        }
+    } else if new_room_type_id != room_type_id {
+        // An unassigned stay changing type gets a room of the new type too, picked at the same point in the
+        // lock order (there is no old room to lock first).
+        if let Some((picked, picked_number)) =
+            pick_room(tx, property, new_room_type_id, new_check_in, new_check_out).await?
+        {
+            new_room_id = Some(picked);
+            new_room_number = Some(picked_number);
         }
     }
 
@@ -369,6 +379,7 @@ pub async fn modify_room(
         "keep_price": changes.keep_price,
         "reprice": changes.reprice,
         "unassigned": unassigned,
+        "room_id": new_room_id,
     });
     audit(tx, tenant, actor, "reservation_room.modified", "reservation_room", id, data).await?;
     let months: BTreeSet<String> = rooms::month_keys(property, check_in, check_out)
