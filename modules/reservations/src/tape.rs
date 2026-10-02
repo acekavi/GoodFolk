@@ -24,8 +24,8 @@ const SHORT_STAY_NIGHTS: i32 = 31;
 /// Everything `tape_window` reads, in one statement. Rows are tagged by `kind` and share one column set, with
 /// nulls where a column doesn't apply:
 /// - `check`: one row, with `known` the number of `$1` rooms that belong to property `$5`;
-/// - `stay`: the stays of those rooms overlapping `[$2, $3)` (`reason` null);
-/// - `block`: their unreleased blocks overlapping it, with `reason` the block reason's label.
+/// - `stay`: the stays of those rooms in property `$5` overlapping `[$2, $3)` (`reason` null);
+/// - `block`: their unreleased blocks in property `$5` overlapping it, with `reason` the block reason's label.
 ///
 /// `&&` is not leakproof, so under row-level security it can't be an index condition: each stay and block
 /// branch bounds its scan with leakproof comparisons (arrival or start, and length: `$4` is the earliest arrival or
@@ -43,14 +43,16 @@ const TAPE_WINDOW_TEMPLATE: &str = "
              (select c.name from reservation r join account c on c.id = r.account_id where r.id = a.reservation_id),
              a.version, null, null
       from reservation_room a
-      where a.room_id = any($1) and a.status not in ('cancelled', 'no_show') and a.stay && daterange($2, $3)
+      where a.property_id = $5 and a.room_id = any($1) and a.status not in ('cancelled', 'no_show')
+        and a.stay && daterange($2, $3)
         and ((a.nights <= {short} and a.arrival >= $4 and a.arrival < $3) or a.nights > {short})
       union all
       select 'block', b.id, null, b.room_id, null, lower(b.period), upper(b.period), null, null, null, null,
              (select br.label from block_reason br where br.property_id = b.property_id and br.id = b.reason_id),
              null
       from room_block b
-      where b.room_id = any($1) and b.released_at is null and b.period && daterange($2, $3)
+      where b.property_id = $5 and b.room_id = any($1) and b.released_at is null
+        and b.period && daterange($2, $3)
         and ((b.days <= {short} and b.starts >= $4 and b.starts < $3) or b.days > {short})
     ) rows
     order by room_id, start";
