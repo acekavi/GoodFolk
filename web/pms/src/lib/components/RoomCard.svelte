@@ -9,6 +9,7 @@
 	import { addDays } from '$lib/inventory';
 	import { ApiError, errorMessage } from '$lib/api/problem';
 	import { ifMatch, rest, unwrap } from '$lib/api/rest';
+	import { conditionLabel, fetchBoard, hkKey, isConditionRefusal } from '$lib/housekeeping';
 	import { Pending } from '$lib/pending.svelte';
 	import { formatMoney } from '$lib/rates';
 	import {
@@ -47,6 +48,10 @@
 		manage: boolean;
 		/** `frontDeskCheckIn`: check in, undo a same-day check-in, and check out. */
 		checkInAllowed: boolean;
+		/** `housekeepingView`: the assigned room's condition is shown. */
+		viewConditions: boolean;
+		/** `housekeepingSupervise`: a dirty room's check-in may be overridden, with a reason. */
+		supervise: boolean;
 	}
 
 	const {
@@ -56,7 +61,9 @@
 		roomTypes,
 		businessDate,
 		manage,
-		checkInAllowed
+		checkInAllowed,
+		viewConditions,
+		supervise
 	}: Props = $props();
 
 	const client = useQueryClient();
@@ -71,8 +78,11 @@
 	let modifying = $state(false);
 	let confirmingCheckOut = $state(false);
 	let addingOccupant = $state(false);
+	let overriding = $state(false);
+	let reason = $state('');
 
 	function closePanels() {
+		overriding = false;
 		picking = false;
 		confirmingCancel = false;
 		modifying = false;
@@ -296,14 +306,48 @@
 			: 'Checking out now keeps the full stay.'
 	);
 
-	async function checkIn() {
-		await command('checkIn', async () =>
-			unwrap(
-				await rest.POST('/api/v1/properties/{property}/reservation-rooms/{room}/check-in', {
-					params: { path: { property: propertyId, room: room.id }, header: ifMatch(room.version) }
-				})
-			)
-		);
+	// The board, shared with the housekeeping screen under `hk:<property>`, so its events refresh the condition.
+	const board = createQuery(() => ({
+		queryKey: hkKey(propertyId),
+		queryFn: ({ signal }: { signal: AbortSignal }) => fetchBoard(propertyId, signal),
+		enabled: viewConditions && !!room.room && ['CONFIRMED', 'CHECKED_IN'].includes(room.status)
+	}));
+	const condition = $derived(
+		board.data?.find((entry) => entry.roomId === room.room?.id)?.condition
+	);
+
+	/**
+	 * Checks in, with the supervisor's `overrideReason` if given. A refusal for the room's condition offers
+	 * a supervisor the override; anyone else sees the message only.
+	 */
+	async function checkIn(overrideReason?: string) {
+		let refused = false;
+		const done = await command('checkIn', async () => {
+			try {
+				return unwrap(
+					await rest.POST('/api/v1/properties/{property}/reservation-rooms/{room}/check-in', {
+						params: {
+							path: { property: propertyId, room: room.id },
+							header: ifMatch(room.version)
+						},
+						body: overrideReason ? { override_reason: overrideReason } : undefined
+					})
+				);
+			} catch (err) {
+				refused = err instanceof ApiError && isConditionRefusal(err.status, err.problem.detail);
+				throw err;
+			}
+		});
+		if (done) overriding = false;
+		else if (refused && supervise && !overrideReason) {
+			reason = '';
+			overriding = true;
+		}
+	}
+
+	function submitOverride(event: SubmitEvent) {
+		event.preventDefault();
+		void checkIn(reason.trim());
 	}
 
 	async function undoCheckIn() {
@@ -383,6 +427,10 @@
 		<dd>{offerLabel({ ratePlanCode: room.ratePlan.code, mealPlan: room.mealPlan })}</dd>
 		<dt>Status</dt>
 		<dd>{statusLabel(room.status)}</dd>
+		{#if condition}
+			<dt>Condition</dt>
+			<dd>{conditionLabel(condition)}</dd>
+		{/if}
 		<dt>Guest</dt>
 		<dd>
 			{room.primaryGuest.firstName}
@@ -599,6 +647,15 @@
 				</div>
 			</form>
 		{/if}
+	{:else if overriding}
+		<form class="inline-form" aria-label="Check in anyway" onsubmit={submitOverride}>
+			<label>
+				Reason
+				<input required maxlength="500" bind:value={reason} />
+			</label>
+			<button disabled={!reason.trim() || pending.has('checkIn')}>Check in anyway</button>
+			<button type="button" class="secondary" onclick={() => (overriding = false)}>Cancel</button>
+		</form>
 	{:else if confirmingCheckOut}
 		<div class="confirm">
 			<p>{checkOutMessage}</p>
@@ -644,7 +701,7 @@
 			{/if}
 			{#if checkInAllowed}
 				{#if room.canCheckIn}
-					<button disabled={pending.has('checkIn')} onclick={checkIn}>Check in</button>
+					<button disabled={pending.has('checkIn')} onclick={() => checkIn()}>Check in</button>
 				{/if}
 				{#if room.canUndoCheckIn}
 					<button class="secondary" disabled={pending.has('undoCheckIn')} onclick={undoCheckIn}

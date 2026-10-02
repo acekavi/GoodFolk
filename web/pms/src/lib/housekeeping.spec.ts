@@ -7,6 +7,7 @@ import {
 	hkKey,
 	initials,
 	issueCounts,
+	isConditionRefusal,
 	issuesKey,
 	nextConditions,
 	NO_FILTERS,
@@ -130,5 +131,21 @@ describe('selection helpers', () => {
 		expect(rangeBetween(order, undefined, 'c')).toEqual(['c']);
 		expect(rangeBetween(order, 'gone', 'c')).toEqual(['c']);
 		expect(rangeBetween(order, 'a', 'gone')).toEqual([]);
+	});
+});
+
+describe('isConditionRefusal', () => {
+	it('is a 409 that names the room and a condition that is not ready', () => {
+		expect(isConditionRefusal(409, 'room 101 is Dirty')).toBe(true);
+		expect(isConditionRefusal(409, 'room 7B is Cleaning')).toBe(true);
+	});
+
+	it('is nothing else', () => {
+		expect(isConditionRefusal(403, 'room 101 is Dirty')).toBe(false);
+		expect(isConditionRefusal(409, 'room 101 is Clean')).toBe(false);
+		expect(
+			isConditionRefusal(409, 'only a confirmed stay can check in; this one is Cancelled')
+		).toBe(false);
+		expect(isConditionRefusal(409, undefined)).toBe(false);
 	});
 });

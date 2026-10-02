@@ -58,6 +58,7 @@
 		properties.data?.find((property) => property.id === propertyId)?.businessDate ?? ''
 	);
 	const manage = $derived(!!me.data && can(me.data, 'manageReservations', propertyId));
+	const viewConditions = $derived(!!me.data && can(me.data, 'housekeepingView', propertyId));
 	const types = $derived(roomTypes.data ?? []);
 	const rail = $derived(railRooms(rooms.data?.rooms ?? [], types));
 	const view = $derived(
@@ -243,6 +244,7 @@
 			span={view.span}
 			{businessDate}
 			{manage}
+			{viewConditions}
 			onview={(date) => (visibleStart = date)}
 			onopen={openReservation}
 			onstart={settled}

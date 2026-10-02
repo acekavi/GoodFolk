@@ -98,6 +98,11 @@ const OCCUPANCY_LABELS: Record<Occupancy, string> = {
 	TURNOVER: 'Turnover'
 };
 
+/** Whether a check-in refusal is the room's condition ("room 101 is Dirty"), which a supervisor may override. */
+export function isConditionRefusal(status: number, detail: string | undefined): boolean {
+	return status === 409 && /^room \S+ is (Dirty|Cleaning)$/.test(detail ?? '');
+}
+
 export const conditionLabel = (condition: Condition) => CONDITION_LABELS[condition];
 export const occupancyLabel = (occupancy: Occupancy) => OCCUPANCY_LABELS[occupancy];
 

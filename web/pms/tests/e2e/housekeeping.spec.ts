@@ -7,7 +7,7 @@ async function board(page: Page) {
 	await createProperty(page, 'HKB');
 	const hotel = await bookableHotel(page, 4, 2);
 	const propertyId = page.url().split('/p/')[1];
-	await post(page.request, `${hotel.path}/reservations`, {
+	const reservation = await post(page.request, `${hotel.path}/reservations`, {
 		booker_guest_id: hotel.guestId,
 		source: 'front_desk',
 		rooms: [
@@ -23,7 +23,7 @@ async function board(page: Page) {
 	});
 	await page.goto(`/p/${propertyId}/housekeeping`);
 	await expect(page.getByRole('heading', { name: 'Housekeeping' })).toBeVisible();
-	return { email, propertyId, hotel };
+	return { email, propertyId, hotel, reservationId: reservation.id as string };
 }
 
 const tile = (page: Page, number: string) =>
@@ -185,4 +185,77 @@ test('a front desk user sees the board and can report, but has no supervisor act
 	await expect(tile(page, '101')).toHaveAttribute('aria-label', /1 open issues/);
 
 	await context.close();
+});
+
+/** Makes room 101 dirty through the API, as the signed-in user. */
+async function makeDirty(page: Page, propertyId: string, hotel: { path: string }) {
+	const board = await page.request.post('/graphql', {
+		headers: { 'x-goodfolk-csrf': '1' },
+		data: {
+			query: `{ housekeepingBoard(propertyId: "${propertyId}") { roomId number } }`
+		}
+	});
+	const rooms: { roomId: string; number: string }[] = (await board.json()).data.housekeepingBoard;
+	const response = await page.request.post(`${hotel.path}/rooms/conditions`, {
+		headers: { 'x-goodfolk-csrf': '1', 'Idempotency-Key': crypto.randomUUID() },
+		data: { room_ids: [rooms.find((room) => room.number === '101')!.roomId], condition: 'dirty' }
+	});
+	expect(response.status(), await response.text()).toBeLessThan(300);
+}
+
+test('a dirty room refuses check-in, and a manager checks the guest in anyway with a reason', async ({
+	page
+}) => {
+	const { propertyId, hotel, reservationId } = await board(page);
+	await makeDirty(page, propertyId, hotel);
+
+	await page.goto(`/p/${propertyId}/reservations/${reservationId}`);
+	await expect(page.getByText('Condition', { exact: true })).toBeVisible();
+	await expect(page.getByText('Dirty', { exact: true })).toBeVisible();
+	await page.getByRole('button', { name: 'Check in', exact: true }).click();
+
+	await expect(page.getByRole('alert').filter({ hasText: 'room 101 is Dirty' })).toBeVisible();
+	const form = page.getByRole('form', { name: 'Check in anyway' });
+	await expect(form.getByRole('button', { name: 'Check in anyway' })).toBeDisabled();
+	await form.getByLabel('Reason').fill('Housekeeping is on its way');
+	await form.getByRole('button', { name: 'Check in anyway' }).click();
+
+	await expect(page.getByText('Checked in', { exact: true }).first()).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Undo check-in' })).toBeVisible();
+	await expect(form).toBeHidden();
+});
+
+test('a front desk user is only told the room is dirty', async ({ page, browser }) => {
+	const { email, propertyId, hotel, reservationId } = await board(page);
+	await makeDirty(page, propertyId, hotel);
+	const { page: desk, context } = await staffOnBoard(browser, email, 'front_desk', propertyId);
+
+	await desk.goto(`/p/${propertyId}/reservations/${reservationId}`);
+	await desk.getByRole('button', { name: 'Check in', exact: true }).click();
+
+	await expect(desk.getByRole('alert').filter({ hasText: 'room 101 is Dirty' })).toBeVisible();
+	await expect(desk.getByRole('form', { name: 'Check in anyway' })).toHaveCount(0);
+	await expect(desk.getByRole('button', { name: 'Check in anyway' })).toHaveCount(0);
+	await context.close();
+});
+
+test("the tape chart rail shows a room's condition and follows the board live", async ({
+	page
+}) => {
+	const { propertyId, hotel } = await board(page);
+	await makeDirty(page, propertyId, hotel);
+	const tape = await page.context().newPage();
+	await tape.goto(`/p/${propertyId}/tape`);
+	const dot = tape
+		.getByRole('list', { name: 'Rooms' })
+		.getByRole('listitem')
+		.filter({ hasText: '101' })
+		.getByRole('img');
+	await expect(dot).toHaveAttribute('title', 'Dirty');
+
+	await tile(page, '101').click();
+	await page.getByLabel('Set condition…').selectOption('CLEAN');
+
+	await expect(dot).toHaveAttribute('title', 'Clean');
+	await tape.close();
 });

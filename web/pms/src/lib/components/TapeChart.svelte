@@ -34,6 +34,7 @@
 	import { errorMessage } from '$lib/api/problem';
 	import { ifMatch, rest, unwrap } from '$lib/api/rest';
 	import { addDays } from '$lib/inventory';
+	import { conditionLabel, fetchBoard, hkKey, type Condition } from '$lib/housekeeping';
 	import { formatMoney } from '$lib/rates';
 	import {
 		fetchAvailability,
@@ -89,6 +90,8 @@
 		businessDate: string;
 		/** Whether the user may change reservations; read-only otherwise. */
 		manage: boolean;
+		/** `housekeepingView`: the rail shows each room's condition. */
+		viewConditions: boolean;
 		/** The first day in view changed, as scrolling moves it. */
 		onview: (date: string) => void;
 		/** The view's first day settled on `date`. */
@@ -106,6 +109,7 @@
 		span,
 		businessDate,
 		manage,
+		viewConditions,
 		onview,
 		onopen,
 		onstart,
@@ -171,6 +175,16 @@
 	// The tiles in view plus one ahead; a string key so the list only changes when the set does.
 	const tilesKey = $derived(tilesFor(firstDay, span + 1, 1, direction).join(','));
 	const tiles = $derived(tilesKey.split(','));
+	// Conditions come from the housekeeping board, cached under `hk:<property>`, so its events refresh the dots.
+	const board = createQuery(() => ({
+		queryKey: hkKey(propertyId),
+		queryFn: ({ signal }: { signal: AbortSignal }) => fetchBoard(propertyId, signal),
+		enabled: viewConditions
+	}));
+	const conditions = $derived(
+		new Map<string, Condition>((board.data ?? []).map((room) => [room.roomId, room.condition]))
+	);
+
 	const roomIds = $derived(rooms.map((room) => room.id));
 	const key = $derived(pageKey(roomIds));
 
@@ -841,7 +855,18 @@
 		<div class="body" style:height="{rooms.length * ROW}px">
 			<ol class="rail" aria-label="Rooms">
 				{#each rooms as room (room.id)}
-					<li><strong>{room.number}</strong> <span class="hint">{room.typeCode}</span></li>
+					{@const condition = conditions.get(room.id)}
+					<li>
+						<strong>{room.number}</strong> <span class="hint">{room.typeCode}</span>
+						{#if condition}
+							<span
+								class="dot {condition.toLowerCase()}"
+								role="img"
+								title={conditionLabel(condition)}
+								aria-label="Condition: {conditionLabel(condition)}"
+							></span>
+						{/if}
+					</li>
 				{/each}
 			</ol>
 			<div class="lane">
@@ -1116,6 +1141,25 @@
 		height: var(--row);
 		padding: 0 0.6rem;
 		border-bottom: 1px solid var(--border);
+	}
+	.dot {
+		width: 0.6rem;
+		height: 0.6rem;
+		margin-left: auto;
+		border-radius: 50%;
+		background: var(--border);
+	}
+	.dot.dirty {
+		background: var(--danger);
+	}
+	.dot.cleaning {
+		background: var(--stay-tentative);
+	}
+	.dot.clean {
+		background: var(--stay-checked-in);
+	}
+	.dot.inspected {
+		background: var(--accent);
 	}
 	.lane {
 		position: relative;
