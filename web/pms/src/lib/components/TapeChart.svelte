@@ -504,7 +504,7 @@
 			if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
 			g.dragging = true;
 			ghost.hidden = false;
-			ghost.className = `ghost ${g.kind}`;
+			ghost.classList.add(g.kind);
 			ghost.style.width = `${g.width}px`;
 			ghostLabel = g.kind === 'move' ? g.stay.guestName : '';
 			g.el.classList.add('dragging');
@@ -525,7 +525,10 @@
 	}
 
 	function endGhost(g: Grab) {
-		if (ghost) ghost.hidden = true;
+		if (ghost) {
+			ghost.hidden = true;
+			ghost.classList.remove(g.kind);
+		}
 		g.el.classList.remove('dragging');
 		viewport?.classList.remove('is-dragging');
 	}
@@ -736,16 +739,19 @@
 				})
 			);
 			let version = modified.version;
+			// The server's own room: a type change picks one, or leaves the stay without.
+			let roomId = modified.room_id ?? '';
 			if (change.plan === 'modify+assign' && modified.room_id !== change.room.id) {
 				try {
 					version = (await assignStay(propertyId, stay.id, version, change.room.id)).version;
+					roomId = change.room.id;
 				} catch (err) {
-					apply({ ...next, roomId: modified.room_id ?? stay.roomId, version });
+					apply({ ...next, roomId, version });
 					say(`Changed, but not moved to room ${change.room.number}: ${errorMessage(err)}`);
 					return;
 				}
 			}
-			apply({ ...next, version });
+			apply({ ...next, roomId, version });
 			say('Stay changed');
 		} catch (err) {
 			back();
@@ -973,7 +979,7 @@
 		{/if}
 		{#if detail.isError || preview.isError}
 			<p class="error" role="alert">{errorMessage(detail.error ?? preview.error)}</p>
-		{:else if !priced}
+		{:else if !priced || !preview.data}
 			<p>Pricing…</p>
 		{:else if offer}
 			<p>
@@ -988,11 +994,12 @@
 		{:else}
 			<p>
 				Total <strong>{money(priced.total, priced.currency)}</strong>. No
-				{typeCode(change.room.roomTypeId)} offer sells these nights on {priced.ratePlan.code}.
+				{typeCode(change.room.roomTypeId)} offer sells these nights on {priced.ratePlan.code}, so
+				this change can't be made.
 			</p>
 		{/if}
 		<div class="actions">
-			<button type="button" disabled={!priced} onclick={confirmChange}>Confirm</button>
+			<button type="button" disabled={!offer} onclick={confirmChange}>Confirm</button>
 			<button type="button" class="secondary" onclick={() => (confirming = undefined)}
 				>Cancel</button
 			>
