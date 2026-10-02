@@ -4,7 +4,7 @@ use db::testing::app_pool;
 use db::{Scope, TenantId, Tx, UserId, begin};
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
-use time::Date;
+use time::{Date, Duration};
 use uuid::Uuid;
 
 /// A tenant with one user (the supervisor of its tests), one property and one room type.
@@ -144,5 +144,84 @@ impl Hotel {
             .fetch_one(&mut *self.tx().await)
             .await
             .unwrap()
+    }
+
+    /// A stay of `status` in `room` for `[business date + from, business date + to)`, written straight into the
+    /// reservation tables as the reservations module leaves an assigned stay (this crate's tests do not use it),
+    /// with its own guest, rate plan and reservation. A checked-out stay's range is the shrunk one.
+    pub async fn stay(&self, room: Uuid, from: i64, to: i64, status: &str) {
+        let mut tx = self.tx().await;
+        let taken: i64 = sqlx::query_scalar("select count(*) from reservation").fetch_one(&mut *tx).await.unwrap();
+        let (guest, plan, reservation) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let confirmation = format!("GAL-{:06}", taken + 1);
+        let (arrival, departure) = (self.business_date + Duration::days(from), self.business_date + Duration::days(to));
+        let statements = [
+            "insert into guest (id, tenant_id, first_name, last_name, residency)
+             values ($3, $1, 'Ada', 'Silva', 'resident')",
+            "insert into rate_plan (id, tenant_id, property_id, code, name, kind, segment, currency)
+             values ($4, $1, $2, 'BAR' || $6, 'Best available', 'standard', 'IBE', 'USD')",
+            "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id)
+             values ($5, $1, $2, $7, 'front_desk', $3)",
+            "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, room_id, stay,
+                                           adults, children, rate_plan_id, meal_plan, status, primary_guest_id,
+                                           currency, cancelled_at, cancellation_penalty, checked_in_at,
+                                           checked_in_business_date, checked_out_at)
+             select gen_random_uuid(), $1, $2, $5, r.room_type_id, r.id, daterange($9, $10), 2, 0, $4, 'RO', $11,
+                    $3, 'USD', case when $11 = 'cancelled' then now() end, case when $11 = 'cancelled' then 0 end,
+                    case when $11 in ('checked_in', 'checked_out') then now() end,
+                    case when $11 in ('checked_in', 'checked_out') then $9 end,
+                    case when $11 = 'checked_out' then now() end
+             from room r where r.id = $8",
+        ];
+        for statement in statements {
+            sqlx::query(statement)
+                .bind(self.tenant.0)
+                .bind(self.property)
+                .bind(guest)
+                .bind(plan)
+                .bind(reservation)
+                .bind(taken + 1)
+                .bind(&confirmation)
+                .bind(room)
+                .bind(arrival)
+                .bind(departure)
+                .bind(status)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+    }
+
+    /// An unreleased block of `kind` on `room` for `[business date + from, business date + to)`.
+    pub async fn block(&self, room: Uuid, from: i64, to: i64, kind: &str) {
+        let mut tx = self.tx().await;
+        let reason = Uuid::now_v7();
+        sqlx::query(
+            "insert into block_reason (id, tenant_id, property_id, code, label, default_kind)
+             values ($1, $2, $3, upper(substr(md5($1::text), 1, 10)), 'Test', $4)",
+        )
+        .bind(reason)
+        .bind(self.tenant.0)
+        .bind(self.property)
+        .bind(kind)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into room_block (id, tenant_id, property_id, room_id, period, kind, reason_id)
+             values (gen_random_uuid(), $1, $2, $3, daterange($4, $5), $6, $7)",
+        )
+        .bind(self.tenant.0)
+        .bind(self.property)
+        .bind(room)
+        .bind(self.business_date + Duration::days(from))
+        .bind(self.business_date + Duration::days(to))
+        .bind(kind)
+        .bind(reason)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
     }
 }

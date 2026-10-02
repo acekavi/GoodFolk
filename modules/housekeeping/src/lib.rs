@@ -4,13 +4,19 @@
 //! transaction and queue a change event.
 
 mod assignments;
+mod board;
 mod condition;
+mod issues;
+mod occupancy;
 
 pub use assignments::{Housekeeper, copy_yesterday, housekeepers, set_assignments};
+pub use board::{BoardRoom, board, my_rooms};
 
 pub use condition::{
     Actor, Condition, MAX_BULK_ROOMS, RoomConditionRow, housekeeper_may, lock_and_set, set_condition, set_conditions,
 };
+pub use issues::{Issue, IssueStatus, Severity, list_issues, report_issue, resolve_issue};
+pub use occupancy::Occupancy;
 
 use db::{Event, TenantId, Tx, UserId};
 use uuid::Uuid;
@@ -39,6 +45,11 @@ pub enum HousekeepingError {
 /// Cache key for a property's housekeeping data: room conditions, assignments and issues.
 pub fn hk_key(property: Uuid) -> String {
     format!("hk:{property}")
+}
+
+/// Cache key for a property's room issues.
+pub fn issues_key(property: Uuid) -> String {
+    format!("issues:{property}")
 }
 
 async fn audit(
