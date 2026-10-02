@@ -1,0 +1,200 @@
+//! The tape chart's two reads: the stays and blocks of up to ten rooms over a window, and the stays that still
+//! need a room. Both are range scans on indexes made for them, so the chart's cost follows what it shows.
+
+use crate::ReservationsError;
+use db::Tx;
+use domain::RoomStatus;
+use sqlx::Row;
+use sqlx::postgres::PgRow;
+use std::collections::HashSet;
+use time::{Date, Duration};
+use uuid::Uuid;
+
+/// Most rooms one `tape_window` shows.
+pub const MAX_TAPE_ROOMS: usize = 10;
+/// Longest window, in days, either read serves.
+pub const MAX_TAPE_DAYS: i64 = 42;
+
+/// A stay in one of the window's rooms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TapeStay {
+    pub id: Uuid,
+    pub reservation_id: Uuid,
+    pub room_id: Uuid,
+    pub room_type_id: Uuid,
+    pub start: Date,
+    pub end: Date,
+    pub status: RoomStatus,
+    /// The primary guest as "Silva, A.": last name and first initial, the last name alone for a single name.
+    pub guest_name: String,
+    pub account_name: Option<String>,
+    pub version: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct TapeBlock {
+    pub id: Uuid,
+    pub room_id: Uuid,
+    pub start: Date,
+    pub end: Date,
+    /// The block reason's label.
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TapeWindow {
+    pub stays: Vec<TapeStay>,
+    pub blocks: Vec<TapeBlock>,
+}
+
+db::text_enum!(
+    /// Why a stay has no room: `overbooked` when a night is sold beyond the physical rooms of its type,
+    /// `no_single_room` when there are rooms enough but no one room is free for every night.
+    NeedsRoomReason { Overbooked = "overbooked", NoSingleRoom = "no_single_room" }
+);
+
+/// A confirmed stay with no room yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnassignedStay {
+    pub id: Uuid,
+    pub reservation_id: Uuid,
+    pub room_type_id: Uuid,
+    pub start: Date,
+    pub end: Date,
+    pub guest_name: String,
+    pub reason: NeedsRoomReason,
+    pub version: i32,
+}
+
+/// `[from, to)` must span 1 to [`MAX_TAPE_DAYS`] days.
+fn check_window(from: Date, to: Date) -> Result<(), ReservationsError> {
+    if to <= from || to - from > Duration::days(MAX_TAPE_DAYS) {
+        return Err(ReservationsError::Invalid(format!("the window must be 1 to {MAX_TAPE_DAYS} days")));
+    }
+    Ok(())
+}
+
+fn stay_from_row(row: &PgRow) -> Result<TapeStay, sqlx::Error> {
+    let status: String = row.try_get("status")?;
+    Ok(TapeStay {
+        id: row.try_get("id")?,
+        reservation_id: row.try_get("reservation_id")?,
+        room_id: row.try_get("room_id")?,
+        room_type_id: row.try_get("room_type_id")?,
+        start: row.try_get("start")?,
+        end: row.try_get("end")?,
+        status: RoomStatus::parse(&status).ok_or_else(|| crate::decode_error("status", &status))?,
+        guest_name: row.try_get("guest_name")?,
+        account_name: row.try_get("account_name")?,
+        version: row.try_get("version")?,
+    })
+}
+
+/// The stays (not cancelled or no-show) and the unreleased blocks of `rooms` that overlap `[from, to)`, by
+/// room then start. The window is at most [`MAX_TAPE_DAYS`] days and `rooms` holds 1 to [`MAX_TAPE_ROOMS`]
+/// rooms of the property, active or not; anything else is `Invalid`.
+pub async fn tape_window(
+    tx: &mut Tx,
+    property: Uuid,
+    rooms: &[Uuid],
+    from: Date,
+    to: Date,
+) -> Result<TapeWindow, ReservationsError> {
+    check_window(from, to)?;
+    if rooms.is_empty() || rooms.len() > MAX_TAPE_ROOMS {
+        return Err(ReservationsError::Invalid(format!("name 1 to {MAX_TAPE_ROOMS} rooms")));
+    }
+    let distinct = rooms.iter().collect::<HashSet<_>>().len();
+    let known: i64 = sqlx::query_scalar("select count(*) from room where id = any($2) and property_id = $1")
+        .bind(property)
+        .bind(rooms)
+        .fetch_one(&mut **tx)
+        .await?;
+    if known != distinct as i64 {
+        return Err(ReservationsError::Invalid("every room must belong to the property".into()));
+    }
+
+    let stay_rows = sqlx::query(
+        "select a.id, a.reservation_id, a.room_id, a.room_type_id, lower(a.stay) as start, upper(a.stay) as \"end\",
+                a.status,
+                g.last_name || case when g.first_name = '' then '' else ', ' || left(g.first_name, 1) || '.' end
+                  as guest_name,
+                c.name as account_name, a.version
+         from reservation_room a
+         join reservation r on r.id = a.reservation_id
+         join guest g on g.id = a.primary_guest_id
+         left join account c on c.id = r.account_id
+         where a.room_id = any($1) and a.status not in ('cancelled', 'no_show') and a.stay && daterange($2, $3)
+         order by a.room_id, lower(a.stay)",
+    )
+    .bind(rooms)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&mut **tx)
+    .await?;
+    let stays = stay_rows.iter().map(stay_from_row).collect::<Result<Vec<_>, _>>()?;
+
+    let blocks = sqlx::query_as(
+        "select b.id, b.room_id, lower(b.period) as start, upper(b.period) as \"end\", br.label as reason
+         from room_block b
+         join block_reason br on br.property_id = b.property_id and br.id = b.reason_id
+         where b.room_id = any($1) and b.released_at is null and b.period && daterange($2, $3)
+         order by b.room_id, lower(b.period)",
+    )
+    .bind(rooms)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(TapeWindow { stays, blocks })
+}
+
+/// The confirmed stays of the property with no room that overlap `[from, to)` (at most [`MAX_TAPE_DAYS`]
+/// days), by arrival. A stay is `overbooked` when any of its nights is sold beyond the type's physical rooms.
+/// Nights before the business date have no counter, so a stay under way is never `overbooked` on their account.
+pub async fn unassigned_stays(
+    tx: &mut Tx,
+    property: Uuid,
+    from: Date,
+    to: Date,
+) -> Result<Vec<UnassignedStay>, ReservationsError> {
+    check_window(from, to)?;
+    let rows = sqlx::query(
+        "select rr.id, rr.reservation_id, rr.room_type_id, lower(rr.stay) as start, upper(rr.stay) as \"end\",
+                g.last_name || case when g.first_name = '' then '' else ', ' || left(g.first_name, 1) || '.' end
+                  as guest_name,
+                exists (
+                  select 1 from inventory_day i
+                  where i.property_id = $1 and i.room_type_id = rr.room_type_id
+                    and i.date >= lower(rr.stay) and i.date < upper(rr.stay)
+                    and i.physical - i.sold - i.out_of_order < 0) as overbooked,
+                rr.version
+         from reservation_room rr
+         join guest g on g.id = rr.primary_guest_id
+         where rr.property_id = $1 and rr.room_id is null and rr.status = 'confirmed'
+           and rr.stay && daterange($2, $3)
+         order by lower(rr.stay), rr.id",
+    )
+    .bind(property)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&mut **tx)
+    .await?;
+    let stays = rows
+        .iter()
+        .map(|row| {
+            let overbooked: bool = row.try_get("overbooked")?;
+            Ok(UnassignedStay {
+                id: row.try_get("id")?,
+                reservation_id: row.try_get("reservation_id")?,
+                room_type_id: row.try_get("room_type_id")?,
+                start: row.try_get("start")?,
+                end: row.try_get("end")?,
+                guest_name: row.try_get("guest_name")?,
+                reason: if overbooked { NeedsRoomReason::Overbooked } else { NeedsRoomReason::NoSingleRoom },
+                version: row.try_get("version")?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
+    Ok(stays)
+}

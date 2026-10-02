@@ -16,6 +16,7 @@ mod modify;
 mod occupants;
 mod reservations;
 mod stay;
+mod tape;
 
 pub use accounts::{
     Account, AccountChanges, AccountContact, AccountKind, MAX_ACCOUNT_LIST, NewAccount, create_account, get_account,
@@ -43,6 +44,10 @@ pub use reservations::{
     Source, Total, UpdatedReservation, create_reservation, update_reservation,
 };
 pub use stay::{CheckInPolicy, CheckedIn, CheckedOut, UndoneCheckIn, check_in, check_out, undo_check_in};
+pub use tape::{
+    MAX_TAPE_DAYS, MAX_TAPE_ROOMS, NeedsRoomReason, TapeBlock, TapeStay, TapeWindow, UnassignedStay, tape_window,
+    unassigned_stays,
+};
 
 use db::{Event, TenantId, Tx, UserId};
 use rates::RatesError;

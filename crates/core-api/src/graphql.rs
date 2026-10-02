@@ -217,6 +217,10 @@ mirror_enum!(PlanKindNode as "PlanKind" from rates::PlanKind { Standard, Derived
 mirror_enum!(SegmentNode as "Segment" from rates::Segment { FitF, FitL, Ota, Ta, Ibe });
 mirror_enum!(ResidencyNode as "Residency" from rates::Residency { Resident, NonResident });
 mirror_enum!(ChangeModeNode as "ChangeMode" from rates::ChangeMode { Percent, Amount });
+mirror_enum!(
+    /// Why a stay has no room.
+    NeedsRoomReasonNode as "NeedsRoomReason" from reservations::NeedsRoomReason { Overbooked, NoSingleRoom }
+);
 mirror_enum!(MealPlanNode as "MealPlan" from rates::MealPlan { Ro, Bb, Hb, Fb });
 mirror_enum!(PriceChangeModeNode as "PriceChangeMode" from rates::PriceChangeMode { Percent, Amount, Set });
 mirror_enum!(PenaltyKindNode as "PenaltyKind" from rates::PenaltyKind { Nights, Percent, Amount });
@@ -776,6 +780,58 @@ pub struct FreeRoomNode {
     pub number: String,
     /// The housekeeping section's name.
     pub section: Option<String>,
+}
+
+/// A stay in one of the tape chart's rooms.
+#[derive(SimpleObject)]
+pub struct TapeStayNode {
+    pub id: Uuid,
+    pub reservation_id: Uuid,
+    pub room_id: Uuid,
+    pub room_type_id: Uuid,
+    pub start: Date,
+    pub end: Date,
+    pub status: RoomStatusNode,
+    /// The primary guest as "Silva, A.".
+    pub guest_name: String,
+    pub account_name: Option<String>,
+    /// Send as `If-Match: "<version>"` with the stay's commands.
+    pub version: i32,
+}
+
+/// A room block in one of the tape chart's rooms.
+#[derive(SimpleObject)]
+pub struct TapeBlockNode {
+    pub id: Uuid,
+    pub room_id: Uuid,
+    pub start: Date,
+    pub end: Date,
+    /// The block reason's label.
+    pub reason: String,
+}
+
+#[derive(SimpleObject)]
+pub struct TapeWindowNode {
+    /// By room, then arrival.
+    pub stays: Vec<TapeStayNode>,
+    /// By room, then start.
+    pub blocks: Vec<TapeBlockNode>,
+}
+
+/// A confirmed stay that has no room yet.
+#[derive(SimpleObject)]
+pub struct UnassignedStayNode {
+    pub id: Uuid,
+    pub reservation_id: Uuid,
+    pub room_type_id: Uuid,
+    pub start: Date,
+    pub end: Date,
+    /// Always `CONFIRMED`: check-in needs a room, so only confirmed stays can be unassigned.
+    pub status: RoomStatusNode,
+    pub guest_name: String,
+    pub reason: NeedsRoomReasonNode,
+    /// Send as `If-Match: "<version>"` with the stay's commands.
+    pub version: i32,
 }
 
 impl From<rates::CancellationRule> for CancellationRuleNode {
@@ -1365,6 +1421,73 @@ impl Query {
             .map_err(reservations_error)?;
         tx.commit().await.map_err(internal)?;
         Ok(rooms.into_iter().map(|r| FreeRoomNode { id: r.id, number: r.number, section: r.section }).collect())
+    }
+
+    /// The stays and blocks of up to 10 rooms of the property that overlap `[from, to)` (at most 42 days),
+    /// for the tape chart.
+    async fn tape_window(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        room_ids: Vec<Uuid>,
+        from: Date,
+        to: Date,
+    ) -> async_graphql::Result<TapeWindowNode> {
+        let mut tx = scoped(ctx, Permission::ReservationsView, property_id).await?;
+        let window =
+            reservations::tape_window(&mut tx, property_id, &room_ids, from, to).await.map_err(reservations_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(TapeWindowNode {
+            stays: window
+                .stays
+                .into_iter()
+                .map(|s| TapeStayNode {
+                    id: s.id,
+                    reservation_id: s.reservation_id,
+                    room_id: s.room_id,
+                    room_type_id: s.room_type_id,
+                    start: s.start,
+                    end: s.end,
+                    status: s.status.into(),
+                    guest_name: s.guest_name,
+                    account_name: s.account_name,
+                    version: s.version,
+                })
+                .collect(),
+            blocks: window
+                .blocks
+                .into_iter()
+                .map(|b| TapeBlockNode { id: b.id, room_id: b.room_id, start: b.start, end: b.end, reason: b.reason })
+                .collect(),
+        })
+    }
+
+    /// Confirmed stays with no room that overlap `[from, to)` (at most 42 days), by arrival, each with why it
+    /// has none.
+    async fn unassigned_stays(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        from: Date,
+        to: Date,
+    ) -> async_graphql::Result<Vec<UnassignedStayNode>> {
+        let mut tx = scoped(ctx, Permission::ReservationsView, property_id).await?;
+        let stays = reservations::unassigned_stays(&mut tx, property_id, from, to).await.map_err(reservations_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(stays
+            .into_iter()
+            .map(|s| UnassignedStayNode {
+                id: s.id,
+                reservation_id: s.reservation_id,
+                room_type_id: s.room_type_id,
+                start: s.start,
+                end: s.end,
+                status: RoomStatusNode::Confirmed,
+                guest_name: s.guest_name,
+                reason: s.reason.into(),
+                version: s.version,
+            })
+            .collect())
     }
 }
 
