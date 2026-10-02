@@ -215,6 +215,10 @@ pub struct ModifyRoomRequest {
     pub adults: Option<i32>,
     #[garde(inner(range(min = 0, max = 50)))]
     pub children: Option<i32>,
+    /// Puts the stay in this room as part of the change: an active room of the new type that is free on the new
+    /// nights.
+    #[garde(skip)]
+    pub room_id: Option<Uuid>,
     /// Keeps the amounts of nights the new stay still covers even across a type or occupancy change (an
     /// upgrade keeps its price); added nights are always quoted.
     #[serde(default)]
@@ -451,6 +455,7 @@ pub async fn modify_room(
         room_type_id: body.room_type_id,
         adults: body.adults,
         children: body.children,
+        room_id: body.room_id,
         keep_price: body.keep_price,
         reprice: body.reprice,
     };

@@ -3985,6 +3985,14 @@
             "type": "boolean",
             "description": "Requotes every night of the new stay regardless of what changed."
           },
+          "room_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Puts the stay in this room as part of the change: an active room of the new type that is free on the new\nnights."
+          },
           "room_type_id": {
             "type": [
               "string",

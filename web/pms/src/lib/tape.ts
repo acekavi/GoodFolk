@@ -336,7 +336,7 @@ export function barWidth(start: string, end: string, dayWidth: number): number {
 
 export type DragHandle = 'body' | 'start' | 'end';
 export type DragKind = 'move' | 'resize-start' | 'resize-end';
-export type DragPlan = 'assign' | 'modify' | 'modify+assign' | 'refuse';
+export type DragPlan = 'assign' | 'modify' | 'modify+room' | 'refuse';
 
 /**
  * What grabbing `bar` by `handle` does, or `null` when it can't be dragged that way: a block, a checked-out
@@ -391,7 +391,8 @@ export function barDays(start: string, end: string): number {
 
 /**
  * What dropping `stay` (dragged as `kind`) on `target` asks of the server. A room only (same type, same dates)
- * is `assign`; anything that changes dates or type is `modify`, plus `assign` when the row is another room.
+ * is `assign`; anything that changes dates or type is `modify`, which also names the room (`modify+room`) when
+ * the row is another room: one request, so the room is checked over the new dates, not the old ones.
  * Dropping where it already is, or a drag its status doesn't allow, is `refuse`.
  */
 export function dragPlan(
@@ -406,7 +407,7 @@ export function dragPlan(
 	const room = target.roomId !== stay.roomId;
 	const type = target.roomTypeId !== stay.roomTypeId;
 	if (!days && !type) return room ? 'assign' : 'refuse';
-	return room ? 'modify+assign' : 'modify';
+	return room ? 'modify+room' : 'modify';
 }
 
 /**

@@ -756,30 +756,21 @@
 			start: change.start,
 			end: change.end,
 			roomTypeId: change.room.roomTypeId,
-			roomId: change.plan === 'modify+assign' ? change.room.id : stay.roomId
+			roomId: change.plan === 'modify+room' ? change.room.id : stay.roomId
 		};
 		const back = await place(next);
 		try {
 			const modified = unwrap(
 				await rest.POST('/api/v1/properties/{property}/reservation-rooms/{room}/modify', {
 					params: { path: { property: propertyId, room: stay.id }, header: ifMatch(stay.version) },
-					body: modifyRoomBody(current, draft)
+					body: {
+						...modifyRoomBody(current, draft),
+						...(change.plan === 'modify+room' && { room_id: change.room.id })
+					}
 				})
 			);
-			let version = modified.version;
-			// The server's own room: a type change picks one, or leaves the stay without.
-			let roomId = modified.room_id ?? '';
-			if (change.plan === 'modify+assign' && modified.room_id !== change.room.id) {
-				try {
-					version = (await assignStay(propertyId, stay.id, version, change.room.id)).version;
-					roomId = change.room.id;
-				} catch (err) {
-					apply({ ...next, roomId, version });
-					say(`Changed, but not moved to room ${change.room.number}: ${errorMessage(err)}`);
-					return;
-				}
-			}
-			apply({ ...next, roomId, version });
+			// The server's own room: the one named, or a type change's pick, or none.
+			apply({ ...next, roomId: modified.room_id ?? '', version: modified.version });
 			say('Stay changed');
 		} catch (err) {
 			back();
@@ -996,8 +987,8 @@
 			→ {change.start} to {change.end}{#if change.room.roomTypeId !== change.stay.roomTypeId},
 				{typeCode(change.stay.roomTypeId)} → {change.room.typeCode}{/if}
 		</p>
-		{#if change.plan === 'modify+assign'}
-			<p>Then it moves to room {change.room.number}.</p>
+		{#if change.plan === 'modify+room'}
+			<p>It also moves to room {change.room.number}.</p>
 		{/if}
 		{#if change.room.roomTypeId !== change.stay.roomTypeId}
 			<label class="check">

@@ -769,6 +769,53 @@ test('dropping a bar on a room of another type can keep the booked price', async
 		});
 });
 
+test('dragging a bar diagonally to a free room on new dates lands there when the old room is taken then', async ({
+	page
+}) => {
+	await signUp(page);
+	await createProperty(page, 'DGN');
+	const hotel = await bookableHotel(page, 6, 3);
+	const stay = await bookTonight(page, hotel);
+	// Another stay takes 101 (the tightest fit, free then) on the night the first one is dragged to.
+	const next = addDays(hotel.businessDate, 1);
+	const other = await post(page.request, `${hotel.path}/reservations`, {
+		booker_guest_id: hotel.guestId,
+		source: 'front_desk',
+		rooms: [
+			{
+				room_type_id: hotel.roomTypeId,
+				rate_plan_id: hotel.ratePlanId,
+				meal_plan: 'RO',
+				check_in: next,
+				check_out: addDays(next, 1),
+				adults: 2
+			}
+		]
+	});
+	expect(other.id).not.toBe(stay.id);
+	await page.getByRole('link', { name: 'Tape chart' }).click();
+	const bar = page.locator('[data-room="101"]', { hasText: 'Silva, A.' });
+	await expect(bar).toHaveCount(2);
+	// The dragged stay is the earlier one: the left-most bar.
+	const boxes = [(await bar.nth(0).boundingBox())!, (await bar.nth(1).boundingBox())!];
+	const box = boxes[0].x < boxes[1].x ? boxes[0] : boxes[1];
+	const x = box.x + box.width / 2;
+	const y = box.y + box.height / 2;
+
+	await drag(page, { x, y }, { x: x + box.width, y: y + 44 });
+	const dialog = page.getByRole('dialog', { name: 'Change stay' });
+	await expect(dialog).toContainText('It also moves to room 102');
+	await dialog.getByRole('button', { name: 'Confirm' }).click();
+	await expect(dialog).toBeHidden();
+
+	const landed = page.locator('[data-room="102"]', { hasText: 'Silva, A.' });
+	await expect(landed).toHaveCount(1);
+	await expect(landed).toHaveAttribute('aria-label', new RegExp(`to ${addDays(next, 1)}`));
+	await expect(page.getByText('Stay changed')).toBeVisible();
+	await expect(bar).toHaveCount(1);
+	await expect.poll(async () => (await reservationRoom(page, hotel, stay.id)).total).toBe(10_000);
+});
+
 test('a checked-in stay can only have its departure edge dragged', async ({ page }) => {
 	await signUp(page);
 	await createProperty(page, 'CKI');

@@ -450,11 +450,11 @@ describe('drag and drop', () => {
 		expect(dragPlan(confirmed, 'move', here)).toBe('refuse');
 		expect(dragPlan(confirmed, 'move', { ...here, dayOffset: 1 })).toBe('modify');
 		expect(dragPlan(confirmed, 'move', { ...here, roomId: 'r102', dayOffset: 1 })).toBe(
-			'modify+assign'
+			'modify+room'
 		);
 		expect(
 			dragPlan(confirmed, 'move', { roomId: 'r201', roomTypeId: 'ty-dlx', dayOffset: 0 })
-		).toBe('modify+assign');
+		).toBe('modify+room');
 		expect(dragPlan(confirmed, 'resize-end', { ...here, roomId: 'r102', dayOffset: 1 })).toBe(
 			'modify'
 		);

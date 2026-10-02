@@ -1283,6 +1283,12 @@ export interface components {
             keep_price?: boolean;
             /** @description Requotes every night of the new stay regardless of what changed. */
             reprice?: boolean;
+            /**
+             * Format: uuid
+             * @description Puts the stay in this room as part of the change: an active room of the new type that is free on the new
+             *     nights.
+             */
+            room_id?: string | null;
             /** Format: uuid */
             room_type_id?: string | null;
         };
