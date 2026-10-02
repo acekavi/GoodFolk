@@ -1,5 +1,5 @@
 import { expect, test, type Locator } from '@playwright/test';
-import { book, bookableHotel, createProperty, signUp } from './helpers';
+import { book, bookableHotel, createProperty, runsQuery, signUp } from './helpers';
 
 const RESERVATIONS = 60;
 const SOURCES = ['front_desk', 'phone', 'email'] as const;
@@ -53,8 +53,10 @@ test('the reservations table pages over a cursor, sorts and filters on the serve
 	// Scrolling near the end loads the next page, which asks for no count (the first page's total stays);
 	// the DOM still holds only the rows in view.
 	const nextPage = page.waitForRequest((request) => {
-		const body = request.postData() ?? '';
-		return body.includes('ReservationList(') && body.includes('"withCount":false');
+		return (
+			runsQuery(request, 'ReservationList') &&
+			(request.postData() ?? '').includes('"withCount":false')
+		);
 	});
 	await expect
 		.poll(async () => {
@@ -108,8 +110,7 @@ test('the reservations table pages over a cursor, sorts and filters on the serve
 
 	// Pointing at a row fetches its reservation ahead of the click.
 	const detail = page.waitForRequest(
-		(request) =>
-			request.url().endsWith('/graphql') && (request.postData() ?? '').includes('Reservation(')
+		(request) => request.url().endsWith('/graphql') && runsQuery(request, 'Reservation')
 	);
 	await row(2).hover();
 	await detail;

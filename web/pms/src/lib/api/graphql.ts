@@ -6,7 +6,10 @@ interface GraphQLResult<T> {
 	errors?: { message: string }[];
 }
 
-/** Runs a read-only GraphQL query. */
+/**
+ * Runs a read-only GraphQL query by its generated document id. Production accepts only those ids; the
+ * development server also gets the text, so a document edited since the last codegen still runs.
+ */
 export async function query<TResult, TVariables>(
 	document: TypedDocumentString<TResult, TVariables>,
 	variables?: TVariables,
@@ -15,7 +18,11 @@ export async function query<TResult, TVariables>(
 	const response = await fetch('/graphql', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json', 'x-goodfolk-csrf': '1' },
-		body: JSON.stringify({ query: document.toString(), variables }),
+		body: JSON.stringify({
+			documentId: document.__meta__?.hash,
+			query: import.meta.env.DEV ? document.toString() : undefined,
+			variables
+		}),
 		signal
 	});
 	// A proxy in front of the API (502, 504) answers with an HTML page, not JSON.

@@ -2,11 +2,15 @@
 
 use crate::auth::TenantContext;
 use crate::error::ApiError;
+use crate::persisted;
 use crate::state::AppState;
-use async_graphql::{Context, EmptyMutation, EmptySubscription, Enum, InputObject, Json, Object, Schema, SimpleObject};
-use async_graphql_axum::rejection::GraphQLRejection;
-use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
+use async_graphql::{
+    Context, EmptyMutation, EmptySubscription, Enum, InputObject, Json, Object, Request, Schema, SimpleObject,
+    Variables,
+};
+use async_graphql_axum::GraphQLResponse;
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use db::{Scope, Tx};
 use identity::Permission;
 use sqlx::PgPool;
@@ -21,13 +25,45 @@ pub fn build_schema(production: bool) -> GqlSchema {
     if production { builder.disable_introspection().finish() } else { builder.finish() }
 }
 
+/// A GraphQL POST body. `documentId` names a persisted document (see `persisted`).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphqlBody {
+    document_id: Option<String>,
+    query: Option<String>,
+    operation_name: Option<String>,
+    #[serde(default)]
+    variables: Variables,
+}
+
 pub async fn handler(
     State(state): State<AppState>,
     ctx: TenantContext,
-    request: Result<GraphQLRequest, GraphQLRejection>,
+    body: Result<axum::Json<GraphqlBody>, JsonRejection>,
 ) -> Result<GraphQLResponse, ApiError> {
-    let request = request.map_err(|rejection| ApiError::bad_request(rejection.0.to_string()))?;
-    Ok(state.schema.execute(request.into_inner().data(state.pool.clone()).data(ctx)).await.into())
+    let axum::Json(body) = body.map_err(|rejection| ApiError::bad_request(rejection.body_text()))?;
+    let mut request = Request::new(resolve_query(&body, state.production)?).variables(body.variables);
+    if let Some(name) = body.operation_name {
+        request = request.operation_name(name);
+    }
+    Ok(state.schema.execute(request.data(state.pool.clone()).data(ctx)).await.into())
+}
+
+/// The query text to run. A `documentId` runs the stored document; a raw `query` runs only outside production,
+/// where a raw `query` sent beside an id (the development client does) wins, so a document that is not yet in
+/// the generated file still works.
+fn resolve_query(body: &GraphqlBody, production: bool) -> Result<String, ApiError> {
+    match (&body.document_id, &body.query) {
+        (_, Some(query)) if !production => Ok(query.clone()),
+        (Some(id), query) => {
+            let text = persisted::documents().get(id).ok_or_else(|| ApiError::bad_request("PersistedQueryNotFound"))?;
+            if query.as_ref().is_some_and(|query| query != text) {
+                return Err(ApiError::bad_request("the query does not match the persisted document"));
+            }
+            Ok(text.clone())
+        }
+        (None, _) => Err(ApiError::bad_request("production accepts only persisted queries")),
+    }
 }
 
 /// Logs a database error and hides it from the client, like `ApiError` does for REST.

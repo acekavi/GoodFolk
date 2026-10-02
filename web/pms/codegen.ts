@@ -8,6 +8,7 @@ const config: CodegenConfig = {
 	generates: {
 		'src/lib/api/gql/': {
 			preset: 'client',
+			presetConfig: { persistedDocuments: { hashAlgorithm: 'sha256' } },
 			config: {
 				// Documents are plain strings: no GraphQL parser is shipped to the browser.
 				documentMode: 'string',

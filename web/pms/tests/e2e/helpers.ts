@@ -1,6 +1,17 @@
-import { expect, type APIRequestContext, type Page } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { expect, type APIRequestContext, type Page, type Request } from '@playwright/test';
 
 export const PASSWORD = 'a long enough password';
+
+const persisted: Record<string, string> = JSON.parse(
+	readFileSync('src/lib/api/gql/persisted-documents.json', 'utf8')
+);
+
+/** Whether `request` runs the GraphQL query `name`. The built app sends a document id, not the query text. */
+export function runsQuery(request: Request, name: string): boolean {
+	const body: { documentId?: string } = JSON.parse(request.postData() ?? '{}');
+	return /^query (\w+)/.exec(persisted[body.documentId ?? ''] ?? '')?.[1] === name;
+}
 
 /** Signs up a new owner with a unique email and waits for the property list. */
 export async function signUp(page: Page): Promise<{ email: string }> {

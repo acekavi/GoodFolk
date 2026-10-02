@@ -4,6 +4,7 @@ import {
 	bookableHotel,
 	createProperty,
 	post,
+	runsQuery,
 	signUp,
 	unassign,
 	type Hotel
@@ -106,7 +107,7 @@ test('a reservation opens in a modal over the table, where rooms are assigned, u
 	// answer) until 101 is picked, as for someone who opened it a moment before the other booking.
 	let offered: string | undefined;
 	await page.route('**/graphql', async (route) => {
-		if (!(route.request().postData() ?? '').includes('FreeRooms(')) return route.fallback();
+		if (!runsQuery(route.request(), 'FreeRooms')) return route.fallback();
 		offered ??= await (await route.fetch()).text();
 		await route.fulfill({ contentType: 'application/json', body: offered });
 	});
