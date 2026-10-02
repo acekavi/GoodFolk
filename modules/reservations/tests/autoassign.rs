@@ -129,6 +129,26 @@ async fn ties_go_to_the_first_room_in_rail_order(_: PgPoolOptions, opts: PgConne
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn ties_follow_the_rails_natural_number_order(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    hotel.rooms(hotel.deluxe.id, &["99"]).await;
+    // Same sort order for 101 and 99, so only the number breaks the tie. As text, "101" < "99".
+    let mut tx = hotel.tx().await;
+    sqlx::query("update room set sort_order = 0 where property_id = $1 and room_type_id = $2")
+        .bind(hotel.property)
+        .bind(hotel.deluxe.id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+
+    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 1, 3)]).await.unwrap();
+
+    assert_eq!(booked.rooms[0].room_number.as_deref(), Some("99"), "{booked:?}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn hand_assigned_rooms_are_never_moved(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 2).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;

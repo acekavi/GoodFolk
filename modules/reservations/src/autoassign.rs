@@ -14,7 +14,8 @@
 //! stay rooms by the tightest fit: the free nights between the previous stay or block on that room and this
 //! arrival, plus the free nights between this departure and the next one, each capped at [`FIT_HORIZON_DAYS`]
 //! (an open end counts as the cap). Ties go to the room's rail order: room type sort order, then the room's
-//! own sort order, then its number.
+//! own sort order, then its number the way the rail compares it, digit runs by value (`99` before `101`; a
+//! number that is only digits comes before one that is not, shorter before longer, then as text).
 //!
 //! **Locking.** [`pick_room`] then walks the ranked candidates in order and locks each in turn with `select
 //! ... for update skip locked`: a room another command already holds (a block, a retype, another assignment)
@@ -38,7 +39,7 @@ pub const FIT_HORIZON_DAYS: i32 = 60;
 
 /// The candidate query: active rooms of `$2` in property `$1` with no stay or block over `[$3, $4)`, ranked
 /// by tightest fit (nights free before `$3` plus nights free after `$4`, each capped at `$5` free nights) then
-/// by rail order. Takes no locks; [`pick_room`] locks each candidate itself, in this order, one at a time.
+/// by rail order (natural number order). Takes no locks; [`pick_room`] locks each candidate itself, in this order, one at a time.
 const CANDIDATE_SQL: &str = "
 with candidate as (
   select r.id, r.number, rt.sort_order as type_order, r.sort_order as room_order,
@@ -67,7 +68,8 @@ with candidate as (
                     where b.room_id = r.id and b.released_at is null and b.period && daterange($3, $4))
 )
 select id, number from candidate
-order by greatest(gap_before, 0) + greatest(gap_after, 0), type_order, room_order, number";
+order by greatest(gap_before, 0) + greatest(gap_after, 0), type_order, room_order,
+         (number !~ '^[0-9]+$'), case when number ~ '^[0-9]+$' then length(number) end, number";
 
 /// The tightest-fitting active room of `room_type` in `property`, free for every night of `[check_in,
 /// check_out)`, locked so it cannot be taken from under the caller before it commits; `None` if no room fits.
