@@ -1,9 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
 import { addDays, bookableHotel, createProperty, post, signUp, type Hotel } from './helpers';
 
-// Phase 4 gates for the tape chart, on a 500-room property with 18 months of four-night stays: first open
-// under 400 ms, a page or picker change under 50 ms, scrolling at 58 fps or better with no long task over
-// 50 ms, the drag ghost following within one frame, and fewer than 3,000 DOM nodes. Timings on shared CI
+// Phase 4 gates for the tape chart, on a 500-room property with 18 months of short stays: first open
+// under 400 ms (p90 of ten cold loads, like the page and picker changes), a page or picker change under
+// 50 ms, scrolling at 58 fps or better with no long task over 50 ms, the drag ghost following within one
+// frame, and fewer than 3,000 DOM nodes. Timings on shared CI
 // runners are noise, so these are left out of the default run. Run them locally with:
 //   E2E_PERF=1 bun run test:e2e --grep @perf
 // The numbers depend on the CPU governor (`powersave` on the development laptop) and on other heavy jobs, so
@@ -149,12 +150,12 @@ function timeChange(start: 'click' | 'enter', first: number, last: number) {
 	);
 }
 
-test('first open of the chart paints its rooms and bars under 400 ms @perf', async ({
+test('first open of the chart paints its rooms and bars under 400 ms at p90 over ten cold loads @perf', async ({
 	browser
 }) => {
 	const session = await page.context().storageState();
 	const timings: number[] = [];
-	for (let run = 0; run < 5; run++) {
+	for (let run = 0; run < 10; run++) {
 		// A new context each time: nothing cached, as on a first visit of the day.
 		const context = await browser.newContext({ storageState: session });
 		const fresh = await context.newPage();
@@ -180,9 +181,10 @@ test('first open of the chart paints its rooms and bars under 400 ms @perf', asy
 		await context.close();
 	}
 	console.log(
-		`tape first open: ${timings.map((ms) => ms.toFixed(0)).join(', ')} ms, median ${median(timings).toFixed(0)}`
+		`tape first open: ${timings.map((ms) => ms.toFixed(0)).join(', ')} ms, median ${median(timings).toFixed(0)}, ` +
+			`p90 ${percentile(timings, 0.9).toFixed(0)}, max ${Math.max(...timings).toFixed(0)}`
 	);
-	expect(median(timings)).toBeLessThan(400);
+	expect(percentile(timings, 0.9)).toBeLessThan(400);
 });
 
 test('a page or picker change paints under 50 ms with the tiles prefetched @perf', async () => {
