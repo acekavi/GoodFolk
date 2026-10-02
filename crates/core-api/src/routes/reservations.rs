@@ -4,14 +4,16 @@ use crate::error::{ApiError, Changes, validate, validate_changes};
 use crate::extract::{ApiJson, ApiPath, SensitiveJson};
 use crate::routes::rooms::present;
 use crate::state::AppState;
+use axum::Json;
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use db::{Scope, Tx};
 use garde::Validate;
 use identity::Permission;
 use rates::{MealPlan, Residency};
 use reservations::{
-    AssignedRoom, CancelledRoom, CheckedIn, CheckedOut, CreatedReservation, Guest, GuestChanges, IdDocType,
-    MAX_ROOMS_PER_RESERVATION, ModifiedRoom, NewGuest, NewReservation, NewReservationRoom, RemovedOccupant,
+    AssignedRoom, CancelledRoom, CheckInOverride, CheckedIn, CheckedOut, CreatedReservation, Guest, GuestChanges,
+    IdDocType, MAX_ROOMS_PER_RESERVATION, ModifiedRoom, NewGuest, NewReservation, NewReservationRoom, RemovedOccupant,
     ReservationChanges, ReservationsError, RoomChanges, RoomOccupant, Source, UndoneCheckIn, UpdatedReservation,
 };
 use serde::Deserialize;
@@ -467,8 +469,18 @@ pub async fn modify_room(
     Ok(Versioned::ok(modified.version, modified))
 }
 
-/// Checks a confirmed, assigned room in on its arrival date.
+/// The optional body of a check-in.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CheckInRequest {
+    /// Checks the guest in although the room is not clean or inspected. Needs the housekeeping supervise
+    /// permission as well as the check-in one. 1 to 500 characters once trimmed, else 422.
+    pub override_reason: Option<String>,
+}
+
+/// Checks a confirmed, assigned room in on its arrival date. The room must be clean or inspected, unless a
+/// manager gives an `override_reason`.
 #[utoipa::path(post, operation_id = "check_in_reservation_room", path = "/api/v1/properties/{property}/reservation-rooms/{room}/check-in",
+    request_body(content = Option<CheckInRequest>, description = "empty, or an override reason"),
     params(("property" = Uuid, Path), ("room" = Uuid, Path), ("If-Match" = String, Header)),
     responses((status = 200, body = CheckedIn,
         headers(("ETag" = String, description = "the reservation room's version, e.g. \"2\""))), (status = 403), (status = 404), (status = 409), (status = 412), (status = 428)))]
@@ -477,13 +489,21 @@ pub async fn check_in(
     ctx: TenantContext,
     ApiPath((property, room)): ApiPath<(Uuid, Uuid)>,
     IfMatch(version): IfMatch,
+    body: Result<Option<Json<CheckInRequest>>, JsonRejection>,
 ) -> Result<Versioned<CheckedIn>, ApiError> {
     ctx.require(Permission::FrontDeskCheckIn, Some(property))?;
+    let reason = body?.and_then(|Json(request)| request.override_reason);
+    let override_ = match reason {
+        Some(reason) => {
+            ctx.require(Permission::HousekeepingSupervise, Some(property))?;
+            Some(CheckInOverride { reason })
+        }
+        None => None,
+    };
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
-    let checked_in =
-        reservations::check_in(&mut tx, ctx.tenant, ctx.user, property, room, version, state.checkin_policy)
-            .await
-            .map_err(reservations_error)?;
+    let checked_in = reservations::check_in(&mut tx, ctx.tenant, ctx.user, property, room, version, override_)
+        .await
+        .map_err(reservations_error)?;
     tx.commit().await?;
     Ok(Versioned::ok(checked_in.version, checked_in))
 }

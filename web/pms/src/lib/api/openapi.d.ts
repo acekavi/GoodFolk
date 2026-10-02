@@ -415,7 +415,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Checks a confirmed, assigned room in on its arrival date. */
+        /**
+         * Checks a confirmed, assigned room in on its arrival date. The room must be clean or inspected, unless a
+         *     manager gives an `override_reason`.
+         */
         post: operations["check_in_reservation_room"];
         delete?: never;
         options?: never;
@@ -901,6 +904,14 @@ export interface components {
          * @enum {string}
          */
         ChangeMode: "percent" | "amount";
+        /** @description The optional body of a check-in. */
+        CheckInRequest: {
+            /**
+             * @description Checks the guest in although the room is not clean or inspected. Needs the housekeeping supervise
+             *     permission as well as the check-in one. 1 to 500 characters once trimmed, else 422.
+             */
+            override_reason?: string | null;
+        };
         /** @description A room after [`check_in`]. */
         CheckedIn: {
             /** Format: date-time */
@@ -1483,7 +1494,7 @@ export interface components {
             weekdays?: number[];
         };
         /** @enum {string} */
-        Role: "owner" | "manager" | "front_desk" | "housekeeping" | "accountant";
+        Role: "owner" | "manager" | "front_desk" | "housekeeping" | "accountant" | "hk_supervisor";
         Room: {
             active: boolean;
             floor?: string | null;
@@ -3004,7 +3015,12 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description empty, or an override reason */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CheckInRequest"] | null;
+            };
+        };
         responses: {
             200: {
                 headers: {

@@ -31,7 +31,7 @@ pub use rates::{
     UpdateCancellationPolicyRequest, UpdateMealSupplementRequest, UpdateRatePlanRequest,
 };
 pub use reservations::{
-    AddOccupantRequest, AssignRoomRequest, CreateGuestRequest, CreateReservationRequest, IdDocRequest,
+    AddOccupantRequest, AssignRoomRequest, CheckInRequest, CreateGuestRequest, CreateReservationRequest, IdDocRequest,
     ModifyRoomRequest, ReservationRoomRequest, UpdateGuestRequest, UpdateReservationRequest,
 };
 pub use room_types::{BedRequest, CreateRoomTypeRequest, UpdateRoomTypeRequest};

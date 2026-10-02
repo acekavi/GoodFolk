@@ -1357,7 +1357,7 @@
         "tags": [
           "crate::routes::reservations"
         ],
-        "summary": "Checks a confirmed, assigned room in on its arrival date.",
+        "summary": "Checks a confirmed, assigned room in on its arrival date. The room must be clean or inspected, unless a\nmanager gives an `override_reason`.",
         "operationId": "check_in_reservation_room",
         "parameters": [
           {
@@ -1387,6 +1387,23 @@
             }
           }
         ],
+        "requestBody": {
+          "description": "empty, or an override reason",
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/CheckInRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "headers": {
@@ -3001,6 +3018,19 @@
           "amount"
         ]
       },
+      "CheckInRequest": {
+        "type": "object",
+        "description": "The optional body of a check-in.",
+        "properties": {
+          "override_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Checks the guest in although the room is not clean or inspected. Needs the housekeeping supervise\npermission as well as the check-in one. 1 to 500 characters once trimmed, else 422."
+          }
+        }
+      },
       "CheckedIn": {
         "type": "object",
         "description": "A room after [`check_in`].",
@@ -4485,7 +4515,8 @@
           "manager",
           "front_desk",
           "housekeeping",
-          "accountant"
+          "accountant",
+          "hk_supervisor"
         ]
       },
       "Room": {

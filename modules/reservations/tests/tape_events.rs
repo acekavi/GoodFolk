@@ -7,8 +7,8 @@ mod common;
 use common::{Hotel, Plans, new_guest};
 use db::{CHANNEL, Event};
 use reservations::{
-    AssignedRoom, CancelledRoom, CheckInPolicy, CheckedIn, CheckedOut, CreatedReservation, Guest, ModifiedRoom,
-    RoomChanges, UndoneCheckIn,
+    AssignedRoom, CancelledRoom, CheckedIn, CheckedOut, CreatedReservation, Guest, ModifiedRoom, RoomChanges,
+    UndoneCheckIn,
 };
 use rooms::Room;
 use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions};
@@ -59,17 +59,8 @@ impl Hotel {
 
     async fn try_check_in(&self, id: Uuid, version: i32) -> CheckedIn {
         let mut tx = self.tx().await;
-        let checked_in = reservations::check_in(
-            &mut tx,
-            self.tenant,
-            self.user,
-            self.property,
-            id,
-            version,
-            CheckInPolicy::default(),
-        )
-        .await
-        .unwrap();
+        let checked_in =
+            reservations::check_in(&mut tx, self.tenant, self.user, self.property, id, version, None).await.unwrap();
         tx.commit().await.unwrap();
         checked_in
     }

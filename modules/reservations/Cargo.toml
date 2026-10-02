@@ -9,6 +9,7 @@ publish.workspace = true
 base64.workspace = true
 db.workspace = true
 domain.workspace = true
+housekeeping.workspace = true
 rates.workspace = true
 rooms.workspace = true
 serde.workspace = true

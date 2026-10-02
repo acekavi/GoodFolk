@@ -1,12 +1,13 @@
 use crate::routes::{
-    AddOccupantRequest, AssignRoomRequest, BedRequest, BulkChangeRequest, BulkChangeResponse, CreateAccountRequest,
-    CreateBlockReasonRequest, CreateBlockRequest, CreateCancellationPolicyRequest, CreateGuestRequest,
-    CreateMealSupplementRequest, CreatePropertyRequest, CreateRatePlanRequest, CreateReservationRequest,
-    CreateRoomRangeRequest, CreateRoomRequest, CreateRoomTypeRequest, IdDocRequest, LoginRequest, ModifyRoomRequest,
-    PriceChangeRequest, PriceRequest, ReorderRequest, ReservationRoomRequest, RestrictionsRequest, SectionRequest,
-    SetPricesRequest, ShortenBlockRequest, SignupRequest, SwitchTenantRequest, UpdateAccountRequest,
-    UpdateBlockReasonRequest, UpdateCancellationPolicyRequest, UpdateGuestRequest, UpdateMealSupplementRequest,
-    UpdatePropertyRequest, UpdateRatePlanRequest, UpdateReservationRequest, UpdateRoomRequest, UpdateRoomTypeRequest,
+    AddOccupantRequest, AssignRoomRequest, BedRequest, BulkChangeRequest, BulkChangeResponse, CheckInRequest,
+    CreateAccountRequest, CreateBlockReasonRequest, CreateBlockRequest, CreateCancellationPolicyRequest,
+    CreateGuestRequest, CreateMealSupplementRequest, CreatePropertyRequest, CreateRatePlanRequest,
+    CreateReservationRequest, CreateRoomRangeRequest, CreateRoomRequest, CreateRoomTypeRequest, IdDocRequest,
+    LoginRequest, ModifyRoomRequest, PriceChangeRequest, PriceRequest, ReorderRequest, ReservationRoomRequest,
+    RestrictionsRequest, SectionRequest, SetPricesRequest, ShortenBlockRequest, SignupRequest, SwitchTenantRequest,
+    UpdateAccountRequest, UpdateBlockReasonRequest, UpdateCancellationPolicyRequest, UpdateGuestRequest,
+    UpdateMealSupplementRequest, UpdatePropertyRequest, UpdateRatePlanRequest, UpdateReservationRequest,
+    UpdateRoomRequest, UpdateRoomTypeRequest,
 };
 use utoipa::OpenApi;
 
@@ -97,6 +98,7 @@ use utoipa::OpenApi;
         UpdateReservationRequest,
         AssignRoomRequest,
         ModifyRoomRequest,
+        CheckInRequest,
         AddOccupantRequest,
         CreateAccountRequest,
         UpdateAccountRequest,
