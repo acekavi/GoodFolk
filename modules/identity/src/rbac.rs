@@ -10,6 +10,7 @@ pub enum Role {
     FrontDesk,
     Housekeeping,
     Accountant,
+    HkSupervisor,
 }
 
 impl Role {
@@ -20,11 +21,12 @@ impl Role {
             Role::FrontDesk => "front_desk",
             Role::Housekeeping => "housekeeping",
             Role::Accountant => "accountant",
+            Role::HkSupervisor => "hk_supervisor",
         }
     }
 
     pub fn parse(value: &str) -> Option<Role> {
-        [Role::Owner, Role::Manager, Role::FrontDesk, Role::Housekeeping, Role::Accountant]
+        [Role::Owner, Role::Manager, Role::FrontDesk, Role::Housekeeping, Role::Accountant, Role::HkSupervisor]
             .into_iter()
             .find(|role| role.as_str() == value)
     }
@@ -47,6 +49,10 @@ impl Role {
                     | ReservationsView
                     | ReservationsManage
                     | FrontDeskCheckIn
+                    | HousekeepingView
+                    | HousekeepingUpdate
+                    | HousekeepingSupervise
+                    | RoomIssuesReport
             ),
             Role::FrontDesk => matches!(
                 permission,
@@ -58,8 +64,33 @@ impl Role {
                     | ReservationsView
                     | ReservationsManage
                     | FrontDeskCheckIn
+                    | HousekeepingView
+                    | RoomIssuesReport
             ),
-            Role::Housekeeping | Role::Accountant => {
+            Role::Housekeeping => matches!(
+                permission,
+                PropertiesView
+                    | RoomsView
+                    | InventoryView
+                    | RatesView
+                    | ReservationsView
+                    | HousekeepingView
+                    | HousekeepingUpdate
+                    | RoomIssuesReport
+            ),
+            Role::HkSupervisor => matches!(
+                permission,
+                PropertiesView
+                    | RoomsView
+                    | InventoryView
+                    | RatesView
+                    | ReservationsView
+                    | HousekeepingView
+                    | HousekeepingUpdate
+                    | HousekeepingSupervise
+                    | RoomIssuesReport
+            ),
+            Role::Accountant => {
                 matches!(permission, PropertiesView | RoomsView | InventoryView | RatesView | ReservationsView)
             }
         }
@@ -91,6 +122,14 @@ pub enum Permission {
     ReservationsManage,
     /// Check a reservation room in, undo a same-day check-in, and check it out.
     FrontDeskCheckIn,
+    /// See room conditions, the housekeeping board, assignments and room issues.
+    HousekeepingView,
+    /// Move a room through its cleaning steps and resolve room issues.
+    HousekeepingUpdate,
+    /// Assign rooms, inspect, set any condition, and override a check-in on a room that is not ready.
+    HousekeepingSupervise,
+    /// Report a problem with a room, without changing its condition.
+    RoomIssuesReport,
 }
 
 /// A role held tenant-wide (`property_id: None`) or for one property.

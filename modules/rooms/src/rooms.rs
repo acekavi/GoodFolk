@@ -190,6 +190,14 @@ async fn insert_rooms(
         Err(err) => return Err(err.into()),
     };
     created.sort_by_key(|room| room.sort_order);
+    sqlx::query(
+        "insert into room_condition (room_id, tenant_id, property_id) select id, $1, $2 from unnest($3::uuid[]) as id",
+    )
+    .bind(tenant.0)
+    .bind(property)
+    .bind(&ids)
+    .execute(&mut **tx)
+    .await?;
     let count = i32::try_from(created.len()).expect("at most MAX_ROOMS_PER_RANGE rooms");
     adjust(tx, property, room_type, today, today + Duration::days(WINDOW_DAYS), count, 0).await?;
     // One entry for the batch, on the room type the rooms were added to.
