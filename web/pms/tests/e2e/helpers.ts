@@ -1,4 +1,7 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { expect, type APIRequestContext, type Page, type Request } from '@playwright/test';
 
 export const PASSWORD = 'a long enough password';
@@ -190,4 +193,54 @@ export async function book(
 		}))
 	});
 	return created.confirmation_no;
+}
+
+/**
+ * Adds a staff user with `role` (tenant-wide) to the owner's tenant through `core-api add-staff`, as the schema
+ * owner (`E2E_OWNER_URL`), and returns their email. They sign in with `PASSWORD`.
+ */
+export function addStaff(ownerEmail: string, role: string, displayName: string): { email: string } {
+	const owner = process.env.E2E_OWNER_URL;
+	if (!owner) throw new Error('set E2E_OWNER_URL to the e2e database, as goodfolk_owner');
+	const email = `staff-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`;
+	// The password is read from a file, never passed as an argument.
+	const dir = mkdtempSync(join(tmpdir(), 'goodfolk-staff-'));
+	try {
+		const passwordFile = join(dir, 'password');
+		writeFileSync(passwordFile, PASSWORD, { mode: 0o600 });
+		execFileSync(
+			'cargo',
+			[
+				'run',
+				'-q',
+				'-p',
+				'core-api',
+				'--',
+				'add-staff',
+				'--owner-email',
+				ownerEmail,
+				'--email',
+				email,
+				'--password-file',
+				passwordFile,
+				'--display-name',
+				displayName,
+				'--role',
+				role
+			],
+			{ cwd: '../..', env: { ...process.env, DATABASE_OWNER_URL: owner }, stdio: 'pipe' }
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+	return { email };
+}
+
+/** Signs `email` in on the login page and waits for the property list. */
+export async function signIn(page: Page, email: string): Promise<void> {
+	await page.goto('/login');
+	await page.getByLabel('Email').fill(email);
+	await page.getByLabel('Password').fill(PASSWORD);
+	await page.getByRole('button', { name: 'Sign in' }).click();
+	await expect(page.getByRole('heading', { name: 'Properties' })).toBeVisible();
 }

@@ -16,6 +16,9 @@ import * as types from './graphql';
  */
 type Documents = {
     "\n\tquery Accounts($propertyId: UUID!, $search: String, $includeInactive: Boolean = false) {\n\t\taccounts(propertyId: $propertyId, search: $search, includeInactive: $includeInactive) {\n\t\t\tid\n\t\t\tkind\n\t\t\tname\n\t\t\tcontact {\n\t\t\t\temail\n\t\t\t\tphone\n\t\t\t\taddress\n\t\t\t\tcontactName\n\t\t\t}\n\t\t\tcreditLimit\n\t\t\tcurrency\n\t\t\tactive\n\t\t\tversion\n\t\t}\n\t}\n": typeof types.AccountsDocument,
+    "\n\tquery HousekeepingBoard($propertyId: UUID!) {\n\t\thousekeepingBoard(propertyId: $propertyId) {\n\t\t\troomId\n\t\t\tnumber\n\t\t\tfloor\n\t\t\tsectionId\n\t\t\troomTypeId\n\t\t\tcondition\n\t\t\tconditionVersion\n\t\t\toccupancy\n\t\t\tassignee {\n\t\t\t\tuserId\n\t\t\t\tdisplayName\n\t\t\t}\n\t\t\tblockKind\n\t\t}\n\t}\n": typeof types.HousekeepingBoardDocument,
+    "\n\tquery Housekeepers($propertyId: UUID!) {\n\t\thousekeepers(propertyId: $propertyId) {\n\t\t\tuserId\n\t\t\tdisplayName\n\t\t}\n\t}\n": typeof types.HousekeepersDocument,
+    "\n\tquery RoomIssues($propertyId: UUID!, $status: IssueStatus) {\n\t\troomIssues(propertyId: $propertyId, status: $status) {\n\t\t\tid\n\t\t\troomId\n\t\t\tseverity\n\t\t\tdescription\n\t\t\tstatus\n\t\t\treportedAt\n\t\t\tversion\n\t\t}\n\t}\n": typeof types.RoomIssuesDocument,
     "\n\tquery Inventory($propertyId: UUID!, $from: Date!, $to: Date!) {\n\t\tinventory(propertyId: $propertyId, from: $from, to: $to) {\n\t\t\tdate\n\t\t\troomTypeId\n\t\t\tphysical\n\t\t\tsold\n\t\t\toutOfOrder\n\t\t\tavailable\n\t\t\tsellable\n\t\t}\n\t\tblocks(propertyId: $propertyId, from: $from, to: $to) {\n\t\t\tid\n\t\t\troomId\n\t\t\tfrom\n\t\t\tto\n\t\t\tkind\n\t\t\treasonId\n\t\t\tnote\n\t\t\tversion\n\t\t}\n\t}\n": typeof types.InventoryDocument,
     "\n\tquery Properties {\n\t\tproperties {\n\t\t\tid\n\t\t\tcode\n\t\t\tname\n\t\t\ttimezone\n\t\t\tbaseCurrency\n\t\t\tbusinessDate\n\t\t\tcheckInTime\n\t\t\tcheckOutTime\n\t\t\tversion\n\t\t}\n\t}\n": typeof types.PropertiesDocument,
     "\n\tquery RatePlans($propertyId: UUID!) {\n\t\tratePlans(propertyId: $propertyId) {\n\t\t\tid\n\t\t\tcode\n\t\t\tname\n\t\t\tkind\n\t\t\tsegment\n\t\t\tresidency\n\t\t\tcurrency\n\t\t\tparentId\n\t\t\tdepth\n\t\t\tderiveMode\n\t\t\tderiveValue\n\t\t\troundingStep\n\t\t\textraAdultAmount\n\t\t\tinheritRestrictions\n\t\t\tallowedMealPlans\n\t\t\tcancellationPolicyId\n\t\t\troomTypeIds\n\t\t\tactive\n\t\t\tversion\n\t\t}\n\t\tmealSupplements(propertyId: $propertyId) {\n\t\t\tid\n\t\t\tmealPlan\n\t\t\tcurrency\n\t\t\tadultAmount\n\t\t\tchildAmount\n\t\t\tfrom\n\t\t\tto\n\t\t\tversion\n\t\t}\n\t\tcancellationPolicies(propertyId: $propertyId) {\n\t\t\tid\n\t\t\tname\n\t\t\tversion\n\t\t}\n\t}\n": typeof types.RatePlansDocument,
@@ -34,6 +37,9 @@ type Documents = {
 };
 const documents: Documents = {
     "\n\tquery Accounts($propertyId: UUID!, $search: String, $includeInactive: Boolean = false) {\n\t\taccounts(propertyId: $propertyId, search: $search, includeInactive: $includeInactive) {\n\t\t\tid\n\t\t\tkind\n\t\t\tname\n\t\t\tcontact {\n\t\t\t\temail\n\t\t\t\tphone\n\t\t\t\taddress\n\t\t\t\tcontactName\n\t\t\t}\n\t\t\tcreditLimit\n\t\t\tcurrency\n\t\t\tactive\n\t\t\tversion\n\t\t}\n\t}\n": types.AccountsDocument,
+    "\n\tquery HousekeepingBoard($propertyId: UUID!) {\n\t\thousekeepingBoard(propertyId: $propertyId) {\n\t\t\troomId\n\t\t\tnumber\n\t\t\tfloor\n\t\t\tsectionId\n\t\t\troomTypeId\n\t\t\tcondition\n\t\t\tconditionVersion\n\t\t\toccupancy\n\t\t\tassignee {\n\t\t\t\tuserId\n\t\t\t\tdisplayName\n\t\t\t}\n\t\t\tblockKind\n\t\t}\n\t}\n": types.HousekeepingBoardDocument,
+    "\n\tquery Housekeepers($propertyId: UUID!) {\n\t\thousekeepers(propertyId: $propertyId) {\n\t\t\tuserId\n\t\t\tdisplayName\n\t\t}\n\t}\n": types.HousekeepersDocument,
+    "\n\tquery RoomIssues($propertyId: UUID!, $status: IssueStatus) {\n\t\troomIssues(propertyId: $propertyId, status: $status) {\n\t\t\tid\n\t\t\troomId\n\t\t\tseverity\n\t\t\tdescription\n\t\t\tstatus\n\t\t\treportedAt\n\t\t\tversion\n\t\t}\n\t}\n": types.RoomIssuesDocument,
     "\n\tquery Inventory($propertyId: UUID!, $from: Date!, $to: Date!) {\n\t\tinventory(propertyId: $propertyId, from: $from, to: $to) {\n\t\t\tdate\n\t\t\troomTypeId\n\t\t\tphysical\n\t\t\tsold\n\t\t\toutOfOrder\n\t\t\tavailable\n\t\t\tsellable\n\t\t}\n\t\tblocks(propertyId: $propertyId, from: $from, to: $to) {\n\t\t\tid\n\t\t\troomId\n\t\t\tfrom\n\t\t\tto\n\t\t\tkind\n\t\t\treasonId\n\t\t\tnote\n\t\t\tversion\n\t\t}\n\t}\n": types.InventoryDocument,
     "\n\tquery Properties {\n\t\tproperties {\n\t\t\tid\n\t\t\tcode\n\t\t\tname\n\t\t\ttimezone\n\t\t\tbaseCurrency\n\t\t\tbusinessDate\n\t\t\tcheckInTime\n\t\t\tcheckOutTime\n\t\t\tversion\n\t\t}\n\t}\n": types.PropertiesDocument,
     "\n\tquery RatePlans($propertyId: UUID!) {\n\t\tratePlans(propertyId: $propertyId) {\n\t\t\tid\n\t\t\tcode\n\t\t\tname\n\t\t\tkind\n\t\t\tsegment\n\t\t\tresidency\n\t\t\tcurrency\n\t\t\tparentId\n\t\t\tdepth\n\t\t\tderiveMode\n\t\t\tderiveValue\n\t\t\troundingStep\n\t\t\textraAdultAmount\n\t\t\tinheritRestrictions\n\t\t\tallowedMealPlans\n\t\t\tcancellationPolicyId\n\t\t\troomTypeIds\n\t\t\tactive\n\t\t\tversion\n\t\t}\n\t\tmealSupplements(propertyId: $propertyId) {\n\t\t\tid\n\t\t\tmealPlan\n\t\t\tcurrency\n\t\t\tadultAmount\n\t\t\tchildAmount\n\t\t\tfrom\n\t\t\tto\n\t\t\tversion\n\t\t}\n\t\tcancellationPolicies(propertyId: $propertyId) {\n\t\t\tid\n\t\t\tname\n\t\t\tversion\n\t\t}\n\t}\n": types.RatePlansDocument,
@@ -55,6 +61,18 @@ const documents: Documents = {
  * The graphql function is used to parse GraphQL queries into a document that can be used by GraphQL clients.
  */
 export function graphql(source: "\n\tquery Accounts($propertyId: UUID!, $search: String, $includeInactive: Boolean = false) {\n\t\taccounts(propertyId: $propertyId, search: $search, includeInactive: $includeInactive) {\n\t\t\tid\n\t\t\tkind\n\t\t\tname\n\t\t\tcontact {\n\t\t\t\temail\n\t\t\t\tphone\n\t\t\t\taddress\n\t\t\t\tcontactName\n\t\t\t}\n\t\t\tcreditLimit\n\t\t\tcurrency\n\t\t\tactive\n\t\t\tversion\n\t\t}\n\t}\n"): typeof import('./graphql').AccountsDocument;
+/**
+ * The graphql function is used to parse GraphQL queries into a document that can be used by GraphQL clients.
+ */
+export function graphql(source: "\n\tquery HousekeepingBoard($propertyId: UUID!) {\n\t\thousekeepingBoard(propertyId: $propertyId) {\n\t\t\troomId\n\t\t\tnumber\n\t\t\tfloor\n\t\t\tsectionId\n\t\t\troomTypeId\n\t\t\tcondition\n\t\t\tconditionVersion\n\t\t\toccupancy\n\t\t\tassignee {\n\t\t\t\tuserId\n\t\t\t\tdisplayName\n\t\t\t}\n\t\t\tblockKind\n\t\t}\n\t}\n"): typeof import('./graphql').HousekeepingBoardDocument;
+/**
+ * The graphql function is used to parse GraphQL queries into a document that can be used by GraphQL clients.
+ */
+export function graphql(source: "\n\tquery Housekeepers($propertyId: UUID!) {\n\t\thousekeepers(propertyId: $propertyId) {\n\t\t\tuserId\n\t\t\tdisplayName\n\t\t}\n\t}\n"): typeof import('./graphql').HousekeepersDocument;
+/**
+ * The graphql function is used to parse GraphQL queries into a document that can be used by GraphQL clients.
+ */
+export function graphql(source: "\n\tquery RoomIssues($propertyId: UUID!, $status: IssueStatus) {\n\t\troomIssues(propertyId: $propertyId, status: $status) {\n\t\t\tid\n\t\t\troomId\n\t\t\tseverity\n\t\t\tdescription\n\t\t\tstatus\n\t\t\treportedAt\n\t\t\tversion\n\t\t}\n\t}\n"): typeof import('./graphql').RoomIssuesDocument;
 /**
  * The graphql function is used to parse GraphQL queries into a document that can be used by GraphQL clients.
  */

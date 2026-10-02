@@ -24,6 +24,17 @@ export type IdDocType =
   | 'OTHER'
   | 'PASSPORT';
 
+/** How urgent a room issue is. */
+export type IssueSeverity =
+  | 'HIGH'
+  | 'LOW'
+  | 'MEDIUM';
+
+/** Whether a room issue still needs work. */
+export type IssueStatus =
+  | 'OPEN'
+  | 'RESOLVED';
+
 export type MealPlan =
   | 'BB'
   | 'FB'
@@ -34,6 +45,15 @@ export type MealPlan =
 export type NeedsRoomReason =
   | 'NO_SINGLE_ROOM'
   | 'OVERBOOKED';
+
+/** What a room's stays make of it on the business date. */
+export type Occupancy =
+  | 'DUE_IN'
+  | 'DUE_OUT'
+  | 'STAY_OVER'
+  /** A guest leaves and another arrives the same day. */
+  | 'TURNOVER'
+  | 'VACANT';
 
 export type PenaltyKind =
   | 'AMOUNT'
@@ -79,6 +99,13 @@ export type ReservationSortField =
 export type Residency =
   | 'NON_RESIDENT'
   | 'RESIDENT';
+
+/** How ready a room is for a guest. */
+export type RoomCondition =
+  | 'CLEAN'
+  | 'CLEANING'
+  | 'DIRTY'
+  | 'INSPECTED';
 
 export type RoomStatus =
   | 'CANCELLED'
@@ -129,6 +156,28 @@ export type AccountsQueryVariables = Exact<{
 
 
 export type AccountsQuery = { accounts: Array<{ id: string, kind: AccountKind, name: string, creditLimit: number | null, currency: string, active: boolean, version: number, contact: { email: string | null, phone: string | null, address: string | null, contactName: string | null } }> };
+
+export type HousekeepingBoardQueryVariables = Exact<{
+  propertyId: string;
+}>;
+
+
+export type HousekeepingBoardQuery = { housekeepingBoard: Array<{ roomId: string, number: string, floor: string | null, sectionId: string | null, roomTypeId: string, condition: RoomCondition, conditionVersion: number, occupancy: Occupancy, blockKind: BlockKind | null, assignee: { userId: string, displayName: string } | null }> };
+
+export type HousekeepersQueryVariables = Exact<{
+  propertyId: string;
+}>;
+
+
+export type HousekeepersQuery = { housekeepers: Array<{ userId: string, displayName: string }> };
+
+export type RoomIssuesQueryVariables = Exact<{
+  propertyId: string;
+  status?: IssueStatus | null | undefined;
+}>;
+
+
+export type RoomIssuesQuery = { roomIssues: Array<{ id: string, roomId: string, severity: IssueSeverity, description: string, status: IssueStatus, reportedAt: string, version: number }> };
 
 export type InventoryQueryVariables = Exact<{
   propertyId: string;
@@ -316,6 +365,46 @@ export const AccountsDocument = new TypedDocumentString(`
   }
 }
     `, {"hash":"sha256:0991236e571c94b801691aefc5b9a85c0c1372010a662f1ee98f155b11a7e2d8"}) as unknown as TypedDocumentString<AccountsQuery, AccountsQueryVariables>;
+export const HousekeepingBoardDocument = new TypedDocumentString(`
+    query HousekeepingBoard($propertyId: UUID!) {
+  housekeepingBoard(propertyId: $propertyId) {
+    roomId
+    number
+    floor
+    sectionId
+    roomTypeId
+    condition
+    conditionVersion
+    occupancy
+    assignee {
+      userId
+      displayName
+    }
+    blockKind
+  }
+}
+    `, {"hash":"sha256:e25aabd727d0b329661f3d73dbcda4a8211c9786700938b2730d837fedc83137"}) as unknown as TypedDocumentString<HousekeepingBoardQuery, HousekeepingBoardQueryVariables>;
+export const HousekeepersDocument = new TypedDocumentString(`
+    query Housekeepers($propertyId: UUID!) {
+  housekeepers(propertyId: $propertyId) {
+    userId
+    displayName
+  }
+}
+    `, {"hash":"sha256:5460be0b73894b27eea037633d372893dee4f9660ccda24a73cb9587f79a4e84"}) as unknown as TypedDocumentString<HousekeepersQuery, HousekeepersQueryVariables>;
+export const RoomIssuesDocument = new TypedDocumentString(`
+    query RoomIssues($propertyId: UUID!, $status: IssueStatus) {
+  roomIssues(propertyId: $propertyId, status: $status) {
+    id
+    roomId
+    severity
+    description
+    status
+    reportedAt
+    version
+  }
+}
+    `, {"hash":"sha256:66aaed05b34bb02e4970e9f39bf3aaa4f6a751717e94c00aa0803441d2bd9e38"}) as unknown as TypedDocumentString<RoomIssuesQuery, RoomIssuesQueryVariables>;
 export const InventoryDocument = new TypedDocumentString(`
     query Inventory($propertyId: UUID!, $from: Date!, $to: Date!) {
   inventory(propertyId: $propertyId, from: $from, to: $to) {

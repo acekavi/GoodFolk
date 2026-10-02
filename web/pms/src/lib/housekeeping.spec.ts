@@ -1,0 +1,134 @@
+import { describe, expect, it } from 'vitest';
+import {
+	conditionLabel,
+	filterRooms,
+	filtersFromSearchParams,
+	filtersToSearchParams,
+	hkKey,
+	initials,
+	issueCounts,
+	issuesKey,
+	nextConditions,
+	NO_FILTERS,
+	occupancyLabel,
+	rangeBetween,
+	type BoardRoom,
+	type RoomIssue
+} from './housekeeping';
+
+function room(over: Partial<BoardRoom> & { number: string }): BoardRoom {
+	return {
+		roomId: `id-${over.number}`,
+		floor: '1',
+		sectionId: null,
+		roomTypeId: 't',
+		condition: 'DIRTY',
+		conditionVersion: 0,
+		occupancy: 'VACANT',
+		assignee: null,
+		blockKind: null,
+		...over
+	};
+}
+
+describe('keys', () => {
+	it('are the server event keys', () => {
+		expect(hkKey('p1')).toEqual(['hk:p1']);
+		expect(issuesKey('p1')).toEqual(['issues:p1']);
+	});
+});
+
+describe('nextConditions', () => {
+	it('lets a supervisor choose any other condition', () => {
+		expect(nextConditions('supervisor', 'CLEAN')).toEqual(['DIRTY', 'CLEANING', 'INSPECTED']);
+		expect(nextConditions('supervisor')).toHaveLength(4);
+	});
+
+	it('lets a housekeeper only advance dirty, then cleaning', () => {
+		expect(nextConditions('housekeeper', 'DIRTY')).toEqual(['CLEANING']);
+		expect(nextConditions('housekeeper', 'CLEANING')).toEqual(['CLEAN']);
+		expect(nextConditions('housekeeper', 'CLEAN')).toEqual([]);
+		expect(nextConditions('housekeeper', 'INSPECTED')).toEqual([]);
+	});
+});
+
+describe('labels', () => {
+	it('read as words', () => {
+		expect(conditionLabel('INSPECTED')).toBe('Inspected');
+		expect(occupancyLabel('STAY_OVER')).toBe('Stay-over');
+		expect(occupancyLabel('DUE_OUT')).toBe('Due out');
+	});
+
+	it('gives initials of at most two words', () => {
+		expect(initials('Kumari Silva')).toBe('KS');
+		expect(initials('  nimal ')).toBe('N');
+		expect(initials('Ann Marie Jones')).toBe('AM');
+	});
+});
+
+describe('filters', () => {
+	const rooms = [
+		room({ number: '101', floor: '1', sectionId: 's1', condition: 'CLEAN' }),
+		room({
+			number: '102',
+			floor: '1',
+			assignee: { userId: 'u1', displayName: 'Kumari Silva' },
+			occupancy: 'DUE_OUT'
+		}),
+		room({ number: '201', floor: '2', sectionId: 's1' }),
+		room({ number: 'X', floor: null })
+	];
+	const numbers = (filters: Partial<typeof NO_FILTERS>) =>
+		filterRooms(rooms, { ...NO_FILTERS, ...filters }).map((r) => r.number);
+
+	it('keeps everything without filters', () => {
+		expect(numbers({})).toEqual(['101', '102', '201', 'X']);
+	});
+
+	it('combines floor, section, housekeeper, condition and occupancy', () => {
+		expect(numbers({ floor: '2' })).toEqual(['201']);
+		expect(numbers({ floor: 'none' })).toEqual(['X']);
+		expect(numbers({ section: 's1' })).toEqual(['101', '201']);
+		expect(numbers({ housekeeper: 'u1' })).toEqual(['102']);
+		expect(numbers({ housekeeper: 'none' })).toEqual(['101', '201', 'X']);
+		expect(numbers({ condition: 'CLEAN' })).toEqual(['101']);
+		expect(numbers({ occupancy: 'DUE_OUT' })).toEqual(['102']);
+		expect(numbers({ floor: '1', section: 's1' })).toEqual(['101']);
+	});
+
+	it('round-trips through the URL, dropping unknown values', () => {
+		const filters = {
+			floor: '2',
+			section: 's1',
+			housekeeper: 'u1',
+			condition: 'CLEAN' as const,
+			occupancy: 'DUE_OUT' as const
+		};
+		const params = filtersToSearchParams(filters);
+		expect(params.toString()).toBe('floor=2&section=s1&hk=u1&condition=clean&occupancy=due_out');
+		expect(filtersFromSearchParams(params)).toEqual(filters);
+		expect(filtersFromSearchParams(new URLSearchParams('condition=bogus'))).toEqual(NO_FILTERS);
+		expect(filtersToSearchParams(NO_FILTERS).toString()).toBe('');
+	});
+});
+
+describe('selection helpers', () => {
+	it('counts open issues per room', () => {
+		const issues = [{ roomId: 'a' }, { roomId: 'a' }, { roomId: 'b' }] as RoomIssue[];
+		expect(issueCounts(issues)).toEqual(
+			new Map([
+				['a', 2],
+				['b', 1]
+			])
+		);
+	});
+
+	it('spans a shift-click range in either direction', () => {
+		const order = ['a', 'b', 'c', 'd'];
+		expect(rangeBetween(order, 'b', 'd')).toEqual(['b', 'c', 'd']);
+		expect(rangeBetween(order, 'd', 'b')).toEqual(['b', 'c', 'd']);
+		expect(rangeBetween(order, undefined, 'c')).toEqual(['c']);
+		expect(rangeBetween(order, 'gone', 'c')).toEqual(['c']);
+		expect(rangeBetween(order, 'a', 'gone')).toEqual([]);
+	});
+});
