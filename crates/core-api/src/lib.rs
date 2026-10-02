@@ -12,6 +12,7 @@ pub mod idempotency;
 pub mod openapi;
 pub mod persisted;
 pub mod routes;
+pub mod staff;
 pub mod state;
 
 pub use routes::router;

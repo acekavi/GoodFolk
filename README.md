@@ -173,3 +173,22 @@ The API (`core-api serve`) reads:
 | `APP_ENV` | `production` sets `Secure` cookies, disables GraphQL introspection and requires `DATABASE_LISTEN_URL`. |
 
 `core-api migrate` reads `DATABASE_OWNER_URL` (the schema owner) instead.
+
+### Adding staff
+
+Until invitations arrive (Phase 8), a hotel owner's staff are added from the command line, as the schema owner:
+
+```sh
+printf '%s' 'a password of at least 12 characters' > /tmp/staff-password
+DATABASE_OWNER_URL=$DATABASE_OWNER_URL cargo run -p core-api -- add-staff \
+  --owner-email owner@example.com --email nimal@example.com --password-file /tmp/staff-password \
+  --display-name Nimal --role front_desk [--property COL] [--tenant "Lagoon Hotels"]
+rm /tmp/staff-password
+```
+
+`--role` is `owner`, `manager`, `front_desk`, `housekeeping`, `accountant` or `hk_supervisor`. `--property` is a property
+code of the owner's tenant and limits the role to that property; without it the role covers the whole tenant.
+`--tenant` is needed only when `--owner-email` owns more than one tenant. The password is read from the file only (never
+an argument or environment variable) and is used only for a new user: an existing user keeps their password and name.
+The command refuses an `--owner-email` that is not a tenant-wide owner, and is safe to repeat: it creates what is
+missing and reports what already existed.
