@@ -99,6 +99,20 @@
 
 	let chart = $state<{ jumpTo: (date: string) => void }>();
 
+	// The opening tiles are requested as soon as the rooms are known, not after the chart has mounted, so
+	// the first paint waits on one round trip less.
+	let warmed = '';
+	$effect(() => {
+		if (warmed === propertyId || !view.start || paged.rooms.length === 0) return;
+		warmed = propertyId;
+		void prefetchTapeTiles(
+			client,
+			propertyId,
+			tilesFor(view.start, view.span + 1, 1, 0),
+			paged.rooms.map((room) => room.id)
+		);
+	});
+
 	/** Today: the opening view, now, even while a scroll is settling. */
 	function today() {
 		if (chart) chart.jumpTo(openingStart(businessDate));

@@ -128,7 +128,22 @@
 	const DRAG_THRESHOLD = 4;
 	const TOAST_MS = 8000;
 	const SETTLE_MS = 200;
+	const MENUS_DELAY_MS = 100;
 	const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+	const MONTHS = [
+		'Jan',
+		'Feb',
+		'Mar',
+		'Apr',
+		'May',
+		'Jun',
+		'Jul',
+		'Aug',
+		'Sep',
+		'Oct',
+		'Nov',
+		'Dec'
+	];
 
 	const client = useQueryClient();
 
@@ -168,6 +183,20 @@
 			enabled: roomIds.length > 0
 		}))
 	}));
+	// A bar's menu button is invisible until hovered, so a new room page paints its bars first and gets the
+	// buttons a moment later: they are some third of the cost of a page change, and a reader paging through
+	// the rooms never waits for (or pays for) the buttons of the pages passed over.
+	let menusReady = $state(true);
+	let menusTimer: ReturnType<typeof setTimeout> | undefined;
+	$effect.pre(() => {
+		void key;
+		untrack(() => {
+			menusReady = false;
+			clearTimeout(menusTimer);
+			menusTimer = setTimeout(() => (menusReady = true), MENUS_DELAY_MS);
+		});
+	});
+	$effect(() => () => clearTimeout(menusTimer));
 	const failed = $derived(tileQueries.find((query) => query.isError));
 	const loading = $derived(tileQueries.some((query) => query.isPending && query.isFetching));
 
@@ -234,11 +263,9 @@
 		)
 	);
 
+	// Spelled out like the weekdays: the first `Intl.DateTimeFormat` of a page costs some 20 ms.
 	function monthName(date: string): string {
-		return new Date(`${date}T00:00:00Z`).toLocaleDateString(undefined, {
-			month: 'short',
-			timeZone: 'UTC'
-		});
+		return MONTHS[Number(date.slice(5, 7)) - 1];
 	}
 
 	// Scrolling: read once per frame; the URL hears of the settled start after a pause.
@@ -249,7 +276,8 @@
 			if (!viewport) return;
 			const left = viewport.scrollLeft;
 			const day = left / dayWidth;
-			if (day !== scrollDay) direction = day > scrollDay ? 1 : -1;
+			// Whole pixels only: the browser rounds a scroll position set in days, which is no direction of travel.
+			if (Math.abs(day - scrollDay) * dayWidth >= 1) direction = day > scrollDay ? 1 : -1;
 			scrollDay = day;
 			recentre();
 			clearTimeout(settleTimer);
@@ -884,7 +912,7 @@
 								{/if}
 							{/if}
 						</a>
-						{#if canMove(bar)}
+						{#if menusReady && canMove(bar)}
 							<button
 								type="button"
 								class="bar-menu"
@@ -1161,7 +1189,6 @@
 		background: var(--stay-confirmed);
 		text-decoration: none;
 		line-height: 1.15;
-		will-change: transform;
 	}
 	.bar.draggable {
 		cursor: grab;
