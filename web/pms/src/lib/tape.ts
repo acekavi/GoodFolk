@@ -334,6 +334,98 @@ export function barWidth(start: string, end: string, dayWidth: number): number {
 	return Math.max(dayNumber(end) - dayNumber(start), 0) * dayWidth;
 }
 
+export type DragHandle = 'body' | 'start' | 'end';
+export type DragKind = 'move' | 'resize-start' | 'resize-end';
+export type DragPlan = 'assign' | 'modify' | 'modify+assign' | 'refuse';
+
+/**
+ * What grabbing `bar` by `handle` does, or `null` when it can't be dragged that way: a block, a checked-out
+ * (or cancelled, no-show) stay never; a checked-in stay only by its departure edge, as the Phase 3 rules allow.
+ */
+export function dragKind(bar: TapeBar, handle: DragHandle): DragKind | null {
+	if (bar.kind !== 'stay') return null;
+	if (bar.status === 'CHECKED_IN') return handle === 'end' ? 'resize-end' : null;
+	if (bar.status !== 'CONFIRMED') return null;
+	return handle === 'start' ? 'resize-start' : handle === 'end' ? 'resize-end' : 'move';
+}
+
+/** Whole days the pointer is from where it grabbed, and the row it is over (`null` above or below the rows). */
+export function dropTarget(
+	deltaX: number,
+	laneY: number,
+	dayWidth: number,
+	rowHeight: number,
+	roomIds: readonly string[]
+): { roomId: string | null; dayOffset: number } {
+	const row = Math.floor(laneY / rowHeight);
+	return {
+		roomId: row >= 0 && row < roomIds.length ? roomIds[row] : null,
+		dayOffset: dayWidth > 0 ? Math.round(deltaX / dayWidth) : 0
+	};
+}
+
+/** `offset` days limited so a stay of `nights` keeps at least one night. */
+export function clampOffset(kind: DragKind, nights: number, offset: number): number {
+	if (kind === 'resize-start') return Math.min(offset, nights - 1);
+	if (kind === 'resize-end') return Math.max(offset, 1 - nights);
+	return offset;
+}
+
+/** The stay's dates after dragging `kind` by `offset` days. */
+export function dragDates(
+	kind: DragKind,
+	stay: { start: string; end: string },
+	offset: number
+): { start: string; end: string } {
+	const days = clampOffset(kind, barDays(stay.start, stay.end), offset);
+	return {
+		start: kind === 'resize-end' ? stay.start : addDays(stay.start, days),
+		end: kind === 'resize-start' ? stay.end : addDays(stay.end, days)
+	};
+}
+
+/** Nights from `start` to the exclusive `end`. */
+export function barDays(start: string, end: string): number {
+	return dayNumber(end) - dayNumber(start);
+}
+
+/**
+ * What dropping `stay` (dragged as `kind`) on `target` asks of the server. A room only (same type, same dates)
+ * is `assign`; anything that changes dates or type is `modify`, plus `assign` when the row is another room.
+ * Dropping where it already is, or a drag its status doesn't allow, is `refuse`.
+ */
+export function dragPlan(
+	stay: TapeStay,
+	kind: DragKind,
+	target: { roomId: string; roomTypeId: string; dayOffset: number }
+): DragPlan {
+	const handle: DragHandle = kind === 'move' ? 'body' : kind === 'resize-start' ? 'start' : 'end';
+	if (dragKind({ kind: 'stay', ...stay }, handle) !== kind) return 'refuse';
+	const days = clampOffset(kind, barDays(stay.start, stay.end), target.dayOffset) !== 0;
+	if (kind !== 'move') return days ? 'modify' : 'refuse';
+	const room = target.roomId !== stay.roomId;
+	const type = target.roomTypeId !== stay.roomTypeId;
+	if (!days && !type) return room ? 'assign' : 'refuse';
+	return room ? 'modify+assign' : 'modify';
+}
+
+/**
+ * `tile` (the one starting `tileStart`) without the stay `next.id`, and with `next` in when it overlaps the
+ * tile and sits in one of the page's rooms (`pageRooms`). A cached tile moves a stay without a refetch.
+ */
+export function withStay(
+	tile: TapeTile,
+	tileStart: string,
+	next: TapeStay,
+	pageRooms: readonly string[]
+): TapeTile {
+	const stays = tile.stays.filter((stay) => stay.id !== next.id);
+	if (pageRooms.includes(next.roomId) && next.start < tileEnd(tileStart) && next.end > tileStart) {
+		stays.push(next);
+	}
+	return { ...tile, stays };
+}
+
 export const TapeWindowDocument = graphql(`
 	query TapeWindow($property: UUID!, $rooms: [UUID!]!, $from: Date!, $to: Date!) {
 		tapeWindow(propertyId: $property, roomIds: $rooms, from: $from, to: $to) {

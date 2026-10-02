@@ -18,21 +18,48 @@
 	A confirmed stay's menu (a button that shows on hover or focus, the context menu, or the context-menu key
 	on the focused bar) offers Move to room…, which reassigns it to a free room of its type, also one on
 	another page. It needs `manage`.
+
+	Drag and drop (also `manage`): a confirmed stay is dragged by its body (to dates, another room or another
+	type) or by either edge (to resize); a checked-in stay only by its departure edge. Pointer events with
+	capture move one ghost element by `transform` alone, snapped to days, with nothing async or read from the
+	cache in `pointermove`. A room-only drop saves at once through `assign`, with an Undo toast; dates and type
+	ask first, with the old and new total. The cached tiles change on drop and roll back on a refusal.
 -->
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import { createQueries, useQueryClient } from '@tanstack/svelte-query';
+	import { createQueries, createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { flushSync, tick, untrack } from 'svelte';
 	import type { RoomStatus } from '$lib/api/gql/graphql';
 	import { errorMessage } from '$lib/api/problem';
+	import { ifMatch, rest, unwrap } from '$lib/api/rest';
 	import { addDays } from '$lib/inventory';
-	import { fetchReservation, reservationKey, statusLabel } from '$lib/reservations';
+	import { formatMoney } from '$lib/rates';
+	import {
+		fetchAvailability,
+		fetchReservation,
+		findOffer,
+		freeRoomsKey,
+		modifyRoomBody,
+		modifyRoomHasChanges,
+		reservationKey,
+		reservationListsKey,
+		statusLabel,
+		type ModifyRoomCurrent,
+		type ModifyRoomDraft
+	} from '$lib/reservations';
 	import RoomAssign from './RoomAssign.svelte';
 	import {
+		assignStay,
+		barDays,
 		barsFor,
 		barWidth,
 		barX,
+		clampOffset,
+		dragDates,
+		dragKind,
+		dragPlan,
+		dropTarget,
 		fetchTapeTile,
 		openingStart,
 		pageKey,
@@ -41,10 +68,15 @@
 		TILE_DAYS,
 		tileStartFor,
 		tilesFor,
+		withStay,
+		type DragHandle,
+		type DragKind,
+		type DragPlan,
 		type RailRoom,
 		type Span,
 		type TapeBar,
-		type TapeStay
+		type TapeStay,
+		type TapeTile
 	} from '$lib/tape';
 
 	interface Props {
@@ -90,6 +122,11 @@
 	const EDGE_DAYS = 3 * TILE_DAYS;
 	const SECOND_LINE_MIN = 120;
 	const BAR_MENU = 24;
+	/** Width of a bar's edge handles, which resize it. */
+	const GRIP = 8;
+	/** A pointer-down becomes a drag once it has moved this far (px); less is a click. */
+	const DRAG_THRESHOLD = 4;
+	const TOAST_MS = 8000;
 	const SETTLE_MS = 200;
 	const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -395,11 +432,339 @@
 			closeMenu();
 		}
 	}
+
+	// Drag and drop.
+	interface Grab {
+		stay: TapeStay;
+		el: HTMLElement;
+		kind: DragKind;
+		pointerId: number;
+		startX: number;
+		startY: number;
+		/** The pointer's y within the lane when it was pressed. */
+		laneY: number;
+		x: number;
+		y: number;
+		width: number;
+		nights: number;
+		row: number;
+		offset: number;
+		roomId: string | null;
+		dragging: boolean;
+	}
+
+	let ghost = $state<HTMLDivElement>();
+	/** Set once when a drag begins, not per move. */
+	let ghostLabel = $state('');
+	let grab: Grab | undefined;
+	/** A drag just ended, so the click that follows it must not open the stay. */
+	let dragged = false;
+
+	function grabBar(
+		event: PointerEvent & { currentTarget: HTMLElement },
+		bar: TapeBar,
+		x: number,
+		y: number,
+		width: number
+	) {
+		dragged = false;
+		if (!manage || bar.kind !== 'stay' || event.button !== 0 || dayWidth === 0) return;
+		const handle = ((event.target as HTMLElement).dataset.handle ?? 'body') as DragHandle;
+		const kind = dragKind(bar, handle);
+		const row = rowOf.get(bar.roomId);
+		if (!kind || row === undefined) return;
+		const el = event.currentTarget;
+		el.setPointerCapture(event.pointerId);
+		grab = {
+			stay: bar,
+			el,
+			kind,
+			pointerId: event.pointerId,
+			startX: event.clientX,
+			startY: event.clientY,
+			laneY: event.clientY - el.parentElement!.getBoundingClientRect().top,
+			x,
+			y,
+			width,
+			nights: barDays(bar.start, bar.end),
+			row,
+			offset: 0,
+			roomId: bar.roomId,
+			dragging: false
+		};
+	}
+
+	// Only arithmetic and one style write per move: no queries, no state, no layout reads.
+	function dragMove(event: PointerEvent) {
+		const g = grab;
+		if (!g || event.pointerId !== g.pointerId || !ghost) return;
+		const dx = event.clientX - g.startX;
+		const dy = event.clientY - g.startY;
+		if (!g.dragging) {
+			if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+			g.dragging = true;
+			ghost.hidden = false;
+			ghost.className = `ghost ${g.kind}`;
+			ghost.style.width = `${g.width}px`;
+			ghostLabel = g.kind === 'move' ? g.stay.guestName : '';
+			g.el.classList.add('dragging');
+			viewport?.classList.add('is-dragging');
+		}
+		const target = dropTarget(dx, g.laneY + dy, dayWidth, ROW, roomIds);
+		const days = clampOffset(g.kind, g.nights, target.dayOffset);
+		g.offset = target.dayOffset;
+		g.roomId = target.roomId;
+		const row = target.roomId === null ? g.row : (rowOf.get(target.roomId) ?? g.row);
+		const shift = days * dayWidth;
+		ghost.style.transform =
+			g.kind === 'move'
+				? `translate(${g.x + shift}px, ${row * ROW + BAR_INSET}px)`
+				: g.kind === 'resize-end'
+					? `translate(${g.x}px, ${g.y}px) scaleX(${(g.width + shift) / g.width})`
+					: `translate(${g.x + shift}px, ${g.y}px) scaleX(${(g.width - shift) / g.width})`;
+	}
+
+	function endGhost(g: Grab) {
+		if (ghost) ghost.hidden = true;
+		g.el.classList.remove('dragging');
+		viewport?.classList.remove('is-dragging');
+	}
+
+	function dragCancel() {
+		const g = grab;
+		grab = undefined;
+		if (!g?.dragging) return;
+		dragged = true;
+		endGhost(g);
+	}
+
+	function dragEnd(event: PointerEvent) {
+		const g = grab;
+		if (!g || event.pointerId !== g.pointerId) return;
+		grab = undefined;
+		if (!g.dragging) return;
+		dragged = true;
+		endGhost(g);
+		drop(g);
+	}
+
+	function drop(g: Grab) {
+		const room = g.kind === 'move' && g.roomId ? rooms[rowOf.get(g.roomId) ?? -1] : undefined;
+		const own = rooms[rowOf.get(g.stay.roomId) ?? -1];
+		const target = room ?? own;
+		if (!target) return;
+		const plan = dragPlan(g.stay, g.kind, {
+			roomId: target.id,
+			roomTypeId: target.roomTypeId,
+			dayOffset: g.offset
+		});
+		if (plan === 'refuse') return;
+		if (plan === 'assign') {
+			void reassign(g.stay, target, own);
+			return;
+		}
+		const dates = dragDates(g.kind, g.stay, g.offset);
+		confirming = { stay: g.stay, ...dates, room: target, plan, keepPrice: false };
+	}
+
+	// The cached tiles show a change as soon as it is made, and go back if the server refuses it.
+	async function place(next: TapeStay): Promise<() => void> {
+		await client.cancelQueries({ queryKey: ['tape', propertyId] });
+		const snapshot = client.getQueriesData<TapeTile>({ queryKey: ['tape', propertyId] });
+		apply(next);
+		return () => {
+			for (const [queryKey, data] of snapshot) client.setQueryData(queryKey, data);
+		};
+	}
+
+	function apply(next: TapeStay) {
+		for (const [queryKey, data] of client.getQueriesData<TapeTile>({
+			queryKey: ['tape', propertyId]
+		})) {
+			if (!data) continue;
+			const pageRooms = (queryKey[3] as string).split(',');
+			client.setQueryData(queryKey, withStay(data, queryKey[2] as string, next, pageRooms));
+		}
+	}
+
+	/** The server's events refetch these too; invalidating now shows the truth at once. */
+	function refresh(reservationId: string) {
+		return Promise.all([
+			client.invalidateQueries({ queryKey: ['tape', propertyId] }),
+			client.invalidateQueries({ queryKey: ['tape-unassigned', propertyId] }),
+			client.invalidateQueries({ queryKey: reservationKey(reservationId) }),
+			client.invalidateQueries({ queryKey: reservationListsKey(propertyId) }),
+			client.invalidateQueries({ queryKey: freeRoomsKey(propertyId) })
+		]);
+	}
+
+	let toast = $state<{ message: string; undo?: () => void }>();
+	let toastTimer: ReturnType<typeof setTimeout> | undefined;
+
+	/** Shows `message` for a few seconds; no message clears the toast. */
+	function say(message?: string, undo?: () => void) {
+		clearTimeout(toastTimer);
+		toast = message ? { message, undo } : undefined;
+		if (message) toastTimer = setTimeout(() => (toast = undefined), TOAST_MS);
+	}
+	$effect(() => () => clearTimeout(toastTimer));
+
+	/**
+	 * Puts the stay in room `to` with its version as If-Match. `from` (the room it leaves) makes the toast offer
+	 * Undo, which assigns it back with the version this move produced; a 412 there shows the server's reason and
+	 * is not retried.
+	 */
+	async function reassign(stay: TapeStay, to: RailRoom, from?: RailRoom) {
+		const back = await place({ ...stay, roomId: to.id });
+		try {
+			const done = await assignStay(propertyId, stay.id, stay.version, to.id);
+			const moved = { ...stay, roomId: to.id, version: done.version };
+			apply(moved);
+			if (from && from.id !== to.id) {
+				say(`Moved to ${to.number}`, () => {
+					say();
+					void reassign(moved, from);
+				});
+			} else say(`Moved back to ${to.number}`);
+		} catch (err) {
+			back();
+			say(errorMessage(err));
+		} finally {
+			await refresh(stay.reservationId);
+		}
+	}
+
+	// Dates, resize and type: confirmed first, with the old and new total.
+	let confirming = $state<{
+		stay: TapeStay;
+		start: string;
+		end: string;
+		room: RailRoom;
+		plan: DragPlan;
+		keepPrice: boolean;
+	}>();
+	let changeDialog = $state<HTMLDialogElement>();
+
+	const typeCode = (roomTypeId: string) =>
+		rooms.find((room) => room.roomTypeId === roomTypeId)?.typeCode ?? '?';
+	const money = (amount: number, currency: string) =>
+		`${currency} ${formatMoney(amount, currency)}`;
+
+	const detail = createQuery(() => ({
+		queryKey: reservationKey(confirming?.stay.reservationId ?? ''),
+		queryFn: ({ signal }: { signal: AbortSignal }) =>
+			fetchReservation(propertyId, confirming!.stay.reservationId, signal),
+		enabled: !!confirming
+	}));
+	/** The booked room being changed, once its reservation is fresh: its total and the plan it was sold on. */
+	const priced = $derived(
+		confirming && !detail.isFetching
+			? detail.data?.rooms.find((room) => room.id === confirming!.stay.id)
+			: undefined
+	);
+	// The same lookup as the reservation modal's Modify preview, so the two share a cache entry.
+	const preview = createQuery(() => ({
+		queryKey: [
+			'reservationRoomPreview',
+			propertyId,
+			confirming?.start,
+			confirming?.end,
+			priced?.adults,
+			priced?.children,
+			priced?.primaryGuest.residency
+		],
+		queryFn: ({ signal }: { signal: AbortSignal }) =>
+			fetchAvailability(
+				propertyId,
+				confirming!.start,
+				confirming!.end,
+				priced!.adults,
+				priced!.children,
+				priced!.primaryGuest.residency,
+				signal
+			),
+		enabled: !!confirming && !!priced
+	}));
+	const offer = $derived(
+		confirming && priced && preview.data
+			? findOffer(preview.data, confirming.room.roomTypeId, priced.ratePlan.id, priced.mealPlan)
+			: undefined
+	);
+
+	$effect(() => {
+		if (!changeDialog) return;
+		if (confirming && !changeDialog.open) changeDialog.showModal();
+		else if (!confirming && changeDialog.open) changeDialog.close();
+	});
+
+	async function confirmChange() {
+		const change = confirming;
+		const room = priced;
+		if (!change || !room) return;
+		confirming = undefined;
+		const { stay } = change;
+		const current: ModifyRoomCurrent = {
+			checkIn: stay.start,
+			checkOut: stay.end,
+			roomTypeId: stay.roomTypeId,
+			adults: room.adults,
+			children: room.children
+		};
+		const typeChanged = change.room.roomTypeId !== stay.roomTypeId;
+		const draft: ModifyRoomDraft = {
+			...current,
+			checkIn: change.start,
+			checkOut: change.end,
+			roomTypeId: change.room.roomTypeId,
+			keepPrice: change.keepPrice && typeChanged,
+			reprice: false
+		};
+		if (!modifyRoomHasChanges(current, draft)) return;
+		const next: TapeStay = {
+			...stay,
+			start: change.start,
+			end: change.end,
+			roomTypeId: change.room.roomTypeId,
+			roomId: change.plan === 'modify+assign' ? change.room.id : stay.roomId
+		};
+		const back = await place(next);
+		try {
+			const modified = unwrap(
+				await rest.POST('/api/v1/properties/{property}/reservation-rooms/{room}/modify', {
+					params: { path: { property: propertyId, room: stay.id }, header: ifMatch(stay.version) },
+					body: modifyRoomBody(current, draft)
+				})
+			);
+			let version = modified.version;
+			if (change.plan === 'modify+assign' && modified.room_id !== change.room.id) {
+				try {
+					version = (await assignStay(propertyId, stay.id, version, change.room.id)).version;
+				} catch (err) {
+					apply({ ...next, roomId: modified.room_id ?? stay.roomId, version });
+					say(`Changed, but not moved to room ${change.room.number}: ${errorMessage(err)}`);
+					return;
+				}
+			}
+			apply({ ...next, version });
+			say('Stay changed');
+		} catch (err) {
+			back();
+			say(errorMessage(err));
+		} finally {
+			await refresh(stay.reservationId);
+		}
+	}
 </script>
 
 <svelte:window
 	onpointerdown={(event) => {
 		if (menuFor && !(event.target as Element).closest('.menu, .bar-menu')) menuFor = undefined;
+	}}
+	onkeydown={(event) => {
+		if (event.key === 'Escape' && grab?.dragging) {
+			event.preventDefault();
+			dragCancel();
+		}
 	}}
 />
 
@@ -469,13 +834,25 @@
 						<a
 							class="bar {statusClass(bar.status)}"
 							href={resolve(`/p/${propertyId}/reservations/${bar.reservationId}${page.url.search}`)}
+							class:draggable={manage && dragKind(bar, 'body') !== null}
 							tabindex="-1"
+							draggable="false"
 							data-room={rooms[rowOf.get(bar.roomId) ?? 0]?.number}
 							data-sveltekit-noscroll
 							aria-label={barLabel(bar)}
 							style:transform="translate({x}px, {y}px)"
 							style:width="{w}px"
+							onpointerdown={(event) => grabBar(event, bar, x, y, w)}
+							onpointermove={dragMove}
+							onpointerup={dragEnd}
+							onpointercancel={dragCancel}
 							onclick={(event) => {
+								// The click that ends a drag is not a request to open the stay.
+								if (dragged) {
+									dragged = false;
+									event.preventDefault();
+									return;
+								}
 								// A plain click opens the modal over the chart; a modified one keeps the link's own behaviour.
 								if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey) return;
 								event.preventDefault();
@@ -492,6 +869,14 @@
 							{#if bar.accountName && w > SECOND_LINE_MIN}
 								<span class="account">{bar.accountName}</span>
 							{/if}
+							{#if manage}
+								{#if dragKind(bar, 'start')}
+									<span class="grip start" data-handle="start" aria-hidden="true"></span>
+								{/if}
+								{#if dragKind(bar, 'end')}
+									<span class="grip end" data-handle="end" aria-hidden="true"></span>
+								{/if}
+							{/if}
 						</a>
 						{#if canMove(bar)}
 							<button
@@ -501,7 +886,7 @@
 								aria-label="Menu for {bar.guestName}"
 								aria-haspopup="menu"
 								aria-expanded={menuFor === bar.id}
-								style:transform="translate({x + Math.max(w - BAR_MENU, 0)}px, {y}px)"
+								style:transform="translate({x + Math.max(w - BAR_MENU - GRIP, 0)}px, {y}px)"
 								onclick={() => openMenu(bar)}>⋯</button
 							>
 						{/if}
@@ -531,6 +916,7 @@
 						>
 					</div>
 				{/if}
+				<div class="ghost" bind:this={ghost} hidden>{ghostLabel}</div>
 				{#if focusRoom}
 					<div
 						class="marker"
@@ -562,6 +948,67 @@
 		/>
 	{/if}
 </dialog>
+
+<dialog
+	bind:this={changeDialog}
+	aria-labelledby="change-title"
+	onclose={() => (confirming = undefined)}
+>
+	{#if confirming}
+		{@const change = confirming}
+		<h2 id="change-title">Change stay</h2>
+		<p>
+			{change.stay.guestName}: {change.stay.start} to {change.stay.end}
+			→ {change.start} to {change.end}{#if change.room.roomTypeId !== change.stay.roomTypeId},
+				{typeCode(change.stay.roomTypeId)} → {change.room.typeCode}{/if}
+		</p>
+		{#if change.plan === 'modify+assign'}
+			<p>Then it moves to room {change.room.number}.</p>
+		{/if}
+		{#if change.room.roomTypeId !== change.stay.roomTypeId}
+			<label class="check">
+				<input type="checkbox" bind:checked={change.keepPrice} />
+				Keep the booked price (upgrade)
+			</label>
+		{/if}
+		{#if detail.isError || preview.isError}
+			<p class="error" role="alert">{errorMessage(detail.error ?? preview.error)}</p>
+		{:else if !priced}
+			<p>Pricing…</p>
+		{:else if offer}
+			<p>
+				Total <strong>{money(priced.total, priced.currency)}</strong> →
+				<strong>{money(offer.total, offer.currency)}</strong>
+				{#if change.keepPrice}
+					<span class="hint"
+						>(every night at the new stay's price; nights kept at their booked price will cost less)</span
+					>
+				{/if}
+			</p>
+		{:else}
+			<p>
+				Total <strong>{money(priced.total, priced.currency)}</strong>. No
+				{typeCode(change.room.roomTypeId)} offer sells these nights on {priced.ratePlan.code}.
+			</p>
+		{/if}
+		<div class="actions">
+			<button type="button" disabled={!priced} onclick={confirmChange}>Confirm</button>
+			<button type="button" class="secondary" onclick={() => (confirming = undefined)}
+				>Cancel</button
+			>
+		</div>
+	{/if}
+</dialog>
+
+{#if toast}
+	<div class="toast" role={toast.undo ? 'status' : 'alert'}>
+		<span>{toast.message}</span>
+		{#if toast.undo}
+			<button type="button" onclick={toast.undo}>Undo</button>
+		{/if}
+		<button type="button" class="secondary" aria-label="Dismiss" onclick={() => say()}>×</button>
+	</div>
+{/if}
 
 <style>
 	.viewport {
@@ -708,6 +1155,64 @@
 		text-decoration: none;
 		line-height: 1.15;
 		will-change: transform;
+	}
+	.bar.draggable {
+		cursor: grab;
+		touch-action: none;
+		user-select: none;
+	}
+	.bar:global(.dragging) {
+		opacity: 0.4;
+	}
+	.viewport:global(.is-dragging) {
+		cursor: grabbing;
+		user-select: none;
+	}
+	.grip {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		width: 8px;
+		cursor: ew-resize;
+	}
+	.grip.start {
+		left: 0;
+	}
+	.grip.end {
+		right: 0;
+	}
+	.ghost {
+		position: absolute;
+		top: 0;
+		left: 0;
+		z-index: 4;
+		height: calc(var(--row) - 8px);
+		padding: 0 0.4rem;
+		overflow: hidden;
+		border: 2px dashed var(--accent);
+		border-radius: 4px;
+		background: color-mix(in srgb, var(--accent) 25%, transparent);
+		color: var(--text);
+		white-space: nowrap;
+		line-height: calc(var(--row) - 12px);
+		pointer-events: none;
+		transform-origin: 0 0;
+		will-change: transform;
+	}
+	.toast {
+		position: fixed;
+		bottom: 1rem;
+		left: 50%;
+		z-index: 20;
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		padding: 0.5rem 0.75rem;
+		transform: translateX(-50%);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--surface);
+		box-shadow: 0 2px 8px rgb(0 0 0 / 0.3);
 	}
 	.bar .name,
 	.bar .account {

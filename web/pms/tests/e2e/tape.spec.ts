@@ -483,3 +483,169 @@ test('without manageReservations the chart has no Assign… and no bar menu', as
 	await expect(page.getByRole('region', { name: 'Needs a room' })).toContainText('Overbooked');
 	await expect(page.getByRole('button', { name: 'Assign…' })).toHaveCount(0);
 });
+
+/** Presses on `from`, moves to `to` in steps (a drag is more than its two ends) and releases. */
+async function drag(page: Page, from: { x: number; y: number }, to: { x: number; y: number }) {
+	await page.mouse.move(from.x, from.y);
+	await page.mouse.down();
+	const steps = 8;
+	for (let step = 1; step <= steps; step++) {
+		await page.mouse.move(
+			from.x + ((to.x - from.x) * step) / steps,
+			from.y + ((to.y - from.y) * step) / steps
+		);
+	}
+	await page.mouse.up();
+}
+
+/** The bar of room `number`, dragged one row down by its body to the next room. */
+async function dragToNextRoom(page: Page, number: string) {
+	const box = await page.locator(`[data-room="${number}"]`, { hasText: 'Silva, A.' }).boundingBox();
+	expect(box).not.toBeNull();
+	const x = box!.x + box!.width / 2;
+	const y = box!.y + box!.height / 2;
+	await drag(page, { x, y }, { x, y: y + 44 });
+}
+
+/** Another session assigning the stay to `roomNumber`, over the API; returns the response status. */
+async function assignTo(
+	page: Page,
+	hotel: Hotel,
+	stayId: string,
+	version: number,
+	roomNumber: string
+): Promise<number> {
+	const propertyId = hotel.path.split('/').pop();
+	const response = await page.request.post('/graphql', {
+		headers: { 'x-goodfolk-csrf': '1' },
+		data: { query: `{ rooms(propertyId: "${propertyId}") { id number } }` }
+	});
+	const { data } = await response.json();
+	const room = data.rooms.find((candidate: { number: string }) => candidate.number === roomNumber);
+	const assigned = await page.request.post(`${hotel.path}/reservation-rooms/${stayId}/assign`, {
+		headers: { 'x-goodfolk-csrf': '1', 'If-Match': `"${version}"` },
+		data: { room_id: room.id }
+	});
+	return assigned.status();
+}
+
+test('dragging a bar to another room of its type saves at once, and Undo puts it back', async ({
+	page
+}) => {
+	await signUp(page);
+	await createProperty(page, 'DRG');
+	const hotel = await bookableHotel(page, 6, 1);
+	await bookTonight(page, hotel);
+	await page.getByRole('link', { name: 'Tape chart' }).click();
+	await expect(page.locator('[data-room="101"]', { hasText: 'Silva, A.' })).toBeVisible();
+	const tapeUrl = page.url();
+
+	await dragToNextRoom(page, '101');
+	await expect(page.locator('[data-room="102"]', { hasText: 'Silva, A.' })).toBeVisible();
+	await expect(page.locator('[data-room="101"]', { hasText: 'Silva, A.' })).toHaveCount(0);
+	await expect(page.getByText('Moved to 102')).toBeVisible();
+	// The drag did not open the stay.
+	expect(page.url()).toBe(tapeUrl);
+
+	await page.getByRole('button', { name: 'Undo' }).click();
+	await expect(page.locator('[data-room="101"]', { hasText: 'Silva, A.' })).toBeVisible();
+	await expect(page.locator('[data-room="102"]', { hasText: 'Silva, A.' })).toHaveCount(0);
+});
+
+test('a drag on data another session already changed rolls back with the server reason', async ({
+	page
+}) => {
+	await signUp(page);
+	await createProperty(page, 'STL');
+	const hotel = await bookableHotel(page, 6, 1);
+	const stay = await bookTonight(page, hotel);
+	// This session keeps showing the chart as it first loaded, as if it had missed the live update.
+	const frozen = new Map<string, string>();
+	let freeze = false;
+	await page.route('**/graphql', async (route) => {
+		const request = route.request();
+		if (!runsQuery(request, 'TapeWindow')) return route.continue();
+		const key = request.postData() ?? '';
+		if (freeze && frozen.has(key)) {
+			return route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: frozen.get(key)!
+			});
+		}
+		const response = await route.fetch();
+		const body = await response.text();
+		frozen.set(key, body);
+		await route.fulfill({ response, body });
+	});
+	await page.getByRole('link', { name: 'Tape chart' }).click();
+	await expect(page.locator('[data-room="101"]', { hasText: 'Silva, A.' })).toBeVisible();
+	freeze = true;
+
+	expect(await assignTo(page, hotel, stay.roomId, stay.version, '103')).toBe(200);
+	await dragToNextRoom(page, '101');
+
+	await expect(page.getByText(/changed by someone else/)).toBeVisible();
+	await expect(page.locator('[data-room="101"]', { hasText: 'Silva, A.' })).toBeVisible();
+	await expect(page.locator('[data-room="102"]', { hasText: 'Silva, A.' })).toHaveCount(0);
+});
+
+test('Undo after the stay changed again shows the server reason and does not retry', async ({
+	page
+}) => {
+	await signUp(page);
+	await createProperty(page, 'UND');
+	const hotel = await bookableHotel(page, 6, 1);
+	const stay = await bookTonight(page, hotel);
+	await page.getByRole('link', { name: 'Tape chart' }).click();
+	await expect(page.locator('[data-room="101"]', { hasText: 'Silva, A.' })).toBeVisible();
+
+	await dragToNextRoom(page, '101');
+	await expect(page.getByText('Moved to 102')).toBeVisible();
+	// Someone else moves it on, using the version the drag produced.
+	expect(await assignTo(page, hotel, stay.roomId, stay.version + 1, '104')).toBe(200);
+	await expect(page.locator('[data-room="104"]', { hasText: 'Silva, A.' })).toBeVisible();
+
+	let assigns = 0;
+	await page.route('**/assign', (route) => {
+		assigns++;
+		return route.continue();
+	});
+	await page.getByRole('button', { name: 'Undo' }).click();
+	await expect(page.getByText(/changed by someone else/)).toBeVisible();
+	await expect(page.locator('[data-room="104"]', { hasText: 'Silva, A.' })).toBeVisible();
+	expect(assigns).toBe(1);
+});
+
+test('dragging the end of a bar one day right asks to confirm the new total, then extends it', async ({
+	page
+}) => {
+	await signUp(page);
+	await createProperty(page, 'RSZ');
+	const hotel = await bookableHotel(page, 6, 2);
+	await bookTonight(page, hotel);
+	await page.getByRole('link', { name: 'Tape chart' }).click();
+	const bar = page.locator('[data-room="101"]', { hasText: 'Silva, A.' });
+	await expect(bar).toBeVisible();
+	const box = (await bar.boundingBox())!;
+	const day = box.width;
+	const from = { x: box.x + box.width - 3, y: box.y + box.height / 2 };
+
+	await drag(page, from, { x: from.x + day, y: from.y });
+	const dialog = page.getByRole('dialog', { name: 'Change stay' });
+	await expect(dialog).toBeVisible();
+	await expect(dialog).toContainText(/USD.*100.*→.*USD.*200/);
+	// Nothing is written until it is confirmed; cancelling leaves the bar as it was.
+	await dialog.getByRole('button', { name: 'Cancel' }).click();
+	await expect(dialog).toBeHidden();
+	expect((await bar.boundingBox())!.width).toBeCloseTo(day, 0);
+
+	await drag(page, from, { x: from.x + day, y: from.y });
+	await dialog.getByRole('button', { name: 'Confirm' }).click();
+	await expect(dialog).toBeHidden();
+	await expect(bar).toHaveAttribute(
+		'aria-label',
+		new RegExp(`to ${addDays(hotel.businessDate, 2)}`)
+	);
+	expect((await bar.boundingBox())!.width).toBeCloseTo(day * 2, 0);
+});

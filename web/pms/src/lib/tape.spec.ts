@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { Room, RoomType } from './rooms';
 import {
+	clampOffset,
+	dragDates,
+	dragKind,
+	dragPlan,
+	dropTarget,
+	withStay,
+	type TapeBar,
+	type TapeTile,
 	barsFor,
 	barWidth,
 	barX,
@@ -363,5 +371,113 @@ describe('Needs a room', () => {
 	it('words the reasons', () => {
 		expect(needsRoomReason('OVERBOOKED')).toBe('Overbooked');
 		expect(needsRoomReason('NO_SINGLE_ROOM')).toBe('No single room free');
+	});
+});
+
+describe('drag and drop', () => {
+	const stay = (status: string, over: Partial<TapeStay> = {}): TapeStay => ({
+		id: 's1',
+		reservationId: 'res1',
+		roomId: 'r101',
+		roomTypeId: 'ty-std',
+		start: '2026-10-10',
+		end: '2026-10-13',
+		status,
+		guestName: 'Silva, A.',
+		accountName: null,
+		version: 1,
+		...over
+	});
+	const bar = (status: string): TapeBar => ({ kind: 'stay', ...stay(status) });
+	const block: TapeBar = {
+		kind: 'block',
+		id: 'b1',
+		roomId: 'r101',
+		start: '2026-10-10',
+		end: '2026-10-13',
+		reason: 'Paint'
+	};
+
+	it('maps the pointer to whole days and a row, or none outside the rows', () => {
+		const ids = ['a', 'b', 'c'];
+		expect(dropTarget(0, 10, 80, 44, ids)).toEqual({ roomId: 'a', dayOffset: 0 });
+		expect(dropTarget(39, 50, 80, 44, ids)).toEqual({ roomId: 'b', dayOffset: 0 });
+		expect(dropTarget(41, 131, 80, 44, ids)).toEqual({ roomId: 'c', dayOffset: 1 });
+		expect(dropTarget(-130, 0, 80, 44, ids).dayOffset).toBe(-2);
+		expect(dropTarget(0, -1, 80, 44, ids).roomId).toBeNull();
+		expect(dropTarget(0, 132, 80, 44, ids).roomId).toBeNull();
+		expect(dropTarget(50, 10, 0, 44, ids).dayOffset).toBe(0);
+	});
+
+	it('lets a confirmed stay move or resize either edge', () => {
+		expect(dragKind(bar('CONFIRMED'), 'body')).toBe('move');
+		expect(dragKind(bar('CONFIRMED'), 'start')).toBe('resize-start');
+		expect(dragKind(bar('CONFIRMED'), 'end')).toBe('resize-end');
+	});
+
+	it('lets a checked-in stay resize only its departure, and refuses the rest', () => {
+		expect(dragKind(bar('CHECKED_IN'), 'end')).toBe('resize-end');
+		expect(dragKind(bar('CHECKED_IN'), 'start')).toBeNull();
+		expect(dragKind(bar('CHECKED_IN'), 'body')).toBeNull();
+		for (const handle of ['body', 'start', 'end'] as const) {
+			expect(dragKind(bar('CHECKED_OUT'), handle)).toBeNull();
+			expect(dragKind(block, handle)).toBeNull();
+		}
+	});
+
+	it('keeps at least one night when resizing', () => {
+		expect(clampOffset('resize-end', 3, -5)).toBe(-2);
+		expect(clampOffset('resize-start', 3, 5)).toBe(2);
+		expect(clampOffset('move', 3, -9)).toBe(-9);
+		expect(dragDates('move', stay('CONFIRMED'), 2)).toEqual({
+			start: '2026-10-12',
+			end: '2026-10-15'
+		});
+		expect(dragDates('resize-end', stay('CONFIRMED'), 1)).toEqual({
+			start: '2026-10-10',
+			end: '2026-10-14'
+		});
+		expect(dragDates('resize-start', stay('CONFIRMED'), 9)).toEqual({
+			start: '2026-10-12',
+			end: '2026-10-13'
+		});
+	});
+
+	it('plans a room-only drop as assign, and a date or type change as modify', () => {
+		const here = { roomId: 'r101', roomTypeId: 'ty-std', dayOffset: 0 };
+		const confirmed = stay('CONFIRMED');
+		expect(dragPlan(confirmed, 'move', { ...here, roomId: 'r102' })).toBe('assign');
+		expect(dragPlan(confirmed, 'move', here)).toBe('refuse');
+		expect(dragPlan(confirmed, 'move', { ...here, dayOffset: 1 })).toBe('modify');
+		expect(dragPlan(confirmed, 'move', { ...here, roomId: 'r102', dayOffset: 1 })).toBe(
+			'modify+assign'
+		);
+		expect(
+			dragPlan(confirmed, 'move', { roomId: 'r201', roomTypeId: 'ty-dlx', dayOffset: 0 })
+		).toBe('modify+assign');
+		expect(dragPlan(confirmed, 'resize-end', { ...here, roomId: 'r102', dayOffset: 1 })).toBe(
+			'modify'
+		);
+		expect(dragPlan(confirmed, 'resize-end', here)).toBe('refuse');
+	});
+
+	it('refuses a plan a stay status does not allow', () => {
+		const target = { roomId: 'r102', roomTypeId: 'ty-std', dayOffset: 1 };
+		expect(dragPlan(stay('CHECKED_OUT'), 'move', target)).toBe('refuse');
+		expect(dragPlan(stay('CHECKED_IN'), 'move', target)).toBe('refuse');
+		expect(dragPlan(stay('CHECKED_IN'), 'resize-start', target)).toBe('refuse');
+		expect(dragPlan(stay('CHECKED_IN'), 'resize-end', target)).toBe('modify');
+	});
+
+	it('moves a stay between cached tiles by overlap and page', () => {
+		const tile: TapeTile = { stays: [stay('CONFIRMED')], blocks: [] };
+		const moved = stay('CONFIRMED', { roomId: 'r102' });
+		expect(withStay(tile, '2026-10-05', moved, ['r101', 'r102']).stays).toEqual([moved]);
+		expect(withStay(tile, '2026-10-05', moved, ['r101']).stays).toEqual([]);
+		const later = stay('CONFIRMED', { start: '2026-10-20', end: '2026-10-21' });
+		expect(withStay(tile, '2026-10-05', later, ['r101']).stays).toEqual([]);
+		expect(withStay({ stays: [], blocks: [] }, '2026-10-19', later, ['r101']).stays).toEqual([
+			later
+		]);
 	});
 });
