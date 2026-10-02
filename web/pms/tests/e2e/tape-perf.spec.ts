@@ -15,9 +15,41 @@ test.describe.configure({ mode: 'serial' });
 const ROOMS = 500;
 const MONTHS = 18;
 const NIGHTS = Math.round(MONTHS * 30.4);
-const STAY_NIGHTS = 4;
-/** Rooms booked on every four-night slot, the lowest-numbered ones: 101 to 124. */
-const BUSY_ROOMS = 24;
+/** Rooms 101 to 130, the first three pages, are the ones measured; about 80% of them are booked each night. */
+const MEASURED_ROOMS = 30;
+const OCCUPANCY = 0.8;
+
+/** Repeatable pseudo-random numbers in [0, 1), so every run seeds the same hotel. */
+function random(seed: number) {
+	return () => {
+		seed = (seed + 0x6d2b79f5) | 0;
+		let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+
+/**
+ * Stays of one to three nights that keep about `OCCUPANCY` of the measured rooms booked on each night, the
+ * count wandering from night to night, in order of check-in. Auto-assignment gives each the lowest free room.
+ */
+function seedStays(): { night: number; nights: number }[] {
+	const next = random(4);
+	const stays: { night: number; nights: number }[] = [];
+	const ends: number[] = [];
+	const mean = MEASURED_ROOMS * OCCUPANCY;
+	for (let night = 0; night < NIGHTS; night++) {
+		const target = Math.min(MEASURED_ROOMS, Math.round(mean - 6 + next() * 12));
+		while (ends.length && ends[0] <= night) ends.shift();
+		while (ends.length < target) {
+			const nights = Math.min(1 + Math.floor(next() * 3), NIGHTS - night);
+			stays.push({ night, nights });
+			ends.push(night + nights);
+			ends.sort((a, b) => a - b);
+		}
+	}
+	return stays;
+}
 
 let page: Page;
 let hotel: Hotel;
@@ -28,26 +60,28 @@ test.beforeAll(async ({ browser }) => {
 	await signUp(page);
 	await createProperty(page, 'TAP');
 	hotel = await bookableHotel(page, ROOMS, NIGHTS);
-	// A reservation holds at most ten rooms, so each four-night slot is three reservations.
-	const bookings = Array.from({ length: Math.floor(NIGHTS / STAY_NIGHTS) }, (_, slot) =>
-		[10, 10, BUSY_ROOMS - 20].map((count) => ({ slot, count }))
-	).flat();
-	for (let start = 0; start < bookings.length; start += 8) {
+	// A reservation holds at most ten rooms, each with its own dates.
+	const stays = seedStays();
+	for (let start = 0; start < stays.length; start += 80) {
 		await Promise.all(
-			bookings.slice(start, start + 8).map(({ slot, count }) =>
-				post(page.request, `${hotel.path}/reservations`, {
-					booker_guest_id: hotel.guestId,
-					source: 'front_desk',
-					rooms: Array.from({ length: count }, () => ({
-						room_type_id: hotel.roomTypeId,
-						rate_plan_id: hotel.ratePlanId,
-						meal_plan: 'RO',
-						check_in: addDays(hotel.businessDate, slot * STAY_NIGHTS),
-						check_out: addDays(hotel.businessDate, (slot + 1) * STAY_NIGHTS),
-						adults: 2
-					}))
-				})
+			Array.from({ length: 8 }, (_, group) =>
+				stays.slice(start + group * 10, start + group * 10 + 10)
 			)
+				.filter((rooms) => rooms.length > 0)
+				.map((rooms) =>
+					post(page.request, `${hotel.path}/reservations`, {
+						booker_guest_id: hotel.guestId,
+						source: 'front_desk',
+						rooms: rooms.map(({ night, nights }) => ({
+							room_type_id: hotel.roomTypeId,
+							rate_plan_id: hotel.ratePlanId,
+							meal_plan: 'RO',
+							check_in: addDays(hotel.businessDate, night),
+							check_out: addDays(hotel.businessDate, night + nights),
+							adults: 2
+						}))
+					})
+				)
 		);
 	}
 });
@@ -57,6 +91,11 @@ test.afterAll(async () => {
 });
 
 const tapeUrl = () => `${hotel.path.replace('/api/v1/properties/', '/p/')}/tape`;
+const sorted = (values: number[]) => [...values].sort((a, b) => a - b);
+const percentile = (values: number[], p: number) =>
+	sorted(values)[Math.ceil(p * values.length) - 1];
+const daysBetween = (from: string, to: string) =>
+	Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 const median = (values: number[]) =>
 	[...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 
@@ -103,36 +142,42 @@ function timeChange(start: 'click' | 'enter', first: number, last: number) {
 						if (start === 'enter' && (event as KeyboardEvent).key !== 'Enter') return;
 						t0 = performance.now();
 					},
-					{ capture: true, once: true }
+					{ capture: true }
 				);
 			}),
 		{ start, first, last }
 	);
 }
 
-test('first open of the chart paints its rooms and bars under 400 ms @perf', async () => {
+test('first open of the chart paints its rooms and bars under 400 ms @perf', async ({
+	browser
+}) => {
+	const session = await page.context().storageState();
 	const timings: number[] = [];
-	await page.addInitScript(() => {
-		(window as unknown as { firstPaint: Promise<number> }).firstPaint = new Promise((resolve) => {
-			const observer = new MutationObserver(() => {
-				const rooms = document.querySelectorAll('ol[aria-label="Rooms"] li').length;
-				if (rooms !== 10 || !document.querySelector('.bar[data-room]')) return;
-				observer.disconnect();
-				requestAnimationFrame(() => {
-					const channel = new MessageChannel();
-					channel.port1.onmessage = () => resolve(performance.now());
-					channel.port2.postMessage(null);
-				});
-			});
-			observer.observe(document, { subtree: true, childList: true, attributes: true });
-		});
-	});
 	for (let run = 0; run < 5; run++) {
-		await page.goto('about:blank');
-		await page.goto(tapeUrl());
+		// A new context each time: nothing cached, as on a first visit of the day.
+		const context = await browser.newContext({ storageState: session });
+		const fresh = await context.newPage();
+		await fresh.addInitScript(() => {
+			(window as unknown as { firstPaint: Promise<number> }).firstPaint = new Promise((resolve) => {
+				const observer = new MutationObserver(() => {
+					const rooms = document.querySelectorAll('ol[aria-label="Rooms"] li').length;
+					if (rooms !== 10 || !document.querySelector('.bar[data-room]')) return;
+					observer.disconnect();
+					requestAnimationFrame(() => {
+						const channel = new MessageChannel();
+						channel.port1.onmessage = () => resolve(performance.now());
+						channel.port2.postMessage(null);
+					});
+				});
+				observer.observe(document, { subtree: true, childList: true, attributes: true });
+			});
+		});
+		await fresh.goto(tapeUrl());
 		timings.push(
-			await page.evaluate(() => (window as never as { firstPaint: Promise<number> }).firstPaint)
+			await fresh.evaluate(() => (window as never as { firstPaint: Promise<number> }).firstPaint)
 		);
+		await context.close();
 	}
 	console.log(
 		`tape first open: ${timings.map((ms) => ms.toFixed(0)).join(', ')} ms, median ${median(timings).toFixed(0)}`
@@ -166,7 +211,7 @@ test('a page or picker change paints under 50 ms with the tiles prefetched @perf
 
 	// A chip change: add the range once so its tiles are cached, remove it, then time adding it again.
 	const chipTimes: number[] = [];
-	for (let change = 0; change < 5; change++) {
+	for (let change = 0; change < 10; change++) {
 		await picker.fill('121-130');
 		await picker.press('Enter');
 		await expect(page.getByRole('button', { name: 'Remove 121-130' })).toBeVisible();
@@ -186,11 +231,11 @@ test('a page or picker change paints under 50 ms with the tiles prefetched @perf
 	}
 	const format = (values: number[]) => values.map((ms) => ms.toFixed(1)).join(', ');
 	console.log(
-		`tape page change: ${format(pageTimes)} ms, median ${median(pageTimes).toFixed(1)}; ` +
-			`picker change: ${format(chipTimes)} ms, median ${median(chipTimes).toFixed(1)}`
+		`tape page change: ${format(pageTimes)} ms, median ${median(pageTimes).toFixed(1)}, p90 ${percentile(pageTimes, 0.9).toFixed(1)}, max ${Math.max(...pageTimes).toFixed(1)}; ` +
+			`picker change: ${format(chipTimes)} ms, median ${median(chipTimes).toFixed(1)}, p90 ${percentile(chipTimes, 0.9).toFixed(1)}, max ${Math.max(...chipTimes).toFixed(1)}`
 	);
-	expect(median(pageTimes)).toBeLessThan(50);
-	expect(median(chipTimes)).toBeLessThan(50);
+	expect(percentile(pageTimes, 0.9)).toBeLessThan(50);
+	expect(percentile(chipTimes, 0.9)).toBeLessThan(50);
 });
 
 /** Scrolls the chart `days` forward over `ms`, one animation frame at a time; the frame gaps and long tasks. */
@@ -243,6 +288,8 @@ test('scrolling six months in three seconds holds 58 fps with no long task @perf
 			`worst frame ${worst.toFixed(1)} ms, long tasks [${result.longTasks.map((ms) => ms.toFixed(0)).join(', ')}], ` +
 			`DOM peak ${result.maxNodes}`
 	);
+	// The scroll happened: the first day in view moved by the six months asked for, give or take snapping.
+	expect(Math.abs(daysBetween(before!, after!) - 182)).toBeLessThanOrEqual(7);
 	expect(fps).toBeGreaterThanOrEqual(58);
 	expect(result.longTasks.filter((ms) => ms > 50)).toEqual([]);
 });
@@ -251,6 +298,9 @@ test('the DOM stays under 3,000 nodes after scrolling twelve months @perf', asyn
 	await page.goto(tapeUrl());
 	await expect(page.locator('.bar[data-room]').first()).toBeVisible();
 	await page.waitForLoadState('networkidle');
+	const origin = (await page
+		.getByRole('group', { name: 'Tape chart' })
+		.getAttribute('data-start'))!;
 	const first = await scrollDays(182, 3000);
 	const second = await scrollDays(183, 3000);
 	await page.waitForTimeout(500);
@@ -259,6 +309,9 @@ test('the DOM stays under 3,000 nodes after scrolling twelve months @perf', asyn
 		`tape DOM: ${nodes} nodes after twelve months (peak ${Math.max(first.maxNodes, second.maxNodes)}), ` +
 			`now at ${second.start}`
 	);
+	// The scrolls happened: six months, then a year in all, give or take snapping.
+	expect(Math.abs(daysBetween(origin, first.start!) - 182)).toBeLessThanOrEqual(7);
+	expect(Math.abs(daysBetween(origin, second.start!) - 365)).toBeLessThanOrEqual(14);
 	expect(nodes).toBeLessThan(3000);
 	expect(Math.max(first.maxNodes, second.maxNodes)).toBeLessThan(3000);
 });
@@ -280,23 +333,29 @@ test('the drag ghost follows the pointer within one frame @perf', async () => {
 	);
 
 	// Each move is recorded at the window (before the bar's own handler) and at the document (after it): the
-	// handler's own time, the ghost's transform once it ran, and the transform at the next frame.
+	// handler's own time, and the ghost's transform once the handler ran. At the next frame the ghost must still
+	// hold the transform the latest move left it with: a ghost moved in a later frame (or by a deferred write)
+	// shows there as a different transform.
 	await page.evaluate(() => {
 		const ghost = document.querySelector<HTMLElement>('.ghost')!;
-		const moves: { handler: number; lag: number; set: string; framed: string }[] = [];
+		const moves: { handler: number; lag: number; set: string; framed: string; latest: string }[] =
+			[];
 		(window as never as { moves: typeof moves }).moves = moves;
 		let t0 = 0;
+		let latest = '';
 		window.addEventListener('pointermove', () => (t0 = performance.now()), { capture: true });
 		document.addEventListener('pointermove', (event) => {
 			const handler = performance.now() - t0;
 			const set = ghost.style.transform;
+			latest = set;
 			const stamp = event.timeStamp;
 			requestAnimationFrame(() => {
 				moves.push({
 					handler,
 					lag: performance.now() - stamp,
 					set,
-					framed: ghost.style.transform
+					framed: ghost.style.transform,
+					latest
 				});
 			});
 		});
@@ -315,14 +374,14 @@ test('the drag ghost follows the pointer within one frame @perf', async () => {
 		() =>
 			(
 				window as never as {
-					moves: { handler: number; lag: number; set: string; framed: string }[];
+					moves: { handler: number; lag: number; set: string; framed: string; latest: string }[];
 				}
 			).moves
 	);
 	const dragging = moves.filter((move) => move.set !== '');
 	const handlers = dragging.map((move) => move.handler);
 	const lags = dragging.map((move) => move.lag);
-	const stale = dragging.filter((move) => move.set !== move.framed).length;
+	const stale = dragging.filter((move) => move.latest !== move.framed).length;
 	const moved = new Set(dragging.map((move) => move.set)).size;
 	console.log(
 		`tape drag: ${dragging.length} moves, handler median ${median(handlers).toFixed(2)} ms, max ${Math.max(...handlers).toFixed(2)} ms; ` +
@@ -331,7 +390,8 @@ test('the drag ghost follows the pointer within one frame @perf', async () => {
 	);
 	expect(dragging.length).toBeGreaterThan(steps / 2);
 	expect(moved).toBeGreaterThan(5);
-	// Pointer moves arrive up to a frame apart, so the transform of a frame is that of the last move before it.
+	// No frame shows the ghost anywhere but where the latest move put it.
+	expect(stale).toBe(0);
 	expect(Math.max(...handlers)).toBeLessThan(16);
 	expect(median(lags)).toBeLessThan(16);
 });
