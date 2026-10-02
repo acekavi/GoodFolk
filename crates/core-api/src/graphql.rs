@@ -42,25 +42,28 @@ pub async fn handler(
     body: Result<axum::Json<GraphqlBody>, JsonRejection>,
 ) -> Result<GraphQLResponse, ApiError> {
     let axum::Json(body) = body.map_err(|rejection| ApiError::bad_request(rejection.body_text()))?;
-    let mut request = Request::new(resolve_query(&body, state.production)?).variables(body.variables);
+    let mut request = resolve_request(&body, state.production)?.variables(body.variables);
     if let Some(name) = body.operation_name {
         request = request.operation_name(name);
     }
     Ok(state.schema.execute(request.data(state.pool.clone()).data(ctx)).await.into())
 }
 
-/// The query text to run. A `documentId` runs the stored document; a raw `query` runs only outside production,
-/// where a raw `query` sent beside an id (the development client does) wins, so a document that is not yet in
-/// the generated file still works.
-fn resolve_query(body: &GraphqlBody, production: bool) -> Result<String, ApiError> {
+/// The request to run. A `documentId` runs the stored document, already parsed; a raw `query` runs only outside
+/// production, where a raw `query` sent beside an id (the development client does) wins, so a document that is
+/// not yet in the generated file still works.
+fn resolve_request(body: &GraphqlBody, production: bool) -> Result<Request, ApiError> {
     match (&body.document_id, &body.query) {
-        (_, Some(query)) if !production => Ok(query.clone()),
+        (_, Some(query)) if !production => Ok(Request::new(query)),
         (Some(id), query) => {
-            let text = persisted::documents().get(id).ok_or_else(|| ApiError::bad_request("PersistedQueryNotFound"))?;
-            if query.as_ref().is_some_and(|query| query != text) {
+            let document =
+                persisted::documents().get(id).ok_or_else(|| ApiError::bad_request("PersistedQueryNotFound"))?;
+            if query.as_ref().is_some_and(|query| *query != document.text) {
                 return Err(ApiError::bad_request("the query does not match the persisted document"));
             }
-            Ok(text.clone())
+            let mut request = Request::new(&document.text);
+            request.set_parsed_query(document.parsed.clone());
+            Ok(request)
         }
         (None, _) => Err(ApiError::bad_request("production accepts only persisted queries")),
     }

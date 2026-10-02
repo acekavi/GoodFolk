@@ -11,5 +11,8 @@ pub use account::{
 };
 pub use password::{hash_password, verify_password};
 pub use rbac::{Grant, Permission, Role, allows, load_grants};
-pub use session::{SESSION_TTL, SessionInfo, create_session, delete_session, resolve_session, switch_tenant};
+pub use session::{
+    SESSION_TTL, SessionInfo, TenantAccess, create_session, delete_session, resolve_session, resolve_tenant_access,
+    switch_tenant,
+};
 pub use throttle::{LOGIN_WINDOW_SECS, MAX_LOGIN_FAILURES, clear_login_failures, reserve_login_attempt};

@@ -1,3 +1,4 @@
+use crate::rbac::{Grant, grants_from_rows};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use db::{TenantId, UserId};
@@ -53,6 +54,66 @@ pub async fn resolve_session(pool: &PgPool, token: &str) -> Result<Option<Sessio
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|(id, user, tenant)| SessionInfo { id, user: UserId(user), tenant: tenant.map(TenantId) }))
+}
+
+/// What a session token gets its holder: the result of [`resolve_tenant_access`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TenantAccess {
+    /// The token is unknown or expired.
+    NoSession,
+    /// The session has no current tenant.
+    NoTenant,
+    /// The session's tenant is one the user is no longer a member of.
+    NotMember,
+    Member {
+        session: SessionInfo,
+        tenant: TenantId,
+        grants: Vec<Grant>,
+    },
+}
+
+/// Resolves a session, checks that its user still belongs to the session's tenant and loads their grants there,
+/// in one transaction of two statements instead of five round trips.
+///
+/// The first statement finds the session and sets the transaction-local `app.tenant_id` and `app.user_id` from
+/// it (`session` has no row-level security, so it needs no settings to be read); the second then reads
+/// `membership` and `role_grant` through row-level security under those settings, exactly as a tenant-scoped
+/// transaction does. The settings end with the transaction, so they cannot leak to the next user of a pooled
+/// connection. Both are prepared statements: sending the two as one simple-protocol query saves a round trip
+/// but makes Postgres plan them on every request, which costs more than it saves.
+pub async fn resolve_tenant_access(pool: &PgPool, token: &str) -> Result<TenantAccess, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let session: Option<(Uuid, Uuid, Option<Uuid>)> = sqlx::query_as(
+        "select s.id, s.user_id, s.active_tenant_id
+         from session s,
+              lateral (select set_config('app.tenant_id', coalesce(s.active_tenant_id::text, ''), true),
+                              set_config('app.user_id', s.user_id::text, true)) as scope
+         where s.token_hash = $1 and s.expires_at > now()",
+    )
+    .bind(token_hash(token))
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((id, user, tenant)) = session else { return Ok(TenantAccess::NoSession) };
+    let session = SessionInfo { id, user: UserId(user), tenant: tenant.map(TenantId) };
+    let Some(tenant) = session.tenant else { return Ok(TenantAccess::NoTenant) };
+    let rows: Vec<(bool, Option<Uuid>, Option<String>)> = sqlx::query_as(
+        "select m.member, g.property_id, g.role
+         from (select exists (select 1 from membership
+                              where tenant_id = (select app.current_tenant())
+                                and user_id = (select app.current_user_id())) as member) m
+         left join role_grant g on m.member and g.user_id = (select app.current_user_id())",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    if !rows.first().is_some_and(|(member, ..)| *member) {
+        return Ok(TenantAccess::NotMember);
+    }
+    let grants = grants_from_rows(
+        session.user,
+        rows.into_iter().filter_map(|(_, property_id, role)| role.map(|role| (property_id, role))).collect(),
+    );
+    Ok(TenantAccess::Member { session, tenant, grants })
 }
 
 pub async fn delete_session(pool: &PgPool, token: &str) -> Result<(), sqlx::Error> {

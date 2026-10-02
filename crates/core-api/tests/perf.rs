@@ -858,8 +858,9 @@ impl TapeFixture {
     }
 }
 
-// Last measured (release): p50 4.3 ms, p95 6.1 ms, so this gate fails at 5 ms. It is pending the per-request
-// overhead work in Phase 4 Task 7 (the statement is about 2 ms; the router and transaction setup add the rest).
+// Last measured (release), after Phase 4 Task 7 cut the round trips that authenticate a request: p50 3.4-4.2 ms,
+// p95 3.9-5.6 ms across eleven runs on a machine with another job on one core, so it passes and fails on noise.
+// Before, p50 was 4.3 ms and p95 6.1 ms (the statement is about 2 ms; the router and transaction setup are the rest).
 #[sqlx::test(migrator = "db::MIGRATOR")]
 #[ignore = "performance gate; run in release mode (see the module docs)"]
 async fn tape_window_p95_under_5ms(_: PgPoolOptions, opts: PgConnectOptions) {

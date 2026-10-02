@@ -3,8 +3,8 @@ use crate::state::AppState;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use db::{Scope, TenantId, UserId};
-use identity::{Grant, Permission, SessionInfo, allows, load_grants, resolve_session};
+use db::{TenantId, UserId};
+use identity::{Grant, Permission, SessionInfo, TenantAccess, allows, resolve_session, resolve_tenant_access};
 use uuid::Uuid;
 
 pub const SESSION_COOKIE: &str = "gf_session";
@@ -86,22 +86,17 @@ impl FromRequestParts<AppState> for TenantContext {
         if let Some(found) = parts.extensions.get::<TenantContext>() {
             return Ok(found.clone());
         }
-        let auth = Authenticated::from_request_parts(parts, state).await?;
-        let tenant = auth.session.tenant.ok_or_else(|| ApiError::forbidden("no tenant selected"))?;
-        let mut tx = db::begin(&state.pool, Scope::tenant(tenant)).await?;
-        // The session's tenant was chosen when the user was a member; they may have been removed since.
-        let member: bool =
-            sqlx::query_scalar("select exists (select 1 from membership where tenant_id = $1 and user_id = $2)")
-                .bind(tenant.0)
-                .bind(auth.session.user.0)
-                .fetch_one(&mut *tx)
-                .await?;
-        if !member {
-            return Err(ApiError::forbidden("no tenant selected"));
-        }
-        let grants = load_grants(&mut tx, auth.session.user).await?;
-        tx.commit().await?;
-        let found = TenantContext { user: auth.session.user, tenant, grants };
+        let jar = CookieJar::from_headers(&parts.headers);
+        let token = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()).ok_or_else(ApiError::unauthenticated)?;
+        // One round trip: the session, the user's membership in its tenant (they may have been removed since the
+        // tenant was chosen) and their grants there.
+        let (session, tenant, grants) = match resolve_tenant_access(&state.pool, &token).await? {
+            TenantAccess::NoSession => return Err(ApiError::unauthenticated()),
+            TenantAccess::NoTenant | TenantAccess::NotMember => return Err(ApiError::forbidden("no tenant selected")),
+            TenantAccess::Member { session, tenant, grants } => (session, tenant, grants),
+        };
+        parts.extensions.insert(Authenticated { session, token });
+        let found = TenantContext { user: session.user, tenant, grants };
         parts.extensions.insert(found.clone());
         Ok(found)
     }

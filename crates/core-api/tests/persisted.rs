@@ -10,7 +10,11 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 const PROPERTIES: &str = "{ properties { code } }";
 
 fn properties_document() -> (&'static String, &'static String) {
-    persisted::documents().iter().find(|(_, text)| text.starts_with("query Properties ")).expect("Properties document")
+    let (id, document) = persisted::documents()
+        .iter()
+        .find(|(_, document)| document.text.starts_with("query Properties "))
+        .expect("Properties document");
+    (id, &document.text)
 }
 
 /// An app whose API runs as in production, sharing `app`'s database.
@@ -104,7 +108,11 @@ async fn development_runs_a_query_sent_beside_an_id(_: PgPoolOptions, opts: PgCo
 #[test]
 fn every_persisted_id_is_the_hash_of_its_text() {
     assert!(!persisted::documents().is_empty());
-    for (id, text) in persisted::documents() {
-        assert_eq!(id, &persisted::document_id(text), "stale persisted-documents.json: run `bun run codegen`");
+    for (id, document) in persisted::documents() {
+        assert_eq!(
+            id,
+            &persisted::document_id(&document.text),
+            "stale persisted-documents.json: run `bun run codegen`"
+        );
     }
 }
