@@ -220,7 +220,7 @@
 </div>
 
 {#if showNeeds && needsRoom.length > 0}
-	<NeedsRoom {propertyId} stays={needsRoom} roomTypes={types} {manage} />
+	<NeedsRoom {propertyId} stays={needsRoom} roomTypes={types} {manage} onopen={openReservation} />
 {/if}
 
 {#if rooms.error || roomTypes.error || properties.error}

@@ -356,6 +356,18 @@ test('an overbooked stay is listed under Needs a room, and Assign… puts it in 
 	await expect(panel).toContainText('DLX');
 	await expect(panel).toContainText('Overbooked');
 
+	// The guest link opens the stay over the chart, as a bar does: the chart and the list stay mounted.
+	await panel.getByRole('link', { name: 'Silva, A.' }).click();
+	const dialog = page.getByRole('dialog');
+	await expect(dialog).toBeVisible();
+	await expect(page).toHaveURL(/\/reservations\/[^/]+/);
+	await expect(page.getByRole('group', { name: 'Tape chart' })).toBeVisible();
+	await expect(panel).toBeVisible();
+	await page.keyboard.press('Escape');
+	await expect(dialog).toBeHidden();
+	await expect(page).toHaveURL(/\/tape(\?|$)/);
+	await expect(panel).toBeVisible();
+
 	const cancelled = await page.request.post(
 		`${hotel.path}/reservation-rooms/${first.roomId}/cancel`,
 		{

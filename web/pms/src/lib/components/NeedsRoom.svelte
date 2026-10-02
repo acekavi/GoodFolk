@@ -1,6 +1,7 @@
 <!--
 	The confirmed stays in view that have no room: guest, type, dates and why. Assign… opens the room picker
-	for one of them, limited to the rooms free for its whole stay.
+	for one of them, limited to the rooms free for its whole stay. The guest's link opens the reservation over
+	the chart, as a bar does; a modified click (new tab) still goes to the reservation's own page.
 -->
 <script lang="ts">
 	import { resolve } from '$app/paths';
@@ -16,9 +17,10 @@
 		roomTypes: RoomType[];
 		/** `manageReservations`: without it the list is read-only. */
 		manage: boolean;
+		onopen: (reservationId: string) => void;
 	}
 
-	const { propertyId, stays, roomTypes, manage }: Props = $props();
+	const { propertyId, stays, roomTypes, manage, onopen }: Props = $props();
 
 	let assigning = $state<string>();
 
@@ -37,7 +39,19 @@
 						<a
 							href={resolve(
 								`/p/${propertyId}/reservations/${stay.reservationId}${page.url.search}`
-							)}>{stay.guestName}</a
+							)}
+							onclick={(event) => {
+								if (
+									event.button ||
+									event.metaKey ||
+									event.ctrlKey ||
+									event.shiftKey ||
+									event.altKey
+								)
+									return;
+								event.preventDefault();
+								onopen(stay.reservationId);
+							}}>{stay.guestName}</a
 						>
 					</td>
 					<td>{typeCode(stay.roomTypeId)}</td>
