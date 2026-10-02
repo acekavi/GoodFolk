@@ -3,7 +3,10 @@
 //! Every function takes a transaction scoped to the caller's tenant. Writes record an audit entry in the same
 //! transaction and queue a change event.
 
+mod assignments;
 mod condition;
+
+pub use assignments::{Housekeeper, copy_yesterday, housekeepers, set_assignments};
 
 pub use condition::{
     Actor, Condition, MAX_BULK_ROOMS, RoomConditionRow, housekeeper_may, set_condition, set_conditions,
@@ -66,4 +69,17 @@ async fn audit(
 /// Queues one change event for `keys`.
 async fn notify(tx: &mut Tx, tenant: TenantId, property: Uuid, keys: Vec<String>) -> Result<(), sqlx::Error> {
     db::notify(tx, &Event { tenant_id: tenant, property_id: Some(property), keys }).await
+}
+
+/// The users among `users` who hold `housekeeping` or `hk_supervisor` for the property, or tenant-wide.
+async fn role_holders(tx: &mut Tx, property: Uuid, users: &[Uuid]) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar(
+        "select distinct user_id from role_grant
+         where user_id = any($1) and role in ('housekeeping', 'hk_supervisor')
+           and (property_id = $2 or property_id is null)",
+    )
+    .bind(users)
+    .bind(property)
+    .fetch_all(&mut **tx)
+    .await
 }

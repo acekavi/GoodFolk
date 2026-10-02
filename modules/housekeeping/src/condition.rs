@@ -1,7 +1,7 @@
 //! A room's cleaning condition: housekeepers move their assigned rooms one step forward, supervisors set any
 //! value.
 
-use crate::{HousekeepingError, audit, hk_key, notify};
+use crate::{HousekeepingError, audit, hk_key, notify, role_holders};
 use db::{TenantId, Tx, UserId};
 use serde::Serialize;
 use uuid::Uuid;
@@ -144,15 +144,7 @@ async fn require_housekeeper(tx: &mut Tx, property: Uuid, room: Uuid, user: User
     if !assigned {
         return Err(HousekeepingError::Forbidden("the room is not assigned to you today"));
     }
-    let holds_role: bool = sqlx::query_scalar(
-        "select exists (select 1 from role_grant
-                        where user_id = $1 and role in ('housekeeping', 'hk_supervisor')
-                          and (property_id = $2 or property_id is null))",
-    )
-    .bind(user.0)
-    .bind(property)
-    .fetch_one(&mut **tx)
-    .await?;
+    let holds_role = !role_holders(tx, property, &[user.0]).await?.is_empty();
     if !holds_role {
         return Err(HousekeepingError::Forbidden("you no longer hold a housekeeping role here"));
     }
