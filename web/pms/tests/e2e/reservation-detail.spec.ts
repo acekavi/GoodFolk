@@ -1,9 +1,20 @@
 import { expect, test, type Page } from '@playwright/test';
-import { addDays, bookableHotel, createProperty, post, signUp, type Hotel } from './helpers';
+import {
+	addDays,
+	bookableHotel,
+	createProperty,
+	post,
+	signUp,
+	unassign,
+	type Hotel
+} from './helpers';
 
 const ID_NUMBER = 'P98765432';
 
-/** Books one DLX room on BAR for the business date's night and returns the reservation and its room. */
+/**
+ * Books one DLX room on BAR for the business date's night, takes it out of the room booking auto-assigned it
+ * (the flow below assigns by hand), and returns the reservation and its room.
+ */
 async function bookOneNight(api: Parameters<typeof post>[0], hotel: Hotel) {
 	const created = await post(api, `${hotel.path}/reservations`, {
 		booker_guest_id: hotel.guestId,
@@ -23,7 +34,7 @@ async function bookOneNight(api: Parameters<typeof post>[0], hotel: Hotel) {
 		id: created.id as string,
 		confirmation: created.confirmation_no as string,
 		roomId: created.rooms[0].id as string,
-		roomVersion: created.rooms[0].version as number
+		roomVersion: await unassign(api, hotel, created.rooms[0].id, created.rooms[0].version)
 	};
 }
 

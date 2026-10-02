@@ -63,6 +63,23 @@ export async function post(api: APIRequestContext, path: string, data: object) {
 	return response.json();
 }
 
+/**
+ * Takes a freshly booked room out of the room booking auto-assigned it, for flows that assign by hand or
+ * need an unassigned stay, and returns the room's version after the unassign.
+ */
+export async function unassign(
+	api: APIRequestContext,
+	hotel: Hotel,
+	roomId: string,
+	version: number
+): Promise<number> {
+	const response = await api.post(`${hotel.path}/reservation-rooms/${roomId}/unassign`, {
+		headers: { 'x-goodfolk-csrf': '1', 'If-Match': `"${version}"` }
+	});
+	expect(response.status(), await response.text()).toBe(200);
+	return (await response.json()).version;
+}
+
 /** `YYYY-MM-DD` plus `days`. */
 export function addDays(date: string, days: number): string {
 	const moved = new Date(`${date}T00:00:00Z`);

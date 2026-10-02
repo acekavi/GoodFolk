@@ -1,7 +1,18 @@
 import { expect, test } from '@playwright/test';
-import { addDays, bookableHotel, createProperty, post, signUp, type Hotel } from './helpers';
+import {
+	addDays,
+	bookableHotel,
+	createProperty,
+	post,
+	signUp,
+	unassign,
+	type Hotel
+} from './helpers';
 
-/** Books one DLX room on BAR for `nights` nights from the business date, two adults. */
+/**
+ * Books one DLX room on BAR for `nights` nights from the business date, two adults, and takes it out of the
+ * room booking auto-assigned it: these flows start from an unassigned stay.
+ */
 async function bookNights(api: Parameters<typeof post>[0], hotel: Hotel, nights: number) {
 	const created = await post(api, `${hotel.path}/reservations`, {
 		booker_guest_id: hotel.guestId,
@@ -17,6 +28,7 @@ async function bookNights(api: Parameters<typeof post>[0], hotel: Hotel, nights:
 			}
 		]
 	});
+	await unassign(api, hotel, created.rooms[0].id, created.rooms[0].version);
 	return created.id as string;
 }
 

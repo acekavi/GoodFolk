@@ -2,6 +2,7 @@
 //! counters move to match, and every night's price is fixed as booking did unless the caller asks to reprice.
 
 use crate::assignment::room_taken_conflict;
+use crate::autoassign::pick_room;
 use crate::{
     ReservationsError, SELLABLE, audit, business_date, check_window, decode_error, notify, reservation_key,
     reservations_key, violates,
@@ -43,7 +44,9 @@ pub struct ModifiedRoom {
     pub check_in: Date,
     pub check_out: Date,
     pub room_type_id: Uuid,
+    /// The room the stay is in after the change: kept, re-assigned by a type change, or none.
     pub room_id: Option<Uuid>,
+    pub room_number: Option<String>,
     /// Whether a type change unassigned the room it had (the old room isn't of the new type).
     pub unassigned: bool,
     pub total: i64,
@@ -71,7 +74,9 @@ pub struct ModifiedRoom {
 /// `keep_price`, in which case every night is requoted; added nights always come from the same quote. The
 /// room's currency never changes.
 ///
-/// A type change unassigns the room if it isn't of the new type (`unassigned: true` in the result); a room
+/// A type change drops the room if it isn't of the new type (`unassigned: true` in the result) and then
+/// re-assigns the tightest-fitting free room of the new type, as booking does, or leaves the stay unassigned if
+/// none fits (`room_id` in the result says which); a room
 /// kept assigned across a date change may lose the room to `reservation_room_no_double_booking` (a
 /// `Conflict` naming the booking that holds it, via the savepoint pattern `assign_room` uses) or to a block
 /// over the new stay (`Conflict`, as `assign_room` checks).
@@ -175,6 +180,7 @@ pub async fn modify_room(
 
     // Lock order: this row (already locked above), then the room, before any inventory lock.
     let mut new_room_id = room_id;
+    let mut new_room_number: Option<String> = None;
     let mut unassigned = false;
     if let Some(rid) = room_id {
         let locked: Option<(String, Uuid)> =
@@ -184,9 +190,19 @@ pub async fn modify_room(
                 .fetch_optional(&mut **tx)
                 .await?;
         let (number, assigned_type) = locked.ok_or(ReservationsError::NotFound("room"))?;
+        new_room_number = Some(number.clone());
         if assigned_type != new_room_type_id {
             new_room_id = None;
+            new_room_number = None;
             unassigned = true;
+            // The dropped room's replacement is picked here, after the old room's lock and before
+            // `lock_days`, so the order stays reservation_room -> room -> inventory_day. No fit leaves it unassigned.
+            if let Some((picked, picked_number)) =
+                pick_room(tx, property, new_room_type_id, new_check_in, new_check_out).await?
+            {
+                new_room_id = Some(picked);
+                new_room_number = Some(picked_number);
+            }
         } else if new_check_in != check_in || new_check_out != check_out {
             let block: Option<(Date, Date)> = sqlx::query_as(
                 "select lower(period), upper(period) from room_block
@@ -375,6 +391,7 @@ pub async fn modify_room(
         check_out: new_check_out,
         room_type_id: new_room_type_id,
         room_id: new_room_id,
+        room_number: new_room_number,
         unassigned,
         total,
         currency,

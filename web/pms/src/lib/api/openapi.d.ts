@@ -1148,6 +1148,15 @@ export interface components {
             meal_plan: components["schemas"]["MealPlan"];
             /** Format: uuid */
             rate_plan_id: string;
+            /**
+             * Format: uuid
+             * @description The room auto-assigned to this stay (`autoassign::pick_room`'s tightest fit), or `None` when no room
+             *     of the booked type fit for the whole stay; a stay left unassigned here shows up in Needs a room.
+             *     Never a hand-assigned room: only `assign_room` and `modify_room`'s re-assignment can put a stay in a
+             *     room a person picked.
+             */
+            room_id?: string | null;
+            room_number?: string | null;
             /** Format: uuid */
             room_type_id: string;
             /** Format: int64 */
@@ -1239,8 +1248,12 @@ export interface components {
             id: string;
             /** Format: uuid */
             reservation_id: string;
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description The room the stay is in after the change: kept, re-assigned by a type change, or none.
+             */
             room_id?: string | null;
+            room_number?: string | null;
             /** Format: uuid */
             room_type_id: string;
             /** Format: int64 */

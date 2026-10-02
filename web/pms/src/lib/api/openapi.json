@@ -3655,6 +3655,20 @@
             "type": "string",
             "format": "uuid"
           },
+          "room_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The room auto-assigned to this stay (`autoassign::pick_room`'s tightest fit), or `None` when no room\nof the booked type fit for the whole stay; a stay left unassigned here shows up in Needs a room.\nNever a hand-assigned room: only `assign_room` and `modify_room`'s re-assignment can put a stay in a\nroom a person picked."
+          },
+          "room_number": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "room_type_id": {
             "type": "string",
             "format": "uuid"
@@ -3904,7 +3918,14 @@
               "string",
               "null"
             ],
-            "format": "uuid"
+            "format": "uuid",
+            "description": "The room the stay is in after the change: kept, re-assigned by a type change, or none."
+          },
+          "room_number": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "room_type_id": {
             "type": "string",

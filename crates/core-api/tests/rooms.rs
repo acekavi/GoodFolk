@@ -237,9 +237,10 @@ async fn a_new_room_tells_screens_to_refetch_rooms_and_inventory(_: PgPoolOption
     };
     assert_eq!(event.property_id, Some(property_id));
     assert_eq!(event.keys[0], format!("rooms:{property_id}"));
-    // Physical counts change from the business date for the whole 730-day window: 25 or 26 months.
+    // Physical counts change from the business date for the whole 730-day window: 24 to 26 months (24 when a leap
+    // day inside the window pulls its last night back before the same month two years on).
     let months = event.keys.iter().filter(|key| key.starts_with(&format!("inventory:{property_id}:"))).count();
-    assert!((25..=26).contains(&months), "{:?}", event.keys);
+    assert!((24..=26).contains(&months), "{:?}", event.keys);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

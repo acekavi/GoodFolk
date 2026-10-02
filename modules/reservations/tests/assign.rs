@@ -30,9 +30,10 @@ impl Hotel {
         rooms.into_iter().find(|room| room.number == number).expect("a room with that number")
     }
 
-    /// Books one DLX room on BAR for `[business date + from, business date + to)`.
+    /// Books one DLX room on BAR for `[business date + from, business date + to)`. Booking auto-assigns a room;
+    /// these tests assign by hand, so the stay is unassigned again, at version 2 (the unassign bumped it).
     async fn stay(&self, booker: &Guest, plans: &Plans, from: i64, to: i64) -> CreatedReservation {
-        self.try_book(booker, vec![self.room(self.deluxe.id, &plans.bar, from, to)]).await.unwrap()
+        self.try_book_unassigned(booker, vec![self.room(self.deluxe.id, &plans.bar, from, to)]).await.unwrap()
     }
 
     /// Blocks `room` for `[business date + from, business date + to)`.
@@ -109,9 +110,9 @@ async fn a_stay_is_assigned_moved_and_unassigned_without_touching_the_counters(
     let (r101, r102) = (hotel.numbered("101").await, hotel.numbered("102").await);
     let sold = hotel.sold(hotel.deluxe.id, 0, 5).await;
 
-    let assigned = hotel.try_assign(stay, 1, r101.id).await.unwrap();
-    let moved = hotel.try_assign(stay, 2, r102.id).await.unwrap();
-    let unassigned = hotel.try_unassign(stay, 3).await.unwrap();
+    let assigned = hotel.try_assign(stay, 2, r101.id).await.unwrap();
+    let moved = hotel.try_assign(stay, 3, r102.id).await.unwrap();
+    let unassigned = hotel.try_unassign(stay, 4).await.unwrap();
 
     let expected = |room: Option<&Room>, version| AssignedRoom {
         id: stay,
@@ -120,16 +121,21 @@ async fn a_stay_is_assigned_moved_and_unassigned_without_touching_the_counters(
         room_number: room.map(|room| room.number.clone()),
         version,
     };
-    assert_eq!(assigned, expected(Some(&r101), 2));
-    assert_eq!(moved, expected(Some(&r102), 3));
-    assert_eq!(unassigned, expected(None, 4));
-    assert_eq!(hotel.assignments().await, vec![(stay, None, 4)]);
-    assert_eq!(hotel.reservation_version(booked.id).await, 4, "the reservation's detail changed each time");
+    assert_eq!(assigned, expected(Some(&r101), 3));
+    assert_eq!(moved, expected(Some(&r102), 4));
+    assert_eq!(unassigned, expected(None, 5));
+    assert_eq!(hotel.assignments().await, vec![(stay, None, 5)]);
+    assert_eq!(hotel.reservation_version(booked.id).await, 5, "the reservation's detail changed each time");
     assert_eq!(hotel.sold(hotel.deluxe.id, 0, 5).await, sold, "assigning never changes the counters");
     let audit = hotel.audit_of(stay).await;
     assert_eq!(
         audit,
         vec![
+            // The helper's unassign of the room booking auto-assigned, 101 being the tightest fit.
+            (
+                "reservation_room.unassigned".into(),
+                serde_json::json!({ "reservation_id": booked.id, "room_id": r101.id, "number": "101" })
+            ),
             (
                 "reservation_room.assigned".into(),
                 serde_json::json!({ "reservation_id": booked.id, "room_id": r101.id, "number": "101", "previous": null })
@@ -166,17 +172,17 @@ async fn only_an_active_unblocked_room_of_the_booked_type_is_assigned(_: PgPoolO
     // A block from the day the stay leaves is no obstacle.
     hotel.block(&r101, 4, 6, BlockKind::OutOfOrder).await;
 
-    let wrong_type = conflict(hotel.try_assign(stay, 1, hotel.numbered("201").await.id).await);
-    let deactivated = conflict(hotel.try_assign(stay, 1, r102.id).await);
-    let out_of_service = conflict(hotel.try_assign(stay, 1, r103.id).await);
-    let out_of_order = conflict(hotel.try_assign(stay, 1, r104.id).await);
+    let wrong_type = conflict(hotel.try_assign(stay, 2, hotel.numbered("201").await.id).await);
+    let deactivated = conflict(hotel.try_assign(stay, 2, r102.id).await);
+    let out_of_service = conflict(hotel.try_assign(stay, 2, r103.id).await);
+    let out_of_order = conflict(hotel.try_assign(stay, 2, r104.id).await);
 
     assert_eq!(wrong_type, "room 201 is a STD, this booking is for DLX");
     assert_eq!(deactivated, "room 102 is inactive");
     assert_eq!(out_of_service, format!("room 103 is blocked from {} to {}", hotel.day(3), hotel.day(6)));
     assert_eq!(out_of_order, format!("room 104 is blocked from {} to {}", hotel.day(0), hotel.day(2)));
-    assert_eq!(hotel.assignments().await, vec![(stay, None, 1)]);
-    assert!(hotel.try_assign(stay, 1, r101.id).await.is_ok());
+    assert_eq!(hotel.assignments().await, vec![(stay, None, 2)]);
+    assert!(hotel.try_assign(stay, 2, r101.id).await.is_ok());
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -186,12 +192,12 @@ async fn a_room_taken_on_any_of_the_nights_names_the_booking_that_has_it(_: PgPo
     let first = hotel.stay(&booker, &plans, 1, 4).await;
     let second = hotel.stay(&booker, &plans, 3, 5).await;
     let r101 = hotel.numbered("101").await;
-    hotel.try_assign(first.rooms[0].id, 1, r101.id).await.unwrap();
+    hotel.try_assign(first.rooms[0].id, 2, r101.id).await.unwrap();
 
-    let taken = conflict(hotel.try_assign(second.rooms[0].id, 1, r101.id).await);
+    let taken = conflict(hotel.try_assign(second.rooms[0].id, 2, r101.id).await);
 
     assert_eq!(taken, format!("room 101 is taken by {} on those nights", first.confirmation_no));
-    assert_eq!(hotel.assignments().await, vec![(first.rooms[0].id, Some(r101.id), 2), (second.rooms[0].id, None, 1)]);
+    assert_eq!(hotel.assignments().await, vec![(first.rooms[0].id, Some(r101.id), 3), (second.rooms[0].id, None, 2)]);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -202,10 +208,10 @@ async fn back_to_back_stays_share_a_room(_: PgPoolOptions, opts: PgConnectOption
     let before = hotel.stay(&booker, &plans, 1, 3).await.rooms[0].id;
     let after = hotel.stay(&booker, &plans, 3, 5).await.rooms[0].id;
 
-    hotel.try_assign(before, 1, r101.id).await.unwrap();
-    hotel.try_assign(after, 1, r101.id).await.unwrap();
+    hotel.try_assign(before, 2, r101.id).await.unwrap();
+    hotel.try_assign(after, 2, r101.id).await.unwrap();
 
-    assert_eq!(hotel.assignments().await, vec![(before, Some(r101.id), 2), (after, Some(r101.id), 2)]);
+    assert_eq!(hotel.assignments().await, vec![(before, Some(r101.id), 3), (after, Some(r101.id), 3)]);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -214,15 +220,15 @@ async fn a_cancelled_booking_frees_its_room(_: PgPoolOptions, opts: PgConnectOpt
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
     let r101 = hotel.numbered("101").await;
     let cancelled = hotel.stay(&booker, &plans, 1, 4).await.rooms[0].id;
-    hotel.try_assign(cancelled, 1, r101.id).await.unwrap();
+    hotel.try_assign(cancelled, 2, r101.id).await.unwrap();
     let mut tx = hotel.tx().await;
-    reservations::cancel_room(&mut tx, hotel.tenant, hotel.user, hotel.property, cancelled, 2).await.unwrap();
+    reservations::cancel_room(&mut tx, hotel.tenant, hotel.user, hotel.property, cancelled, 3).await.unwrap();
     tx.commit().await.unwrap();
     let stay = hotel.stay(&booker, &plans, 1, 4).await.rooms[0].id;
 
-    let assigned = hotel.try_assign(stay, 1, r101.id).await;
-    let reassigned = conflict(hotel.try_assign(cancelled, 3, hotel.numbered("102").await.id).await);
-    let unassigned = conflict(hotel.try_unassign(cancelled, 3).await);
+    let assigned = hotel.try_assign(stay, 2, r101.id).await;
+    let reassigned = conflict(hotel.try_assign(cancelled, 4, hotel.numbered("102").await.id).await);
+    let unassigned = conflict(hotel.try_unassign(cancelled, 4).await);
 
     assert_eq!(assigned.unwrap().room_id, Some(r101.id));
     assert_eq!(reassigned, "only a confirmed stay can be assigned a room; this one is cancelled");
@@ -235,15 +241,15 @@ async fn unassigning_a_stay_without_a_room_is_refused(_: PgPoolOptions, opts: Pg
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
     let stay = hotel.stay(&booker, &plans, 1, 4).await.rooms[0].id;
     let r101 = hotel.numbered("101").await;
-    hotel.try_assign(stay, 1, r101.id).await.unwrap();
+    hotel.try_assign(stay, 2, r101.id).await.unwrap();
 
-    let again = conflict(hotel.try_assign(stay, 2, r101.id).await);
-    hotel.try_unassign(stay, 2).await.unwrap();
-    let nothing = conflict(hotel.try_unassign(stay, 3).await);
+    let again = conflict(hotel.try_assign(stay, 3, r101.id).await);
+    hotel.try_unassign(stay, 3).await.unwrap();
+    let nothing = conflict(hotel.try_unassign(stay, 4).await);
 
     assert_eq!(again, "the stay is already in room 101");
     assert_eq!(nothing, "the stay has no room assigned");
-    assert_eq!(hotel.assignments().await, vec![(stay, None, 3)]);
+    assert_eq!(hotel.assignments().await, vec![(stay, None, 4)]);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -253,16 +259,16 @@ async fn a_stale_version_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
     let stay = hotel.stay(&booker, &plans, 1, 4).await.rooms[0].id;
     let r101 = hotel.numbered("101").await;
 
-    let stale_assign = hotel.try_assign(stay, 2, r101.id).await;
-    hotel.try_assign(stay, 1, r101.id).await.unwrap();
-    let stale_unassign = hotel.try_unassign(stay, 1).await;
+    let stale_assign = hotel.try_assign(stay, 3, r101.id).await;
+    hotel.try_assign(stay, 2, r101.id).await.unwrap();
+    let stale_unassign = hotel.try_unassign(stay, 2).await;
 
     assert!(matches!(stale_assign, Err(ReservationsError::VersionMismatch("reservation room"))), "{stale_assign:?}");
     assert!(
         matches!(stale_unassign, Err(ReservationsError::VersionMismatch("reservation room"))),
         "{stale_unassign:?}"
     );
-    assert_eq!(hotel.assignments().await, vec![(stay, Some(r101.id), 2)]);
+    assert_eq!(hotel.assignments().await, vec![(stay, Some(r101.id), 3)]);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -284,10 +290,10 @@ async fn a_room_or_stay_of_another_property_is_not_found(_: PgPoolOptions, opts:
     let elsewhere = rooms::create_room(&mut tx, hotel.tenant, hotel.user, kandy.id, elsewhere).await.unwrap();
     tx.commit().await.unwrap();
 
-    let other_room = hotel.try_assign(stay, 1, elsewhere.id).await;
+    let other_room = hotel.try_assign(stay, 2, elsewhere.id).await;
     let mut tx = hotel.tx().await;
     let other_stay =
-        reservations::assign_room(&mut tx, hotel.tenant, hotel.user, kandy.id, stay, 1, elsewhere.id).await;
+        reservations::assign_room(&mut tx, hotel.tenant, hotel.user, kandy.id, stay, 2, elsewhere.id).await;
 
     assert!(matches!(other_room, Err(ReservationsError::NotFound("room"))), "{other_room:?}");
     assert!(matches!(other_stay, Err(ReservationsError::NotFound("reservation room"))), "{other_stay:?}");
@@ -328,7 +334,7 @@ async fn parallel_assignments_of_one_room_to_overlapping_stays_give_it_to_one(
         tasks.spawn(async move {
             let mut tx = db::begin(&pool, db::Scope::tenant(tenant)).await.unwrap();
             start.wait().await;
-            let assigned = reservations::assign_room(&mut tx, tenant, user, property, stay, 1, r101.id).await?;
+            let assigned = reservations::assign_room(&mut tx, tenant, user, property, stay, 2, r101.id).await?;
             tx.commit().await?;
             Ok::<_, ReservationsError>(assigned)
         });
@@ -381,7 +387,7 @@ async fn an_assignment_and_a_block_of_the_same_room_at_once_let_one_through(_: P
                 tokio::spawn(async move {
                     let mut tx = db::begin(&pool, db::Scope::tenant(tenant)).await.unwrap();
                     start.wait().await;
-                    let assigned = reservations::assign_room(&mut tx, tenant, user, property, stay, 1, room.id).await;
+                    let assigned = reservations::assign_room(&mut tx, tenant, user, property, stay, 2, room.id).await;
                     if assigned.is_ok() {
                         tx.commit().await.unwrap();
                     }
@@ -440,7 +446,7 @@ async fn a_room_retyped_while_a_stay_is_being_assigned_to_it_is_a_wrong_type_con
     let (pool2, room_id) = (pool.clone(), r101.id);
     let assigning = tokio::spawn(async move {
         let mut tx = db::begin(&pool2, db::Scope::tenant(tenant)).await.unwrap();
-        reservations::assign_room(&mut tx, tenant, user, property, stay, 1, room_id).await
+        reservations::assign_room(&mut tx, tenant, user, property, stay, 2, room_id).await
     });
     // Gives the spawned task time to reach its `select ... for update` and start waiting on the row lock
     // `retyping` still holds, so the retype has genuinely committed while the assignment was in flight.
@@ -458,12 +464,12 @@ async fn free_rooms_leave_out_assigned_blocked_and_inactive_rooms(_: PgPoolOptio
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
     let (r101, r102, r104) = (hotel.numbered("101").await, hotel.numbered("102").await, hotel.numbered("104").await);
     let stay = hotel.stay(&booker, &plans, 1, 4).await.rooms[0].id;
-    hotel.try_assign(stay, 1, r101.id).await.unwrap();
+    hotel.try_assign(stay, 2, r101.id).await.unwrap();
     // A cancelled stay's room is free again, though the cancelled stay keeps it on record.
     let cancelled = hotel.stay(&booker, &plans, 1, 4).await.rooms[0].id;
-    hotel.try_assign(cancelled, 1, r102.id).await.unwrap();
+    hotel.try_assign(cancelled, 2, r102.id).await.unwrap();
     let mut tx = hotel.tx().await;
-    reservations::cancel_room(&mut tx, hotel.tenant, hotel.user, hotel.property, cancelled, 2).await.unwrap();
+    reservations::cancel_room(&mut tx, hotel.tenant, hotel.user, hotel.property, cancelled, 3).await.unwrap();
     tx.commit().await.unwrap();
     hotel.block(&hotel.numbered("103").await, 3, 5, BlockKind::OutOfService).await;
     let mut tx = hotel.tx().await;

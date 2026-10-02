@@ -154,15 +154,16 @@ async fn create_emits_tape_keys_for_every_booked_room(_: PgPoolOptions, opts: Pg
 async fn assign_and_unassign_emit_tape_keys_for_the_stays_range(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.stay(&booker, &plans, 0, 3).await;
+    // Booking auto-assigns a room; this test assigns by hand, so the stay starts unassigned (version 2).
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
     let room = booked.rooms[0].id;
     let target = hotel.numbered("101").await;
     let expected = rooms::tape_keys(hotel.property, hotel.day(0), hotel.day(3)).into_iter().collect::<BTreeSet<_>>();
     let mut listener = hotel.listener().await;
 
-    hotel.try_assign(room, 1, target.id).await;
+    hotel.try_assign(room, 2, target.id).await;
     let assigned_keys = recv(&mut listener).await;
-    hotel.try_unassign(room, 2).await;
+    hotel.try_unassign(room, 3).await;
     let unassigned_keys = recv(&mut listener).await;
 
     assert_eq!(tape_only(&assigned_keys), expected);
@@ -212,16 +213,17 @@ async fn modify_emits_tape_keys_for_the_old_and_new_months(_: PgPoolOptions, opt
 async fn check_in_and_undo_emit_tape_keys_for_the_stays_range(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.stay(&booker, &plans, 0, 3).await;
+    // Booking auto-assigns a room; this test assigns by hand, so the stay starts unassigned (version 2).
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
     let room = booked.rooms[0].id;
     let target = hotel.numbered("101").await;
-    hotel.try_assign(room, 1, target.id).await;
+    hotel.try_assign(room, 2, target.id).await;
     let expected = rooms::tape_keys(hotel.property, hotel.day(0), hotel.day(3)).into_iter().collect::<BTreeSet<_>>();
     let mut listener = hotel.listener().await;
 
-    hotel.try_check_in(room, 2).await;
+    hotel.try_check_in(room, 3).await;
     let checked_in_keys = recv(&mut listener).await;
-    hotel.try_undo_check_in(room, 3).await;
+    hotel.try_undo_check_in(room, 4).await;
     let undone_keys = recv(&mut listener).await;
 
     assert_eq!(tape_only(&checked_in_keys), expected);
@@ -232,16 +234,17 @@ async fn check_in_and_undo_emit_tape_keys_for_the_stays_range(_: PgPoolOptions, 
 async fn check_out_emits_tape_keys_for_the_original_range(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.stay(&booker, &plans, 0, 5).await;
+    // Booking auto-assigns a room; this test assigns by hand, so the stay starts unassigned (version 2).
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 5)]).await.unwrap();
     let room = booked.rooms[0].id;
     let target = hotel.numbered("101").await;
-    hotel.try_assign(room, 1, target.id).await;
-    hotel.try_check_in(room, 2).await;
+    hotel.try_assign(room, 2, target.id).await;
+    hotel.try_check_in(room, 3).await;
     // An early departure shortens the stay to [0, 2); the tape key must still cover the booked [0, 5).
     hotel.move_business_date(2).await;
     let mut listener = hotel.listener().await;
 
-    hotel.try_check_out(room, 3).await;
+    hotel.try_check_out(room, 4).await;
 
     let keys = recv(&mut listener).await;
     let expected = rooms::tape_keys(hotel.property, hotel.day(0), hotel.day(5)).into_iter().collect::<BTreeSet<_>>();

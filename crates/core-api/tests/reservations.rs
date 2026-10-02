@@ -111,6 +111,19 @@ impl Hotel {
                           "check_in": self.day(from), "check_out": self.day(to), "adults": 2}]})
     }
 
+    /// `booking` over REST, then takes the booked room out of the room booking auto-assigned it, for tests that
+    /// start from an unassigned stay. The result shows no room and the room's version after the unassign.
+    async fn book_unassigned(&self, app: &TestApp, booker: &Value, from: i64, to: i64) -> Value {
+        let mut created = post(app, &self.owner, &self.reservations(), self.booking(booker, from, to)).await.body;
+        let version = created["rooms"][0]["version"].as_i64().unwrap();
+        let freed = command(app, &self.owner, &format!("{}/unassign", self.stay(&created)), version, None).await;
+        assert_eq!(freed.status, StatusCode::OK, "{:?}", freed.body);
+        created["rooms"][0]["version"] = json!(version + 1);
+        created["rooms"][0]["room_id"] = Value::Null;
+        created["rooms"][0]["room_number"] = Value::Null;
+        created
+    }
+
     /// The path of the first room of a reservation `created` over REST.
     fn stay(&self, created: &Value) -> String {
         format!("{}/reservation-rooms/{}", self.path, created["rooms"][0]["id"].as_str().unwrap())
@@ -151,10 +164,12 @@ async fn a_guest_books_a_room_that_is_assigned_unassigned_and_cancelled_over_res
     let sold_when_booked = hotel.sold(1, 3).await;
     let stay = hotel.stay(&created.body);
     let room_version = created.body["rooms"][0]["version"].as_i64().expect("each booked room has its version");
+    // Booking auto-assigned room 101; take it out again so the stay is assigned by hand below.
+    let freed = command(&app, &hotel.owner, &format!("{stay}/unassign"), room_version, None).await;
     let assign_101 = Some(json!({"room_id": hotel.rooms[0]}));
-    let assigned = command(&app, &hotel.owner, &format!("{stay}/assign"), room_version, assign_101).await;
-    let unassigned = command(&app, &hotel.owner, &format!("{stay}/unassign"), 2, None).await;
-    let cancelled = command(&app, &hotel.owner, &format!("{stay}/cancel"), 3, None).await;
+    let assigned = command(&app, &hotel.owner, &format!("{stay}/assign"), 2, assign_101).await;
+    let unassigned = command(&app, &hotel.owner, &format!("{stay}/unassign"), 3, None).await;
+    let cancelled = command(&app, &hotel.owner, &format!("{stay}/cancel"), 4, None).await;
 
     assert_eq!(guest.status, StatusCode::CREATED, "{:?}", guest.body);
     assert_eq!(guest.headers[header::ETAG], "\"1\"");
@@ -173,23 +188,31 @@ async fn a_guest_books_a_room_that_is_assigned_unassigned_and_cancelled_over_res
     assert_eq!(created.body["confirmation_no"], "GAL-000001");
     assert_eq!(created.body["rooms"][0]["total"], 20_000);
     assert_eq!(room_version, 1, "a booked room starts at version 1");
+    assert_eq!(
+        (created.body["rooms"][0]["room_id"].clone(), created.body["rooms"][0]["room_number"].clone()),
+        (json!(hotel.rooms[0]), json!("101")),
+        "booking auto-assigns the first free room"
+    );
     assert_eq!(created.body["totals"], json!([{"currency": "USD", "amount": 20_000}]));
     assert_eq!((replayed.status, &replayed.body), (StatusCode::CREATED, &created.body), "a retry replays the booking");
     assert_eq!(replayed.headers[header::ETAG], "\"1\"");
     assert_eq!(hotel.scalar("select count(*) from reservation").await, 1, "the retry booked nothing");
     assert_eq!(hotel.scalar("select value from property_counter").await, 1, "the retry took no second number");
     assert_eq!(sold_when_booked, [1, 1]);
+    assert_eq!(freed.status, StatusCode::OK, "{:?}", freed.body);
+    assert_eq!(freed.headers[header::ETAG], "\"2\"");
+    assert_eq!(freed.body["room_id"], Value::Null);
     assert_eq!(assigned.status, StatusCode::OK, "{:?}", assigned.body);
-    assert_eq!(assigned.headers[header::ETAG], "\"2\"");
+    assert_eq!(assigned.headers[header::ETAG], "\"3\"");
     assert_eq!(
         (assigned.body["room_id"].clone(), assigned.body["room_number"].clone()),
         (json!(hotel.rooms[0]), json!("101"))
     );
     assert_eq!(unassigned.status, StatusCode::OK, "{:?}", unassigned.body);
-    assert_eq!(unassigned.headers[header::ETAG], "\"3\"");
+    assert_eq!(unassigned.headers[header::ETAG], "\"4\"");
     assert_eq!(unassigned.body["room_id"], Value::Null);
     assert_eq!(cancelled.status, StatusCode::OK, "{:?}", cancelled.body);
-    assert_eq!(cancelled.headers[header::ETAG], "\"4\"");
+    assert_eq!(cancelled.headers[header::ETAG], "\"5\"");
     assert_eq!(
         (cancelled.body["status"].as_str(), cancelled.body["penalty"].as_i64(), cancelled.body["currency"].as_str()),
         (Some("cancelled"), Some(0), Some("USD")),
@@ -204,11 +227,12 @@ async fn reservation_rules_are_problems(_: PgPoolOptions, opts: PgConnectOptions
     let hotel = Hotel::new(&app, opts).await;
     let guest = post(&app, &hotel.owner, &hotel.guests(), hotel.guest("Silva")).await.body;
     let guest_path = format!("{}/{}", hotel.guests(), guest["id"].as_str().unwrap());
-    let first = post(&app, &hotel.owner, &hotel.reservations(), hotel.booking(&guest, 1, 3)).await.body;
-    let second = post(&app, &hotel.owner, &hotel.reservations(), hotel.booking(&guest, 2, 4)).await.body;
+    let first = hotel.book_unassigned(&app, &guest, 1, 3).await;
+    let second = hotel.book_unassigned(&app, &guest, 2, 4).await;
     let (first, second) = (hotel.stay(&first), hotel.stay(&second));
     let assign_101 = json!({"room_id": hotel.rooms[0]});
-    command(&app, &hotel.owner, &format!("{first}/assign"), 1, Some(assign_101.clone())).await;
+    let assigned = command(&app, &hotel.owner, &format!("{first}/assign"), 2, Some(assign_101.clone())).await;
+    assert_eq!(assigned.status, StatusCode::OK, "{:?}", assigned.body);
     let min_stay = json!({"from": hotel.day(10), "to": hotel.day(11), "min_stay": 3});
     let restricted =
         app.send(Method::PUT, &format!("{}/restrictions", hotel.bar_path()), Some(&hotel.owner), Some(min_stay)).await;
@@ -221,7 +245,7 @@ async fn reservation_rules_are_problems(_: PgPoolOptions, opts: PgConnectOptions
             Some(format!("no DLX rooms left on {}", hotel.day(2))),
         ),
         (
-            command(&app, &hotel.owner, &format!("{second}/assign"), 1, Some(assign_101)).await,
+            command(&app, &hotel.owner, &format!("{second}/assign"), 2, Some(assign_101)).await,
             StatusCode::CONFLICT,
             Some("room 101 is taken by GAL-000001 on those nights".to_owned()),
         ),
@@ -260,8 +284,10 @@ async fn front_desk_manages_reservations_and_housekeeping_and_accountants_cannot
     let accountant = app.staff(&hotel.superuser, &hotel.owner, "accounts@example.com", "accountant").await;
     let guest = post(&app, &hotel.owner, &hotel.guests(), hotel.guest("Silva")).await.body;
     let guest_path = format!("{}/{}", hotel.guests(), guest["id"].as_str().unwrap());
-    let stay = hotel.stay(&post(&app, &hotel.owner, &hotel.reservations(), hotel.booking(&guest, 1, 3)).await.body);
+    let stay = hotel.stay(&hotel.book_unassigned(&app, &guest, 1, 3).await);
     let assign_101 = json!({"room_id": hotel.rooms[0]});
+    // The front desk's own booking below auto-assigns 101, so the front desk assigns this stay to 102.
+    let assign_102 = json!({"room_id": hotel.rooms[1]});
 
     for staff in [&housekeeping, &accountant] {
         let refused = [
@@ -280,9 +306,9 @@ async fn front_desk_manages_reservations_and_housekeeping_and_accountants_cannot
         (post(&app, &front_desk, &hotel.guests(), hotel.guest("Perera")).await, StatusCode::CREATED),
         (patch(&app, &front_desk, &guest_path, 1, json!({"notes": "Late arrival"})).await, StatusCode::OK),
         (post(&app, &front_desk, &hotel.reservations(), hotel.booking(&guest, 1, 3)).await, StatusCode::CREATED),
-        (command(&app, &front_desk, &format!("{stay}/assign"), 1, Some(assign_101)).await, StatusCode::OK),
-        (command(&app, &front_desk, &format!("{stay}/unassign"), 2, None).await, StatusCode::OK),
-        (command(&app, &front_desk, &format!("{stay}/cancel"), 3, None).await, StatusCode::OK),
+        (command(&app, &front_desk, &format!("{stay}/assign"), 2, Some(assign_102)).await, StatusCode::OK),
+        (command(&app, &front_desk, &format!("{stay}/unassign"), 3, None).await, StatusCode::OK),
+        (command(&app, &front_desk, &format!("{stay}/cancel"), 4, None).await, StatusCode::OK),
     ];
     for (index, (response, status)) in by_front_desk.into_iter().enumerate() {
         assert_eq!(response.status, status, "case {index}: {:?}", response.body);
@@ -294,7 +320,7 @@ async fn another_tenants_guests_and_reservations_cannot_be_changed(_: PgPoolOpti
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts).await;
     let guest = post(&app, &hotel.owner, &hotel.guests(), hotel.guest("Silva")).await.body;
-    let created = post(&app, &hotel.owner, &hotel.reservations(), hotel.booking(&guest, 1, 3)).await.body;
+    let created = hotel.book_unassigned(&app, &guest, 1, 3).await;
     let stay = created["rooms"][0]["id"].as_str().unwrap();
     let intruder = app.signup_owner("intruder@example.com", "Other Hotels").await;
     let own = json!({"code": "KAN", "name": "Kandy", "timezone": "Asia/Colombo", "base_currency": "LKR"});
@@ -351,7 +377,7 @@ async fn another_tenants_guests_and_reservations_cannot_be_changed(_: PgPoolOpti
     .fetch_one(&hotel.superuser)
     .await
     .unwrap();
-    assert_eq!(untouched, (2, 1, 1, 1, 1, "confirmed".to_owned(), true, 2), "nothing of the other tenant changed");
+    assert_eq!(untouched, (2, 1, 1, 2, 2, "confirmed".to_owned(), true, 2), "nothing of the other tenant changed");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

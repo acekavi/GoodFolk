@@ -145,6 +145,19 @@ impl Hotel {
         post(app, &self.owner, &self.reservations(), self.booking(guest, from, to)).await.body
     }
 
+    /// `book`, then takes the booked room out of the room booking auto-assigned it, for tests that start from
+    /// an unassigned stay. The result shows no room and the room's version after the unassign.
+    async fn book_unassigned(&self, app: &TestApp, guest: &Value, from: i64, to: i64) -> Value {
+        let mut created = self.book(app, guest, from, to).await;
+        let version = created["rooms"][0]["version"].as_i64().unwrap();
+        let freed = command(app, &self.owner, &format!("{}/unassign", self.stay(&created)), version, None).await;
+        assert_eq!(freed.status, StatusCode::OK, "{:?}", freed.body);
+        created["rooms"][0]["version"] = json!(version + 1);
+        created["rooms"][0]["room_id"] = Value::Null;
+        created["rooms"][0]["room_number"] = Value::Null;
+        created
+    }
+
     /// The path of a reservation's first room, created over REST.
     fn stay(&self, created: &Value) -> String {
         format!("{}/reservation-rooms/{}", self.path, created["rooms"][0]["id"].as_str().unwrap())
@@ -240,7 +253,7 @@ async fn the_detail_s_occupants_and_check_in_flags_track_a_room_through_a_stay(
     let query = |id: &str| json!({"p": hotel.id, "id": id});
 
     // Booked today, but not yet assigned: none of the three actions are offered.
-    let created = hotel.book(&app, &booker, 0, 2).await;
+    let created = hotel.book_unassigned(&app, &booker, 0, 2).await;
     let stay = hotel.stay(&created);
     let reservation_id = created["id"].as_str().unwrap();
 
@@ -254,12 +267,12 @@ async fn the_detail_s_occupants_and_check_in_flags_track_a_room_through_a_stay(
     assert_eq!(room["occupants"], json!([]));
 
     // A second room, arriving later: assigned but not arriving today, so check-in still isn't offered.
-    let future = hotel.book(&app, &booker, 5, 7).await;
+    let future = hotel.book_unassigned(&app, &booker, 5, 7).await;
     command(
         &app,
         &hotel.owner,
         &format!("{}/assign", hotel.stay(&future)),
-        1,
+        2,
         Some(json!({"room_id": hotel.rooms[1]["id"]})),
     )
     .await;
@@ -268,10 +281,10 @@ async fn the_detail_s_occupants_and_check_in_flags_track_a_room_through_a_stay(
 
     // Assigned and an occupant added: check-in becomes possible; the occupant shows up masked.
     let assigned =
-        command(&app, &hotel.owner, &format!("{stay}/assign"), 1, Some(json!({"room_id": hotel.rooms[0]["id"]}))).await;
+        command(&app, &hotel.owner, &format!("{stay}/assign"), 2, Some(json!({"room_id": hotel.rooms[0]["id"]}))).await;
     assert_eq!(assigned.status, StatusCode::OK, "{:?}", assigned.body);
     let added =
-        command(&app, &hotel.owner, &format!("{stay}/guests"), 2, Some(json!({"guest_id": occupant["id"]}))).await;
+        command(&app, &hotel.owner, &format!("{stay}/guests"), 3, Some(json!({"guest_id": occupant["id"]}))).await;
     assert_eq!(added.status, StatusCode::OK, "{:?}", added.body);
 
     let ready = graphql(&app, &hotel.owner, DETAIL, query(reservation_id)).await;
@@ -293,7 +306,7 @@ async fn the_detail_s_occupants_and_check_in_flags_track_a_room_through_a_stay(
     );
 
     // Checked in today: undo is offered, and so is check-out (always true once checked in).
-    let checked_in = command(&app, &hotel.owner, &format!("{stay}/check-in"), 3, None).await;
+    let checked_in = command(&app, &hotel.owner, &format!("{stay}/check-in"), 4, None).await;
     assert_eq!(checked_in.status, StatusCode::OK, "{:?}", checked_in.body);
     let in_house = graphql(&app, &hotel.owner, DETAIL, query(reservation_id)).await;
     let room = &in_house["data"]["reservation"]["rooms"][0];
@@ -318,7 +331,7 @@ async fn the_detail_s_occupants_and_check_in_flags_track_a_room_through_a_stay(
     );
 
     // Checked out (early, since the business date is still before the booked departure): nothing more to do.
-    let checked_out = command(&app, &hotel.owner, &format!("{stay}/check-out"), 4, None).await;
+    let checked_out = command(&app, &hotel.owner, &format!("{stay}/check-out"), 5, None).await;
     assert_eq!(checked_out.status, StatusCode::OK, "{:?}", checked_out.body);
     let departed = graphql(&app, &hotel.owner, DETAIL, query(reservation_id)).await;
     let room = &departed["data"]["reservation"]["rooms"][0];

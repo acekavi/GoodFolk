@@ -175,12 +175,34 @@ impl Hotel {
         post(app, &self.owner, &format!("{}/reservations", self.path), booking).await.body
     }
 
+    /// `book`, then takes every booked room out of the room booking auto-assigned it, for tests whose point is an
+    /// unassigned stay or a hand assignment. The result shows no room and each room's version after the unassign.
+    async fn book_unassigned(
+        &self,
+        app: &TestApp,
+        guest: &Value,
+        from: i64,
+        to: i64,
+        rooms: usize,
+        source: &str,
+    ) -> Value {
+        let mut created = self.book(app, guest, from, to, rooms, source).await;
+        for index in 0..rooms {
+            let version = created["rooms"][index]["version"].as_i64().unwrap();
+            command(app, &self.owner, &format!("{}/unassign", self.stay(&created, index)), version, None).await;
+            created["rooms"][index]["version"] = json!(version + 1);
+            created["rooms"][index]["room_id"] = Value::Null;
+            created["rooms"][index]["room_number"] = Value::Null;
+        }
+        created
+    }
+
     fn stay(&self, created: &Value, index: usize) -> String {
         format!("{}/reservation-rooms/{}", self.path, created["rooms"][index]["id"].as_str().unwrap())
     }
 
     /// Seven bookings of ten deluxe rooms in all, arriving on different days, from five guests, two of them
-    /// by phone; `GAL-000003` is cancelled.
+    /// by phone; `GAL-000003` is cancelled. No room is assigned (each starts unassigned, at version 2).
     async fn bookings(&self, app: &TestApp) -> Vec<Value> {
         let guests = [
             self.guest(app, "Ada", "Silva").await,
@@ -200,9 +222,9 @@ impl Hotel {
         ];
         let mut created = Vec::new();
         for (guest, from, to, rooms, source) in plan {
-            created.push(self.book(app, &guests[guest], from, to, rooms, source).await);
+            created.push(self.book_unassigned(app, &guests[guest], from, to, rooms, source).await);
         }
-        command(app, &self.owner, &format!("{}/cancel", self.stay(&created[2], 0)), 1, None).await;
+        command(app, &self.owner, &format!("{}/cancel", self.stay(&created[2], 0)), 2, None).await;
         created
     }
 }
@@ -233,12 +255,12 @@ async fn availability_offers_and_free_rooms_are_read_over_graphql(_: PgPoolOptio
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts).await;
     let guest = hotel.guest(&app, "Ada", "Silva").await;
-    let booked = hotel.book(&app, &guest, 1, 3, 1, "front_desk").await;
+    let booked = hotel.book_unassigned(&app, &guest, 1, 3, 1, "front_desk").await;
     command(
         &app,
         &hotel.owner,
         &format!("{}/assign", hotel.stay(&booked, 0)),
-        1,
+        2,
         Some(json!({"room_id": hotel.room("101")["id"]})),
     )
     .await;
@@ -318,7 +340,7 @@ async fn the_list_pages_through_every_room_once_in_order_under_each_sort(_: PgPo
             first["currency"].clone(),
             first["version"].clone()
         ),
-        (Value::Null, json!("CONFIRMED"), json!("FRONT_DESK"), json!(10_000), json!("USD"), json!(1))
+        (Value::Null, json!("CONFIRMED"), json!("FRONT_DESK"), json!(10_000), json!("USD"), json!(2))
     );
 
     let mut expected = all.clone();
@@ -430,10 +452,10 @@ async fn the_detail_shows_rooms_nights_terms_penalties_masked_ids_and_history(
     let guest = json!({"first_name": "Ada", "last_name": "Silva", "residency": "non_resident",
                        "id_doc": {"type": "passport", "number": "N7654321"}});
     let guest = post(&app, &hotel.owner, &format!("{}/guests", hotel.path), guest).await.body;
-    let booked = hotel.book(&app, &guest, 2, 4, 2, "phone").await;
+    let booked = hotel.book_unassigned(&app, &guest, 2, 4, 2, "phone").await;
     let assign_101 = Some(json!({"room_id": hotel.room("101")["id"]}));
-    command(&app, &hotel.owner, &format!("{}/assign", hotel.stay(&booked, 0)), 1, assign_101).await;
-    command(&app, &hotel.owner, &format!("{}/cancel", hotel.stay(&booked, 1)), 1, None).await;
+    command(&app, &hotel.owner, &format!("{}/assign", hotel.stay(&booked, 0)), 2, assign_101).await;
+    command(&app, &hotel.owner, &format!("{}/cancel", hotel.stay(&booked, 1)), 2, None).await;
 
     let response = app
         .send(Method::POST, "/graphql", Some(&hotel.owner), Some(json!({"query": DETAIL,
@@ -450,7 +472,9 @@ async fn the_detail_shows_rooms_nights_terms_penalties_masked_ids_and_history(
         (booked["id"].clone(), json!("GAL-000001"), json!("CONFIRMED"), json!("PHONE")),
         "{detail:?}"
     );
-    assert_eq!(detail["version"], 3, "the assignment and the cancellation each moved it");
+    // Created at 1; the two unassigns (booking auto-assigned both rooms), the assignment and the cancellation each
+    // moved it.
+    assert_eq!(detail["version"], 5);
     assert!(detail["createdAt"].is_string());
     assert_eq!(detail["booker"]["idDocMasked"], "•••• 4321");
     assert_eq!(detail["booker"]["idDocType"], "PASSPORT");
@@ -459,7 +483,7 @@ async fn the_detail_shows_rooms_nights_terms_penalties_masked_ids_and_history(
     let (kept, cancelled) = (&detail["rooms"][0], &detail["rooms"][1]);
     assert_eq!(
         (kept["status"].clone(), kept["version"].clone(), kept["checkIn"].clone(), kept["checkOut"].clone()),
-        (json!("CONFIRMED"), json!(2), json!(hotel.day(2)), json!(hotel.day(4)))
+        (json!("CONFIRMED"), json!(3), json!(hotel.day(2)), json!(hotel.day(4)))
     );
     assert_eq!(kept["roomType"], json!({"id": hotel.deluxe, "code": "DLX", "name": "Deluxe"}));
     assert_eq!(kept["room"], json!({"id": hotel.room("101")["id"], "number": "101"}));
@@ -498,6 +522,8 @@ async fn the_detail_shows_rooms_nights_terms_penalties_masked_ids_and_history(
         [
             ("reservation_room.cancelled", "Owner"),
             ("reservation_room.assigned", "Owner"),
+            ("reservation_room.unassigned", "Owner"),
+            ("reservation_room.unassigned", "Owner"),
             ("reservation.created", "Owner")
         ],
         "newest first"
