@@ -541,6 +541,7 @@ dependencies = [
  "flate2",
  "futures",
  "garde",
+ "housekeeping",
  "http-body-util",
  "identity",
  "mimalloc",

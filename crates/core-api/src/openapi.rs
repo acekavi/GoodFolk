@@ -1,13 +1,14 @@
 use crate::routes::{
-    AddOccupantRequest, AssignRoomRequest, BedRequest, BulkChangeRequest, BulkChangeResponse, CheckInRequest,
-    CreateAccountRequest, CreateBlockReasonRequest, CreateBlockRequest, CreateCancellationPolicyRequest,
-    CreateGuestRequest, CreateMealSupplementRequest, CreatePropertyRequest, CreateRatePlanRequest,
-    CreateReservationRequest, CreateRoomRangeRequest, CreateRoomRequest, CreateRoomTypeRequest, IdDocRequest,
-    LoginRequest, ModifyRoomRequest, PriceChangeRequest, PriceRequest, ReorderRequest, ReservationRoomRequest,
-    RestrictionsRequest, SectionRequest, SetPricesRequest, ShortenBlockRequest, SignupRequest, SwitchTenantRequest,
-    UpdateAccountRequest, UpdateBlockReasonRequest, UpdateCancellationPolicyRequest, UpdateGuestRequest,
-    UpdateMealSupplementRequest, UpdatePropertyRequest, UpdateRatePlanRequest, UpdateReservationRequest,
-    UpdateRoomRequest, UpdateRoomTypeRequest,
+    AddOccupantRequest, AssignRoomRequest, AssignmentRequest, BedRequest, BulkChangeRequest, BulkChangeResponse,
+    CheckInRequest, CopiedAssignments, CreateAccountRequest, CreateBlockReasonRequest, CreateBlockRequest,
+    CreateCancellationPolicyRequest, CreateGuestRequest, CreateMealSupplementRequest, CreatePropertyRequest,
+    CreateRatePlanRequest, CreateReservationRequest, CreateRoomRangeRequest, CreateRoomRequest, CreateRoomTypeRequest,
+    IdDocRequest, LoginRequest, ModifyRoomRequest, PriceChangeRequest, PriceRequest, ReorderRequest,
+    ReportIssueRequest, ReservationRoomRequest, RestrictionsRequest, SectionRequest, SetAssignmentsRequest,
+    SetConditionRequest, SetConditionsRequest, SetPricesRequest, ShortenBlockRequest, SignupRequest,
+    SwitchTenantRequest, UpdateAccountRequest, UpdateBlockReasonRequest, UpdateCancellationPolicyRequest,
+    UpdateGuestRequest, UpdateIssueRequest, UpdateMealSupplementRequest, UpdatePropertyRequest, UpdateRatePlanRequest,
+    UpdateReservationRequest, UpdateRoomRequest, UpdateRoomTypeRequest,
 };
 use utoipa::OpenApi;
 
@@ -59,6 +60,12 @@ use utoipa::OpenApi;
         crate::routes::reservations::check_out,
         crate::routes::reservations::add_occupant,
         crate::routes::reservations::remove_occupant,
+        crate::routes::housekeeping::set_condition,
+        crate::routes::housekeeping::set_conditions,
+        crate::routes::housekeeping::set_assignments,
+        crate::routes::housekeeping::copy_yesterday,
+        crate::routes::housekeeping::report_issue,
+        crate::routes::housekeeping::update_issue,
     ),
     components(schemas(
         SignupRequest,
@@ -102,6 +109,13 @@ use utoipa::OpenApi;
         AddOccupantRequest,
         CreateAccountRequest,
         UpdateAccountRequest,
+        SetConditionRequest,
+        SetConditionsRequest,
+        AssignmentRequest,
+        SetAssignmentsRequest,
+        CopiedAssignments,
+        ReportIssueRequest,
+        UpdateIssueRequest,
         identity::Profile,
         identity::TenantSummary,
         identity::Grant,
@@ -145,6 +159,11 @@ use utoipa::OpenApi;
         reservations::AccountKind,
         reservations::AccountContact,
         reservations::Account,
+        housekeeping::Condition,
+        housekeeping::RoomConditionRow,
+        housekeeping::Severity,
+        housekeeping::IssueStatus,
+        housekeeping::Issue,
     ))
 )]
 pub struct ApiDoc;

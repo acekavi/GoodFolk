@@ -17,6 +17,7 @@ db.workspace = true
 domain.workspace = true
 futures.workspace = true
 garde.workspace = true
+housekeeping.workspace = true
 identity.workspace = true
 mimalloc.workspace = true
 property.workspace = true

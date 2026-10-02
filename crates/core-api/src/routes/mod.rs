@@ -2,6 +2,7 @@ pub(crate) mod accounts;
 pub(crate) mod auth;
 pub(crate) mod blocks;
 mod health;
+pub(crate) mod housekeeping;
 pub(crate) mod properties;
 pub(crate) mod rates;
 pub(crate) mod reservations;
@@ -24,6 +25,10 @@ use tower_http::trace::TraceLayer;
 pub use accounts::{CreateAccountRequest, UpdateAccountRequest};
 pub use auth::{LoginRequest, SignupRequest, SwitchTenantRequest};
 pub use blocks::{CreateBlockReasonRequest, CreateBlockRequest, ShortenBlockRequest, UpdateBlockReasonRequest};
+pub use housekeeping::{
+    AssignmentRequest, CopiedAssignments, ReportIssueRequest, SetAssignmentsRequest, SetConditionRequest,
+    SetConditionsRequest, UpdateIssueRequest,
+};
 pub use properties::{CreatePropertyRequest, UpdatePropertyRequest};
 pub use rates::{
     BulkChangeRequest, BulkChangeResponse, CreateCancellationPolicyRequest, CreateMealSupplementRequest,
@@ -60,6 +65,9 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/guests"), post(reservations::create_guest))
         .route(&format!("{PROPERTY}/reservations"), post(reservations::create_reservation))
         .route(&format!("{PROPERTY}/accounts"), post(accounts::create))
+        .route(&format!("{PROPERTY}/rooms/conditions"), post(housekeeping::set_conditions))
+        .route(&format!("{PROPERTY}/hk-assignments/copy-yesterday"), post(housekeeping::copy_yesterday))
+        .route(&format!("{PROPERTY}/room-issues"), post(housekeeping::report_issue))
         .route_layer(from_fn_with_state(state.clone(), idempotency::idempotent));
 
     let requests = Router::new()
@@ -73,6 +81,9 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/room-types/{{room_type}}"), patch(room_types::update))
         .route(&format!("{PROPERTY}/rooms/order"), put(rooms::reorder))
         .route(&format!("{PROPERTY}/rooms/{{room}}"), patch(rooms::update))
+        .route(&format!("{PROPERTY}/rooms/{{room}}/condition"), put(housekeeping::set_condition))
+        .route(&format!("{PROPERTY}/hk-assignments"), put(housekeeping::set_assignments))
+        .route(&format!("{PROPERTY}/room-issues/{{issue}}"), patch(housekeeping::update_issue))
         .route(&format!("{PROPERTY}/sections/{{section}}"), patch(rooms::rename_section))
         .route(&format!("{PROPERTY}/block-reasons/{{reason}}"), patch(blocks::update_reason))
         .route(&format!("{PROPERTY}/blocks/{{block}}"), patch(blocks::shorten))

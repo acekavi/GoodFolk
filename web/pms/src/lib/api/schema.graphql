@@ -78,6 +78,32 @@ type BlockReasonNode {
 	version: Int!
 }
 
+"""
+A room on the housekeeping board, with its state for the business date.
+"""
+type BoardRoomNode {
+	roomId: UUID!
+	number: String!
+	floor: String
+	sectionId: UUID
+	roomTypeId: UUID!
+	condition: RoomCondition!
+	"""
+	Send as `If-Match: "<version>"` with a condition change; 0 for a room with no condition row.
+	"""
+	conditionVersion: Int!
+	occupancy: Occupancy!
+	"""
+	Who cleans the room on the business date.
+	"""
+	assignee: HousekeeperNode
+	openIssues: Int!
+	"""
+	The kind of the block covering the business date, if any.
+	"""
+	blockKind: BlockKind
+}
+
 type BulkPreviewNode {
 	"""
 	How many of the plan's prices would change.
@@ -184,6 +210,14 @@ type HistoryEntryNode {
 	data: JSON!
 }
 
+"""
+A user who can be assigned rooms.
+"""
+type HousekeeperNode {
+	userId: UUID!
+	displayName: String!
+}
+
 enum IdDocType {
 	PASSPORT
 	NIC
@@ -203,6 +237,23 @@ type InventoryDayNode {
 	outOfOrder: Int!
 	available: Int!
 	sellable: Int!
+}
+
+"""
+How urgent a room issue is.
+"""
+enum IssueSeverity {
+	LOW
+	MEDIUM
+	HIGH
+}
+
+"""
+Whether a room issue still needs work.
+"""
+enum IssueStatus {
+	OPEN
+	RESOLVED
 }
 
 """
@@ -237,6 +288,20 @@ Why a stay has no room.
 enum NeedsRoomReason {
 	OVERBOOKED
 	NO_SINGLE_ROOM
+}
+
+"""
+What a room's stays make of it on the business date.
+"""
+enum Occupancy {
+	VACANT
+	STAY_OVER
+	DUE_OUT
+	DUE_IN
+	"""
+	A guest leaves and another arrives the same day.
+	"""
+	TURNOVER
 }
 
 """
@@ -428,6 +493,24 @@ type Query {
 	has none.
 	"""
 	unassignedStays(propertyId: UUID!, from: Date!, to: Date!): [UnassignedStayNode!]!
+	"""
+	Every active room of the property with its condition, occupancy, assignee, open issues and block for the
+	business date, in rail order.
+	"""
+	housekeepingBoard(propertyId: UUID!): [BoardRoomNode!]!
+	"""
+	The signed-in user's rooms for the business date: turnovers, departures, stay-overs, arrivals, then
+	empty rooms, each group in room order.
+	"""
+	myRooms(propertyId: UUID!): [BoardRoomNode!]!
+	"""
+	The property's room issues, newest first, at most 500; only those with `status` if given.
+	"""
+	roomIssues(propertyId: UUID!, status: IssueStatus): [RoomIssueNode!]!
+	"""
+	Users who hold a housekeeping role at the property and can be assigned rooms, by name.
+	"""
+	housekeepers(propertyId: UUID!): [HousekeeperNode!]!
 }
 
 type QuoteNightNode {
@@ -680,6 +763,35 @@ type RestrictionNode {
 	maxStay: Int
 	closedToArrival: Boolean!
 	closedToDeparture: Boolean!
+}
+
+"""
+How ready a room is for a guest.
+"""
+enum RoomCondition {
+	DIRTY
+	CLEANING
+	CLEAN
+	INSPECTED
+}
+
+"""
+A problem found in a room.
+"""
+type RoomIssueNode {
+	id: UUID!
+	roomId: UUID!
+	severity: IssueSeverity!
+	description: String!
+	status: IssueStatus!
+	reportedBy: UUID!
+	reportedAt: DateTime!
+	resolvedBy: UUID
+	resolvedAt: DateTime
+	"""
+	Send as `If-Match: "<version>"` when resolving.
+	"""
+	version: Int!
 }
 
 type RoomNode {

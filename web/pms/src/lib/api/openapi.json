@@ -807,6 +807,83 @@
         }
       }
     },
+    "/api/v1/properties/{property}/hk-assignments": {
+      "put": {
+        "tags": [
+          "crate::routes::housekeeping"
+        ],
+        "summary": "Sets, replaces or (with a `null` user) removes the assignment of each room for the business date. Every\nassignee must hold a housekeeping role at the property, else 422 and nothing changes.",
+        "operationId": "set_hk_assignments",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetAssignmentsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/hk-assignments/copy-yesterday": {
+      "post": {
+        "tags": [
+          "crate::routes::housekeeping"
+        ],
+        "summary": "Copies the previous business date's assignments to the business date, skipping rooms already assigned,\ninactive or blocked, and housekeepers who no longer hold the role.",
+        "operationId": "copy_yesterdays_hk_assignments",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CopiedAssignments"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/meal-supplements": {
       "post": {
         "tags": [
@@ -1957,6 +2034,137 @@
         }
       }
     },
+    "/api/v1/properties/{property}/room-issues": {
+      "post": {
+        "tags": [
+          "crate::routes::housekeeping"
+        ],
+        "summary": "Reports a problem with a room, without changing its condition.",
+        "operationId": "report_room_issue",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportIssueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the issue's version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Issue"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/room-issues/{issue}": {
+      "patch": {
+        "tags": [
+          "crate::routes::housekeeping"
+        ],
+        "summary": "Resolves an open issue; resolving a resolved one is 422.",
+        "operationId": "update_room_issue",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "issue",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateIssueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the issue's version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Issue"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/room-types": {
       "post": {
         "tags": [
@@ -2238,6 +2446,61 @@
         }
       }
     },
+    "/api/v1/properties/{property}/rooms/conditions": {
+      "post": {
+        "tags": [
+          "crate::routes::housekeeping"
+        ],
+        "summary": "Sets the condition of up to 500 rooms, whatever their version. A room outside the property is 404 and\nnothing changes. A retried request with the same `Idempotency-Key` is answered without applying it again.",
+        "operationId": "set_room_conditions",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetConditionsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RoomConditionRow"
+                  }
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/rooms/order": {
       "put": {
         "tags": [
@@ -2411,6 +2674,77 @@
           "404": {},
           "409": {},
           "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/rooms/{room}/condition": {
+      "put": {
+        "tags": [
+          "crate::routes::housekeeping"
+        ],
+        "summary": "Changes a room's condition. A caller who can also supervise housekeeping may set any value; a housekeeper\nmoves a room assigned to them today one step forward (`dirty` to `cleaning`, `cleaning` to `clean`), else 403\nfor another housekeeper's room and 422 for any other step.",
+        "operationId": "set_room_condition",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetConditionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the condition's version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoomConditionRow"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "412": {},
+          "422": {},
+          "428": {}
         }
       }
     },
@@ -2720,6 +3054,26 @@
           "version": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "AssignmentRequest": {
+        "type": "object",
+        "required": [
+          "room_id"
+        ],
+        "properties": {
+          "room_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The housekeeper who cleans the room; `null` removes the room's assignment."
           }
         }
       },
@@ -3106,6 +3460,30 @@
           "version": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "Condition": {
+        "type": "string",
+        "description": "How ready a room is for a guest.",
+        "enum": [
+          "dirty",
+          "cleaning",
+          "clean",
+          "inspected"
+        ]
+      },
+      "CopiedAssignments": {
+        "type": "object",
+        "required": [
+          "copied"
+        ],
+        "properties": {
+          "copied": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many of yesterday's assignments were copied.",
+            "minimum": 0
           }
         }
       },
@@ -3831,6 +4209,72 @@
           "other"
         ]
       },
+      "Issue": {
+        "type": "object",
+        "required": [
+          "id",
+          "room_id",
+          "severity",
+          "description",
+          "status",
+          "reported_by",
+          "reported_at",
+          "version"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reported_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reported_by": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "resolved_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "resolved_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "room_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/Severity"
+          },
+          "status": {
+            "$ref": "#/components/schemas/IssueStatus"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "IssueStatus": {
+        "type": "string",
+        "description": "Whether an issue still needs work.",
+        "enum": [
+          "open",
+          "resolved"
+        ]
+      },
       "LoginRequest": {
         "type": "object",
         "required": [
@@ -4384,6 +4828,27 @@
           }
         }
       },
+      "ReportIssueRequest": {
+        "type": "object",
+        "required": [
+          "room_id",
+          "severity",
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "room_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/Severity",
+            "description": "`low`, `medium` or `high`."
+          }
+        }
+      },
       "ReservationRoomRequest": {
         "type": "object",
         "description": "One room of a booking: a room type on a rate plan and meal plan for `[check_in, check_out)`.",
@@ -4572,6 +5037,27 @@
           }
         }
       },
+      "RoomConditionRow": {
+        "type": "object",
+        "required": [
+          "room_id",
+          "condition",
+          "version"
+        ],
+        "properties": {
+          "condition": {
+            "$ref": "#/components/schemas/Condition"
+          },
+          "room_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
       "RoomOccupant": {
         "type": "object",
         "description": "A room after [`add_occupant`].",
@@ -4740,6 +5226,53 @@
           "IBE"
         ]
       },
+      "SetAssignmentsRequest": {
+        "type": "object",
+        "description": "Replaces the business date's assignment of each room named, each once.",
+        "required": [
+          "assignments"
+        ],
+        "properties": {
+          "assignments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssignmentRequest"
+            }
+          }
+        }
+      },
+      "SetConditionRequest": {
+        "type": "object",
+        "required": [
+          "condition"
+        ],
+        "properties": {
+          "condition": {
+            "$ref": "#/components/schemas/Condition",
+            "description": "`dirty`, `cleaning`, `clean` or `inspected`."
+          }
+        }
+      },
+      "SetConditionsRequest": {
+        "type": "object",
+        "required": [
+          "room_ids",
+          "condition"
+        ],
+        "properties": {
+          "condition": {
+            "$ref": "#/components/schemas/Condition"
+          },
+          "room_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "1 to 500 rooms of the property."
+          }
+        }
+      },
       "SetPricesRequest": {
         "type": "object",
         "description": "Prices for a standard or custom plan; derived plans are repriced from them in the same transaction.",
@@ -4754,6 +5287,15 @@
             }
           }
         }
+      },
+      "Severity": {
+        "type": "string",
+        "description": "How urgent an issue is; a `High` one offers to block the room.",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ]
       },
       "ShortenBlockRequest": {
         "type": "object",
@@ -5060,6 +5602,18 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "UpdateIssueRequest": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/IssueStatus",
+            "description": "Only `resolved` is accepted."
           }
         }
       },
