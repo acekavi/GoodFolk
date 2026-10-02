@@ -138,11 +138,13 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
   | `tapeWindow`, 10 rooms × 42 days (the spec's window), same fixture | p95 < 5 ms | p95 4.48 ms and 4.12 ms on two runs, `powersave`, nothing else running |
   | `unassignedStays`, 42 days | p95 < 5 ms | p95 2.8–3.4 ms |
   | `tapeWindow` payload, the busiest 14-day tile of the first page, gzipped | < 8 KB | 1.7 KB |
-  | Page change, tiles prefetched (browser, p90 of ten) | < 50 ms | p90 43.9, 37.0 and 38.9 ms on three runs; a picker change about 22 ms (measured in the first round, not re-measured after the profiling pass) |
-  | First open to usable (browser, p90 of ten cold loads) | < 400 ms | p90 239 ms (median 235, max 259) on one run; before the p90 rule, medians of five were 309, 242 and 272 ms |
-  | Horizontal scroll across six months in three seconds | ≥ 58 fps, no long task over 50 ms | 59.9 fps, no long task |
-  | DOM nodes after scrolling twelve months | < 3,000 | under 850 |
-  | Drag ghost, `pointermove` handler | within one frame (16 ms) | at most 0.7 ms |
+  | Page change, tiles prefetched (browser, p90 of ten) | < 50 ms | p90 43.9, 37.0 and 38.9 ms on three runs, 29.1, 32.8 and 32.1 ms on the latest three; a picker change about 22 ms (measured in the first round, not re-measured after the profiling pass) |
+  | First open to usable (browser, p90 of ten cold loads) | < 400 ms | p90 239, 254 and 268 ms on three runs (medians 235, 235, 251; the first load of two runs took 510-549 ms, the rest at most 268); before the p90 rule, medians of five were 309, 242 and 272 ms |
+  | Horizontal scroll across six months in three seconds | ≥ 58 fps, no long task over 50 ms | 59.9 fps, no long task (twice) |
+  | DOM nodes after scrolling twelve months | < 3,000 | 1,306 nodes after the scroll, peak 1,391 (twice) |
+  | Drag ghost, `pointermove` handler | within one frame (16 ms) | handler at most 0.5 ms; every frame's ghost within 1.5 px of the pointer-implied position (twice) |
+
+  The browser gates run on a seed that checks itself: stays are created one at a time (so auto-assignment is the same every run) and the seed fails unless the measured rooms are at least 70% booked (80.6% measured), and the scroll and DOM gates fail unless bars are drawn in the revealed tiles.
 
   The first-open, page and picker gates use the p90 of ten (cold loads, for first open), not the median (half the turns could fail) and not the maximum (one slow `powersave` sample flakes it); the spec gave no percentile. The page-change margin is thin on this laptop (p90 49.4 ms in an earlier run before the profiling pass), so re-measure with the `performance` governor before relying on it.
 - Carried over from the Phase 4 reviews:

@@ -19,6 +19,10 @@ const NIGHTS = Math.round(MONTHS * 30.4);
 /** Rooms 101 to 130, the first three pages, are the ones measured; about 80% of them are booked each night. */
 const MEASURED_ROOMS = 30;
 const OCCUPANCY = 0.8;
+/** The seed must really fill the measured rooms to at least this, or the gates measure an empty chart. */
+const MIN_OCCUPANCY = 0.7;
+/** Ten rooms at 70% over a 14-day view hold far more bars than this; fewer means the tiles did not draw. */
+const MIN_VISIBLE_BARS = 10;
 
 /** Repeatable pseudo-random numbers in [0, 1), so every run seeds the same hotel. */
 function random(seed: number) {
@@ -61,30 +65,29 @@ test.beforeAll(async ({ browser }) => {
 	await signUp(page);
 	await createProperty(page, 'TAP');
 	hotel = await bookableHotel(page, ROOMS, NIGHTS);
-	// A reservation holds at most ten rooms, each with its own dates.
+	// A reservation holds at most ten rooms, each with its own dates. One at a time, in check-in order, so
+	// auto-assignment gives every stay the same room on every run.
 	const stays = seedStays();
-	for (let start = 0; start < stays.length; start += 80) {
-		await Promise.all(
-			Array.from({ length: 8 }, (_, group) =>
-				stays.slice(start + group * 10, start + group * 10 + 10)
-			)
-				.filter((rooms) => rooms.length > 0)
-				.map((rooms) =>
-					post(page.request, `${hotel.path}/reservations`, {
-						booker_guest_id: hotel.guestId,
-						source: 'front_desk',
-						rooms: rooms.map(({ night, nights }) => ({
-							room_type_id: hotel.roomTypeId,
-							rate_plan_id: hotel.ratePlanId,
-							meal_plan: 'RO',
-							check_in: addDays(hotel.businessDate, night),
-							check_out: addDays(hotel.businessDate, night + nights),
-							adults: 2
-						}))
-					})
-				)
-		);
+	for (let start = 0; start < stays.length; start += 10) {
+		await post(page.request, `${hotel.path}/reservations`, {
+			booker_guest_id: hotel.guestId,
+			source: 'front_desk',
+			rooms: stays.slice(start, start + 10).map(({ night, nights }) => ({
+				room_type_id: hotel.roomTypeId,
+				rate_plan_id: hotel.ratePlanId,
+				meal_plan: 'RO',
+				check_in: addDays(hotel.businessDate, night),
+				check_out: addDays(hotel.businessDate, night + nights),
+				adults: 2
+			}))
+		});
 	}
+	// What the server did, not what was asked: the measured rooms really are about as full as intended.
+	const occupancy = await measuredOccupancy();
+	console.log(
+		`tape seed: ${stays.length} stays, measured rooms ${(occupancy * 100).toFixed(1)}% booked`
+	);
+	expect(occupancy).toBeGreaterThanOrEqual(MIN_OCCUPANCY);
 });
 
 test.afterAll(async () => {
@@ -99,6 +102,59 @@ const daysBetween = (from: string, to: string) =>
 	Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 const median = (values: number[]) =>
 	[...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+
+/**
+ * The share of room-nights booked in the measured rooms over the seeded span, read back through `tapeWindow`
+ * (at most ten rooms and 42 days a request) so it reflects what auto-assignment actually did.
+ */
+async function measuredOccupancy(): Promise<number> {
+	const propertyId = hotel.path.split('/').pop();
+	const rooms = await page.request.post('/graphql', {
+		headers: { 'x-goodfolk-csrf': '1' },
+		data: { query: `{ rooms(propertyId: "${propertyId}") { id number } }` }
+	});
+	const ids: string[] = (await rooms.json()).data.rooms
+		.filter((room: { number: string }) => Number(room.number) < 101 + MEASURED_ROOMS)
+		.map((room: { id: string }) => room.id);
+	expect(ids).toHaveLength(MEASURED_ROOMS);
+	let booked = 0;
+	for (let first = 0; first < MEASURED_ROOMS; first += 10) {
+		for (let night = 0; night < NIGHTS; night += 42) {
+			const from = addDays(hotel.businessDate, night);
+			const to = addDays(hotel.businessDate, Math.min(night + 42, NIGHTS));
+			const response = await page.request.post('/graphql', {
+				headers: { 'x-goodfolk-csrf': '1' },
+				data: {
+					query: `{ tapeWindow(propertyId: "${propertyId}", roomIds: ${JSON.stringify(ids.slice(first, first + 10))}, from: "${from}", to: "${to}") { stays { start end } } }`
+				}
+			});
+			const { data, errors } = await response.json();
+			expect(errors).toBeUndefined();
+			for (const stay of data.tapeWindow.stays as { start: string; end: string }[]) {
+				const start = stay.start > from ? stay.start : from;
+				const end = stay.end < to ? stay.end : to;
+				booked += Math.max(daysBetween(start, end), 0);
+			}
+		}
+	}
+	return booked / (MEASURED_ROOMS * NIGHTS);
+}
+
+/** The bars drawn inside the chart's visible area: a scroll that loaded nothing shows none. */
+function visibleBars() {
+	return page.evaluate(() => {
+		const view = document.querySelector('[aria-label="Tape chart"]')!.getBoundingClientRect();
+		return [...document.querySelectorAll('.bar[data-room]')].filter((bar) => {
+			const box = bar.getBoundingClientRect();
+			return (
+				box.right > view.left &&
+				box.left < view.right &&
+				box.bottom > view.top &&
+				box.top < view.bottom
+			);
+		}).length;
+	});
+}
 
 /**
  * The page's own clock for one interaction: from the click (or the Enter key) that starts it to the frame
@@ -292,6 +348,8 @@ test('scrolling six months in three seconds holds 58 fps with no long task @perf
 	);
 	// The scroll happened: the first day in view moved by the six months asked for, give or take snapping.
 	expect(Math.abs(daysBetween(before!, after!) - 182)).toBeLessThanOrEqual(7);
+	// And the tiles it revealed have bars: a blank chart would also scroll smoothly.
+	await expect.poll(visibleBars).toBeGreaterThanOrEqual(MIN_VISIBLE_BARS);
 	expect(fps).toBeGreaterThanOrEqual(58);
 	expect(result.longTasks.filter((ms) => ms > 50)).toEqual([]);
 });
@@ -304,7 +362,9 @@ test('the DOM stays under 3,000 nodes after scrolling twelve months @perf', asyn
 		.getByRole('group', { name: 'Tape chart' })
 		.getAttribute('data-start'))!;
 	const first = await scrollDays(182, 3000);
+	await expect.poll(visibleBars).toBeGreaterThanOrEqual(MIN_VISIBLE_BARS);
 	const second = await scrollDays(183, 3000);
+	await expect.poll(visibleBars).toBeGreaterThanOrEqual(MIN_VISIBLE_BARS);
 	await page.waitForTimeout(500);
 	const nodes = await page.evaluate(() => document.querySelectorAll('*').length);
 	console.log(
@@ -337,27 +397,48 @@ test('the drag ghost follows the pointer within one frame @perf', async () => {
 	// Each move is recorded at the window (before the bar's own handler) and at the document (after it): the
 	// handler's own time, and the ghost's transform once the handler ran. At the next frame the ghost must still
 	// hold the transform the latest move left it with: a ghost moved in a later frame (or by a deferred write)
-	// shows there as a different transform.
+	// shows there as a different transform. Independently of what the handler wrote, each frame also records
+	// where the pointer last was and where the ghost really is on screen, to compare with the position the
+	// pointer implies.
 	await page.evaluate(() => {
 		const ghost = document.querySelector<HTMLElement>('.ghost')!;
-		const moves: { handler: number; lag: number; set: string; framed: string; latest: string }[] =
-			[];
+		const moves: {
+			handler: number;
+			lag: number;
+			set: string;
+			framed: string;
+			latest: string;
+			pointer: { x: number; y: number };
+			shown: { left: number; top: number; height: number };
+		}[] = [];
 		(window as never as { moves: typeof moves }).moves = moves;
 		let t0 = 0;
 		let latest = '';
-		window.addEventListener('pointermove', () => (t0 = performance.now()), { capture: true });
+		const pointer = { x: 0, y: 0 };
+		window.addEventListener(
+			'pointermove',
+			(event) => {
+				t0 = performance.now();
+				pointer.x = event.clientX;
+				pointer.y = event.clientY;
+			},
+			{ capture: true }
+		);
 		document.addEventListener('pointermove', (event) => {
 			const handler = performance.now() - t0;
 			const set = ghost.style.transform;
 			latest = set;
 			const stamp = event.timeStamp;
 			requestAnimationFrame(() => {
+				const rect = ghost.getBoundingClientRect();
 				moves.push({
 					handler,
 					lag: performance.now() - stamp,
 					set,
 					framed: ghost.style.transform,
-					latest
+					latest,
+					pointer: { ...pointer },
+					shown: { left: rect.left, top: rect.top, height: rect.height }
 				});
 			});
 		});
@@ -366,8 +447,9 @@ test('the drag ghost follows the pointer within one frame @perf', async () => {
 	await page.mouse.down();
 	const steps = 60;
 	for (let step = 1; step <= steps; step++) {
-		// Sweep across days, with a little vertical wander, 3/8 of a day a move.
-		await page.mouse.move(grabX + step * dayWidth * 0.375, grabY + Math.sin(step / 5) * 20);
+		// Sweep across days, with a little vertical wander, 2/5 of a day a move (never half a day, where a
+		// snap could go either way).
+		await page.mouse.move(grabX + step * dayWidth * 0.4, grabY + Math.sin(step / 5) * 20);
 	}
 	await page.waitForTimeout(100);
 	await page.keyboard.press('Escape');
@@ -376,7 +458,15 @@ test('the drag ghost follows the pointer within one frame @perf', async () => {
 		() =>
 			(
 				window as never as {
-					moves: { handler: number; lag: number; set: string; framed: string; latest: string }[];
+					moves: {
+						handler: number;
+						lag: number;
+						set: string;
+						framed: string;
+						latest: string;
+						pointer: { x: number; y: number };
+						shown: { left: number; top: number; height: number };
+					}[];
 				}
 			).moves
 	);
@@ -385,15 +475,31 @@ test('the drag ghost follows the pointer within one frame @perf', async () => {
 	const lags = dragging.map((move) => move.lag);
 	const stale = dragging.filter((move) => move.latest !== move.framed).length;
 	const moved = new Set(dragging.map((move) => move.set)).size;
+	// Where the pointer says the ghost belongs: the grabbed bar's own place, moved by the whole days the
+	// pointer is from where it grabbed, in the row the pointer is over (the wander stays inside the bar's row).
+	const rowTop = box.y - 4;
+	const off = dragging.filter((move) => {
+		const left = box.x + Math.round((move.pointer.x - grabX) / dayWidth) * dayWidth;
+		const middle = move.shown.top + move.shown.height / 2;
+		return (
+			Math.abs(move.shown.left - left) > 1.5 ||
+			middle < rowTop ||
+			middle > rowTop + 44 ||
+			move.pointer.y < rowTop ||
+			move.pointer.y > rowTop + 44
+		);
+	}).length;
 	console.log(
 		`tape drag: ${dragging.length} moves, handler median ${median(handlers).toFixed(2)} ms, max ${Math.max(...handlers).toFixed(2)} ms; ` +
 			`move to frame median ${median(lags).toFixed(1)} ms, max ${Math.max(...lags).toFixed(1)} ms; ` +
-			`${stale} frames behind, ${moved} distinct transforms`
+			`${stale} frames behind, ${off} off the pointer, ${moved} distinct transforms`
 	);
 	expect(dragging.length).toBeGreaterThan(steps / 2);
 	expect(moved).toBeGreaterThan(5);
 	// No frame shows the ghost anywhere but where the latest move put it.
 	expect(stale).toBe(0);
+	// ... and that place is the one the pointer implies, not merely the one the handler computed.
+	expect(off).toBe(0);
 	expect(Math.max(...handlers)).toBeLessThan(16);
 	expect(median(lags)).toBeLessThan(16);
 });
