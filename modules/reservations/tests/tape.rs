@@ -404,3 +404,34 @@ async fn blocks_that_started_before_the_window_are_found_by_start_and_length(_: 
     assert_eq!(found, expected);
     assert!(!found.contains(&old) && !found.contains(&released));
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_first_long_stay_and_block_are_found_and_a_stay_ending_at_the_window_start_is_not(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let (hotel, plans) = Hotel::for_booking(opts, 3).await;
+    let silva = hotel.guest(new_guest("Anula", "Silva")).await;
+    let rooms = hotel.all_rooms().await;
+    let all: Vec<Uuid> = rooms.iter().map(|room| room.id).collect();
+    // Window [31, 45). The 32-night stay arrives exactly 31 days before it and overlaps its first night (the
+    // first stay long enough for the long branch); the 31-night one arrives at the same day and ends where the
+    // window starts.
+    let first_long = hotel.dlx(&silva, &plans, 0, 32).await;
+    let ends_at_from = hotel.dlx(&silva, &plans, 0, 31).await;
+    let long_block = hotel.block(&rooms[2], 0, 32).await;
+    let released_long = hotel.block(&rooms[3], 0, 40).await;
+    let mut tx = hotel.tx().await;
+    sqlx::query("update room_block set released_at = now() where id = $1")
+        .bind(released_long)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let window = hotel.window(&all, 31, 45).await.unwrap();
+
+    assert_eq!(window.stays.iter().map(|stay| stay.id).collect::<Vec<_>>(), vec![first_long.rooms[0].id]);
+    assert!(window.stays.iter().all(|stay| stay.id != ends_at_from.rooms[0].id));
+    assert_eq!(window.blocks.iter().map(|block| block.id).collect::<Vec<_>>(), vec![long_block]);
+}

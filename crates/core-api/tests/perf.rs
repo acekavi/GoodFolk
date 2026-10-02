@@ -614,6 +614,8 @@ struct TapeFixture {
 /// `unnest` SQL, so the check-in columns are filled to match 0008's CHECK constraints: stays that ended are
 /// checked out, stays spanning the business date are checked in and later ones are confirmed.
 async fn seed_tape_property(opts: PgConnectOptions) -> TapeFixture {
+    // Large enough that the planner probes `guest` by index, as in production; 200 guests is a few pages, which it
+    // scans instead, hiding the cost of the per-stay lookups.
     const GUESTS: usize = 20_000;
     const BATCH: usize = 20_000;
     const BLOCKS_PER_ROOM: [i64; 6] = [3, 3, 3, 3, 3, 1];
@@ -862,7 +864,7 @@ impl TapeFixture {
 // p95 3.9-5.6 ms across eleven runs on a machine with another job on one core, so it passes and fails on noise.
 // Before, p50 was 4.3 ms and p95 6.1 ms (the statement is about 2 ms; the router and transaction setup are the rest).
 #[sqlx::test(migrator = "db::MIGRATOR")]
-#[ignore = "performance gate; run in release mode (see the module docs)"]
+#[ignore = "performance gate; run in release mode (see the module docs); borderline at 5 ms, see the comment above"]
 async fn tape_window_p95_under_5ms(_: PgPoolOptions, opts: PgConnectOptions) {
     let fixture = seed_tape_property(opts).await;
     let mut rng = Rng(0x2545_F491_4F6C_DD1D);

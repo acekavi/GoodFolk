@@ -7,6 +7,7 @@ use domain::RoomStatus;
 use sqlx::Row;
 use sqlx::postgres::PgRow;
 use std::collections::HashSet;
+use std::sync::LazyLock;
 use time::{Date, Duration};
 use uuid::Uuid;
 
@@ -22,19 +23,19 @@ const SHORT_STAY_NIGHTS: i32 = 31;
 
 /// Everything `tape_window` reads, in one statement. Rows are tagged by `kind` and share one column set, with
 /// nulls where a column doesn't apply:
-/// - `check`: one row, with `known` the number of `$1` rooms that belong to property `$6`;
+/// - `check`: one row, with `known` the number of `$1` rooms that belong to property `$5`;
 /// - `stay`: the stays of those rooms overlapping `[$2, $3)` (`reason` null);
 /// - `block`: their unreleased blocks overlapping it, with `reason` the block reason's label.
 ///
 /// `&&` is not leakproof, so under row-level security it can't be an index condition: each stay and block
-/// branch bounds its scan with leakproof comparisons (arrival or start, and length: `$4` is the short limit, `$5`
-/// the earliest arrival or start of a short one that can still overlap) and `&&` only trims the result.
-const TAPE_WINDOW_SQL: &str = "
+/// branch bounds its scan with leakproof comparisons (arrival or start, and length: `$4` is the earliest arrival or
+/// start of a short one that can still overlap) and `&&` only trims the result.
+const TAPE_WINDOW_TEMPLATE: &str = "
     select * from (
       select 'check'::text as kind, null::uuid as id, null::uuid as reservation_id, null::uuid as room_id,
              null::uuid as room_type_id, null::date as start, null::date as \"end\", null::text as status,
              null::text as guest_name, null::text as account_name, null::int as version, null::text as reason,
-             (select count(*) from room where id = any($1) and property_id = $6) as known
+             (select count(*) from room where id = any($1) and property_id = $5) as known
       union all
       select 'stay', a.id, a.reservation_id, a.room_id, a.room_type_id, lower(a.stay), upper(a.stay), a.status,
              (select g.last_name || case when g.first_name = '' then '' else ', ' || left(g.first_name, 1) || '.' end
@@ -43,16 +44,23 @@ const TAPE_WINDOW_SQL: &str = "
              a.version, null, null
       from reservation_room a
       where a.room_id = any($1) and a.status not in ('cancelled', 'no_show') and a.stay && daterange($2, $3)
-        and ((a.nights <= $4 and a.arrival >= $5 and a.arrival < $3) or a.nights > $4)
+        and ((a.nights <= {short} and a.arrival >= $4 and a.arrival < $3) or a.nights > {short})
       union all
       select 'block', b.id, null, b.room_id, null, lower(b.period), upper(b.period), null, null, null, null,
              (select br.label from block_reason br where br.property_id = b.property_id and br.id = b.reason_id),
              null
       from room_block b
       where b.room_id = any($1) and b.released_at is null and b.period && daterange($2, $3)
-        and ((b.days <= $4 and b.starts >= $5 and b.starts < $3) or b.days > $4)
+        and ((b.days <= {short} and b.starts >= $4 and b.starts < $3) or b.days > {short})
     ) rows
     order by room_id, start";
+
+/// [`TAPE_WINDOW_TEMPLATE`] with [`SHORT_STAY_NIGHTS`] written into the text. The length limit must be a literal,
+/// not a bind: a partial index (`where nights > 31`) is only used when the planner can prove the query's condition
+/// implies its predicate, which `nights > $4` doesn't in a generic plan. The number must match the predicates of
+/// `reservation_room_long_stay_idx` (0011) and `room_block_long_idx` (0012).
+static TAPE_WINDOW_SQL: LazyLock<String> =
+    LazyLock::new(|| TAPE_WINDOW_TEMPLATE.replace("{short}", &SHORT_STAY_NIGHTS.to_string()));
 
 /// A stay in one of the window's rooms.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,11 +152,10 @@ pub async fn tape_window(
         return Err(ReservationsError::Invalid(format!("name 1 to {MAX_TAPE_ROOMS} rooms")));
     }
     let distinct = rooms.iter().collect::<HashSet<_>>().len();
-    let rows = sqlx::query(TAPE_WINDOW_SQL)
+    let rows = sqlx::query(sqlx::AssertSqlSafe(TAPE_WINDOW_SQL.as_str()))
         .bind(rooms)
         .bind(from)
         .bind(to)
-        .bind(SHORT_STAY_NIGHTS)
         .bind(from - Duration::days(i64::from(SHORT_STAY_NIGHTS)))
         .bind(property)
         .fetch_all(&mut **tx)
