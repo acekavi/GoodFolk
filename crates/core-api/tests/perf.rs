@@ -10,6 +10,8 @@
 //!   by arrival and status out of 10k reservation rooms, in under 25 ms at p95; availability for 7 nights
 //!   across 12 room types and 5 rate plans (derived plans included, room only and breakfast) in under 40 ms at
 //!   p95.
+//! - Phase 5: `housekeepingBoard` for 500 rooms (stays at about 80%, half of them assigned, 30 open issues and
+//!   active blocks) in under 30 ms at p95.
 //!
 //! Ignored by default because debug builds are several times slower. Run them in release mode, one at a time:
 //!
@@ -964,4 +966,110 @@ async fn tape_window_payload_under_8kb_compressed(_: PgPoolOptions, opts: PgConn
         compressed.len()
     );
     assert!(compressed.len() < 8192, "{} compressed bytes is over the 8 KB gate", compressed.len());
+}
+
+const BOARD_ASSIGNED: usize = TAPE_ROOMS / 2;
+const BOARD_OPEN_ISSUES: usize = 30;
+/// Every this-many rooms has a block covering the business date.
+const BOARD_BLOCK_EVERY: usize = 25;
+
+const HOUSEKEEPING_BOARD: &str = "query ($p: UUID!) {
+    housekeepingBoard(propertyId: $p) {
+        roomId number floor sectionId roomTypeId condition conditionVersion occupancy openIssues blockKind
+        assignee { userId displayName }
+    }
+}";
+
+/// The tape property (500 rooms, stays at about 80%, so rooms arrive, depart and stay over on the business date)
+/// with what the board also reads: a `room_condition` row for every room (raw room inserts get none), the
+/// business date's assignments for half the rooms, 30 open issues and a block covering the business date in
+/// every 25th room.
+async fn seed_board_property(opts: PgConnectOptions) -> TapeFixture {
+    let fixture = seed_tape_property(opts).await;
+    let (tenant, user): (Uuid, Uuid) = sqlx::query_as(
+        "select p.tenant_id, (select id from app_user where tenant_id = p.tenant_id limit 1)
+         from property p where p.id = $1",
+    )
+    .bind(fixture.property)
+    .fetch_one(&fixture.superuser)
+    .await
+    .unwrap();
+    let conditions: Vec<&str> =
+        (0..TAPE_ROOMS).map(|index| ["dirty", "cleaning", "clean", "inspected"][index % 4]).collect();
+    sqlx::query(
+        "insert into room_condition (room_id, tenant_id, property_id, condition)
+         select c.room_id, $1, $2, c.condition from unnest($3::uuid[], $4::text[]) as c (room_id, condition)
+         on conflict (room_id) do update set condition = excluded.condition",
+    )
+    .bind(tenant)
+    .bind(fixture.property)
+    .bind(&fixture.rooms)
+    .bind(&conditions)
+    .execute(&fixture.superuser)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into hk_assignment (tenant_id, property_id, business_date, room_id, user_id)
+         select $1, $2, $3, a.room_id, $4 from unnest($5::uuid[]) as a (room_id)",
+    )
+    .bind(tenant)
+    .bind(fixture.property)
+    .bind(fixture.day0)
+    .bind(user)
+    .bind(&fixture.rooms[..BOARD_ASSIGNED])
+    .execute(&fixture.superuser)
+    .await
+    .unwrap();
+    let issue_rooms: Vec<Uuid> = fixture.rooms.iter().step_by(TAPE_ROOMS / BOARD_OPEN_ISSUES).copied().collect();
+    sqlx::query(
+        "insert into room_issue (id, tenant_id, property_id, room_id, severity, description, reported_by)
+         select gen_random_uuid(), $1, $2, i.room_id, 'medium', 'Leaking tap', $3 from unnest($4::uuid[]) as i (room_id)",
+    )
+    .bind(tenant)
+    .bind(fixture.property)
+    .bind(user)
+    .bind(&issue_rooms)
+    .execute(&fixture.superuser)
+    .await
+    .unwrap();
+    // A block that would overlap one of the tape's own blocks is skipped by the exclusion constraint.
+    let reason: Uuid = sqlx::query_scalar("select id from block_reason where property_id = $1")
+        .bind(fixture.property)
+        .fetch_one(&fixture.superuser)
+        .await
+        .unwrap();
+    let block_rooms: Vec<Uuid> = fixture.rooms.iter().step_by(BOARD_BLOCK_EVERY).copied().collect();
+    sqlx::query(
+        "insert into room_block (id, tenant_id, property_id, room_id, period, kind, reason_id)
+         select gen_random_uuid(), $1, $2, b.room_id, daterange($3, $3 + 3, '[)'), 'out_of_service', $4
+         from unnest($5::uuid[]) as b (room_id)
+         on conflict do nothing",
+    )
+    .bind(tenant)
+    .bind(fixture.property)
+    .bind(fixture.day0)
+    .bind(reason)
+    .bind(&block_rooms)
+    .execute(&fixture.superuser)
+    .await
+    .unwrap();
+    sqlx::query("analyze").execute(&fixture.superuser).await.unwrap();
+    fixture
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn housekeeping_board_p95_under_30ms(_: PgPoolOptions, opts: PgConnectOptions) {
+    let fixture = seed_board_property(opts).await;
+    let (samples, rooms) = fixture
+        .time_requests(
+            || json!({"query": HOUSEKEEPING_BOARD, "variables": {"p": fixture.property}}),
+            |body| body["data"]["housekeepingBoard"].as_array().unwrap().len(),
+        )
+        .await;
+    assert_eq!(rooms, SAMPLES * TAPE_ROOMS, "every request lists all rooms");
+    let p50 = samples[SAMPLES / 2];
+    let p95 = samples[p95_index(SAMPLES)];
+    println!("housekeepingBoard, {TAPE_ROOMS} rooms over {SAMPLES} samples: p50 {p50:?}, p95 {p95:?}");
+    assert!(p95 < Duration::from_millis(30), "p95 {p95:?} is over the 30 ms gate");
 }
