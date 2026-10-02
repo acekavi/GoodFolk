@@ -41,8 +41,8 @@ pub struct Issue {
 const COLUMNS: &str =
     "id, room_id, severity, description, status, reported_by, reported_at, resolved_by, resolved_at, version";
 
-/// Reports an issue in `room`, which must belong to the property (`NotFound`), with a description of 1 to
-/// 2,000 characters (`Invalid`).
+/// Reports an issue in `room`, which must be an active room of the property (`NotFound`), with a description
+/// of 1 to 2,000 characters once trimmed (`Invalid`); the trimmed text is stored.
 pub async fn report_issue(
     tx: &mut Tx,
     tenant: TenantId,
@@ -52,14 +52,16 @@ pub async fn report_issue(
     severity: Severity,
     description: String,
 ) -> Result<Issue, HousekeepingError> {
+    let description = description.trim();
     if !(1..=MAX_DESCRIPTION).contains(&description.chars().count()) {
         return Err(HousekeepingError::Invalid(format!("describe the issue in 1 to {MAX_DESCRIPTION} characters")));
     }
-    let exists: bool = sqlx::query_scalar("select exists (select 1 from room where id = $1 and property_id = $2)")
-        .bind(room)
-        .bind(property)
-        .fetch_one(&mut **tx)
-        .await?;
+    let exists: bool =
+        sqlx::query_scalar("select exists (select 1 from room where id = $1 and property_id = $2 and active)")
+            .bind(room)
+            .bind(property)
+            .fetch_one(&mut **tx)
+            .await?;
     if !exists {
         return Err(HousekeepingError::NotFound("room"));
     }
@@ -72,7 +74,7 @@ pub async fn report_issue(
     .bind(property)
     .bind(room)
     .bind(severity.as_str())
-    .bind(&description)
+    .bind(description)
     .bind(actor.0)
     .fetch_one(&mut **tx)
     .await?;

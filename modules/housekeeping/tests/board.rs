@@ -88,6 +88,36 @@ async fn long_stays_count_too(_: PgPoolOptions, opts: PgConnectOptions) {
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn stays_and_blocks_at_the_short_long_split_are_found(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let rooms = hotel.rooms(&["a31", "a32", "d31", "d32", "block31", "block32"]).await;
+    // In house on the last night of a 31 and a 32 night stay, and due out when they end today.
+    hotel.stay(rooms[0], -30, 1, "checked_in").await;
+    hotel.stay(rooms[1], -31, 1, "checked_in").await;
+    hotel.stay(rooms[2], -31, 0, "checked_in").await;
+    hotel.stay(rooms[3], -32, 0, "checked_in").await;
+    // A block covering today on the first day it exists, either side of the split.
+    hotel.block(rooms[4], -30, 1, "out_of_order").await;
+    hotel.block(rooms[5], -31, 1, "out_of_service").await;
+
+    let board = hotel.board().await;
+    let occupancy: Vec<_> = board.iter().map(|room| room.occupancy).collect();
+    assert_eq!(
+        occupancy,
+        [
+            Occupancy::StayOver,
+            Occupancy::StayOver,
+            Occupancy::DueOut,
+            Occupancy::DueOut,
+            Occupancy::Vacant,
+            Occupancy::Vacant
+        ]
+    );
+    assert_eq!(board[4].block_kind, Some(rooms::BlockKind::OutOfOrder));
+    assert_eq!(board[5].block_kind, Some(rooms::BlockKind::OutOfService));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn the_board_has_each_rooms_condition_assignee_issues_and_block(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;
     let rooms = hotel.rooms(&["101", "102", "103", "104"]).await;

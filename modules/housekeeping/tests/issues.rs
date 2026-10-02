@@ -75,15 +75,32 @@ async fn a_description_has_one_to_two_thousand_characters(_: PgPoolOptions, opts
         let result = hotel.report(room, Severity::Low, &description).await;
         assert!(matches!(result, Err(HousekeepingError::Invalid(_))), "{} characters", description.len());
     }
+    for blank in ["   ", "\n\t "] {
+        let result = hotel.report(room, Severity::Low, blank).await;
+        assert!(matches!(result, Err(HousekeepingError::Invalid(_))), "{blank:?}");
+    }
+    let padded = format!("  {}  ", "x".repeat(2000));
+    assert_eq!(hotel.report(room, Severity::Low, &padded).await.unwrap().description, "x".repeat(2000));
     hotel.report(room, Severity::Low, "x").await.unwrap();
     hotel.report(room, Severity::Low, &"é".repeat(2000)).await.unwrap();
-    assert_eq!(hotel.issues(None).await.len(), 2);
+    assert_eq!(hotel.issues(None).await.len(), 3);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn an_issue_needs_a_room_of_the_property(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;
     let result = hotel.report(Uuid::now_v7(), Severity::Low, "Broken").await;
+    assert!(matches!(result, Err(HousekeepingError::NotFound("room"))));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_inactive_room_takes_no_issue(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let room = hotel.rooms(&["101"]).await[0];
+    let mut tx = hotel.tx().await;
+    sqlx::query("update room set active = false where id = $1").bind(room).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let result = hotel.report(room, Severity::Low, "Broken").await;
     assert!(matches!(result, Err(HousekeepingError::NotFound("room"))));
 }
 

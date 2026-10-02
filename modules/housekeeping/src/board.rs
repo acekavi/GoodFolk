@@ -97,7 +97,7 @@ left join room_condition c on c.room_id = r.id
 left join hk_assignment a on a.property_id = p.id and a.business_date = p.business_date and a.room_id = r.id
 left join app_user u on u.id = a.user_id
 left join lateral (
-  select count(*) as open from room_issue x where x.room_id = r.id and x.status = 'open'
+  select count(*) as open from room_issue x where x.property_id = p.id and x.room_id = r.id and x.status = 'open'
 ) i on true
 left join lateral (
   select k.kind from room_block k
