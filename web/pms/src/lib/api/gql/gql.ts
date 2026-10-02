@@ -30,6 +30,7 @@ type Documents = {
     "\n\tquery RoomTypes($propertyId: UUID!) {\n\t\troomTypes(propertyId: $propertyId) {\n\t\t\tid\n\t\t\tcode\n\t\t\tname\n\t\t\tbaseOccupancy\n\t\t\tmaxAdults\n\t\t\tmaxChildren\n\t\t\tmaxOccupancy\n\t\t\toverbooking\n\t\t\tamenities\n\t\t\tsortOrder\n\t\t\tactive\n\t\t\tversion\n\t\t}\n\t}\n": typeof types.RoomTypesDocument,
     "\n\tquery Rooms($propertyId: UUID!) {\n\t\trooms(propertyId: $propertyId) {\n\t\t\tid\n\t\t\troomTypeId\n\t\t\tnumber\n\t\t\tfloor\n\t\t\tsectionId\n\t\t\tactive\n\t\t\tsortOrder\n\t\t\tversion\n\t\t}\n\t\tsections(propertyId: $propertyId) {\n\t\t\tid\n\t\t\tname\n\t\t\tversion\n\t\t}\n\t\tblockReasons(propertyId: $propertyId) {\n\t\t\tid\n\t\t\tcode\n\t\t\tlabel\n\t\t\tdefaultKind\n\t\t\tactive\n\t\t}\n\t}\n": typeof types.RoomsDocument,
     "\n\tquery TapeWindow($property: UUID!, $rooms: [UUID!]!, $from: Date!, $to: Date!) {\n\t\ttapeWindow(propertyId: $property, roomIds: $rooms, from: $from, to: $to) {\n\t\t\tstays {\n\t\t\t\tid\n\t\t\t\treservationId\n\t\t\t\troomId\n\t\t\t\troomTypeId\n\t\t\t\tstart\n\t\t\t\tend\n\t\t\t\tstatus\n\t\t\t\tguestName\n\t\t\t\taccountName\n\t\t\t\tversion\n\t\t\t}\n\t\t\tblocks {\n\t\t\t\tid\n\t\t\t\troomId\n\t\t\t\tstart\n\t\t\t\tend\n\t\t\t\treason\n\t\t\t}\n\t\t}\n\t}\n": typeof types.TapeWindowDocument,
+    "\n\tquery UnassignedStays($property: UUID!, $from: Date!, $to: Date!) {\n\t\tunassignedStays(propertyId: $property, from: $from, to: $to) {\n\t\t\tid\n\t\t\treservationId\n\t\t\troomTypeId\n\t\t\tstart\n\t\t\tend\n\t\t\tstatus\n\t\t\tguestName\n\t\t\treason\n\t\t\tversion\n\t\t}\n\t}\n": typeof types.UnassignedStaysDocument,
 };
 const documents: Documents = {
     "\n\tquery Accounts($propertyId: UUID!, $search: String, $includeInactive: Boolean = false) {\n\t\taccounts(propertyId: $propertyId, search: $search, includeInactive: $includeInactive) {\n\t\t\tid\n\t\t\tkind\n\t\t\tname\n\t\t\tcontact {\n\t\t\t\temail\n\t\t\t\tphone\n\t\t\t\taddress\n\t\t\t\tcontactName\n\t\t\t}\n\t\t\tcreditLimit\n\t\t\tcurrency\n\t\t\tactive\n\t\t\tversion\n\t\t}\n\t}\n": types.AccountsDocument,
@@ -47,6 +48,7 @@ const documents: Documents = {
     "\n\tquery RoomTypes($propertyId: UUID!) {\n\t\troomTypes(propertyId: $propertyId) {\n\t\t\tid\n\t\t\tcode\n\t\t\tname\n\t\t\tbaseOccupancy\n\t\t\tmaxAdults\n\t\t\tmaxChildren\n\t\t\tmaxOccupancy\n\t\t\toverbooking\n\t\t\tamenities\n\t\t\tsortOrder\n\t\t\tactive\n\t\t\tversion\n\t\t}\n\t}\n": types.RoomTypesDocument,
     "\n\tquery Rooms($propertyId: UUID!) {\n\t\trooms(propertyId: $propertyId) {\n\t\t\tid\n\t\t\troomTypeId\n\t\t\tnumber\n\t\t\tfloor\n\t\t\tsectionId\n\t\t\tactive\n\t\t\tsortOrder\n\t\t\tversion\n\t\t}\n\t\tsections(propertyId: $propertyId) {\n\t\t\tid\n\t\t\tname\n\t\t\tversion\n\t\t}\n\t\tblockReasons(propertyId: $propertyId) {\n\t\t\tid\n\t\t\tcode\n\t\t\tlabel\n\t\t\tdefaultKind\n\t\t\tactive\n\t\t}\n\t}\n": types.RoomsDocument,
     "\n\tquery TapeWindow($property: UUID!, $rooms: [UUID!]!, $from: Date!, $to: Date!) {\n\t\ttapeWindow(propertyId: $property, roomIds: $rooms, from: $from, to: $to) {\n\t\t\tstays {\n\t\t\t\tid\n\t\t\t\treservationId\n\t\t\t\troomId\n\t\t\t\troomTypeId\n\t\t\t\tstart\n\t\t\t\tend\n\t\t\t\tstatus\n\t\t\t\tguestName\n\t\t\t\taccountName\n\t\t\t\tversion\n\t\t\t}\n\t\t\tblocks {\n\t\t\t\tid\n\t\t\t\troomId\n\t\t\t\tstart\n\t\t\t\tend\n\t\t\t\treason\n\t\t\t}\n\t\t}\n\t}\n": types.TapeWindowDocument,
+    "\n\tquery UnassignedStays($property: UUID!, $from: Date!, $to: Date!) {\n\t\tunassignedStays(propertyId: $property, from: $from, to: $to) {\n\t\t\tid\n\t\t\treservationId\n\t\t\troomTypeId\n\t\t\tstart\n\t\t\tend\n\t\t\tstatus\n\t\t\tguestName\n\t\t\treason\n\t\t\tversion\n\t\t}\n\t}\n": types.UnassignedStaysDocument,
 };
 
 /**
@@ -109,6 +111,10 @@ export function graphql(source: "\n\tquery Rooms($propertyId: UUID!) {\n\t\troom
  * The graphql function is used to parse GraphQL queries into a document that can be used by GraphQL clients.
  */
 export function graphql(source: "\n\tquery TapeWindow($property: UUID!, $rooms: [UUID!]!, $from: Date!, $to: Date!) {\n\t\ttapeWindow(propertyId: $property, roomIds: $rooms, from: $from, to: $to) {\n\t\t\tstays {\n\t\t\t\tid\n\t\t\t\treservationId\n\t\t\t\troomId\n\t\t\t\troomTypeId\n\t\t\t\tstart\n\t\t\t\tend\n\t\t\t\tstatus\n\t\t\t\tguestName\n\t\t\t\taccountName\n\t\t\t\tversion\n\t\t\t}\n\t\t\tblocks {\n\t\t\t\tid\n\t\t\t\troomId\n\t\t\t\tstart\n\t\t\t\tend\n\t\t\t\treason\n\t\t\t}\n\t\t}\n\t}\n"): typeof import('./graphql').TapeWindowDocument;
+/**
+ * The graphql function is used to parse GraphQL queries into a document that can be used by GraphQL clients.
+ */
+export function graphql(source: "\n\tquery UnassignedStays($property: UUID!, $from: Date!, $to: Date!) {\n\t\tunassignedStays(propertyId: $property, from: $from, to: $to) {\n\t\t\tid\n\t\t\treservationId\n\t\t\troomTypeId\n\t\t\tstart\n\t\t\tend\n\t\t\tstatus\n\t\t\tguestName\n\t\t\treason\n\t\t\tversion\n\t\t}\n\t}\n"): typeof import('./graphql').UnassignedStaysDocument;
 
 
 export function graphql(source: string) {

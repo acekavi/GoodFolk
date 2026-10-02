@@ -234,3 +234,85 @@ test('hovering Next loads the next page of rooms before it is clicked', async ({
 	// Only the tile of overscan ahead of the scroll is new; the tiles in view were prefetched.
 	expect(requested - prefetched).toBeLessThanOrEqual(1);
 });
+
+/** Lets `hotel`'s room type be sold `allowance` rooms beyond its physical count. */
+async function overbook(page: Page, hotel: Hotel, allowance: number) {
+	const propertyId = hotel.path.split('/').pop();
+	const response = await page.request.post('/graphql', {
+		headers: { 'x-goodfolk-csrf': '1' },
+		data: {
+			query: `{ roomTypes(propertyId: "${propertyId}") { id version } }`
+		}
+	});
+	const { data } = await response.json();
+	const type = data.roomTypes.find(
+		(candidate: { id: string }) => candidate.id === hotel.roomTypeId
+	);
+	const patched = await page.request.patch(`${hotel.path}/room-types/${hotel.roomTypeId}`, {
+		headers: { 'x-goodfolk-csrf': '1', 'If-Match': `"${type.version}"` },
+		data: { overbooking: allowance }
+	});
+	expect(patched.status(), await patched.text()).toBe(200);
+}
+
+const silva = (page: Page) => page.locator('[data-room]', { hasText: 'Silva, A.' });
+
+test('an overbooked stay is listed under Needs a room, and Assign… puts it in a freed room', async ({
+	page
+}) => {
+	await signUp(page);
+	await createProperty(page, 'NRM');
+	const hotel = await bookableHotel(page, 2, 1);
+	await overbook(page, hotel, 1);
+	const first = await bookTonight(page, hotel);
+	await bookTonight(page, hotel);
+	await bookTonight(page, hotel);
+	await page.getByRole('link', { name: 'Tape chart' }).click();
+	await expect(silva(page)).toHaveCount(2);
+
+	const needs = page.getByRole('button', { name: /^Needs a room/ });
+	await expect(needs).toHaveText('Needs a room (1)');
+	await needs.click();
+	const panel = page.getByRole('region', { name: 'Needs a room' });
+	await expect(panel).toContainText('Silva, A.');
+	await expect(panel).toContainText('DLX');
+	await expect(panel).toContainText('Overbooked');
+
+	const cancelled = await page.request.post(
+		`${hotel.path}/reservation-rooms/${first.roomId}/cancel`,
+		{
+			headers: { 'x-goodfolk-csrf': '1', 'If-Match': `"${first.version}"` }
+		}
+	);
+	expect(cancelled.status(), await cancelled.text()).toBe(200);
+	await expect(silva(page)).toHaveCount(1);
+
+	await panel.getByRole('button', { name: 'Assign…' }).click();
+	await panel.getByRole('combobox').selectOption({ label: '101' });
+	await panel.getByRole('button', { name: 'Assign', exact: true }).click();
+	await expect(needs).toHaveCount(0);
+	await expect(silva(page)).toHaveCount(2);
+	await expect(page.locator('[data-room="101"]', { hasText: 'Silva, A.' })).toBeVisible();
+});
+
+test('Move to room… moves a bar to a room on the next page', async ({ page }) => {
+	await signUp(page);
+	await createProperty(page, 'MOV');
+	const hotel = await bookableHotel(page, 12, 1);
+	await bookTonight(page, hotel);
+	await page.getByRole('link', { name: 'Tape chart' }).click();
+	const bar = page.locator('[data-room="101"]', { hasText: 'Silva, A.' });
+	await expect(bar).toBeVisible();
+
+	await bar.hover();
+	await page.getByRole('button', { name: 'Menu for Silva, A.' }).click();
+	await page.getByRole('menuitem', { name: 'Move to room…' }).click();
+	const dialog = page.getByRole('dialog', { name: 'Move to room' });
+	await dialog.getByRole('combobox').selectOption({ label: '111' });
+	await dialog.getByRole('button', { name: 'Move', exact: true }).click();
+	await expect(dialog).toBeHidden();
+	await expect(bar).toHaveCount(0);
+
+	await page.getByRole('button', { name: 'Next' }).click();
+	await expect(page.locator('[data-room="111"]', { hasText: 'Silva, A.' })).toBeVisible();
+});

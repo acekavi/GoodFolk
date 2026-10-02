@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/svelte-query';
-import { tapeEventTiles } from './tape';
+import { rangeTouchesMonth, tapeEventTiles } from './tape';
 
 /**
  * Applies one server-sent event to the query cache. `invalidate` carries the cache keys that
@@ -28,10 +28,18 @@ function invalidateTape(client: QueryClient, eventKey: string): void {
 		.findAll(tape)
 		.map((query) => query.queryKey[2] as string);
 	const stale = new Set(tapeEventTiles(eventKey, propertyId, cached));
-	if (stale.size === 0) return;
+	if (stale.size > 0) {
+		void client.invalidateQueries({
+			...tape,
+			predicate: (query) => stale.has(query.queryKey[2] as string)
+		});
+	}
+	// The Needs a room lists, cached under `['tape-unassigned', property, from, to]`, with a day in the month.
+	const month = eventKey.split(':')[2];
 	void client.invalidateQueries({
-		...tape,
-		predicate: (query) => stale.has(query.queryKey[2] as string)
+		queryKey: ['tape-unassigned', propertyId],
+		predicate: (query) =>
+			rangeTouchesMonth(query.queryKey[2] as string, query.queryKey[3] as string, month)
 	});
 }
 

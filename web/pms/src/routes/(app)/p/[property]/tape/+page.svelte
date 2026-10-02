@@ -1,5 +1,5 @@
 <!--
-	The tape chart screen: the header (span, Today, paging, room picker) and the chart. The view (chosen
+	The tape chart screen: the header (Needs a room, span, Today, paging, room picker) and the chart. The view (chosen
 	rooms, page, span and first day) lives in the URL, so a reload or a bookmark reopens it; changes replace
 	the history entry, so Back leaves the chart rather than undoing a scroll.
 -->
@@ -9,6 +9,8 @@
 	import { page } from '$app/state';
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { errorMessage } from '$lib/api/problem';
+	import { addDays } from '$lib/inventory';
+	import NeedsRoom from '$lib/components/NeedsRoom.svelte';
 	import RoomPicker from '$lib/components/RoomPicker.svelte';
 	import TapeChart from '$lib/components/TapeChart.svelte';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
@@ -18,10 +20,14 @@
 		openingStart,
 		PAGE_SIZE,
 		pageOf,
+		fetchUnassignedStays,
+		overlapping,
 		prefetchTapeTiles,
 		railRooms,
 		selectRooms,
 		tilesFor,
+		unassignedKey,
+		unassignedWindow,
 		viewFromSearchParams,
 		viewToSearchParams,
 		type Chip,
@@ -73,6 +79,22 @@
 
 	/** The first day in view now, which the URL may not hold yet while a scroll settles. */
 	let visibleStart = $state<string>();
+	let showNeeds = $state(false);
+
+	// Read for the tiles under the view, then narrowed to the visible days, so scrolling within a tile
+	// makes no request.
+	const firstDay = $derived(visibleStart ?? view.start);
+	const needsWindow = $derived(firstDay ? unassignedWindow(firstDay, view.span) : undefined);
+	const unassigned = createQuery(() => ({
+		queryKey: unassignedKey(propertyId, needsWindow?.from ?? '', needsWindow?.to ?? ''),
+		queryFn: ({ signal }) =>
+			fetchUnassignedStays(propertyId, needsWindow!.from, needsWindow!.to, signal),
+		enabled: !!needsWindow,
+		placeholderData: (previous) => previous
+	}));
+	const needsRoom = $derived(
+		firstDay ? overlapping(unassigned.data ?? [], firstDay, addDays(firstDay, view.span)) : []
+	);
 
 	function show(next: Partial<TapeView>) {
 		const search = viewToSearchParams({
@@ -112,8 +134,14 @@
 
 <div class="title">
 	<h1>Tape chart</h1>
-	<!-- Where the Needs a room button goes, left of the span switch. -->
-	<span data-slot="needs-room"></span>
+	{#if needsRoom.length > 0}
+		<button
+			type="button"
+			class="secondary"
+			aria-expanded={showNeeds}
+			onclick={() => (showNeeds = !showNeeds)}>Needs a room ({needsRoom.length})</button
+		>
+	{/if}
 	<span class="spacer"></span>
 	<div class="spans" role="group" aria-label="Days shown">
 		{#each SPANS as span (span)}
@@ -152,6 +180,10 @@
 		<RoomPicker rooms={rail} {types} chips={view.chips} onchange={pick} />
 	{/if}
 </div>
+
+{#if showNeeds && needsRoom.length > 0}
+	<NeedsRoom {propertyId} stays={needsRoom} roomTypes={types} {manage} />
+{/if}
 
 {#if rooms.error || roomTypes.error || properties.error}
 	<p class="error" role="alert">

@@ -2,7 +2,7 @@ import { QueryClient } from '@tanstack/svelte-query';
 import { describe, expect, it, vi } from 'vitest';
 import { applyEvent } from './events';
 import { addDays } from './inventory';
-import { tapeKey, tileStartFor } from './tape';
+import { tapeKey, tileStartFor, unassignedKey } from './tape';
 
 describe('applyEvent', () => {
 	it('invalidates exactly the keys named by an invalidate event', () => {
@@ -80,6 +80,20 @@ describe('applyEvent', () => {
 			expect(invalidated(client, tile)).toBe(true);
 			expect(invalidated(client, ['properties'])).toBe(true);
 			expect(invalidated(client, ['inventory:p1:2026-09'])).toBe(false);
+		});
+
+		it('refetches the Needs a room lists of that property with a day in the event month', () => {
+			const client = new QueryClient();
+			const keys = [
+				unassignedKey('p1', '2026-09-28', '2026-10-26'),
+				unassignedKey('p1', '2026-11-02', '2026-11-30'),
+				unassignedKey('p2', '2026-09-28', '2026-10-26')
+			];
+			for (const key of keys) client.setQueryData(key, []);
+
+			applyEvent(client, 'invalidate', '["tape:p1:2026-10"]');
+
+			expect(keys.map((key) => invalidated(client, key))).toEqual([true, false, false]);
 		});
 
 		it('invalidates cached tiles on resync', () => {

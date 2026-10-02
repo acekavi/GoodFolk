@@ -14,6 +14,10 @@
 	Keyboard: one focus stop on the chart. Arrow keys move the focused day and room, Enter opens the stay
 	under the focus, PageUp and PageDown page the rooms, T returns to the business date. The focus is
 	announced through a status region, not through nodes per cell.
+
+	A confirmed stay's menu (a button that shows on hover or focus, the context menu, or the context-menu key
+	on the focused bar) offers Move to room…, which reassigns it to a free room of its type, also one on
+	another page. It needs `manage`.
 -->
 <script lang="ts">
 	import { goto } from '$app/navigation';
@@ -25,6 +29,7 @@
 	import { errorMessage } from '$lib/api/problem';
 	import { addDays } from '$lib/inventory';
 	import { fetchReservation, reservationKey, statusLabel } from '$lib/reservations';
+	import RoomAssign from './RoomAssign.svelte';
 	import {
 		barsFor,
 		barWidth,
@@ -39,7 +44,8 @@
 		tilesFor,
 		type RailRoom,
 		type Span,
-		type TapeBar
+		type TapeBar,
+		type TapeStay
 	} from '$lib/tape';
 
 	interface Props {
@@ -72,6 +78,7 @@
 	/** The canvas is re-centred when the view comes this close to its edge. */
 	const EDGE_DAYS = 3 * TILE_DAYS;
 	const SECOND_LINE_MIN = 120;
+	const BAR_MENU = 24;
 	const SETTLE_MS = 200;
 	const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -304,6 +311,13 @@
 			event.preventDefault();
 			focus = { row: focus.row, date: businessDate };
 			onstart(openingStart(businessDate));
+		} else if (
+			(event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) &&
+			focusBar &&
+			canMove(focusBar)
+		) {
+			event.preventDefault();
+			openMenu(focusBar);
 		} else if (event.key === 'Enter' && focusBar?.kind === 'stay') {
 			event.preventDefault();
 			// The reservation's modal over the reservations list, keeping the chart's view in the URL.
@@ -315,7 +329,59 @@
 	}
 
 	const todayIndex = (tile: string) => barX(businessDate, tile, 1);
+
+	// A stay's menu and Move to room…. Only confirmed stays can be assigned.
+	let menuFor = $state<string>();
+	let movingId = $state<string>();
+	let menuItem = $state<HTMLButtonElement>();
+	let moveDialog = $state<HTMLDialogElement>();
+
+	const canMove = (bar: TapeBar): bar is { kind: 'stay' } & TapeStay =>
+		manage && bar.kind === 'stay' && bar.status === 'CONFIRMED';
+	const menuPlaced = $derived(bars.find(({ bar }) => bar.kind === 'stay' && bar.id === menuFor));
+	const moving = $derived(
+		bars.find(({ bar }) => bar.kind === 'stay' && bar.id === movingId)?.bar as
+			({ kind: 'stay' } & TapeStay) | undefined
+	);
+
+	function openMenu(bar: TapeBar) {
+		if (canMove(bar)) menuFor = bar.id;
+	}
+
+	function closeMenu() {
+		menuFor = undefined;
+		viewport?.focus();
+	}
+
+	function startMove() {
+		movingId = menuFor;
+		menuFor = undefined;
+	}
+
+	// The menu's item takes the focus when the menu opens, so the keyboard can choose it.
+	$effect(() => {
+		if (menuPlaced) void tick().then(() => menuItem?.focus());
+	});
+	$effect(() => {
+		if (!moveDialog) return;
+		if (moving && !moveDialog.open) moveDialog.showModal();
+		else if (!moving && moveDialog.open) moveDialog.close();
+	});
+
+	function menuKeydown(event: KeyboardEvent) {
+		if (event.key === 'Escape') {
+			event.preventDefault();
+			event.stopPropagation();
+			closeMenu();
+		}
+	}
 </script>
+
+<svelte:window
+	onpointerdown={(event) => {
+		if (menuFor && !(event.target as Element).closest('.menu, .bar-menu')) menuFor = undefined;
+	}}
+/>
 
 {#if failed}
 	<p class="error" role="alert">
@@ -390,12 +456,29 @@
 							style:transform="translate({x}px, {y}px)"
 							style:width="{w}px"
 							onpointerenter={() => prefetch(bar.reservationId)}
+							oncontextmenu={(event) => {
+								if (!canMove(bar)) return;
+								event.preventDefault();
+								openMenu(bar);
+							}}
 						>
 							<span class="name">{bar.guestName}</span>
 							{#if bar.accountName && w > SECOND_LINE_MIN}
 								<span class="account">{bar.accountName}</span>
 							{/if}
 						</a>
+						{#if canMove(bar)}
+							<button
+								type="button"
+								class="bar-menu"
+								tabindex="-1"
+								aria-label="Menu for {bar.guestName}"
+								aria-haspopup="menu"
+								aria-expanded={menuFor === bar.id}
+								style:transform="translate({x + Math.max(w - BAR_MENU, 0)}px, {y}px)"
+								onclick={() => openMenu(bar)}>⋯</button
+							>
+						{/if}
 					{:else}
 						<div
 							class="bar block"
@@ -408,6 +491,20 @@
 						</div>
 					{/if}
 				{/each}
+				{#if menuPlaced && menuPlaced.bar.kind === 'stay'}
+					<div
+						class="menu"
+						role="menu"
+						aria-label="Menu for {menuPlaced.bar.guestName}"
+						tabindex="-1"
+						style:transform="translate({menuPlaced.x}px, {menuPlaced.y + ROW - BAR_INSET}px)"
+						onkeydown={menuKeydown}
+					>
+						<button type="button" role="menuitem" bind:this={menuItem} onclick={startMove}
+							>Move to room…</button
+						>
+					</div>
+				{/if}
 				{#if focusRoom}
 					<div
 						class="marker"
@@ -422,6 +519,23 @@
 	</div>
 	<div class="visually-hidden" role="status">{focusLabel}</div>
 </div>
+
+<dialog bind:this={moveDialog} aria-labelledby="move-title" onclose={() => (movingId = undefined)}>
+	{#if moving}
+		<h2 id="move-title">Move to room</h2>
+		<p>
+			{moving.guestName}, {moving.start} to {moving.end}
+		</p>
+		<RoomAssign
+			{propertyId}
+			stay={moving}
+			typeCode={rooms[rowOf.get(moving.roomId) ?? 0]?.typeCode ?? ''}
+			action="Move"
+			ondone={() => (movingId = undefined)}
+			oncancel={() => (movingId = undefined)}
+		/>
+	{/if}
+</dialog>
 
 <style>
 	.viewport {
@@ -592,6 +706,43 @@
 		color: var(--text);
 		border: 1px solid var(--muted);
 		background: repeating-linear-gradient(45deg, var(--surface) 0 6px, var(--border) 6px 12px);
+	}
+	.bar-menu {
+		position: absolute;
+		top: 0;
+		left: 0;
+		z-index: 2;
+		width: 24px;
+		height: calc(var(--row) - 8px);
+		padding: 0;
+		opacity: 0;
+		border: 0;
+		color: var(--stay-text);
+		background: transparent;
+	}
+	.bar:hover + .bar-menu,
+	.bar-menu:hover,
+	.bar-menu:focus-visible,
+	.bar-menu[aria-expanded='true'] {
+		opacity: 1;
+	}
+	.menu {
+		position: absolute;
+		top: 0;
+		left: 0;
+		z-index: 3;
+		display: grid;
+		min-width: 9rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--surface);
+		box-shadow: 0 2px 8px rgb(0 0 0 / 0.2);
+	}
+	.menu button {
+		text-align: left;
+		border: 0;
+		background: transparent;
+		color: var(--text);
 	}
 	.marker {
 		position: absolute;

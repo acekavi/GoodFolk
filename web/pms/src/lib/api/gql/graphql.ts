@@ -30,6 +30,11 @@ export type MealPlan =
   | 'HB'
   | 'RO';
 
+/** Why a stay has no room. */
+export type NeedsRoomReason =
+  | 'NO_SINGLE_ROOM'
+  | 'OVERBOOKED';
+
 export type PenaltyKind =
   | 'AMOUNT'
   | 'NIGHTS'
@@ -259,6 +264,15 @@ export type TapeWindowQueryVariables = Exact<{
 
 
 export type TapeWindowQuery = { tapeWindow: { stays: Array<{ id: string, reservationId: string, roomId: string, roomTypeId: string, start: string, end: string, status: RoomStatus, guestName: string, accountName: string | null, version: number }>, blocks: Array<{ id: string, roomId: string, start: string, end: string, reason: string }> } };
+
+export type UnassignedStaysQueryVariables = Exact<{
+  property: string;
+  from: string;
+  to: string;
+}>;
+
+
+export type UnassignedStaysQuery = { unassignedStays: Array<{ id: string, reservationId: string, roomTypeId: string, start: string, end: string, status: RoomStatus, guestName: string, reason: NeedsRoomReason, version: number }> };
 
 export class TypedDocumentString<TResult, TVariables>
   extends String
@@ -730,3 +744,18 @@ export const TapeWindowDocument = new TypedDocumentString(`
   }
 }
     `, {"hash":"sha256:bc62e37b267ab6f2a849d6e4fc693f8e464217aa9a9a03dc9f54a095d509982c"}) as unknown as TypedDocumentString<TapeWindowQuery, TapeWindowQueryVariables>;
+export const UnassignedStaysDocument = new TypedDocumentString(`
+    query UnassignedStays($property: UUID!, $from: Date!, $to: Date!) {
+  unassignedStays(propertyId: $property, from: $from, to: $to) {
+    id
+    reservationId
+    roomTypeId
+    start
+    end
+    status
+    guestName
+    reason
+    version
+  }
+}
+    `, {"hash":"sha256:49a4c53c98a8985c3fb6794843b286cc9c0742902efc8a528a1344eb5e874658"}) as unknown as TypedDocumentString<UnassignedStaysQuery, UnassignedStaysQueryVariables>;

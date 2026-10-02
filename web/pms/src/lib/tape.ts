@@ -1,7 +1,8 @@
 import type { QueryClient } from '@tanstack/svelte-query';
 import { graphql } from './api/gql';
-import type { TapeWindowQuery } from './api/gql/graphql';
+import type { TapeWindowQuery, UnassignedStaysQuery } from './api/gql/graphql';
 import { query } from './api/graphql';
+import { ifMatch, rest, unwrap } from './api/rest';
 import { addDays } from './inventory';
 import type { Room, RoomType } from './rooms';
 
@@ -438,4 +439,79 @@ export async function prefetchTapeTiles(
 		)
 	);
 	pruneTape(client);
+}
+
+export const UnassignedStaysDocument = graphql(`
+	query UnassignedStays($property: UUID!, $from: Date!, $to: Date!) {
+		unassignedStays(propertyId: $property, from: $from, to: $to) {
+			id
+			reservationId
+			roomTypeId
+			start
+			end
+			status
+			guestName
+			reason
+			version
+		}
+	}
+`);
+
+export type UnassignedStay = UnassignedStaysQuery['unassignedStays'][number];
+
+/** Query key of the stays that need a room in `[from, to)`; `tape:` events refetch the ones touching their month. */
+export function unassignedKey(propertyId: string, from: string, to: string): readonly unknown[] {
+	return ['tape-unassigned', propertyId, from, to] as const;
+}
+
+export async function fetchUnassignedStays(
+	propertyId: string,
+	from: string,
+	to: string,
+	signal?: AbortSignal
+): Promise<UnassignedStay[]> {
+	return (await query(UnassignedStaysDocument, { property: propertyId, from, to }, signal))
+		.unassignedStays;
+}
+
+/** The days the Needs a room list is read for: the tiles under the view, so scrolling within them reuses the result. */
+export function unassignedWindow(firstDay: string, days: number): { from: string; to: string } {
+	return {
+		from: tileStartFor(firstDay),
+		to: tileEnd(tileStartFor(addDays(firstDay, Math.max(days, 1) - 1)))
+	};
+}
+
+/** The stays that overlap `[from, to)`. */
+export function overlapping(stays: readonly UnassignedStay[], from: string, to: string) {
+	return stays.filter((stay) => stay.start < to && stay.end > from);
+}
+
+/** Whether the cached range `[from, to)` has a day in `month` (`YYYY-MM`). */
+export function rangeTouchesMonth(from: string, to: string, month: string): boolean {
+	return from.slice(0, 7) <= month && month <= addDays(to, -1).slice(0, 7);
+}
+
+const NEEDS_ROOM_REASONS: Record<string, string> = {
+	OVERBOOKED: 'Overbooked',
+	NO_SINGLE_ROOM: 'No single room free'
+};
+
+export function needsRoomReason(reason: string): string {
+	return NEEDS_ROOM_REASONS[reason] ?? reason;
+}
+
+/** Assigns (or moves) the stay to `roomId`, sending its `version` as If-Match; throws an `ApiError` on refusal. */
+export async function assignStay(
+	propertyId: string,
+	stayId: string,
+	version: number,
+	roomId: string
+) {
+	return unwrap(
+		await rest.POST('/api/v1/properties/{property}/reservation-rooms/{room}/assign', {
+			params: { path: { property: propertyId, room: stayId }, header: ifMatch(version) },
+			body: { room_id: roomId }
+		})
+	);
 }

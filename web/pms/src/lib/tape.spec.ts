@@ -7,6 +7,9 @@ import {
 	lruVictims,
 	openingStart,
 	naturalCompare,
+	needsRoomReason,
+	overlapping,
+	rangeTouchesMonth,
 	pageKey,
 	pageOf,
 	railRooms,
@@ -17,13 +20,15 @@ import {
 	tileEnd,
 	tilesFor,
 	tilesInMonth,
+	unassignedWindow,
 	tileStartFor,
 	monthsOfTile,
 	viewFromSearchParams,
 	viewToSearchParams,
 	type RailRoom,
 	type TapeStay,
-	type TapeView
+	type TapeView,
+	type UnassignedStay
 } from './tape';
 
 const types = [
@@ -326,5 +331,37 @@ describe('lruVictims', () => {
 	it('never removes a query in use or fetching, even when it is the oldest', () => {
 		const entries = [entry('a', 1, true), entry('b', 2), entry('c', 3), entry('d', 4)];
 		expect(lruVictims(entries, 2)).toEqual(['b', 'c']);
+	});
+});
+
+describe('Needs a room', () => {
+	const stay = (start: string, end: string) => ({ start, end }) as UnassignedStay;
+
+	it('reads the tiles under the view, so scrolling within them keeps the window', () => {
+		// 2026-10-02 is in the tile from 2026-09-21; 14 days from it reach 2026-10-15, in the tile from 2026-10-05.
+		expect(unassignedWindow('2026-10-02', 14)).toEqual({ from: '2026-09-21', to: '2026-10-19' });
+		expect(unassignedWindow('2026-10-05', 7)).toEqual({ from: '2026-10-05', to: '2026-10-19' });
+	});
+
+	it('keeps the stays that share a night with the days', () => {
+		const stays = [
+			stay('2026-10-01', '2026-10-03'),
+			stay('2026-10-03', '2026-10-05'),
+			stay('2026-10-09', '2026-10-10')
+		];
+		expect(overlapping(stays, '2026-10-03', '2026-10-09')).toEqual([stays[1]]);
+	});
+
+	it('knows whether a cached range has a day in a month', () => {
+		expect(rangeTouchesMonth('2026-09-28', '2026-10-26', '2026-09')).toBe(true);
+		expect(rangeTouchesMonth('2026-09-28', '2026-10-26', '2026-10')).toBe(true);
+		expect(rangeTouchesMonth('2026-09-28', '2026-10-26', '2026-11')).toBe(false);
+		// The end is exclusive.
+		expect(rangeTouchesMonth('2026-09-28', '2026-10-01', '2026-10')).toBe(false);
+	});
+
+	it('words the reasons', () => {
+		expect(needsRoomReason('OVERBOOKED')).toBe('Overbooked');
+		expect(needsRoomReason('NO_SINGLE_ROOM')).toBe('No single room free');
 	});
 });
