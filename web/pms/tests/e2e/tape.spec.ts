@@ -104,21 +104,53 @@ test('the chart pages ten rooms at a time, narrows with chips and keeps its view
 	await expect(rows(page)).toHaveCount(2);
 });
 
-test('a booking is a bar in its room that opens the reservation, and Escape comes back to the chart', async ({
+test('a stay opens over the chart, which stays mounted with its scroll and focus; Escape comes back', async ({
 	page
 }) => {
 	const hotel = await twelveRooms(page);
 	const { id } = await bookTonight(page, hotel);
 	await page.getByRole('link', { name: 'Tape chart' }).click();
-
+	const chart = page.getByRole('group', { name: 'Tape chart' });
 	const bar = page.locator('[data-room="101"]', { hasText: 'Silva, A.' });
 	await expect(bar).toBeVisible();
+
+	// Move the focus off its starting cell and scroll, so a remount would show.
+	await chart.focus();
+	await page.keyboard.press('ArrowDown');
+	await page.keyboard.press('ArrowDown');
+	const opening = await chart.getAttribute('data-start');
+	await chart.evaluate((el) => (el.scrollLeft += (el.clientWidth - 112) / 12));
+	await expect(chart).not.toHaveAttribute('data-start', opening!);
+	const start = await chart.getAttribute('data-start');
+	const focused = await chart.getByRole('status').textContent();
+	expect(focused).toContain('103');
+
+	const lists: string[] = [];
+	page.on('request', (request) => {
+		if (runsQuery(request, 'ReservationList')) lists.push(request.url());
+	});
 	await bar.click();
 	await expect(page).toHaveURL(new RegExp(`/reservations/${id}`));
-	await expect(page.getByRole('dialog')).toBeVisible();
-	await page.keyboard.press('Escape');
-	await expect(page).toHaveURL(/\/tape(\?|$)/);
+	const dialog = page.getByRole('dialog');
+	await expect(dialog).toBeVisible();
+	// The chart is still in the page, under the dialog, and no list was loaded behind it.
+	await expect(chart).toBeVisible();
 	await expect(bar).toBeVisible();
+	expect(lists).toEqual([]);
+
+	await page.keyboard.press('Escape');
+	await expect(dialog).toBeHidden();
+	await expect(page).toHaveURL(/\/tape(\?|$)/);
+	await expect(chart).toHaveAttribute('data-start', start!);
+	await expect(chart.getByRole('status')).toHaveText(focused!);
+	await expect(chart).toBeVisible();
+
+	// A reload of the reservation's URL still opens it, over the reservations list.
+	await bar.click();
+	await expect(dialog).toBeVisible();
+	await page.reload();
+	await expect(page.getByRole('dialog')).toBeVisible();
+	await expect(page.getByRole('table', { name: 'Reservations' })).toBeVisible();
 });
 
 test('the arrow keys move the focused day, and Enter opens the bar under it', async ({ page }) => {
@@ -139,6 +171,51 @@ test('the arrow keys move the focused day, and Enter opens the bar under it', as
 	await page.keyboard.press('ArrowUp');
 	await page.keyboard.press('Enter');
 	await expect(page).toHaveURL(new RegExp(`/reservations/${id}`));
+	await expect(page.getByRole('dialog')).toBeVisible();
+	await page.keyboard.press('Escape');
+	await expect(chart).toBeFocused();
+	await expect(chart.getByRole('status')).toContainText(`101 ${hotel.businessDate}`);
+
+	// PageDown and PageUp page the rooms.
+	await page.keyboard.press('PageDown');
+	await expect(page.getByText('Rooms 11–12 of 12')).toBeVisible();
+	await expect(rows(page)).toHaveCount(2);
+	await page.keyboard.press('PageUp');
+	await expect(page.getByText('Rooms 1–10 of 12')).toBeVisible();
+	await expect(rows(page)).toHaveCount(10);
+});
+
+test('T and Today win over a scroll that is still settling', async ({ page }) => {
+	const hotel = await twelveRooms(page);
+	await page.getByRole('link', { name: 'Tape chart' }).click();
+	const chart = page.getByRole('group', { name: 'Tape chart' });
+	const opening = addDays(hotel.businessDate, -2);
+	await expect(chart).toHaveAttribute('data-start', opening);
+	await chart.focus();
+
+	for (const jump of ['key', 'button'] as const) {
+		await chart.evaluate((el) => (el.scrollLeft += el.clientWidth * 2));
+		await expect(chart).not.toHaveAttribute('data-start', opening);
+		// Within the settle pause, before the scrolled start reaches the URL.
+		if (jump === 'key') await page.keyboard.press('t');
+		else await page.getByRole('button', { name: 'Today' }).click();
+		await page.waitForTimeout(500);
+		await expect(chart).toHaveAttribute('data-start', opening);
+		await expect(page).toHaveURL(new RegExp(`start=${opening}`));
+	}
+});
+
+test('Today after scrolling a year away brings the business date back', async ({ page }) => {
+	const hotel = await twelveRooms(page);
+	await page.getByRole('link', { name: 'Tape chart' }).click();
+	const chart = page.getByRole('group', { name: 'Tape chart' });
+	const opening = addDays(hotel.businessDate, -2);
+	await expect(chart).toHaveAttribute('data-start', opening);
+
+	await chart.evaluate((el) => (el.scrollLeft = el.scrollWidth));
+	await expect(chart).not.toHaveAttribute('data-start', opening);
+	await page.getByRole('button', { name: 'Today' }).click();
+	await expect(chart).toHaveAttribute('data-start', opening);
 });
 
 test('a property with five rooms has no picker and no paging', async ({ page }) => {

@@ -4,13 +4,14 @@
 	the history entry, so Back leaves the chart rather than undoing a scroll.
 -->
 <script lang="ts">
-	import { goto } from '$app/navigation';
+	import { goto, pushState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { errorMessage } from '$lib/api/problem';
 	import { addDays } from '$lib/inventory';
 	import NeedsRoom from '$lib/components/NeedsRoom.svelte';
+	import ReservationModal from '$lib/components/ReservationModal.svelte';
 	import RoomPicker from '$lib/components/RoomPicker.svelte';
 	import TapeChart from '$lib/components/TapeChart.svelte';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
@@ -96,6 +97,34 @@
 		firstDay ? overlapping(unassigned.data ?? [], firstDay, addDays(firstDay, view.span)) : []
 	);
 
+	let chart = $state<{ jumpTo: (date: string) => void }>();
+
+	/** Today: the opening view, now, even while a scroll is settling. */
+	function today() {
+		if (chart) chart.jumpTo(openingStart(businessDate));
+		else show({ start: openingStart(businessDate) });
+	}
+
+	/**
+	 * A stay's reservation, in its modal over the chart: a shallow history entry at the reservation's URL, so
+	 * the chart stays mounted with its scroll and focus, and reloading that URL opens the reservations page.
+	 */
+	function openReservation(reservationId: string) {
+		pushState(resolve(`/p/${propertyId}/reservations/${reservationId}${page.url.search}`), {
+			reservation: reservationId
+		});
+	}
+
+	/** A scroll settled on `start`. Not while a reservation is open: replacing its history entry would close it. */
+	function settled(start: string) {
+		if (!page.state.reservation) show({ start });
+	}
+
+	/** Back to the chart's own entry; the modal unmounts with the state. */
+	function closeReservation() {
+		if (page.state.reservation) history.back();
+	}
+
 	function show(next: Partial<TapeView>) {
 		const search = viewToSearchParams({
 			...view,
@@ -153,12 +182,7 @@
 			>
 		{/each}
 	</div>
-	<button
-		type="button"
-		class="secondary"
-		disabled={!businessDate}
-		onclick={() => show({ start: openingStart(businessDate) })}>Today</button
-	>
+	<button type="button" class="secondary" disabled={!businessDate} onclick={today}>Today</button>
 	{#if multiPage}
 		<span class="position" role="status">{position}</span>
 		<button
@@ -198,6 +222,7 @@
 {:else}
 	{#key propertyId}
 		<TapeChart
+			bind:this={chart}
 			{propertyId}
 			rooms={paged.rooms}
 			start={view.start}
@@ -205,9 +230,16 @@
 			{businessDate}
 			{manage}
 			onview={(date) => (visibleStart = date)}
-			onstart={(start) => show({ start })}
+			onopen={openReservation}
+			onstart={settled}
 			onpage={turn}
 		/>
+	{/key}
+{/if}
+
+{#if page.state.reservation}
+	{#key page.state.reservation}
+		<ReservationModal {propertyId} id={page.state.reservation} onclose={closeReservation} />
 	{/key}
 {/if}
 

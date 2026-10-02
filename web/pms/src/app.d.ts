@@ -5,7 +5,10 @@ declare global {
 		// interface Error {}
 		// interface Locals {}
 		// interface PageData {}
-		// interface PageState {}
+		/** The reservation the tape chart shows in a modal over itself (shallow routing). */
+		interface PageState {
+			reservation?: string;
+		}
 		// interface Platform {}
 	}
 }

@@ -20,7 +20,6 @@
 	another page. It needs `manage`.
 -->
 <script lang="ts">
-	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { createQueries, useQueryClient } from '@tanstack/svelte-query';
@@ -62,12 +61,24 @@
 		onview: (date: string) => void;
 		/** The view's first day settled on `date`. */
 		onstart: (date: string) => void;
+		/** A stay was opened, by click or Enter. */
+		onopen: (reservationId: string) => void;
 		/** PageUp (-1) or PageDown (1) was pressed. */
 		onpage: (delta: -1 | 1) => void;
 	}
 
-	let { propertyId, rooms, start, span, businessDate, manage, onview, onstart, onpage }: Props =
-		$props();
+	let {
+		propertyId,
+		rooms,
+		start,
+		span,
+		businessDate,
+		manage,
+		onview,
+		onopen,
+		onstart,
+		onpage
+	}: Props = $props();
 
 	const RAIL = 112;
 	const ROW = 44;
@@ -233,6 +244,15 @@
 		}
 	}
 
+	/** Shows `date` first now, dropping any scroll still settling so it cannot undo the jump. */
+	export function jumpTo(date: string) {
+		clearTimeout(settleTimer);
+		settleTimer = undefined;
+		focus = { row: focus.row, date: businessDate };
+		scrollToDay(date);
+		onstart(date);
+	}
+
 	function scrollToDay(date: string) {
 		if (!viewport) return;
 		const index = dayAt(date);
@@ -254,8 +274,11 @@
 		);
 	});
 	// Follow the URL's start (Today, Back) unless a scroll is still settling.
+	// `wanted` is a primitive, so a URL change that leaves the start alone (a modal opening over the chart,
+	// a picker change) does not re-run the effect and snap back to a stale start.
+	const wanted = $derived(start);
 	$effect(() => {
-		const target = start;
+		const target = wanted;
 		untrack(() => {
 			if (positioned && settleTimer === undefined && firstDay !== target) scrollToDay(target);
 		});
@@ -309,8 +332,7 @@
 			onpage(event.key === 'PageUp' ? -1 : 1);
 		} else if (event.key === 't' || event.key === 'T') {
 			event.preventDefault();
-			focus = { row: focus.row, date: businessDate };
-			onstart(openingStart(businessDate));
+			jumpTo(openingStart(businessDate));
 		} else if (
 			(event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) &&
 			focusBar &&
@@ -320,11 +342,7 @@
 			openMenu(focusBar);
 		} else if (event.key === 'Enter' && focusBar?.kind === 'stay') {
 			event.preventDefault();
-			// The reservation's modal over the reservations list, keeping the chart's view in the URL.
-			void goto(
-				resolve(`/p/${propertyId}/reservations/${focusBar.reservationId}${page.url.search}`),
-				{ noScroll: true }
-			);
+			onopen(focusBar.reservationId);
 		}
 	}
 
@@ -455,6 +473,12 @@
 							aria-label={barLabel(bar)}
 							style:transform="translate({x}px, {y}px)"
 							style:width="{w}px"
+							onclick={(event) => {
+								// A plain click opens the modal over the chart; a modified one keeps the link's own behaviour.
+								if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey) return;
+								event.preventDefault();
+								onopen(bar.reservationId);
+							}}
 							onpointerenter={() => prefetch(bar.reservationId)}
 							oncontextmenu={(event) => {
 								if (!canMove(bar)) return;
