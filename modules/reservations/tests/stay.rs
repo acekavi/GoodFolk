@@ -488,7 +488,8 @@ async fn check_out_leaves_the_room_dirty(_: PgPoolOptions, opts: PgConnectOption
 }
 
 /// A supervisor's `set_condition` and a check-out of the same room, 20 times: neither waits on the other
-/// forever, and the room ends `dirty` (check-out last) or `cleaning` (the change last), matching the audit.
+/// forever, and the room always ends `dirty`: the change either ran first and check-out then overwrote it, or
+/// lost on a stale version.
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn check_out_races_set_condition_without_deadlock(_: PgPoolOptions, opts: PgConnectOptions) {
     const ROUNDS: usize = 20;
@@ -528,12 +529,8 @@ async fn check_out_races_set_condition_without_deadlock(_: PgPoolOptions, opts: 
 
         out.unwrap();
         let condition = hotel.condition(room).await.0;
-        match set {
-            // The change ran first and check-out then made the room dirty.
-            Ok(_) => assert!(condition == "dirty" || condition == "cleaning", "round {round}: {condition}"),
-            // Check-out came first, so the change named a stale version.
-            Err(_) => assert_eq!(condition, "dirty", "round {round}"),
-        }
+        // Check-out writes last in every ordering; a change that came after it named a stale version.
+        assert_eq!(condition, "dirty", "round {round}: change {set:?}");
         applied += usize::from(set.is_ok());
         assert_eq!(hotel.audited("room.condition_changed").await.len(), applied, "round {round}: audit count");
     }

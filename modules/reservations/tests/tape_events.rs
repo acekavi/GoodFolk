@@ -219,6 +219,9 @@ async fn check_in_and_undo_emit_tape_keys_for_the_stays_range(_: PgPoolOptions, 
 
     assert_eq!(tape_only(&checked_in_keys), expected);
     assert_eq!(tape_only(&undone_keys), expected);
+    let board = housekeeping::hk_key(hotel.property);
+    assert!(checked_in_keys.contains(&board), "check-in tells the board: {checked_in_keys:?}");
+    assert!(undone_keys.contains(&board), "undo tells the board: {undone_keys:?}");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

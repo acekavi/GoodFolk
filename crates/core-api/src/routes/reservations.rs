@@ -4,9 +4,7 @@ use crate::error::{ApiError, Changes, validate, validate_changes};
 use crate::extract::{ApiJson, ApiPath, SensitiveJson};
 use crate::routes::rooms::present;
 use crate::state::AppState;
-use axum::Json;
 use axum::extract::State;
-use axum::extract::rejection::JsonRejection;
 use db::{Scope, Tx};
 use garde::Validate;
 use identity::Permission;
@@ -489,10 +487,10 @@ pub async fn check_in(
     ctx: TenantContext,
     ApiPath((property, room)): ApiPath<(Uuid, Uuid)>,
     IfMatch(version): IfMatch,
-    body: Result<Option<Json<CheckInRequest>>, JsonRejection>,
+    body: Option<ApiJson<CheckInRequest>>,
 ) -> Result<Versioned<CheckedIn>, ApiError> {
     ctx.require(Permission::FrontDeskCheckIn, Some(property))?;
-    let reason = body?.and_then(|Json(request)| request.override_reason);
+    let reason = body.and_then(|ApiJson(request)| request.override_reason);
     let override_ = match reason {
         Some(reason) => {
             ctx.require(Permission::HousekeepingSupervise, Some(property))?;

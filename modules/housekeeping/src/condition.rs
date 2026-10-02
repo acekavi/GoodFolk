@@ -161,16 +161,7 @@ async fn write(
     from: Condition,
     to: Condition,
 ) -> Result<RoomConditionRow, HousekeepingError> {
-    let version: i32 = sqlx::query_scalar(
-        "update room_condition set condition = $1, version = version + 1, changed_at = now(), changed_by = $2
-         where room_id = $3 and property_id = $4 returning version",
-    )
-    .bind(to.as_str())
-    .bind(actor.0)
-    .bind(room)
-    .bind(property)
-    .fetch_one(&mut **tx)
-    .await?;
+    let version = update_row(tx, actor, property, room, to).await?;
     audit(
         tx,
         tenant,
@@ -182,4 +173,39 @@ async fn write(
     )
     .await?;
     Ok(RoomConditionRow { room_id: room, condition: to, version })
+}
+
+/// Locks `room`'s condition row, sets it to `to` and returns the condition it had, for callers that audit the
+/// change inside their own entry (check-in's undo and check-out). Lock it after the caller's `reservation_room`
+/// row, like [`set_condition`] does. `NotFound` when the room has no row in the property.
+pub async fn lock_and_set(
+    tx: &mut Tx,
+    actor: UserId,
+    property: Uuid,
+    room: Uuid,
+    to: Condition,
+) -> Result<Condition, HousekeepingError> {
+    let from: String =
+        sqlx::query_scalar("select condition from room_condition where room_id = $1 and property_id = $2 for update")
+            .bind(room)
+            .bind(property)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or(HousekeepingError::NotFound("room"))?;
+    update_row(tx, actor, property, room, to).await?;
+    Ok(parse(&from)?)
+}
+
+/// Sets the locked row's condition, bumps its version and returns the new one.
+async fn update_row(tx: &mut Tx, actor: UserId, property: Uuid, room: Uuid, to: Condition) -> Result<i32, sqlx::Error> {
+    sqlx::query_scalar(
+        "update room_condition set condition = $1, version = version + 1, changed_at = now(), changed_by = $2
+         where room_id = $3 and property_id = $4 returning version",
+    )
+    .bind(to.as_str())
+    .bind(actor.0)
+    .bind(room)
+    .bind(property)
+    .fetch_one(&mut **tx)
+    .await
 }

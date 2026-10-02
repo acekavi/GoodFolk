@@ -165,7 +165,7 @@ pub async fn check_in(
         data["condition"] = condition.as_str().into();
     }
     audit(tx, tenant, actor, "reservation_room.checked_in", "reservation_room", id, data).await?;
-    let keys = [reservations_key(property), reservation_key(row.reservation_id)]
+    let keys = [reservations_key(property), reservation_key(row.reservation_id), hk_key(property)]
         .into_iter()
         .chain(rooms::tape_keys(property, row.check_in, row.check_out))
         .collect();
@@ -221,7 +221,10 @@ pub async fn undo_check_in(
         return Err(ReservationsError::Conflict("check-in can only be undone on the day it happened".into()));
     }
 
-    let restored = before.as_deref().unwrap_or(Condition::Clean.as_str());
+    let restored = match before {
+        Some(stored) => Condition::parse(&stored).ok_or_else(|| decode_error("condition_before_check_in", &stored))?,
+        None => Condition::Clean,
+    };
     if let Some(room) = room_id {
         set_room_condition(tx, actor, property, room, restored).await?;
     }
@@ -240,7 +243,7 @@ pub async fn undo_check_in(
         .execute(&mut **tx)
         .await?;
 
-    let data = serde_json::json!({ "reservation_id": reservation_id, "condition": restored });
+    let data = serde_json::json!({ "reservation_id": reservation_id, "condition": restored.as_str() });
     audit(tx, tenant, actor, "reservation_room.check_in_undone", "reservation_room", id, data).await?;
     let keys = [reservations_key(property), reservation_key(reservation_id), hk_key(property)]
         .into_iter()
@@ -292,6 +295,11 @@ pub async fn check_out(
     let current = RoomStatus::parse(&stay.status).ok_or_else(|| decode_error("status", &stay.status))?;
     domain::transition(current, Action::CheckOut).map_err(|invalid| ReservationsError::Conflict(invalid.message))?;
 
+    // Before the inventory days: room_condition comes ahead of room_block and inventory_day in the lock order.
+    let was = match stay.room_id {
+        Some(room) => Some(set_room_condition(tx, actor, property, room, Condition::Dirty).await?),
+        None => None,
+    };
     let today = business_date(tx, property).await?;
     let mut new_check_out = stay.check_out;
     let mut released_nights = Vec::new();
@@ -318,10 +326,6 @@ pub async fn check_out(
         }
     }
 
-    let was = match stay.room_id {
-        Some(room) => Some(set_room_condition(tx, actor, property, room, Condition::Dirty.as_str()).await?),
-        None => None,
-    };
     let (version, checked_out_at): (i32, OffsetDateTime) = sqlx::query_as(
         "update reservation_room
          set stay = daterange($2, $3), status = 'checked_out', checked_out_at = now(), version = version + 1
@@ -341,7 +345,7 @@ pub async fn check_out(
     let data = serde_json::json!({
         "reservation_id": stay.reservation_id,
         "released_nights": released_nights,
-        "condition_before": was,
+        "condition_before": was.map(Condition::as_str),
     });
     audit(tx, tenant, actor, "reservation_room.checked_out", "reservation_room", id, data).await?;
     let mut keys = vec![reservations_key(property), reservation_key(stay.reservation_id), hk_key(property)];
@@ -363,32 +367,20 @@ pub async fn check_out(
     })
 }
 
-/// Locks `room`'s condition row and sets it to `to`, returning the condition it had. The caller audits it inside
-/// its own entry; the board key is notified there too.
+/// Locks `room`'s condition and sets it to `to`, returning the condition it had. The caller audits it inside
+/// its own entry and notifies the board.
 async fn set_room_condition(
     tx: &mut Tx,
     actor: UserId,
     property: Uuid,
     room: Uuid,
-    to: &str,
-) -> Result<String, ReservationsError> {
-    let from: String =
-        sqlx::query_scalar("select condition from room_condition where room_id = $1 and property_id = $2 for update")
-            .bind(room)
-            .bind(property)
-            .fetch_optional(&mut **tx)
-            .await?
-            .ok_or(ReservationsError::NotFound("room"))?;
-    sqlx::query(
-        "update room_condition set condition = $1, version = version + 1, changed_at = now(), changed_by = $2
-         where room_id = $3",
-    )
-    .bind(to)
-    .bind(actor.0)
-    .bind(room)
-    .execute(&mut **tx)
-    .await?;
-    Ok(from)
+    to: Condition,
+) -> Result<Condition, ReservationsError> {
+    housekeeping::lock_and_set(tx, actor, property, room, to).await.map_err(|err| match err {
+        housekeeping::HousekeepingError::NotFound(what) => ReservationsError::NotFound(what),
+        housekeeping::HousekeepingError::Database(err) => ReservationsError::Database(err),
+        other => unreachable!("locking a condition cannot fail with {other:?}"),
+    })
 }
 
 /// `reason` trimmed, or `Invalid` when it is empty or longer than [`MAX_OVERRIDE_REASON`] characters.

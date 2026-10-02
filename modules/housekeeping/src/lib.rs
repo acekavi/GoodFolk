@@ -9,7 +9,7 @@ mod condition;
 pub use assignments::{Housekeeper, copy_yesterday, housekeepers, set_assignments};
 
 pub use condition::{
-    Actor, Condition, MAX_BULK_ROOMS, RoomConditionRow, housekeeper_may, set_condition, set_conditions,
+    Actor, Condition, MAX_BULK_ROOMS, RoomConditionRow, housekeeper_may, lock_and_set, set_condition, set_conditions,
 };
 
 use db::{Event, TenantId, Tx, UserId};
