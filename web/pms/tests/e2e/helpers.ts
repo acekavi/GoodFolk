@@ -132,11 +132,14 @@ export async function bookableHotel(page: Page, rooms: number, nights: number): 
 		max_children: 1,
 		max_occupancy: 3
 	});
-	await post(api, `${path}/rooms/bulk`, {
-		room_type_id: roomType.id,
-		first: 101,
-		last: 100 + rooms
-	});
+	// The API adds at most 200 rooms at a time.
+	for (let first = 101; first <= 100 + rooms; first += 200) {
+		await post(api, `${path}/rooms/bulk`, {
+			room_type_id: roomType.id,
+			first,
+			last: Math.min(first + 199, 100 + rooms)
+		});
+	}
 	const plan = await post(api, `${path}/rate-plans`, {
 		code: 'BAR',
 		name: 'Best available',
