@@ -63,6 +63,12 @@ pub fn rooms_key(property: Uuid) -> String {
     format!("rooms:{property}")
 }
 
+/// The housekeeping board's cache key, `housekeeping::hk_key`. A block shows on the board, but `housekeeping`
+/// depends on this crate, so the key is spelled here too.
+fn hk_key(property: Uuid) -> String {
+    format!("hk:{property}")
+}
+
 /// Whether `err` violated the named constraint.
 fn violates(err: &sqlx::Error, constraint: &str) -> bool {
     err.as_database_error().and_then(|db_err| db_err.constraint()).is_some_and(|name| name == constraint)

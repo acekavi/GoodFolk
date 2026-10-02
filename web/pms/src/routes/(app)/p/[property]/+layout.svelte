@@ -1,10 +1,15 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
+	import { createQuery } from '@tanstack/svelte-query';
+	import { can, fetchMe } from '$lib/session';
 
 	let { children } = $props();
 
+	const me = createQuery(() => ({ queryKey: ['me'], queryFn: fetchMe }));
 	const property = $derived(page.params.property ?? '');
+	// The profile is cached by the app layout; until it loads, the link is not offered.
+	const seesHousekeeping = $derived(!!me.data && can(me.data, 'housekeepingView', property));
 	const links = $derived([
 		{ href: resolve('/(app)/p/[property]', { property }), label: 'Overview' },
 		{ href: resolve('/(app)/p/[property]/tape', { property }), label: 'Tape chart' },
@@ -12,10 +17,9 @@
 			href: resolve('/(app)/p/[property]/reservations/(list)', { property }),
 			label: 'Reservations'
 		},
-		{
-			href: resolve('/(app)/p/[property]/housekeeping', { property }),
-			label: 'Housekeeping'
-		},
+		...(seesHousekeeping
+			? [{ href: resolve('/(app)/p/[property]/housekeeping', { property }), label: 'Housekeeping' }]
+			: []),
 		{ href: resolve('/(app)/p/[property]/accounts', { property }), label: 'Accounts' },
 		{ href: resolve('/(app)/p/[property]/room-types', { property }), label: 'Room types' },
 		{ href: resolve('/(app)/p/[property]/rooms', { property }), label: 'Rooms' },

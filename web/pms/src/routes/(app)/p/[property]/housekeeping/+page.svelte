@@ -68,6 +68,7 @@
 	}));
 	const allowed = $derived(!!me.data && can(me.data, 'housekeepingView', propertyId));
 	const supervise = $derived(!!me.data && can(me.data, 'housekeepingSupervise', propertyId));
+	const mayBlock = $derived(!!me.data && can(me.data, 'blockRooms', propertyId));
 	const mayReport = $derived(!!me.data && can(me.data, 'roomIssuesReport', propertyId));
 	const board = createQuery(() => ({
 		queryKey: hkKey(propertyId),
@@ -390,13 +391,16 @@
 	{:else}
 		<div class="grid" role="group" aria-label="Rooms">
 			{#each shown as room (room.roomId)}
-				<button
-					type="button"
+				<!-- Only a supervisor can act on a tile; for everyone else it is a plain element with the same label. -->
+				<svelte:element
+					this={supervise ? 'button' : 'div'}
+					type={supervise ? 'button' : undefined}
+					role={supervise ? undefined : 'img'}
 					class="tile"
 					data-condition={room.condition}
 					aria-label={tileName(room)}
 					aria-pressed={supervise ? selected.has(room.roomId) : undefined}
-					onclick={(event) => pick(room.roomId, event.shiftKey)}
+					onclick={supervise ? (event: MouseEvent) => pick(room.roomId, event.shiftKey) : undefined}
 				>
 					<span class="number">{room.number}</span>
 					<span class="condition" aria-hidden="true">{conditionLabel(room.condition)}</span>
@@ -412,7 +416,7 @@
 					{#if room.blockKind}<span class="block" aria-hidden="true"
 							>{room.blockKind === 'OUT_OF_ORDER' ? 'OOO' : 'OOS'}</span
 						>{/if}
-				</button>
+				</svelte:element>
 			{/each}
 		</div>
 	{/if}
@@ -463,7 +467,7 @@
 								disabled={pending.has(issue.id)}
 								onclick={() => resolveOne(issue)}>Resolve</button
 							>
-							{#if issue.severity === 'HIGH'}
+							{#if mayBlock && issue.severity === 'HIGH'}
 								<button type="button" class="secondary" onclick={() => blockRoom(issue)}
 									>Block room</button
 								>
@@ -476,7 +480,7 @@
 	</section>
 {/if}
 
-{#if supervise && rooms.data && roomTypes.data && businessDate}
+{#if mayBlock && rooms.data && roomTypes.data && businessDate}
 	<BlockDialog
 		{propertyId}
 		{businessDate}

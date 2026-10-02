@@ -1,5 +1,14 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
-import { addDays, addStaff, bookableHotel, createProperty, post, signIn, signUp } from './helpers';
+import {
+	addDays,
+	addStaff,
+	bookableHotel,
+	createProperty,
+	insertAssignment,
+	post,
+	signIn,
+	signUp
+} from './helpers';
 
 /** A hotel of rooms 101 to 104 with one stay arriving tonight in 101, and its owner's page on the board. */
 async function board(page: Page) {
@@ -92,12 +101,30 @@ test('a bulk set to clean changes every selected room', async ({ page }) => {
 	await expect(page.getByRole('status').filter({ hasText: 'selected' })).toHaveText('0 selected');
 });
 
-test('rooms are assigned to a housekeeper, and Copy yesterday keeps the assignments', async ({
+test('rooms are assigned to a housekeeper, and Copy yesterday brings over the previous day', async ({
 	page
 }) => {
-	const { email } = await board(page);
+	const { email, propertyId, hotel } = await board(page);
 	addStaff(email, 'housekeeping', 'Kumari Silva');
 	await page.reload();
+	// Kumari cleaned room 103 yesterday; the API only assigns for today, so this goes in as the schema owner.
+	const me = await (await page.request.get('/api/v1/me')).json();
+	const graphql = await page.request.post('/graphql', {
+		headers: { 'x-goodfolk-csrf': '1' },
+		data: {
+			query: `{ rooms(propertyId: "${propertyId}") { id number } housekeepers(propertyId: "${propertyId}") { userId displayName } }`
+		}
+	});
+	const { rooms, housekeepers } = (await graphql.json()).data;
+	insertAssignment({
+		tenant: me.current_tenant,
+		property: propertyId,
+		date: addDays(hotel.businessDate, -1),
+		room: rooms.find((room: { number: string }) => room.number === '103').id,
+		user: housekeepers.find(
+			(person: { displayName: string }) => person.displayName === 'Kumari Silva'
+		).userId
+	});
 
 	await tile(page, '102').click();
 	await page.getByLabel('Assign to…').selectOption({ label: 'Kumari Silva' });
@@ -110,8 +137,10 @@ test('rooms are assigned to a housekeeper, and Copy yesterday keeps the assignme
 
 	await page.getByRole('button', { name: 'Copy yesterday' }).click();
 	await expect(page.getByRole('status').filter({ hasText: 'Copied' })).toHaveText(
-		'Copied 0 assignments from yesterday'
+		'Copied 1 assignment from yesterday'
 	);
+	await expect(tile(page, '103')).toHaveAttribute('aria-label', /cleaned by Kumari Silva/);
+	await expect(tile(page, '103').getByText('KS')).toBeVisible();
 	await expect(tile(page, '102')).toHaveAttribute('aria-label', /cleaned by Kumari Silva/);
 
 	await tile(page, '102').click();
@@ -168,7 +197,9 @@ test('a front desk user sees the board and can report, but has no supervisor act
 	const { email, propertyId } = await board(page);
 	const { page: desk, context } = await staffOnBoard(browser, email, 'front_desk', propertyId);
 
-	await expect(desk.getByRole('group', { name: 'Rooms' }).getByRole('button')).toHaveCount(4);
+	// Without supervise, tiles are plain labelled elements, not buttons.
+	await expect(desk.getByRole('group', { name: 'Rooms' }).getByRole('img')).toHaveCount(4);
+	await expect(desk.getByRole('group', { name: 'Rooms' }).getByRole('button')).toHaveCount(0);
 	await expect(desk.getByRole('form', { name: 'Report an issue' })).toBeVisible();
 	await expect(desk.getByRole('button', { name: 'Copy yesterday' })).toHaveCount(0);
 	await expect(desk.getByRole('toolbar', { name: 'Selected rooms' })).toHaveCount(0);
@@ -258,4 +289,54 @@ test("the tape chart rail shows a room's condition and follows the board live", 
 
 	await expect(dot).toHaveAttribute('title', 'Clean');
 	await tape.close();
+});
+
+test('Block room is offered to a manager but not to a housekeeping supervisor', async ({
+	page,
+	browser
+}) => {
+	const { email, propertyId } = await board(page);
+	const form = page.getByRole('form', { name: 'Report an issue' });
+	await form.getByLabel('Room').selectOption({ label: '102' });
+	await form.getByLabel('Severity').selectOption('HIGH');
+	await form.getByLabel('Description').fill('Window will not close');
+	await form.getByRole('button', { name: 'Report issue' }).click();
+
+	// A supervisor resolves issues but, like the server's InventoryBlock grant, cannot block rooms.
+	const supervisor = await staffOnBoard(browser, email, 'hk_supervisor', propertyId);
+	const issue = supervisor.page.getByRole('list', { name: 'Open issues' }).getByRole('listitem');
+	await expect(issue).toContainText('Window will not close');
+	await expect(issue.getByRole('button', { name: 'Resolve' })).toBeVisible();
+	await expect(issue.getByRole('button', { name: 'Block room' })).toHaveCount(0);
+	await supervisor.context.close();
+
+	const manager = await staffOnBoard(browser, email, 'manager', propertyId);
+	await expect(
+		manager.page
+			.getByRole('list', { name: 'Open issues' })
+			.getByRole('listitem')
+			.getByRole('button', { name: 'Block room' })
+	).toBeVisible();
+	await manager.context.close();
+});
+
+test('another user blocking a room shows its marker on the board without a reload', async ({
+	page,
+	browser
+}) => {
+	const { email, propertyId } = await board(page);
+	const manager = await staffOnBoard(browser, email, 'manager', propertyId);
+	const form = manager.page.getByRole('form', { name: 'Report an issue' });
+	await form.getByLabel('Room').selectOption({ label: '103' });
+	await form.getByLabel('Severity').selectOption('HIGH');
+	await form.getByLabel('Description').fill('Flooded');
+	await form.getByRole('button', { name: 'Report issue' }).click();
+	await manager.page.getByRole('button', { name: 'Block room' }).click();
+	const dialog = manager.page.getByRole('dialog', { name: 'Block a room' });
+	await dialog.getByLabel('Reason').selectOption({ index: 1 });
+	await dialog.getByRole('button', { name: 'Block room' }).click();
+	await expect(dialog).toBeHidden();
+
+	await expect(tile(page, '103')).toHaveAttribute('aria-label', /out of (order|service)/);
+	await manager.context.close();
 });

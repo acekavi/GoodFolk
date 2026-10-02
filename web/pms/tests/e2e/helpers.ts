@@ -244,3 +244,36 @@ export async function signIn(page: Page, email: string): Promise<void> {
 	await page.getByRole('button', { name: 'Sign in' }).click();
 	await expect(page.getByRole('heading', { name: 'Properties' })).toBeVisible();
 }
+
+/** An assignment of a room to a housekeeper for a business date, as the board keeps it. */
+export interface Assignment {
+	tenant: string;
+	property: string;
+	date: string;
+	room: string;
+	user: string;
+}
+
+/**
+ * Inserts an `hk_assignment` row as the schema owner (`E2E_OWNER_URL`), in the tenant's scope as row-level
+ * security requires. The API only assigns for the current business date, so a past one needs this. Bun runs
+ * the insert because the e2e runner has no Postgres client.
+ */
+export function insertAssignment(assignment: Assignment): void {
+	const owner = process.env.E2E_OWNER_URL;
+	if (!owner) throw new Error('set E2E_OWNER_URL to the e2e database, as goodfolk_owner');
+	const script = `
+		const sql = new Bun.SQL(process.env.URL);
+		const a = JSON.parse(process.env.ASSIGNMENT);
+		await sql.begin(async (tx) => {
+			await tx\`select set_config('app.tenant_id', \${a.tenant}, true)\`;
+			await tx\`insert into hk_assignment (tenant_id, property_id, business_date, room_id, user_id)
+				values (\${a.tenant}, \${a.property}, \${a.date}, \${a.room}, \${a.user})\`;
+		});
+		await sql.close();
+	`;
+	execFileSync('bun', ['-e', script], {
+		env: { ...process.env, URL: owner, ASSIGNMENT: JSON.stringify(assignment) },
+		stdio: 'pipe'
+	});
+}
