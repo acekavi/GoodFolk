@@ -164,11 +164,13 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
 
 ## Phase 5 — Housekeeping ([spec](specs/phase-5-housekeeping.md))
 
-- Room condition state machine, and automation on check-out and check-in.
-- Enforce `CHECKIN_REQUIRES_CLEAN_ROOM` in `reservations::check_in` (today the flag is parsed into `CheckInPolicy` but is a no-op: there's no room condition to read), refusing check-in into a room that isn't clean/inspected when it's `true`, with a test for both settings.
-- Housekeeping board, assignments, and the housekeeper PWA (my rooms, offline queue).
-- Issue reports with photos (needs the Phase 6 upload path; a stub is acceptable until then).
-- Laundry: hotel linen (par levels, stock by location, sent/received batches, write-offs) and guest laundry orders that post charges to the folio.
+- Room condition (`dirty → cleaning → clean → inspected`), set `dirty` on check-out, restored on undo check-in.
+- Check-in requires a clean or inspected room, with a manager override and reason; `CHECKIN_REQUIRES_CLEAN_ROOM` is removed.
+- A `hk_supervisor` role; the housekeeping board (conditions, derived occupancy, assignments, issues, bulk changes, copy yesterday).
+- The installable housekeeper app under `/hk`: my rooms, one-tap conditions, issue reports, an offline queue with visible conflicts.
+- Issue reports (photos arrive with Phase 6).
+- Linen and guest laundry moved to [laundry.md](specs/laundry.md), built with or after Phase 7 (the owner's decision).
+- **Performance gates:** board for 500 rooms p95 under 30 ms server time and renders under 50 ms; housekeeper app first load on 3G-class network under 2 s.
 
 ## Phase 6 — Media engine ([spec](specs/phase-6-media.md))
 
@@ -196,6 +198,7 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
 - Carried over from Phase 1:
   - Once the business-date roll exists, run `rooms::extend_window` under a property-level lock: today a writer may insert counter rows computed from a business date the roll is moving, leaving stale rows behind.
   - The roll updates `property.business_date` with the row locked `for update`, and counter writers read the business date `for share` (today `inventory::business_date` reads it unlocked), so no write adjusts counters from a business date that is changing under it.
+- Linen and guest laundry (moved from Phase 5): [spec](specs/laundry.md). Guest laundry charges post to the folio built here.
 
 ## Phase 8 — Settings completeness and channels ([spec](specs/phase-8-settings-channels.md))
 
