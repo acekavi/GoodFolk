@@ -38,6 +38,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 db = { workspace = true, features = ["testing"] }
+flate2.workspace = true
 http-body-util.workspace = true
 tokio.workspace = true
 tower.workspace = true

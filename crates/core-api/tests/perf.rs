@@ -577,3 +577,373 @@ async fn availability_for_7_nights_12_types_and_5_plans_is_served_under_40ms_at_
     println!("availability, {NIGHTS} nights x {ROOM_TYPES} types x 5 plans: p50 {p50:?}, p95 {p95:?}");
     assert!(p95 < Duration::from_millis(40), "p95 {p95:?} is over the 40 ms gate");
 }
+
+const TAPE_ROOMS: usize = 500;
+const TAPE_PAGE_ROOMS: usize = 10;
+const TAPE_PAST_DAYS: i64 = 183;
+const TAPE_AHEAD_DAYS: i64 = 365;
+const TAPE_UNASSIGNED: usize = 50;
+/// How far either side of the business date a sampled window may start: 9 months.
+const TAPE_SAMPLE_SPREAD: i64 = 273;
+
+/// A small deterministic xorshift generator, so a run's data and sampled windows are the same every time.
+struct Rng(u64);
+
+impl Rng {
+    fn below(&mut self, bound: u64) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0 % bound
+    }
+}
+
+struct TapeFixture {
+    app: TestApp,
+    owner: String,
+    superuser: PgPool,
+    property: Uuid,
+    day0: time::Date,
+    /// The 500 rooms in sort order.
+    rooms: Vec<Uuid>,
+}
+
+/// A 500-room, 12-type property with 18 months of stays (6 in the past, 12 ahead) at about 80% occupancy, every
+/// stay assigned to a room, 1 to 7 nights long and never overlapping another in its room; 3% of room-nights
+/// blocked; and 50 confirmed stays with no room. Inserted directly through the owner pool with batched
+/// `unnest` SQL, so the check-in columns are filled to match 0008's CHECK constraints: stays that ended are
+/// checked out, stays spanning the business date are checked in and later ones are confirmed.
+async fn seed_tape_property(opts: PgConnectOptions) -> TapeFixture {
+    const GUESTS: usize = 20_000;
+    const BATCH: usize = 20_000;
+    const BLOCKS_PER_ROOM: [i64; 6] = [3, 3, 3, 3, 3, 1];
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    let (path, day0, types) = property_with_room_types(&app, &owner).await;
+    let property = Uuid::parse_str(path.trim_start_matches("/api/v1/properties/")).unwrap();
+    let tenant: Uuid = sqlx::query_scalar("select tenant_id from property where id = $1")
+        .bind(property)
+        .fetch_one(&superuser)
+        .await
+        .unwrap();
+    let type_ids: Vec<Uuid> = types.iter().map(uuid).collect();
+    let standard = json!({"code": "STD", "name": "Standard", "kind": "standard", "segment": "IBE",
+                          "currency": "USD", "room_type_ids": types});
+    let rate_plan = uuid(&post(&app, &owner, &format!("{path}/rate-plans"), standard).await.body["id"]);
+
+    let rooms: Vec<Uuid> = (0..TAPE_ROOMS).map(|_| Uuid::now_v7()).collect();
+    let numbers: Vec<String> = (0..TAPE_ROOMS).map(|index| (1001 + index).to_string()).collect();
+    let room_types: Vec<Uuid> = (0..TAPE_ROOMS).map(|index| type_ids[index % type_ids.len()]).collect();
+    let sort_orders: Vec<i32> = (0..TAPE_ROOMS).map(|index| i32::try_from(index).unwrap()).collect();
+    sqlx::query(
+        "insert into room (id, tenant_id, property_id, room_type_id, number, sort_order)
+         select r.id, $1, $2, r.room_type_id, r.number, r.sort_order
+         from unnest($3::uuid[], $4::uuid[], $5::text[], $6::int[]) as r (id, room_type_id, number, sort_order)",
+    )
+    .bind(tenant)
+    .bind(property)
+    .bind(&rooms)
+    .bind(&room_types)
+    .bind(&numbers)
+    .bind(&sort_orders)
+    .execute(&superuser)
+    .await
+    .unwrap();
+    // The counters the unassigned list's `overbooked` check reads: each type's physical rooms.
+    sqlx::query(
+        "update inventory_day i set physical = (select count(*) from room r where r.room_type_id = i.room_type_id)
+         where i.property_id = $1",
+    )
+    .bind(property)
+    .execute(&superuser)
+    .await
+    .unwrap();
+
+    let guest_ids: Vec<Uuid> = (0..GUESTS).map(|_| Uuid::now_v7()).collect();
+    let last_names: Vec<String> = (0..GUESTS).map(|index| format!("Surname{index}")).collect();
+    sqlx::query(
+        "insert into guest (id, tenant_id, first_name, last_name, residency)
+         select g.id, $1, 'Ana', g.name, 'non_resident' from unnest($2::uuid[], $3::text[]) as g (id, name)",
+    )
+    .bind(tenant)
+    .bind(&guest_ids)
+    .bind(&last_names)
+    .execute(&superuser)
+    .await
+    .unwrap();
+
+    // Each room is filled from the start of the span with stays of 1 to 7 nights and gaps of 0 to 2 nights
+    // (an average of 4 nights booked per 0.8 free: about 83% occupancy).
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    let first = day0 - time::Duration::days(TAPE_PAST_DAYS);
+    let last = day0 + time::Duration::days(TAPE_AHEAD_DAYS);
+    // (room, room type, start, end)
+    let mut stays: Vec<(Option<Uuid>, Uuid, time::Date, time::Date)> = Vec::new();
+    for (index, room) in rooms.iter().enumerate() {
+        let mut cursor = first + time::Duration::days(i64::try_from(rng.below(3)).unwrap());
+        loop {
+            let end = cursor + time::Duration::days(i64::try_from(rng.below(7)).unwrap() + 1);
+            if end > last {
+                break;
+            }
+            stays.push((Some(*room), room_types[index], cursor, end));
+            let gap = [0, 0, 1, 1, 2][usize::try_from(rng.below(5)).unwrap()];
+            cursor = end + time::Duration::days(gap);
+        }
+    }
+    for _ in 0..TAPE_UNASSIGNED {
+        let start = day0 + time::Duration::days(i64::try_from(rng.below(TAPE_AHEAD_DAYS as u64 - 8)).unwrap() + 1);
+        let end = start + time::Duration::days(i64::try_from(rng.below(7)).unwrap() + 1);
+        stays.push((None, type_ids[usize::try_from(rng.below(12)).unwrap()], start, end));
+    }
+
+    for (batch_number, batch) in stays.chunks(BATCH).enumerate() {
+        let reservation_ids: Vec<Uuid> = batch.iter().map(|_| Uuid::now_v7()).collect();
+        let stay_ids: Vec<Uuid> = batch.iter().map(|_| Uuid::now_v7()).collect();
+        let confirmations: Vec<String> =
+            (0..batch.len()).map(|index| format!("TAPE-{:06}", batch_number * BATCH + index)).collect();
+        let sources: Vec<&str> = batch.iter().map(|_| "front_desk").collect();
+        let bookers: Vec<Uuid> = (0..batch.len()).map(|index| guest_ids[index % GUESTS]).collect();
+        sqlx::query(
+            "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id)
+             select r.id, $1, $2, r.confirmation_no, r.source, r.booker_guest_id
+             from unnest($3::uuid[], $4::text[], $5::text[], $6::uuid[])
+                  as r (id, confirmation_no, source, booker_guest_id)",
+        )
+        .bind(tenant)
+        .bind(property)
+        .bind(&reservation_ids)
+        .bind(&confirmations)
+        .bind(&sources)
+        .bind(&bookers)
+        .execute(&superuser)
+        .await
+        .unwrap();
+
+        let room_ids: Vec<Option<Uuid>> = batch.iter().map(|stay| stay.0).collect();
+        let stay_types: Vec<Uuid> = batch.iter().map(|stay| stay.1).collect();
+        let starts: Vec<time::Date> = batch.iter().map(|stay| stay.2).collect();
+        let ends: Vec<time::Date> = batch.iter().map(|stay| stay.3).collect();
+        let primary_guests: Vec<Uuid> = (0..batch.len()).map(|index| guest_ids[(index + 1) % GUESTS]).collect();
+        sqlx::query(
+            "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, room_id, stay,
+                                            adults, children, rate_plan_id, meal_plan, status, primary_guest_id,
+                                            currency, checked_in_at, checked_in_business_date, checked_out_at)
+             select c.id, $1, $2, c.reservation_id, c.room_type_id, c.room_id, daterange(c.start, c.stop, '[)'), 2, 0,
+                    $3, 'RO', c.status, c.primary_guest_id, 'USD',
+                    case when c.status in ('checked_in', 'checked_out') then now() end,
+                    case when c.status in ('checked_in', 'checked_out') then c.start end,
+                    case when c.status = 'checked_out' then now() end
+             from (select u.*, case when u.stop <= $4 then 'checked_out'
+                                    when u.start <= $4 then 'checked_in'
+                                    else 'confirmed' end as status
+                   from unnest($5::uuid[], $6::uuid[], $7::uuid[], $8::uuid[], $9::date[], $10::date[], $11::uuid[])
+                        as u (id, reservation_id, room_type_id, room_id, start, stop, primary_guest_id)) as c",
+        )
+        .bind(tenant)
+        .bind(property)
+        .bind(rate_plan)
+        .bind(day0)
+        .bind(&stay_ids)
+        .bind(&reservation_ids)
+        .bind(&stay_types)
+        .bind(&room_ids)
+        .bind(&starts)
+        .bind(&ends)
+        .bind(&primary_guests)
+        .execute(&superuser)
+        .await
+        .unwrap();
+    }
+
+    // 3% of room-nights: five blocks of 3 nights and one of 1 night in every room, spread over the span.
+    let reason = Uuid::now_v7();
+    sqlx::query(
+        "insert into block_reason (id, tenant_id, property_id, code, label, default_kind)
+         values ($1, $2, $3, 'MAINT', 'Maintenance', 'out_of_order')",
+    )
+    .bind(reason)
+    .bind(tenant)
+    .bind(property)
+    .execute(&superuser)
+    .await
+    .unwrap();
+    let span = (last - first).whole_days();
+    let slot = span / i64::try_from(BLOCKS_PER_ROOM.len()).unwrap();
+    let mut block_rooms = Vec::new();
+    let mut block_starts = Vec::new();
+    let mut block_ends = Vec::new();
+    for room in &rooms {
+        for (number, nights) in BLOCKS_PER_ROOM.iter().enumerate() {
+            let offset = i64::try_from(number).unwrap() * slot + i64::try_from(rng.below(slot as u64 - 4)).unwrap();
+            block_rooms.push(*room);
+            block_starts.push(first + time::Duration::days(offset));
+            block_ends.push(first + time::Duration::days(offset + nights));
+        }
+    }
+    sqlx::query(
+        "insert into room_block (id, tenant_id, property_id, room_id, period, kind, reason_id)
+         select gen_random_uuid(), $1, $2, b.room_id, daterange(b.start, b.stop, '[)'), 'out_of_order', $3
+         from unnest($4::uuid[], $5::date[], $6::date[]) as b (room_id, start, stop)",
+    )
+    .bind(tenant)
+    .bind(property)
+    .bind(reason)
+    .bind(&block_rooms)
+    .bind(&block_starts)
+    .bind(&block_ends)
+    .execute(&superuser)
+    .await
+    .unwrap();
+    sqlx::query("analyze").execute(&superuser).await.unwrap();
+
+    TapeFixture { app, owner, superuser, property, day0, rooms }
+}
+
+const TAPE_WINDOW: &str = "query ($p: UUID!, $rooms: [UUID!]!, $from: Date!, $to: Date!) {
+    tapeWindow(propertyId: $p, roomIds: $rooms, from: $from, to: $to) {
+        stays { id reservationId roomId roomTypeId start end status guestName accountName version }
+        blocks { id roomId start end reason }
+    }
+}";
+
+const UNASSIGNED_STAYS: &str = "query ($p: UUID!, $from: Date!, $to: Date!) {
+    unassignedStays(propertyId: $p, from: $from, to: $to) {
+        id reservationId roomTypeId start end status guestName reason version
+    }
+}";
+
+impl TapeFixture {
+    /// A random page of 10 consecutive rooms and a random window of `days` days starting within 9 months of the
+    /// business date, as a `tapeWindow` request.
+    fn random_tape_window(&self, rng: &mut Rng, days: i64) -> Value {
+        let page = usize::try_from(rng.below((TAPE_ROOMS / TAPE_PAGE_ROOMS) as u64)).unwrap() * TAPE_PAGE_ROOMS;
+        let from = self.random_start(rng);
+        json!({"query": TAPE_WINDOW, "variables": {
+            "p": self.property, "rooms": &self.rooms[page..page + TAPE_PAGE_ROOMS],
+            "from": from.to_string(), "to": (from + time::Duration::days(days)).to_string()}})
+    }
+
+    fn random_start(&self, rng: &mut Rng) -> time::Date {
+        self.day0
+            + time::Duration::days(
+                i64::try_from(rng.below(2 * TAPE_SAMPLE_SPREAD as u64)).unwrap() - TAPE_SAMPLE_SPREAD,
+            )
+    }
+
+    /// Times `SAMPLES` requests after a warm-up of 20 and returns the sorted samples, plus the rows `rows`
+    /// counted across all responses.
+    async fn time_requests(
+        &self,
+        mut next: impl FnMut() -> Value,
+        rows: impl Fn(&Value) -> usize,
+    ) -> (Vec<Duration>, usize) {
+        let mut samples = Vec::with_capacity(SAMPLES);
+        let mut total_rows = 0;
+        for round in 0..SAMPLES + 20 {
+            let query = next();
+            let started = Instant::now();
+            let response = self.app.send(Method::POST, "/graphql", Some(&self.owner), Some(query)).await;
+            let elapsed = started.elapsed();
+            assert!(response.body["errors"].is_null(), "{:?}", response.body);
+            // The first 20 warm the connection pool and Postgres' caches.
+            if round >= 20 {
+                samples.push(elapsed);
+                total_rows += rows(&response.body);
+            }
+        }
+        samples.sort();
+        (samples, total_rows)
+    }
+}
+
+// Last measured (release): p50 4.3 ms, p95 6.1 ms, so this gate fails at 5 ms. It is pending the per-request
+// overhead work in Phase 4 Task 7 (the statement is about 2 ms; the router and transaction setup add the rest).
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn tape_window_p95_under_5ms(_: PgPoolOptions, opts: PgConnectOptions) {
+    let fixture = seed_tape_property(opts).await;
+    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    let (samples, stays) = fixture
+        .time_requests(
+            || fixture.random_tape_window(&mut rng, 14),
+            |body| body["data"]["tapeWindow"]["stays"].as_array().unwrap().len(),
+        )
+        .await;
+    assert!(stays > 0, "no sampled window held a stay");
+    let p50 = samples[SAMPLES / 2];
+    let p95 = samples[p95_index(SAMPLES)];
+    println!(
+        "tapeWindow, 10 rooms x 14 days of {TAPE_ROOMS} rooms ({stays} stays over {SAMPLES} samples): p50 {p50:?}, p95 {p95:?}"
+    );
+    assert!(p95 < Duration::from_millis(5), "p95 {p95:?} is over the 5 ms gate");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn unassigned_stays_p95_under_5ms(_: PgPoolOptions, opts: PgConnectOptions) {
+    let fixture = seed_tape_property(opts).await;
+    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    let (samples, stays) = fixture
+        .time_requests(
+            || {
+                let from = fixture.random_start(&mut rng);
+                json!({"query": UNASSIGNED_STAYS, "variables": {
+                    "p": fixture.property, "from": from.to_string(),
+                    "to": (from + time::Duration::days(42)).to_string()}})
+            },
+            |body| body["data"]["unassignedStays"].as_array().unwrap().len(),
+        )
+        .await;
+    assert!(stays > 0, "no sampled window held an unassigned stay");
+    let p50 = samples[SAMPLES / 2];
+    let p95 = samples[p95_index(SAMPLES)];
+    println!(
+        "unassignedStays, 42 days of {TAPE_UNASSIGNED} stays ({stays} rows over {SAMPLES} samples): p50 {p50:?}, p95 {p95:?}"
+    );
+    assert!(p95 < Duration::from_millis(5), "p95 {p95:?} is over the 5 ms gate");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn tape_window_payload_under_8kb_compressed(_: PgPoolOptions, opts: PgConnectOptions) {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    let fixture = seed_tape_property(opts).await;
+    // The 14-day tile over the first page of rooms with the most stays and blocks: the busiest week.
+    let busiest: time::Date = sqlx::query_scalar(
+        "select d::date from generate_series($2::date - 183, $2::date + 350, interval '1 day') as d
+         order by (select count(*) from reservation_room s
+                   where s.room_id = any($1) and s.status not in ('cancelled', 'no_show')
+                     and s.stay && daterange(d::date, d::date + 14))
+                + (select count(*) from room_block b
+                   where b.room_id = any($1) and b.released_at is null
+                     and b.period && daterange(d::date, d::date + 14)) desc, d limit 1",
+    )
+    .bind(&fixture.rooms[..TAPE_PAGE_ROOMS])
+    .bind(fixture.day0)
+    .fetch_one(&fixture.superuser)
+    .await
+    .unwrap();
+    let query = json!({"query": TAPE_WINDOW, "variables": {
+        "p": fixture.property, "rooms": &fixture.rooms[..TAPE_PAGE_ROOMS],
+        "from": busiest.to_string(), "to": (busiest + time::Duration::days(14)).to_string()}});
+    let response = fixture.app.send(Method::POST, "/graphql", Some(&fixture.owner), Some(query)).await;
+    assert!(response.body["errors"].is_null(), "{:?}", response.body);
+    let stays = response.body["data"]["tapeWindow"]["stays"].as_array().unwrap().len();
+    let blocks = response.body["data"]["tapeWindow"]["blocks"].as_array().unwrap().len();
+
+    let json = serde_json::to_vec(&response.body).unwrap();
+    let mut gzip = GzEncoder::new(Vec::new(), Compression::default());
+    gzip.write_all(&json).unwrap();
+    let compressed = gzip.finish().unwrap();
+    println!(
+        "tapeWindow payload, 10 rooms x 14 days from {busiest} ({stays} stays, {blocks} blocks): {} bytes JSON, {} bytes gzip",
+        json.len(),
+        compressed.len()
+    );
+    assert!(compressed.len() < 8192, "{} compressed bytes is over the 8 KB gate", compressed.len());
+}
