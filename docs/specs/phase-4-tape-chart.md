@@ -114,9 +114,10 @@ query UnassignedStays($property: UUID!, $from: Date!, $to: Date!) {
 
 - **`tapeWindow` limits.** At most 10 room ids, and all must belong to the property; anything else is refused. The
   window is at most 42 days.
-- **`tapeWindow` queries.** Two range scans restricted to those rooms: stays on the GiST index behind
-  `reservation_room_no_double_booking` `(room_id, stay)`, and blocks on the one behind `room_block_no_overlap`
-  `(room_id, period)`.
+- **`tapeWindow` queries.** One statement, two branches restricted to those rooms: stays and blocks. Under row-level
+  security `stay && daterange(…)` is not leakproof, so the branches use the stored `reservation_room.arrival` and
+  `nights`, and `room_block.starts` and `days`, with the indexes of migrations 0011 and 0012 (see api-conventions'
+  leakproof stored-column entry); the 31-night split between short and long stays is written into the SQL text.
 - **`unassignedStays`.** Reads a new partial GiST index on `reservation_room (property_id, stay) where room_id is null
   and status = 'confirmed'` (check-in needs a room, so only confirmed stays can be unassigned).
 - **Room list.** The rail and the picker reuse the existing rooms and room types reads. Filtering, sorting and paging

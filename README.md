@@ -57,7 +57,7 @@ Run by hand, because shared CI machines make timings noisy, and one at a time (`
 # create reservation, 1 room x 3 nights, a 12-type property with restrictions and BB/HB supplements: p95 under 60 ms
 # reservations list, 50 rows filtered by arrival and status out of 10k reservation rooms: p95 under 25 ms
 # availability for 7 nights x 12 room types x 5 rate plans (derived plans included): p95 under 40 ms
-# tapeWindow for 10 rooms x 14 days of a 500-room property with 18 months of stays: p95 under 5 ms
+# tapeWindow for 10 rooms x 14 days, and x 42 days, of a 500-room property with 18 months of stays: p95 under 5 ms each
 # unassignedStays for 42 days: p95 under 5 ms; a tapeWindow response under 8 KB gzipped
 DATABASE_URL=$DATABASE_OWNER_URL cargo test --release -p core-api --test perf -- --ignored --nocapture --test-threads=1
 
@@ -65,7 +65,7 @@ DATABASE_URL=$DATABASE_OWNER_URL cargo test --release -p core-api --test perf --
 # measure with the `performance` CPU governor, or on the server class -- a `powersave` laptop reads 41-58 ms)
 # the reservations table scrolls 10k reservation rooms at 60 fps with a fixed DOM row count (seeds for ~2 min)
 # the tape chart on a 500-room property with 18 months of stays (seeds for several minutes): first open under
-# 400 ms, a page or picker change under 50 ms (p90 of ten), scrolling at 58 fps with no long task over 50 ms,
+# 400 ms and a page or picker change under 50 ms (each p90 of ten), scrolling at 58 fps with no long task over 50 ms,
 # the drag ghost within one frame, under 3,000 DOM nodes
 cd web/pms && E2E_PERF=1 E2E_DATABASE_URL=... bun run test:e2e --grep @perf
 ```
@@ -90,7 +90,7 @@ Chromium runs with its sandbox on, as in CI. If your machine cannot start it ("N
 
 With the API and `bun run dev` running (see Development; run `cargo run -p core-api -- migrate` first, as the schema owner, to add the Phase 2 tables):
 
-1. Sign up, add a property, and on **Room types** add `DLX` (2 adults, 1 child, max 3) and `STD` (2 adults); add a few rooms of each on **Rooms**.
+1. Sign up, add a property, and on **Room types** add `DLX` (2 adults, 1 child, max 3) and `STD` (2 adults). On **Rooms**, add three rooms of each: `DLX` `101` to `103` and `STD` `201` to `203`. The reservations and Phase 3b scripts below rely on these room numbers.
 2. On **Rate plans**, add:
    - `BAR`: standard, USD, segment IBE, meal plans RO, BB and HB.
    - `OTA`: derived from BAR, change 15 %, segment OTA, meal plans RO and BB, tick "Inherit the parent's restrictions".
@@ -147,11 +147,11 @@ The chart shows ten rooms a page, and the room picker and **Prev** / **Next** on
 6. Keyboard: Tab to the chart. The arrow keys move the focused day and room, Enter opens the stay under the focus, PageDown shows `Rooms 11–14 of 14` and PageUp goes back, and `T` (or **Today**) returns to the opening view. **Next** and **Prev** do the same, and hovering them first makes the change instant.
 7. Room picker: type `DLX` and take the type's suggestion (it shows the code and the name you gave it; Enter takes the highlighted one): it becomes a chip, and the header reads `Rooms 1–10 of 12`. Type `201-202` and take the range: a `201-202` chip is added, and the header reads `Rooms 1–10 of 14`, the union of both chips. Remove both chips with their `×`, then add `101-103` and `201-202`: the chart shows five rooms, `101` to `103` and `201`, `202`. Reload the page: the chips, page, span and first day all come back, because the address carries them. **7 days** and **30 days** change the span.
 8. Drag a bar into another `DLX` room, say the first reservation from `101` to `103`: it saves at once, `Moved to 103` appears with **Undo**, and both rows update. Click **Undo**: `Moved back to 101`.
-9. Drag the right-hand edge of the third reservation's bar (in `102`) one day later. A **Change stay** dialog shows the dates and `Total USD 300.00 → USD 400.00`; **Cancel** leaves the bar as it was. Do it again and **Confirm**: `Stay changed`. Now drag the first reservation's right-hand edge one day later: its price confirms the same way, but **Confirm** is refused by the server because the second reservation holds `101` from that day. The bar snaps back and the toast reads `room 101 is taken by TPC-000002 on those nights`.
+9. Drag the right-hand edge of the third reservation's bar (in `102`) one day later. A **Change stay** dialog shows the dates and `Total USD 300.00 → USD 400.00`; **Cancel** leaves the bar as it was. Do it again and **Confirm**: `Stay changed`. Now drag the first reservation's right-hand edge one day later: its price confirms the same way, but **Confirm** is refused by the server because the second reservation holds `101` from that day. The bar snaps back and the toast reads `room 101 is taken by TPC-000002 on those nights`. The toast stays for 8 seconds; read it before it clears.
 10. Drag the third reservation's bar onto room `201`. The **Change stay** dialog shows `DLX → STD` and a **Keep the booked price (upgrade)** checkbox. Without it the total goes `USD 400.00 → USD 600.00`; with it ticked, a hint says nights kept at their booked price will cost less. **Confirm**: the bar moves to `201`.
-11. Needs a room: book `STD` twice for the same dates as the third reservation. The first lands in `202`. The second sells against `STD`'s allowance of 1 and has no room to go in, so it is created without one, and **Needs a room (1)** appears in the header. Open it: a table of Guest, Type, Dates and Why lists it as `Overbooked`. **Assign…** answers `No STD room is free for these nights.`
-12. Cancel the `STD` booking that is in `202` (on its reservation, **Cancel this room**). Back on **Tape chart**, that bar is gone. In the **Needs a room** table, **Assign…** now offers `202`: choose it and press **Assign**. The bar appears in `202` and **Needs a room** disappears, since nothing is left to place.
-13. Move a stay to a room on another page. Remove the chips, right-click the first reservation's bar (or use the `⋯` button at its right end, or focus it and press the context-menu key or Shift+F10) and choose **Move to room…**. In the **Move to room** dialog, pick `112`, **Move**. The bar leaves this page, and **Next** shows it in `112`. Only confirmed stays have the menu and drag handles; checked-in stays can only have their end edge dragged, and checked-out stays and blocks cannot be dragged at all.
+11. Needs a room: on **Reservations**, book `STD` twice for the same dates as the third reservation. The first lands in `202`. The second sells against `STD`'s allowance of 1 and has no room to go in, so it is created without one. Go back to **Tape chart** through the nav link: it opens at its default view again (rooms `101` to `110`, no chips, no table), and **Needs a room (1)** is in the header. Click it: a table of Guest, Type, Dates and Why lists the booking as `Overbooked`. **Assign…** answers `No STD room is free for these nights.`
+12. Cancel the `STD` booking that is in `202` (on its reservation, **Cancel this room**), then open **Tape chart** from the nav again and click **Needs a room (1)** again, since the view is reset each time. Press **Next** (`Rooms 11–14 of 14`): `202` has no bar now, only the `201` bar from step 10. In the **Needs a room** table, **Assign…** now offers `202`: choose it and press **Assign**. The bar appears in `202` and **Needs a room** disappears, since nothing is left to place.
+13. Move a stay to a room on another page. Press **Prev**, right-click the first reservation's bar (or use the `⋯` button at its right end, or focus it and press the context-menu key or Shift+F10) and choose **Move to room…**. In the **Move to room** dialog, pick `112`, **Move**. The bar leaves this page, and **Next** shows it in `112`. Only confirmed stays have the menu and drag handles; checked-in stays can only have their end edge dragged, and checked-out stays and blocks cannot be dragged at all.
 
 For the block bars, block room `105` out of order from the inventory calendar for a few nights: a hatched bar with its reason appears in that row, live.
 
