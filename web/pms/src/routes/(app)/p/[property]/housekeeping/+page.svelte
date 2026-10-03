@@ -8,6 +8,20 @@
 	takes Tab (a roving tab stop) and the arrow, Home, End and Page keys. For everyone else the same markup is a
 	read-only table whose scroller takes Tab itself, so the keyboard can scroll it.
 -->
+<script module lang="ts">
+	// Tile geometry, in rems so that it follows the user's text size: a tile is `TILE` high and at least
+	// `TILE_MIN` wide, with `GAP` between tiles, and the rows have a fixed pitch for the scroll maths.
+	const TILE = 4.3;
+	const TILE_MIN = 7.5;
+	const GAP = 0.4;
+	const OVERSCAN = 1;
+	const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+	const pitch = (TILE + GAP) * rem;
+	// The width the grid had when it was last on screen: the next one starts from it, and its first measure
+	// confirms it before the first paint.
+	let lastWidth = 0;
+</script>
+
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
@@ -63,15 +77,6 @@
 		TURNOVER: '⇄'
 	};
 	const SEVERITIES: Severity[] = ['LOW', 'MEDIUM', 'HIGH'];
-
-	// Tile geometry, in rems so that it follows the user's text size: a tile is `TILE` high and at least
-	// `TILE_MIN` wide, with `GAP` between tiles, and the rows have a fixed pitch for the scroll maths.
-	const TILE = 4.3;
-	const TILE_MIN = 7.5;
-	const GAP = 0.4;
-	const OVERSCAN = 1;
-	const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-	const pitch = (TILE + GAP) * rem;
 
 	const propertyId = $derived(page.params.property ?? '');
 	const client = useQueryClient();
@@ -142,8 +147,12 @@
 
 	let grid = $state<HTMLDivElement>();
 	let scrollTop = $state(0);
-	let width = $state(0);
-	let height = $state(0);
+	let width = $state(lastWidth);
+	// The grid is at most 70vh tall (and more than that many rows are always there to fill it).
+	let height = $state(Math.round(0.7 * window.innerHeight));
+	$effect(() => {
+		if (width > 0) lastWidth = width;
+	});
 	// The tile that takes Tab, by room id so that a refetch or a filter does not move it, kept rendered
 	// wherever the board is scrolled.
 	let activeId = $state<string>();
