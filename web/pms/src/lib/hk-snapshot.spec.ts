@@ -42,25 +42,33 @@ describe('saved lists', () => {
 		expect(await saved.loadChoices('p', B)).toBeUndefined();
 	});
 
-	it('sign-out clears both stores', async () => {
-		const kv = memoryKv();
-		const saved = createSnapshots(kv);
+	it("one user's save does not replace another's, and sign-out removes only the signer's", async () => {
+		const saved = createSnapshots(memoryKv());
 		const queue = createQueue(memoryStore());
-		await saved.save(snapshot);
-		await saved.saveOwner(A);
-		await queue.enqueue({
-			kind: 'issue',
-			owner: A,
+		const issue = {
+			kind: 'issue' as const,
 			propertyId: 'p',
 			roomId: 'r',
 			roomNumber: '101',
-			severity: 'LOW',
+			severity: 'LOW' as const,
 			description: 'x'
-		});
-		await saved.wipe();
-		await queue.clear();
+		};
+		for (const owner of [A, B]) {
+			await saved.save({ ...snapshot, owner });
+			await saved.saveChoices('p', owner, [{ roomId: 'r', number: '101' }]);
+			await queue.enqueue({ ...issue, owner });
+		}
+		await saved.saveOwner(A);
+
+		await saved.wipeFor(A);
+		await queue.discardOwned(A);
+
 		expect(await saved.load('p', A)).toBeUndefined();
+		expect(await saved.load(null, A)).toBeUndefined();
+		expect(await saved.loadChoices('p', A)).toBeUndefined();
 		expect(await saved.loadOwner()).toBeUndefined();
-		expect(await queue.items()).toEqual([]);
+		expect((await queue.items()).map((item) => item.owner)).toEqual([B]);
+		expect(await saved.load('p', B)).toMatchObject({ owner: B });
+		expect(await saved.loadChoices('p', B)).toHaveLength(1);
 	});
 });

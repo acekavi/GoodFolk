@@ -4,8 +4,13 @@ const NAME = 'goodfolk-hk';
 let opened: Promise<IDBDatabase> | undefined;
 
 export function openDb(): Promise<IDBDatabase> {
-	opened ??= new Promise((resolve, reject) => {
+	opened ??= new Promise<IDBDatabase>((resolve, reject) => {
 		const request = indexedDB.open(NAME, 1);
+		// Another tab holding an older version open must not hang sign-out: fail, and let callers carry on.
+		request.onblocked = () => {
+			opened = undefined;
+			reject(new Error('the housekeeper database is in use by another tab'));
+		};
 		request.onupgradeneeded = () => {
 			request.result.createObjectStore('queue', { keyPath: 'id', autoIncrement: true });
 			request.result.createObjectStore('kv');
@@ -41,9 +46,4 @@ export interface Owner {
 
 export function sameOwner(a: Owner | null | undefined, b: Owner | null | undefined): boolean {
 	return !!a && !!b && a.userId === b.userId && a.tenantId === b.tenantId;
-}
-
-/** Empties one object store. */
-export async function clearStore(store: 'queue' | 'kv'): Promise<void> {
-	await withStore(store, 'readwrite', (objects) => objects.clear());
 }

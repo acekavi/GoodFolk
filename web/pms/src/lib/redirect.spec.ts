@@ -8,6 +8,10 @@ describe('safeRedirect', () => {
 		expect(safeRedirect('/hk?property=abc', origin)).toBe('/hk?property=abc');
 	});
 
+	it('keeps a // that is only in the query', () => {
+		expect(safeRedirect('/hk?x=//evil', origin)).toBe('/hk?x=//evil');
+	});
+
 	it.each([
 		null,
 		'',

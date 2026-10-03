@@ -1,10 +1,20 @@
 import type { QueryClient } from '@tanstack/svelte-query';
 import { sameOwner, type Owner } from './hk-db';
-import { hkQueue, type NewItem, type QueueItem, type Send } from './hk-queue';
+import { toApiError } from './api/problem';
+import { rest } from './api/rest';
+import { hkQueue, type NewItem, type QueueItem, type Send, type WhoAmI } from './hk-queue';
 import { snapshots } from './hk-snapshot';
+import { ownerOf } from './session';
 import { hkKey, issuesKey, reportIssue, setCondition } from './housekeeping';
 
 type WithoutOwner<T> = T extends unknown ? Omit<T, 'owner'> : never;
+
+/** Who the session belongs to right now, asked of the server and never answered from a cache. */
+const whoAmI: WhoAmI = async () => {
+	const { data, error, response } = await rest.GET('/api/v1/me', { cache: 'no-store' });
+	if (!response.ok || !data) throw toApiError(error, response.status);
+	return ownerOf(data);
+};
 
 /** Sends one queued item to the API. A condition change answers with the room's new version. */
 const send: Send = async (item) => {
@@ -70,8 +80,14 @@ class HkSync {
 		await this.refresh();
 		if (this.waiting.length === 0) return;
 		const properties = new Set(this.waiting.map((item) => item.propertyId));
-		const { stopped } = await hkQueue.replay(send, owner);
+		const { stopped, current } = await hkQueue.replay(send, owner, whoAmI);
 		this.signIn = stopped === 'sign-in';
+		if (current) {
+			// The session is someone else's now (another window signed in): nothing was sent, and what is
+			// shown and sent from here on is theirs.
+			this.owner = current;
+			void this.#client?.invalidateQueries({ queryKey: ['me'] });
+		}
 		await this.refresh();
 		for (const property of properties) {
 			void this.#client?.invalidateQueries({ queryKey: hkKey(property) });
@@ -92,10 +108,10 @@ class HkSync {
 		await this.refresh();
 	}
 
-	/** Empties the device of everything the app kept: the queue, the saved lists and who signed in. */
-	async wipe() {
-		await Promise.allSettled([hkQueue.clear(), snapshots.wipe()]);
-		this.items = [];
+	/** Removes what `owner` kept on the device: their queue, saved lists and the note that they signed in. */
+	async wipe(owner: Owner) {
+		await Promise.allSettled([hkQueue.discardOwned(owner), snapshots.wipeFor(owner)]);
+		await this.refresh();
 		this.owner = null;
 		this.remembered = null;
 		this.signIn = false;
@@ -112,9 +128,9 @@ export const sync = new HkSync();
 /** The device's `localStorage` entry for the property the housekeeper app opened last. */
 export const REMEMBERED_PROPERTY = 'goodfolk.hk.property';
 
-/** Forgets the user's offline work and choices on this device, for sign-out. */
-export async function wipeDevice() {
-	await sync.wipe();
+/** Forgets `owner`'s offline work and choices on this device, for their sign-out; other users' stay. */
+export async function wipeDevice(owner: Owner) {
+	await sync.wipe(owner);
 	try {
 		localStorage.removeItem(REMEMBERED_PROPERTY);
 	} catch {

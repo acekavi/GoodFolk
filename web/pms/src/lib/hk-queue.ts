@@ -1,6 +1,6 @@
 import { ApiError } from './api/problem';
 import { idempotencyKey } from './api/rest';
-import { clearStore, sameOwner, withStore, type Owner } from './hk-db';
+import { sameOwner, withStore, type Owner } from './hk-db';
 import type { Condition, Severity } from './housekeeping';
 
 /**
@@ -65,13 +65,19 @@ export interface Store {
 	add(item: WithoutId<QueueItem>): Promise<QueueItem>;
 	put(item: QueueItem): Promise<void>;
 	remove(id: number): Promise<void>;
-	clear(): Promise<void>;
 }
 
 export interface ReplayResult {
-	/** Why replay stopped early, or `null` when it went through every waiting item. */
-	stopped: 'network' | 'sign-in' | null;
+	/**
+	 * Why replay stopped early, or `null` when it went through every waiting item. `other-user` means the
+	 * session now belongs to someone else (`current`); nothing was sent.
+	 */
+	stopped: 'network' | 'sign-in' | 'other-user' | null;
+	current?: Owner;
 }
+
+/** Asks the server, not a cache, who the session belongs to; rejects like a request does. */
+export type WhoAmI = () => Promise<Owner>;
 
 /** The queue in IndexedDB. */
 export function idbStore(): Store {
@@ -89,8 +95,7 @@ export function idbStore(): Store {
 		},
 		remove: async (id) => {
 			await withStore('queue', 'readwrite', (store) => store.delete(id));
-		},
-		clear: () => clearStore('queue')
+		}
 	};
 }
 
@@ -110,9 +115,6 @@ export function memoryStore(): Store {
 		},
 		remove: async (id) => {
 			items.delete(id);
-		},
-		clear: async () => {
-			items.clear();
 		}
 	};
 }
@@ -176,12 +178,21 @@ export function createQueue(store: Store) {
 		}
 	}
 
-	async function run(send: Send, owner: Owner): Promise<ReplayResult> {
+	async function run(send: Send, owner: Owner, whoAmI: WhoAmI): Promise<ReplayResult> {
 		for (;;) {
 			const item = (await store.all()).find(
 				(candidate) => candidate.status === 'waiting' && sameOwner(candidate.owner, owner)
 			);
 			if (!item) return { stopped: null };
+			// The session may have changed hands since the owner was last read (another window signed in as
+			// someone else), so ask just before every send: an item is only ever sent as the user who made it.
+			let current: Owner;
+			try {
+				current = await whoAmI();
+			} catch (error) {
+				return { stopped: classify(error).outcome === 'sign-in' ? 'sign-in' : 'network' };
+			}
+			if (!sameOwner(current, owner)) return { stopped: 'other-user', current };
 			// Nothing to base it on (what it was queued behind is gone): it cannot be sent.
 			if (item.kind === 'condition' && item.version === null) {
 				await store.put({ ...item, status: 'conflict' });
@@ -207,8 +218,8 @@ export function createQueue(store: Store) {
 		enqueue,
 		items: () => store.all(),
 		/** Sends `owner`'s waiting items in order, never anyone else's. A second call while one runs shares it. */
-		replay(send: Send, owner: Owner): Promise<ReplayResult> {
-			running ??= run(send, owner).finally(() => {
+		replay(send: Send, owner: Owner, whoAmI: WhoAmI): Promise<ReplayResult> {
+			running ??= run(send, owner, whoAmI).finally(() => {
 				running = undefined;
 			});
 			return running;
@@ -253,8 +264,12 @@ export function createQueue(store: Store) {
 				if (!sameOwner(item.owner, owner)) await store.remove(item.id);
 			}
 		},
-		/** Empties the queue, for sign-out. */
-		clear: () => store.clear()
+		/** Drops every item that is `owner`'s, for their sign-out. */
+		async discardOwned(owner: Owner) {
+			for (const item of await store.all()) {
+				if (sameOwner(item.owner, owner)) await store.remove(item.id);
+			}
+		}
 	};
 }
 

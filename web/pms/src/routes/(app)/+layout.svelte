@@ -8,7 +8,7 @@
 	import { connectEvents } from '$lib/events';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
 	import { wipeDevice } from '$lib/hk-sync.svelte';
-	import { fetchMe } from '$lib/session';
+	import { fetchMe, ownerOf } from '$lib/session';
 
 	let { children } = $props();
 
@@ -75,7 +75,7 @@
 				return;
 			}
 			client.clear();
-			await wipeDevice();
+			if (me.data) await wipeDevice(ownerOf(me.data));
 			await goto(resolve('/login'));
 		} catch (err) {
 			actionError = errorMessage(err);

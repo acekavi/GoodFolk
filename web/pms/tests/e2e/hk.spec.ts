@@ -313,8 +313,9 @@ test('a reload offline still shows My rooms, labelled with its time', async ({ p
 					new Promise<boolean>((done) => {
 						const open = indexedDB.open('goodfolk-hk');
 						open.onsuccess = () => {
-							const read = open.result.transaction('kv').objectStore('kv').get('snapshot:last');
-							read.onsuccess = () => done(!!read.result);
+							const read = open.result.transaction('kv').objectStore('kv').getAllKeys();
+							read.onsuccess = () =>
+								done(read.result.some((key) => String(key).startsWith('last:')));
 							read.onerror = () => done(false);
 						};
 						open.onerror = () => done(false);
@@ -389,16 +390,19 @@ test("another user on the device gets neither the first one's changes nor their 
 	await context.close();
 });
 
-test('signing out warns about unsent changes and clears the device', async ({ page, browser }) => {
+test('signing out warns about unsent changes, then clears the device', async ({
+	page,
+	browser
+}) => {
 	const { housekeeper, propertyId } = await hotelWithHousekeeper(page);
 	const { page: hk, context } = await phone(browser, housekeeper);
 	await hk.goto(`/hk?property=${propertyId}`);
 	const first = hk.getByRole('list', { name: 'Rooms' }).getByRole('listitem').first();
 	await expect(first).toContainText('Dirty');
 	await shellCached(hk);
-	await context.setOffline(true);
+	// Online, but the server cannot be reached for condition changes: they queue and stay queued.
+	await hk.route('**/rooms/*/condition', (route) => route.abort());
 	await first.getByRole('button', { name: 'Start cleaning' }).click();
-	await expect(hk.getByText('1 change waiting to be sent.')).toBeVisible();
 	await first.getByRole('button', { name: 'Done' }).click();
 	await expect(hk.getByText('2 changes waiting to be sent.')).toBeVisible();
 
@@ -412,9 +416,7 @@ test('signing out warns about unsent changes and clears the device', async ({ pa
 	expect(messages[0]).toMatch(/2 changes haven't been sent and will be lost/);
 	await expect(hk).toHaveURL(/\/hk\?/);
 
-	// Once the changes are sent nothing is lost, so signing out goes straight through.
-	await context.setOffline(false);
-	await expect(hk.getByRole('region', { name: 'Connection' })).toHaveCount(0);
+	hk.once('dialog', (dialog) => dialog.accept());
 	await hk.getByRole('button', { name: 'Sign out' }).click();
 	await expect(hk).toHaveURL(/\/login/);
 	const left = await hk.evaluate(
@@ -422,12 +424,86 @@ test('signing out warns about unsent changes and clears the device', async ({ pa
 			new Promise<number>((done) => {
 				const open = indexedDB.open('goodfolk-hk');
 				open.onsuccess = () => {
-					const count = open.result.transaction(['kv', 'queue']).objectStore('kv').count();
-					count.onsuccess = () => done(count.result);
+					const transaction = open.result.transaction(['kv', 'queue']);
+					let total = 0;
+					for (const name of ['kv', 'queue']) {
+						const count = transaction.objectStore(name).count();
+						count.onsuccess = () => {
+							total += count.result;
+						};
+					}
+					transaction.oncomplete = () => done(total);
 				};
 			})
 	);
 	expect(left).toBe(0);
+	await context.close();
+});
+
+test('a 401 never shows the saved list', async ({ page, browser }) => {
+	const { housekeeper, propertyId } = await hotelWithHousekeeper(page);
+	const { page: hk, context } = await phone(browser, housekeeper);
+	await hk.goto(`/hk?property=${propertyId}`);
+	await expect(hk.getByRole('list', { name: 'Rooms' }).getByRole('listitem')).toHaveCount(2);
+	await expect
+		.poll(() =>
+			hk.evaluate(
+				() =>
+					new Promise<number>((done) => {
+						const open = indexedDB.open('goodfolk-hk');
+						open.onsuccess = () => {
+							const count = open.result.transaction('kv').objectStore('kv').count();
+							count.onsuccess = () => done(count.result);
+						};
+					})
+			)
+		)
+		.toBeGreaterThan(1);
+
+	await hk.route('**/graphql', (route) =>
+		route.fulfill({
+			status: 401,
+			contentType: 'application/json',
+			body: JSON.stringify({ type: 'about:blank', title: 'Unauthorized', status: 401 })
+		})
+	);
+	await hk.reload();
+	await expect(hk.getByRole('alert')).toBeVisible();
+	await expect(hk.getByRole('list', { name: 'Rooms' })).toHaveCount(0);
+	await expect(hk.getByText(/^Showing the list as it was/)).toHaveCount(0);
+	await context.close();
+});
+
+test("A's waiting changes are not sent when another window has signed in as B", async ({
+	page,
+	browser
+}) => {
+	const { email, housekeeper, propertyId } = await hotelWithHousekeeper(page);
+	const { email: second } = addStaff(email, 'housekeeping', 'Nimali Fernando');
+	const { page: one, context } = await phone(browser, housekeeper);
+	await one.goto(`/hk?property=${propertyId}`);
+	const first = one.getByRole('list', { name: 'Rooms' }).getByRole('listitem').first();
+	await expect(first).toContainText('Dirty');
+	await shellCached(one);
+
+	await context.setOffline(true);
+	await first.getByRole('button', { name: 'Start cleaning' }).click();
+	await expect(one.getByText('1 change waiting to be sent.')).toBeVisible();
+	// A's session ends; the change stays, asking to sign in.
+	await context.clearCookies();
+	await context.setOffline(false);
+	await expect(one.getByText(/Your session has expired/)).toBeVisible();
+
+	// In a second window of the same browser, B signs in. Window one still believes A is signed in.
+	const two = await context.newPage();
+	await signIn(two, second);
+	await one.evaluate(() => window.dispatchEvent(new Event('focus')));
+
+	await expect(one.getByText('Saved by another user on this device: 1 (not sent).')).toBeVisible();
+	await page.goto(`/p/${propertyId}/housekeeping`);
+	await expect(
+		page.getByRole('group', { name: 'Rooms' }).getByRole('button', { name: /^101, Dirty,/ })
+	).toBeVisible();
 	await context.close();
 });
 

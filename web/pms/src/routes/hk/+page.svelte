@@ -129,7 +129,13 @@
 			else await setCondition(propertyId, room.roomId, condition, room.conditionVersion);
 		} catch (err) {
 			if (err instanceof ApiError) message = `Room ${room.number}: ${explain(err)}`;
-			else await queue();
+			else {
+				try {
+					await queue();
+				} catch {
+					message = `Room ${room.number}: this change could not be saved on this device.`;
+				}
+			}
 		} finally {
 			busyRoom = '';
 			if (sync.online) await client.invalidateQueries({ queryKey: hkKey(propertyId) });

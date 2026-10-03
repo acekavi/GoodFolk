@@ -138,7 +138,8 @@
 
 	/** Signs out, and takes the offline work off the device, warning first about what has not been sent. */
 	async function signOut() {
-		const unsent = sync.waiting.length;
+		const signer = sync.viewer;
+		const unsent = sync.mine.length;
 		if (
 			unsent > 0 &&
 			!confirm(
@@ -156,11 +157,11 @@
 				leaveError = toApiError(problem, response.status).message;
 				return;
 			}
-			await wipeDevice();
+			if (signer) await wipeDevice(signer);
 			client.clear();
 			await goto(resolve('/login'));
 			// Anything the screens saved while they were still mounted.
-			await wipeDevice();
+			if (signer) await wipeDevice(signer);
 		} catch (err) {
 			leaveError = errorMessage(err);
 		} finally {
