@@ -159,13 +159,13 @@ test('an issue is reported, shows as a badge, and is resolved', async ({ page })
 	const issue = page.getByRole('list', { name: 'Open issues' }).getByRole('listitem');
 	await expect(issue).toContainText('Room 103');
 	await expect(issue).toContainText('Leaking tap');
-	await expect(tile(page, '103')).toHaveAttribute('aria-label', /1 open issues/);
+	await expect(tile(page, '103')).toHaveAttribute('aria-label', /1 open issue$/);
 	await expect(issue.getByRole('button', { name: 'Block room' })).toHaveCount(0);
 
 	await issue.getByRole('button', { name: 'Resolve' }).click();
 
 	await expect(page.getByText('No open issues.')).toBeVisible();
-	await expect(tile(page, '103')).not.toHaveAttribute('aria-label', /open issues/);
+	await expect(tile(page, '103')).not.toHaveAttribute('aria-label', /open issue/);
 });
 
 test('a high issue offers Block room, which opens the dialog for that room', async ({ page }) => {
@@ -220,7 +220,7 @@ test('a front desk user sees the board and can report, but has no supervisor act
 	await expect(issue).toContainText('No hot water');
 	await expect(issue.getByRole('button')).toHaveCount(0);
 	// The owner's board shows it without a reload: the `issues:` event refreshes the badge.
-	await expect(tile(page, '101')).toHaveAttribute('aria-label', /1 open issues/);
+	await expect(tile(page, '101')).toHaveAttribute('aria-label', /1 open issue$/);
 
 	await context.close();
 });

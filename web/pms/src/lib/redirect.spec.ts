@@ -18,8 +18,20 @@ describe('safeRedirect', () => {
 		'hk',
 		'//evil.example',
 		'/\\evil.example',
+		'/\\evil.com',
 		'https://evil.example/hk',
-		'javascript:alert(1)'
+		'https://evil.com',
+		'javascript:alert(1)',
+		'//evil.com',
+		'/.//evil.com',
+		'/..//evil.com',
+		'/%2E//evil.com',
+		'/%2e%2e//evil.com',
+		'/\t/evil.com',
+		'/\n/evil.com',
+		'/\r/evil.com',
+		'/.\t/\t/evil.com',
+		'/\t\\evil.com'
 	])('refuses %s', (raw) => {
 		expect(safeRedirect(raw, origin)).toBeNull();
 	});

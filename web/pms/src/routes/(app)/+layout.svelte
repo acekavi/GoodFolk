@@ -74,8 +74,10 @@
 				actionError = toApiError(problem, response.status).message;
 				return;
 			}
+			// Read the owner first: clearing the cache empties `me`, and the wipe needs to know whose data to remove.
+			const owner = me.data ? ownerOf(me.data) : null;
 			client.clear();
-			if (me.data) await wipeDevice(ownerOf(me.data));
+			if (owner) await wipeDevice(owner);
 			await goto(resolve('/login'));
 		} catch (err) {
 			actionError = errorMessage(err);

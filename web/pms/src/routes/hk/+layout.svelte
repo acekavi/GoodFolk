@@ -230,6 +230,11 @@
 				<p role="alert">Your account has no housekeeping role at any property.</p>
 			</main>
 		{/if}
+	{:else if me.data && !me.data.current_tenant}
+		<main>
+			<h1>No hotel yet</h1>
+			<p role="alert">Your account is not part of a hotel yet. Ask the owner to add you.</p>
+		</main>
 	{:else if offline && snapshot}
 		{@render shell(snapshot.propertyId, snapshot.propertyName)}
 	{:else if offline && sync.remembered === null}
@@ -302,6 +307,10 @@
 	}
 	main {
 		padding: 1rem;
+	}
+	main > button {
+		min-height: 48px;
+		padding: 0 1rem;
 	}
 	.choices {
 		display: grid;

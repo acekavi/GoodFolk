@@ -15,8 +15,11 @@
 	const TILE_MIN = 7.5;
 	const GAP = 0.4;
 	const OVERSCAN = 1;
-	const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-	const pitch = (TILE + GAP) * rem;
+	// The probe is this many rems wide, so its measured width gives the rem in pixels to a tenth of a pixel.
+	const PROBE_REMS = 10;
+	// The root font size when the module loaded; the live value comes from the probe in the markup, so a change
+	// of the text size while the board is open moves the geometry too.
+	const initialRem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
 	// The width the grid had when it was last on screen: the next one starts from it, and its first measure
 	// confirms it before the first paint.
 	let lastWidth = 0;
@@ -48,6 +51,8 @@
 		initials,
 		issueCounts,
 		issuesKey,
+		MAX_BULK_ROOMS,
+		MAX_ISSUE_DESCRIPTION,
 		moveTile,
 		nextConditions,
 		NO_FLOOR,
@@ -146,6 +151,9 @@
 	});
 
 	let grid = $state<HTMLDivElement>();
+	let probeWidth = $state(0);
+	const rem = $derived(probeWidth > 0 ? probeWidth / PROBE_REMS : initialRem);
+	const pitch = $derived((TILE + GAP) * rem);
 	let scrollTop = $state(0);
 	let width = $state(lastWidth);
 	// The grid is at most 70vh tall (and more than that many rows are always there to fill it).
@@ -250,7 +258,9 @@
 			conditionLabel(room.condition),
 			occupancyLabel(room.occupancy),
 			room.assignee ? `cleaned by ${room.assignee.displayName}` : '',
-			counts.get(room.roomId) ? `${counts.get(room.roomId)} open issues` : '',
+			counts.get(room.roomId)
+				? `${counts.get(room.roomId)} open ${counts.get(room.roomId) === 1 ? 'issue' : 'issues'}`
+				: '',
 			room.blockKind ? (room.blockKind === 'OUT_OF_ORDER' ? 'out of order' : 'out of service') : ''
 		]
 			.filter(Boolean)
@@ -271,6 +281,8 @@
 			]);
 		}
 	}
+
+	const tooMany = $derived(selected.size > MAX_BULK_ROOMS);
 
 	function bulkCondition(value: string) {
 		if (!value) return;
@@ -447,6 +459,8 @@
 	{#if supervise}
 		<div class="bulk" role="toolbar" aria-label="Selected rooms">
 			<span role="status">{selected.size} selected</span>
+			{#if tooMany}<span class="hint" role="status">Select {MAX_BULK_ROOMS} rooms or fewer</span
+				>{/if}
 			<button
 				type="button"
 				class="secondary"
@@ -463,7 +477,7 @@
 			>
 			<select
 				aria-label="Set condition…"
-				disabled={selected.size === 0 || pending.has('bulk')}
+				disabled={selected.size === 0 || tooMany || pending.has('bulk')}
 				value=""
 				onchange={(e) => {
 					bulkCondition(e.currentTarget.value);
@@ -477,7 +491,7 @@
 			</select>
 			<select
 				aria-label="Assign to…"
-				disabled={selected.size === 0 || pending.has('bulk')}
+				disabled={selected.size === 0 || tooMany || pending.has('bulk')}
 				value=""
 				onchange={(e) => {
 					bulkAssign(e.currentTarget.value);
@@ -501,6 +515,12 @@
 	{:else if shown.length === 0}
 		<p>No rooms match the filters.</p>
 	{:else}
+		<div
+			class="probe"
+			aria-hidden="true"
+			style:width="{PROBE_REMS}rem"
+			bind:clientWidth={probeWidth}
+		></div>
 		<!-- A scrollable region must take focus for the keyboard to scroll it. -->
 		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 		<div
@@ -582,7 +602,7 @@
 					</label>
 					<label>
 						Description
-						<input required maxlength="500" bind:value={report.description} />
+						<input required maxlength={MAX_ISSUE_DESCRIPTION} bind:value={report.description} />
 					</label>
 					<button disabled={pending.has('report')}>Report issue</button>
 				</form>
@@ -657,6 +677,12 @@
 	}
 	.bulk {
 		align-items: center;
+	}
+	.probe {
+		position: fixed;
+		height: 0;
+		visibility: hidden;
+		pointer-events: none;
 	}
 	.grid {
 		overflow: auto;

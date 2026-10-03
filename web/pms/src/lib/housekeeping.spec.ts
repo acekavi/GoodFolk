@@ -162,6 +162,8 @@ describe('isConditionRefusal', () => {
 	it('is a 409 that names the room and a condition that is not ready', () => {
 		expect(isConditionRefusal(409, 'room 101 is Dirty')).toBe(true);
 		expect(isConditionRefusal(409, 'room 7B is Cleaning')).toBe(true);
+		expect(isConditionRefusal(409, 'room Suite 12 is Dirty')).toBe(true);
+		expect(isConditionRefusal(409, 'room Suite 12 is Dirty and more')).toBe(false);
 	});
 
 	it('is nothing else', () => {

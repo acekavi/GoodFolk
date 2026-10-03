@@ -24,7 +24,10 @@ export function openDb(): Promise<IDBDatabase> {
 	return opened;
 }
 
-/** Runs `work` on one object store in a transaction and resolves with its request's result. */
+/**
+ * Runs `work` on one object store in a transaction and resolves with its request's result once the transaction
+ * has completed, so a resolved write is durable; rejects if the request fails or the transaction aborts.
+ */
 export async function withStore<T>(
 	store: 'queue' | 'kv',
 	mode: IDBTransactionMode,
@@ -32,9 +35,12 @@ export async function withStore<T>(
 ): Promise<T> {
 	const db = await openDb();
 	return new Promise((resolve, reject) => {
-		const request = work(db.transaction(store, mode).objectStore(store));
-		request.onsuccess = () => resolve(request.result);
-		request.onerror = () => reject(request.error);
+		const transaction = db.transaction(store, mode);
+		const request = work(transaction.objectStore(store));
+		transaction.oncomplete = () => resolve(request.result);
+		transaction.onerror = () => reject(transaction.error ?? request.error);
+		transaction.onabort = () =>
+			reject(transaction.error ?? new Error('the transaction was aborted'));
 	});
 }
 

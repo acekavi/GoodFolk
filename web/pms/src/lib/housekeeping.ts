@@ -125,7 +125,7 @@ const OCCUPANCY_LABELS: Record<Occupancy, string> = {
 
 /** Whether a check-in refusal is the room's condition ("room 101 is Dirty"), which a supervisor may override. */
 export function isConditionRefusal(status: number, detail: string | undefined): boolean {
-	return status === 409 && /^room \S+ is (Dirty|Cleaning)$/.test(detail ?? '');
+	return status === 409 && /^room .+ is (Dirty|Cleaning)$/.test(detail ?? '');
 }
 
 export const conditionLabel = (condition: Condition) => CONDITION_LABELS[condition];
@@ -285,7 +285,13 @@ export async function setCondition(
 	);
 }
 
-/** Sets the condition of every room in `roomIds` (at most 500); the key makes a retry safe. */
+/** The most rooms one bulk condition or assignment change may name; the server answers 422 beyond it. */
+export const MAX_BULK_ROOMS = 500;
+
+/** The longest issue description, as on the server. */
+export const MAX_ISSUE_DESCRIPTION = 2000;
+
+/** Sets the condition of every room in `roomIds` (at most {@link MAX_BULK_ROOMS}); the key makes a retry safe. */
 export async function setConditions(
 	propertyId: string,
 	roomIds: string[],

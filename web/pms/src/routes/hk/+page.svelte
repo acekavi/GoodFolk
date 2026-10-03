@@ -154,7 +154,7 @@
 	<p>Loading…</p>
 {:else if !list && rooms.error}
 	<p class="error" role="alert">{errorMessage(rooms.error)}</p>
-	<button onclick={() => rooms.refetch()}>Retry</button>
+	<button class="retry" onclick={() => rooms.refetch()}>Retry</button>
 {:else if !list}
 	<p>Loading…</p>
 {:else if list.length === 0}
@@ -174,7 +174,9 @@
 					{typeCode.get(room.roomTypeId) ?? ''}
 					<span>{occupancyLabel(room.occupancy)}</span>
 					{#if room.blockKind}<span>Blocked</span>{/if}
-					{#if room.openIssues > 0}<span>{room.openIssues} open issues</span>{/if}
+					{#if room.openIssues > 0}<span
+							>{room.openIssues} open {room.openIssues === 1 ? 'issue' : 'issues'}</span
+						>{/if}
 					{#if waiting}<span>Waiting to be sent</span>{/if}
 				</p>
 				<div class="steps">
@@ -243,6 +245,7 @@
 		gap: 0.5rem;
 	}
 	.steps button,
+	.retry,
 	.report {
 		display: flex;
 		align-items: center;
