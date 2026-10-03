@@ -87,6 +87,55 @@ describe('hk queue', () => {
 		expect(await queue.items()).toHaveLength(1);
 	});
 
+	it('marks a 403 or 412 for an item from an earlier business date as the day rolling, and sends the rest', async () => {
+		const queue = createQueue(memoryStore());
+		await queue.enqueue({ ...condition('a'), businessDate: '2026-10-01' });
+		await queue.enqueue({ ...condition('b'), businessDate: '2026-10-01' });
+		await queue.enqueue({ ...condition('c'), businessDate: '2026-10-01' });
+		const { sent, send } = sender({ a: problem(403), b: problem(412) });
+		const today = vi.fn(async () => '2026-10-02');
+		expect(await queue.replay(send, A, whoIs(A), today)).toEqual({ stopped: null });
+		expect(sent.map((item) => item.roomId)).toEqual(['a', 'b', 'c']);
+		const items = await queue.items();
+		expect(items.map((item) => [item.roomId, item.conflictStatus, item.dateRolled])).toEqual([
+			['a', 403, true],
+			['b', 412, true]
+		]);
+	});
+
+	it('does not call a refusal a roll when the date is unchanged, unknown or unreadable', async () => {
+		const queue = createQueue(memoryStore());
+		await queue.enqueue({ ...condition('a'), businessDate: '2026-10-02' });
+		await queue.enqueue({ ...condition('b') });
+		await queue.enqueue({ ...condition('c'), businessDate: '2026-10-01' });
+		const { send } = sender({ a: problem(412), b: problem(412), c: problem(412) });
+		const today = vi.fn(async (): Promise<string | undefined> => '2026-10-02');
+		await queue.replay(send, A, whoIs(A), today);
+		expect((await queue.items()).map((item) => item.dateRolled)).toEqual([
+			undefined,
+			undefined,
+			true
+		]);
+		const other = createQueue(memoryStore());
+		await other.enqueue({ ...condition('a'), businessDate: '2026-10-01' });
+		await other.replay(sender({ a: problem(412) }).send, A, whoIs(A), async () => {
+			throw new TypeError('offline');
+		});
+		expect((await other.items())[0].dateRolled).toBeUndefined();
+	});
+
+	it('only 403 and 412 can be a roll, and retry clears the mark', async () => {
+		const queue = createQueue(memoryStore());
+		await queue.enqueue({ ...condition('a'), businessDate: '2026-10-01' });
+		await queue.enqueue({ ...condition('b'), businessDate: '2026-10-01' });
+		const { send } = sender({ a: problem(409), b: problem(403) });
+		await queue.replay(send, A, whoIs(A), async () => '2026-10-02');
+		const [a, b] = await queue.items();
+		expect([a.dateRolled, b.dateRolled]).toEqual([undefined, true]);
+		await queue.retry(b.id, 5);
+		expect((await queue.items())[1]).toMatchObject({ status: 'waiting', dateRolled: undefined });
+	});
+
 	it('stops at a network error, keeps the queue, and resumes from that item', async () => {
 		const queue = createQueue(memoryStore());
 		await queue.enqueue(condition('a'));

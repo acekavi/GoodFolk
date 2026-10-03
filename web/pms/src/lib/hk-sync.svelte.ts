@@ -2,10 +2,18 @@ import type { QueryClient } from '@tanstack/svelte-query';
 import { sameOwner, type Owner } from './hk-db';
 import { toApiError } from './api/problem';
 import { rest } from './api/rest';
-import { hkQueue, type NewItem, type QueueItem, type Send, type WhoAmI } from './hk-queue';
+import {
+	hkQueue,
+	type BusinessDateOf,
+	type NewItem,
+	type QueueItem,
+	type Send,
+	type WhoAmI
+} from './hk-queue';
 import { snapshots } from './hk-snapshot';
 import { ownerOf } from './session';
 import { hkKey, issuesKey, reportIssue, setCondition } from './housekeeping';
+import { fetchProperties, propertiesKey } from './properties';
 
 type WithoutOwner<T> = T extends unknown ? Omit<T, 'owner'> : never;
 
@@ -15,6 +23,10 @@ const whoAmI: WhoAmI = async () => {
 	if (!response.ok || !data) throw toApiError(error, response.status);
 	return ownerOf(data);
 };
+
+/** The property's business date, read fresh: it is what an item made on an earlier date is compared with. */
+const businessDateOf: BusinessDateOf = async (propertyId) =>
+	(await fetchProperties()).find((property) => property.id === propertyId)?.businessDate;
 
 /** Sends one queued item to the API. A condition change answers with the room's new version. */
 const send: Send = async (item) => {
@@ -68,7 +80,13 @@ class HkSync {
 	async enqueue(item: WithoutOwner<NewItem>) {
 		const owner = this.viewer;
 		if (!owner) throw new Error('nobody is signed in');
-		await hkQueue.enqueue({ ...item, owner } as NewItem);
+		// The business date the change was made against, so a replay after the day rolls can say so.
+		const businessDate =
+			this.#client
+				?.getQueryData<{ id: string; businessDate: string }[]>(propertiesKey)
+				?.find((property) => property.id === item.propertyId)?.businessDate ??
+			(await snapshots.load(item.propertyId, owner))?.businessDate;
+		await hkQueue.enqueue({ ...item, owner, businessDate } as NewItem);
 		await this.refresh();
 		void this.replay();
 	}
@@ -80,7 +98,7 @@ class HkSync {
 		await this.refresh();
 		if (this.waiting.length === 0) return;
 		const properties = new Set(this.waiting.map((item) => item.propertyId));
-		const { stopped, current } = await hkQueue.replay(send, owner, whoAmI);
+		const { stopped, current } = await hkQueue.replay(send, owner, whoAmI, businessDateOf);
 		this.signIn = stopped === 'sign-in';
 		if (current) {
 			// The session is someone else's now (another window signed in): nothing was sent, and what is
@@ -89,6 +107,10 @@ class HkSync {
 			void this.#client?.invalidateQueries({ queryKey: ['me'] });
 		}
 		await this.refresh();
+		// The day rolled: the property's business date, and the list for it, are not what was cached.
+		if (this.conflicts.some((item) => item.dateRolled)) {
+			void this.#client?.invalidateQueries({ queryKey: propertiesKey });
+		}
 		for (const property of properties) {
 			void this.#client?.invalidateQueries({ queryKey: hkKey(property) });
 			void this.#client?.invalidateQueries({ queryKey: issuesKey(property) });

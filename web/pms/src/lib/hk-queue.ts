@@ -24,9 +24,13 @@ interface Base {
 	roomId: string;
 	roomNumber: string;
 	createdAt: number;
+	/** The property's business date of the list it was made against, when that was known. */
+	businessDate?: string;
 	status: 'waiting' | 'conflict';
 	/** The HTTP status that made this a conflict. */
 	conflictStatus?: number;
+	/** The refusal was a 403 or 412 for an item made on an earlier business date: the day rolled. */
+	dateRolled?: boolean;
 }
 
 export interface ConditionItem extends Base {
@@ -50,8 +54,10 @@ export interface IssueItem extends Base {
 export type QueueItem = ConditionItem | IssueItem;
 
 export type NewItem =
-	| Omit<ConditionItem, 'id' | 'createdAt' | 'status' | 'conflictStatus'>
-	| (Omit<IssueItem, 'id' | 'createdAt' | 'status' | 'conflictStatus' | 'key'> & { key?: string });
+	| Omit<ConditionItem, 'id' | 'createdAt' | 'status' | 'conflictStatus' | 'dateRolled'>
+	| (Omit<IssueItem, 'id' | 'createdAt' | 'status' | 'conflictStatus' | 'dateRolled' | 'key'> & {
+			key?: string;
+	  });
 
 /** Sends one item, and answers with the room's new condition version for a condition change. */
 export type Send = (item: QueueItem) => Promise<{ version?: number } | void>;
@@ -78,6 +84,9 @@ export interface ReplayResult {
 
 /** Asks the server, not a cache, who the session belongs to; rejects like a request does. */
 export type WhoAmI = () => Promise<Owner>;
+
+/** The property's business date now, or `undefined` when it cannot be read. */
+export type BusinessDateOf = (propertyId: string) => Promise<string | undefined>;
 
 /** The queue in IndexedDB. */
 export function idbStore(): Store {
@@ -136,6 +145,20 @@ function classify(error: unknown): { outcome: Outcome; status?: number } {
 	return { outcome: 'conflict', status };
 }
 
+/**
+ * Whether a refusal is the business date rolling: a 403 (no longer assigned) or 412 (version moved on) for
+ * an item made against an earlier date. Unknown dates are never taken for a roll.
+ */
+async function rolled(item: QueueItem, status: number | undefined, today?: BusinessDateOf) {
+	if ((status !== 403 && status !== 412) || !item.businessDate || !today) return false;
+	try {
+		const now = await today(item.propertyId);
+		return !!now && now > item.businessDate;
+	} catch {
+		return false;
+	}
+}
+
 const sameRoom = (a: QueueItem, b: QueueItem) =>
 	sameOwner(a.owner, b.owner) && a.propertyId === b.propertyId && a.roomId === b.roomId;
 
@@ -178,7 +201,12 @@ export function createQueue(store: Store) {
 		}
 	}
 
-	async function run(send: Send, owner: Owner, whoAmI: WhoAmI): Promise<ReplayResult> {
+	async function run(
+		send: Send,
+		owner: Owner,
+		whoAmI: WhoAmI,
+		today?: BusinessDateOf
+	): Promise<ReplayResult> {
 		for (;;) {
 			const item = (await store.all()).find(
 				(candidate) => candidate.status === 'waiting' && sameOwner(candidate.owner, owner)
@@ -208,7 +236,12 @@ export function createQueue(store: Store) {
 			} catch (error) {
 				const { outcome, status } = classify(error);
 				if (outcome !== 'conflict') return { stopped: outcome };
-				await store.put({ ...item, status: 'conflict', conflictStatus: status });
+				await store.put({
+					...item,
+					status: 'conflict',
+					conflictStatus: status,
+					dateRolled: (await rolled(item, status, today)) || undefined
+				});
 				await cascade(item, status);
 			}
 		}
@@ -217,9 +250,17 @@ export function createQueue(store: Store) {
 	return {
 		enqueue,
 		items: () => store.all(),
-		/** Sends `owner`'s waiting items in order, never anyone else's. A second call while one runs shares it. */
-		replay(send: Send, owner: Owner, whoAmI: WhoAmI): Promise<ReplayResult> {
-			running ??= run(send, owner, whoAmI).finally(() => {
+		/**
+		 * Sends `owner`'s waiting items in order, never anyone else's. A second call while one runs shares it.
+		 * `today` lets a 403 or 412 be told apart as the business date rolling.
+		 */
+		replay(
+			send: Send,
+			owner: Owner,
+			whoAmI: WhoAmI,
+			today?: BusinessDateOf
+		): Promise<ReplayResult> {
+			running ??= run(send, owner, whoAmI, today).finally(() => {
 				running = undefined;
 			});
 			return running;
@@ -233,7 +274,12 @@ export function createQueue(store: Store) {
 			const item = all.find((candidate) => candidate.id === id);
 			if (!item || item.status !== 'conflict') return;
 			if (item.kind === 'issue') {
-				await store.put({ ...item, status: 'waiting', conflictStatus: undefined });
+				await store.put({
+					...item,
+					status: 'waiting',
+					conflictStatus: undefined,
+					dateRolled: undefined
+				});
 				return;
 			}
 			const earlier = all.some(
@@ -243,7 +289,8 @@ export function createQueue(store: Store) {
 				...item,
 				version: earlier ? null : version,
 				status: 'waiting',
-				conflictStatus: undefined
+				conflictStatus: undefined,
+				dateRolled: undefined
 			});
 			for (const other of all) {
 				if (
@@ -253,7 +300,12 @@ export function createQueue(store: Store) {
 					other.version === null &&
 					sameRoom(item, other)
 				) {
-					await store.put({ ...other, status: 'waiting', conflictStatus: undefined });
+					await store.put({
+						...other,
+						status: 'waiting',
+						conflictStatus: undefined,
+						dateRolled: undefined
+					});
 				}
 			}
 		},

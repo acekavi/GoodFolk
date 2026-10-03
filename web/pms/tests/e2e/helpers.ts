@@ -277,3 +277,24 @@ export function insertAssignment(assignment: Assignment): void {
 		stdio: 'pipe'
 	});
 }
+
+/**
+ * Moves a property's business date one day on, as the night audit would, as the schema owner
+ * (`E2E_OWNER_URL`), in the tenant's scope as row-level security requires. Use a property the test made.
+ */
+export function rollBusinessDate(tenant: string, property: string): void {
+	const owner = process.env.E2E_OWNER_URL;
+	if (!owner) throw new Error('set E2E_OWNER_URL to the e2e database, as goodfolk_owner');
+	const script = `
+		const sql = new Bun.SQL(process.env.URL);
+		await sql.begin(async (tx) => {
+			await tx\`select set_config('app.tenant_id', \${process.env.TENANT}, true)\`;
+			await tx\`update property set business_date = business_date + 1 where id = \${process.env.PROPERTY}\`;
+		});
+		await sql.close();
+	`;
+	execFileSync('bun', ['-e', script], {
+		env: { ...process.env, URL: owner, TENANT: tenant, PROPERTY: property },
+		stdio: 'pipe'
+	});
+}

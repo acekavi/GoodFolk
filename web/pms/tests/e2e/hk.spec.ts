@@ -1,5 +1,13 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
-import { PASSWORD, addStaff, bookableHotel, createProperty, signIn, signUp } from './helpers';
+import {
+	PASSWORD,
+	addStaff,
+	bookableHotel,
+	createProperty,
+	rollBusinessDate,
+	signIn,
+	signUp
+} from './helpers';
 
 const csrf = { 'x-goodfolk-csrf': '1' };
 
@@ -268,6 +276,53 @@ test('a change made stale while offline is a visible conflict, and the rest stil
 	await conflicts.getByRole('button', { name: 'Discard' }).click();
 	await expect(hk.getByRole('region', { name: 'Connection' })).toHaveCount(0);
 	await expect(rooms.nth(0)).toContainText('Inspected');
+	await context.close();
+});
+
+test('a queue replayed after the day rolls shows what changed, sends the rest and refreshes the list', async ({
+	page,
+	browser
+}) => {
+	const { housekeeper, propertyId } = await hotelWithHousekeeper(page);
+	const me = await (await page.request.get('/api/v1/me')).json();
+	const { page: hk, context } = await phone(browser, housekeeper);
+	await hk.goto(`/hk/issue?property=${propertyId}`);
+	const form = hk.getByRole('form', { name: 'Report an issue' });
+	await expect(form.getByLabel('Room').locator('option')).toHaveCount(5);
+	await hk.goto(`/hk?property=${propertyId}`);
+	const rooms = hk.getByRole('list', { name: 'Rooms' }).getByRole('listitem');
+	await expect(rooms).toHaveCount(2);
+	await shellCached(hk);
+
+	await context.setOffline(true);
+	await hk.goto(`/hk/issue?property=${propertyId}`);
+	await form.getByLabel('Room').selectOption({ label: '103' });
+	await form.getByLabel('Description').fill('Cracked window');
+	await form.getByRole('button', { name: 'Report issue' }).click();
+	await expect(hk.getByText('saved on this device')).toBeVisible();
+	await hk.goto(`/hk?property=${propertyId}`);
+	await rooms.nth(0).getByRole('button', { name: 'Start cleaning' }).click();
+	await expect(hk.getByText('2 changes waiting to be sent.')).toBeVisible();
+
+	// Night audit while the phone is offline: tomorrow nobody is assigned yet.
+	rollBusinessDate(me.current_tenant, propertyId);
+	await context.setOffline(false);
+
+	const conflicts = hk.getByRole('list', { name: 'Conflicts' });
+	await expect(conflicts).toContainText('Your rooms changed since you went offline.');
+	await expect(conflicts).toContainText('Room 101');
+	await expect(hk.getByText('No rooms are assigned to you today.')).toBeVisible();
+	await expect(hk.getByText('waiting to be sent')).toHaveCount(0);
+
+	// The report was not tied to an assignment, so it went through behind the refused change.
+	await expect(conflicts.getByRole('listitem')).toHaveCount(1);
+
+	await page.goto(`/p/${propertyId}/housekeeping`);
+	await expect(page.getByRole('list', { name: 'Open issues' }).getByRole('listitem')).toContainText(
+		'Cracked window'
+	);
+	await conflicts.getByRole('button', { name: 'Discard' }).click();
+	await expect(hk.getByRole('region', { name: 'Connection' })).toHaveCount(0);
 	await context.close();
 });
 

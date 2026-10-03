@@ -26,6 +26,11 @@
 
 	function describe(item: QueueItem): string {
 		const room = `Room ${item.roomNumber}`;
+		if (item.dateRolled) {
+			return `Your rooms changed since you went offline. ${room}: ${
+				item.kind === 'issue' ? 'your issue report' : `your ${stepLabel(item.condition)}`
+			} was not sent. The list is updated.`;
+		}
 		if (item.kind === 'issue') {
 			return `${room}: your issue report was not sent (${why(item.conflictStatus)}).`;
 		}
