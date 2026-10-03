@@ -63,6 +63,56 @@ async fn a_range_creates_numbered_rooms_in_order(_: PgPoolOptions, opts: PgConne
     assert_eq!(hotel.drift().await, vec![]);
 }
 
+impl Hotel {
+    /// `(room number, condition)` of every room that has a condition row, by number.
+    async fn conditions(&self) -> Vec<(String, String)> {
+        let mut tx = self.tx().await;
+        sqlx::query_as(
+            "select r.number, c.condition from room_condition c join room r on r.id = c.room_id order by r.number",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap()
+    }
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_new_room_starts_clean(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let dlx = hotel.room_type("DLX").await;
+
+    hotel.room(dlx.id, "101").await;
+
+    assert_eq!(hotel.conditions().await, [("101".to_owned(), "clean".to_owned())]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn every_room_of_a_range_starts_clean(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let dlx = hotel.room_type("DLX").await;
+    let mut tx = hotel.tx().await;
+
+    rooms::create_rooms(&mut tx, hotel.tenant, hotel.user, hotel.property, range(dlx.id, 101, 103)).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let expected: Vec<(String, String)> = (101..=103).map(|n| (n.to_string(), "clean".to_owned())).collect();
+    assert_eq!(hotel.conditions().await, expected);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn deleting_a_room_deletes_its_condition(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let dlx = hotel.room_type("DLX").await;
+    let room = hotel.room(dlx.id, "101").await;
+    hotel.room(dlx.id, "102").await;
+
+    let mut tx = hotel.tx().await;
+    sqlx::query("delete from room where id = $1").bind(room.id).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(hotel.conditions().await, [("102".to_owned(), "clean".to_owned())]);
+}
+
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn existing_numbers_are_a_conflict_that_names_them(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;
@@ -279,4 +329,28 @@ async fn deactivating_a_room_announces_the_whole_window_and_a_plain_edit_announc
     let received = tokio::time::timeout(Duration::from_secs(5), listener.recv()).await.unwrap().unwrap();
     let event: Event = serde_json::from_str(received.payload()).unwrap();
     assert_eq!(tape_only(&event.keys), Vec::<String>::new(), "a rename doesn't move the room on or off the chart");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn room_commands_tell_the_housekeeping_board(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let dlx = hotel.room_type("DLX").await;
+    let mut listener = PgListener::connect_with(&hotel.pool).await.unwrap();
+    listener.listen(CHANNEL).await.unwrap();
+    let board = rooms::hk_key(hotel.property);
+    assert_eq!(board, format!("hk:{}", hotel.property));
+
+    let first = hotel.room(dlx.id, "101").await;
+    let second = hotel.room(dlx.id, "102").await;
+    hotel.update_room(&first, RoomChanges { number: Some("101A".into()), ..RoomChanges::default() }).await.unwrap();
+    let mut tx = hotel.tx().await;
+    rooms::reorder_rooms(&mut tx, hotel.tenant, hotel.property, &[second.id, first.id]).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // Create, create, update, reorder: each one's event carries the board key.
+    for what in ["create", "create", "update", "reorder"] {
+        let received = tokio::time::timeout(Duration::from_secs(5), listener.recv()).await.unwrap().unwrap();
+        let event: Event = serde_json::from_str(received.payload()).unwrap();
+        assert!(event.keys.contains(&board), "{what} tells the board: {:?}", event.keys);
+    }
 }

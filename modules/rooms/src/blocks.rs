@@ -1,5 +1,5 @@
 use crate::inventory::{WINDOW_DAYS, adjust, business_date, clamped_month_keys, extend_window, lock_days};
-use crate::{RoomsError, assigned_stay, audit, notify, rooms_key, tape_keys, violates};
+use crate::{RoomsError, assigned_stay, audit, hk_key, notify, rooms_key, tape_keys, violates};
 use db::{TenantId, Tx, UserId};
 use serde::{Deserialize, Serialize};
 use time::{Date, Duration};
@@ -333,6 +333,7 @@ pub async fn create_block(
     let keys = clamped_month_keys(property, today, block.from, block.to)
         .into_iter()
         .chain(tape_keys(property, block.from, block.to))
+        .chain([hk_key(property)])
         .collect();
     notify(tx, tenant, property, keys).await?;
     Ok(block)
@@ -408,6 +409,7 @@ pub async fn shorten_block(
     let keys = clamped_month_keys(property, today, restored_from, current.to)
         .into_iter()
         .chain(tape_keys(property, current.from, current.to))
+        .chain([hk_key(property)])
         .collect();
     notify(tx, tenant, property, keys).await?;
     Ok(block)

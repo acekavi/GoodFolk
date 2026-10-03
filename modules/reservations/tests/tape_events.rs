@@ -7,8 +7,8 @@ mod common;
 use common::{Hotel, Plans, new_guest};
 use db::{CHANNEL, Event};
 use reservations::{
-    AssignedRoom, CancelledRoom, CheckInPolicy, CheckedIn, CheckedOut, CreatedReservation, Guest, ModifiedRoom,
-    RoomChanges, UndoneCheckIn,
+    AssignedRoom, CancelledRoom, CheckedIn, CheckedOut, CreatedReservation, Guest, ModifiedRoom, RoomChanges,
+    UndoneCheckIn,
 };
 use rooms::Room;
 use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions};
@@ -59,17 +59,8 @@ impl Hotel {
 
     async fn try_check_in(&self, id: Uuid, version: i32) -> CheckedIn {
         let mut tx = self.tx().await;
-        let checked_in = reservations::check_in(
-            &mut tx,
-            self.tenant,
-            self.user,
-            self.property,
-            id,
-            version,
-            CheckInPolicy::default(),
-        )
-        .await
-        .unwrap();
+        let checked_in =
+            reservations::check_in(&mut tx, self.tenant, self.user, self.property, id, version, None).await.unwrap();
         tx.commit().await.unwrap();
         checked_in
     }
@@ -148,6 +139,7 @@ async fn create_emits_tape_keys_for_every_booked_room(_: PgPoolOptions, opts: Pg
         .chain(rooms::tape_keys(hotel.property, hotel.day(28), hotel.day(33)))
         .collect();
     assert_eq!(tape_only(&keys), expected);
+    assert!(keys.contains(&housekeeping::hk_key(hotel.property)), "a booking tells the board: {keys:?}");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -168,6 +160,9 @@ async fn assign_and_unassign_emit_tape_keys_for_the_stays_range(_: PgPoolOptions
 
     assert_eq!(tape_only(&assigned_keys), expected);
     assert_eq!(tape_only(&unassigned_keys), expected);
+    let board = housekeeping::hk_key(hotel.property);
+    assert!(assigned_keys.contains(&board), "assigning tells the board: {assigned_keys:?}");
+    assert!(unassigned_keys.contains(&board), "unassigning tells the board: {unassigned_keys:?}");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -187,6 +182,7 @@ async fn cancel_emits_tape_keys_for_the_whole_stay_not_only_the_released_nights(
     let keys = recv(&mut listener).await;
     let expected = rooms::tape_keys(hotel.property, hotel.day(1), hotel.day(4)).into_iter().collect::<BTreeSet<_>>();
     assert_eq!(tape_only(&keys), expected);
+    assert!(keys.contains(&housekeeping::hk_key(hotel.property)), "a cancellation tells the board: {keys:?}");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -207,6 +203,7 @@ async fn modify_emits_tape_keys_for_the_old_and_new_months(_: PgPoolOptions, opt
         .chain(rooms::tape_keys(hotel.property, hotel.day(30), hotel.day(33)))
         .collect();
     assert_eq!(tape_only(&keys), expected);
+    assert!(keys.contains(&housekeeping::hk_key(hotel.property)), "a modification tells the board: {keys:?}");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -228,6 +225,9 @@ async fn check_in_and_undo_emit_tape_keys_for_the_stays_range(_: PgPoolOptions, 
 
     assert_eq!(tape_only(&checked_in_keys), expected);
     assert_eq!(tape_only(&undone_keys), expected);
+    let board = housekeeping::hk_key(hotel.property);
+    assert!(checked_in_keys.contains(&board), "check-in tells the board: {checked_in_keys:?}");
+    assert!(undone_keys.contains(&board), "undo tells the board: {undone_keys:?}");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

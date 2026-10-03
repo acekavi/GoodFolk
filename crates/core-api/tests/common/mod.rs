@@ -27,8 +27,7 @@ impl TestApp {
     }
 
     pub fn with_pool(pool: PgPool) -> Self {
-        let state =
-            AppState::new(pool.clone(), false, db::testing::guest_id_keys(), reservations::CheckInPolicy::default());
+        let state = AppState::new(pool.clone(), false, db::testing::guest_id_keys());
         Self { router: router(state.clone()), state, pool }
     }
 

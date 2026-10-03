@@ -7,7 +7,8 @@
 	import { ApiError, errorMessage, toApiError } from '$lib/api/problem';
 	import { connectEvents } from '$lib/events';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
-	import { fetchMe } from '$lib/session';
+	import { wipeDevice } from '$lib/hk-sync.svelte';
+	import { fetchMe, ownerOf } from '$lib/session';
 
 	let { children } = $props();
 
@@ -73,7 +74,10 @@
 				actionError = toApiError(problem, response.status).message;
 				return;
 			}
+			// Read the owner first: clearing the cache empties `me`, and the wipe needs to know whose data to remove.
+			const owner = me.data ? ownerOf(me.data) : null;
 			client.clear();
+			if (owner) await wipeDevice(owner);
 			await goto(resolve('/login'));
 		} catch (err) {
 			actionError = errorMessage(err);

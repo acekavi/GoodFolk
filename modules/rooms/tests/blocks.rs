@@ -340,6 +340,8 @@ async fn create_block_announces_the_blocks_range(_: PgPoolOptions, opts: PgConne
 
     let keys = recv(&mut listener).await;
     assert_eq!(tape_only(&keys), rooms::tape_keys(hotel.property, hotel.day(2), hotel.day(5)));
+    // The housekeeping board shows the block, so other users' boards refresh.
+    assert!(keys.contains(&format!("hk:{}", hotel.property)), "{keys:?}");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -356,4 +358,5 @@ async fn shorten_block_announces_the_blocks_original_range(_: PgPoolOptions, opt
     let keys = recv(&mut listener).await;
     // The whole [0, 10) span the block used to cover, not just [4, 10), the days its counters gave back.
     assert_eq!(tape_only(&keys), rooms::tape_keys(hotel.property, hotel.day(0), hotel.day(10)));
+    assert!(keys.contains(&format!("hk:{}", hotel.property)), "{keys:?}");
 }

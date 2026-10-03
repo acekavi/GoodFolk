@@ -40,6 +40,8 @@
 	const me = createQuery(() => ({ queryKey: ['me'], queryFn: fetchMe }));
 	const manage = $derived(!!me.data && can(me.data, 'manageReservations', propertyId));
 	const checkInAllowed = $derived(!!me.data && can(me.data, 'frontDeskCheckIn', propertyId));
+	const viewConditions = $derived(!!me.data && can(me.data, 'housekeepingView', propertyId));
+	const supervise = $derived(!!me.data && can(me.data, 'housekeepingSupervise', propertyId));
 	// The same key and fetcher as the table's prefetch on hover and focus, so an opened row is often
 	// already loaded.
 	const reservation = createQuery(() => ({
@@ -206,6 +208,8 @@
 					{businessDate}
 					{manage}
 					{checkInAllowed}
+					{viewConditions}
+					{supervise}
 				/>
 			{/each}
 

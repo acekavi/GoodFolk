@@ -249,6 +249,46 @@ export interface paths {
         patch: operations["update_guest"];
         trace?: never;
     };
+    "/api/v1/properties/{property}/hk-assignments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Sets, replaces or (with a `null` user) removes the assignment of each room for the business date. Every
+         *     assignee must hold a housekeeping role at the property, else 422 and nothing changes.
+         */
+        put: operations["set_hk_assignments"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/hk-assignments/copy-yesterday": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Copies the previous business date's assignments to the business date, skipping rooms already assigned,
+         *     inactive or blocked, and housekeepers who no longer hold the role.
+         */
+        post: operations["copy_yesterdays_hk_assignments"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/meal-supplements": {
         parameters: {
             query?: never;
@@ -415,7 +455,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Checks a confirmed, assigned room in on its arrival date. */
+        /**
+         * Checks a confirmed, assigned room in on its arrival date. The room must be clean or inspected, unless a
+         *     manager gives an `override_reason`.
+         */
         post: operations["check_in_reservation_room"];
         delete?: never;
         options?: never;
@@ -558,6 +601,40 @@ export interface paths {
         patch: operations["update_reservation"];
         trace?: never;
     };
+    "/api/v1/properties/{property}/room-issues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reports a problem with a room, without changing its condition. */
+        post: operations["report_room_issue"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/room-issues/{issue}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Resolves an open issue; resolving a resolved one is 422. */
+        patch: operations["update_room_issue"];
+        trace?: never;
+    };
     "/api/v1/properties/{property}/room-types": {
         parameters: {
             query?: never;
@@ -638,6 +715,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/properties/{property}/rooms/conditions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sets the condition of up to 500 rooms, whatever their version. A room outside the property is 404 and
+         *     nothing changes. A retried request with the same `Idempotency-Key` is answered without applying it again.
+         */
+        post: operations["set_room_conditions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/rooms/order": {
         parameters: {
             query?: never;
@@ -681,6 +778,27 @@ export interface paths {
         put?: never;
         /** A 409 lists the blocks in the way as `conflicts`: full `Block` objects, as this endpoint returns them. */
         post: operations["create_block"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/rooms/{room}/condition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Changes a room's condition. A caller who can also supervise housekeeping may set any value; a housekeeper
+         *     moves a room assigned to them today one step forward (`dirty` to `cleaning`, `cleaning` to `clean`), else 403
+         *     for another housekeeper's room and 422 for any other step.
+         */
+        put: operations["set_room_condition"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -790,6 +908,15 @@ export interface components {
             room_number?: string | null;
             /** Format: int32 */
             version: number;
+        };
+        AssignmentRequest: {
+            /** Format: uuid */
+            room_id: string;
+            /**
+             * Format: uuid
+             * @description The housekeeper who cleans the room; `null` removes the room's assignment.
+             */
+            user_id?: string | null;
         };
         /** @description Beds of one kind in a room type, e.g. `{ "kind": "king", "count": 1 }`. */
         Bed: {
@@ -901,6 +1028,14 @@ export interface components {
          * @enum {string}
          */
         ChangeMode: "percent" | "amount";
+        /** @description The optional body of a check-in. */
+        CheckInRequest: {
+            /**
+             * @description Checks the guest in although the room is not clean or inspected. Needs the housekeeping supervise
+             *     permission as well as the check-in one. 1 to 500 characters once trimmed, else 422.
+             */
+            override_reason?: string | null;
+        };
         /** @description A room after [`check_in`]. */
         CheckedIn: {
             /** Format: date-time */
@@ -928,6 +1063,18 @@ export interface components {
             status: components["schemas"]["RoomStatus"];
             /** Format: int32 */
             version: number;
+        };
+        /**
+         * @description How ready a room is for a guest.
+         * @enum {string}
+         */
+        Condition: "dirty" | "cleaning" | "clean" | "inspected";
+        CopiedAssignments: {
+            /**
+             * Format: int32
+             * @description How many of yesterday's assignments were copied.
+             */
+            copied: number;
         };
         /** @description A company or travel agent, and how to reach it. */
         CreateAccountRequest: {
@@ -1206,6 +1353,30 @@ export interface components {
          * @enum {string}
          */
         IdDocType: "passport" | "nic" | "driving_licence" | "other";
+        Issue: {
+            description: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            reported_at: string;
+            /** Format: uuid */
+            reported_by: string;
+            /** Format: date-time */
+            resolved_at?: string | null;
+            /** Format: uuid */
+            resolved_by?: string | null;
+            /** Format: uuid */
+            room_id: string;
+            severity: components["schemas"]["Severity"];
+            status: components["schemas"]["IssueStatus"];
+            /** Format: int32 */
+            version: number;
+        };
+        /**
+         * @description Whether an issue still needs work.
+         * @enum {string}
+         */
+        IssueStatus: "open" | "resolved";
         LoginRequest: {
             email: string;
             password: string;
@@ -1431,6 +1602,13 @@ export interface components {
             /** @description Every id of the collection, in the new display order. */
             ids: string[];
         };
+        ReportIssueRequest: {
+            description: string;
+            /** Format: uuid */
+            room_id: string;
+            /** @description `low`, `medium` or `high`. */
+            severity: components["schemas"]["Severity"];
+        };
         /** @description One room of a booking: a room type on a rate plan and meal plan for `[check_in, check_out)`. */
         ReservationRoomRequest: {
             /** Format: int32 */
@@ -1483,7 +1661,7 @@ export interface components {
             weekdays?: number[];
         };
         /** @enum {string} */
-        Role: "owner" | "manager" | "front_desk" | "housekeeping" | "accountant";
+        Role: "owner" | "manager" | "front_desk" | "housekeeping" | "accountant" | "hk_supervisor";
         Room: {
             active: boolean;
             floor?: string | null;
@@ -1498,6 +1676,13 @@ export interface components {
             section_id?: string | null;
             /** Format: int32 */
             sort_order: number;
+            /** Format: int32 */
+            version: number;
+        };
+        RoomConditionRow: {
+            condition: components["schemas"]["Condition"];
+            /** Format: uuid */
+            room_id: string;
             /** Format: int32 */
             version: number;
         };
@@ -1573,10 +1758,28 @@ export interface components {
          * @enum {string}
          */
         Segment: "FIT_F" | "FIT_L" | "OTA" | "TA" | "IBE";
+        /** @description Replaces the business date's assignment of each room named, each once. */
+        SetAssignmentsRequest: {
+            assignments: components["schemas"]["AssignmentRequest"][];
+        };
+        SetConditionRequest: {
+            /** @description `dirty`, `cleaning`, `clean` or `inspected`. */
+            condition: components["schemas"]["Condition"];
+        };
+        SetConditionsRequest: {
+            condition: components["schemas"]["Condition"];
+            /** @description 1 to 500 rooms of the property. */
+            room_ids: string[];
+        };
         /** @description Prices for a standard or custom plan; derived plans are repriced from them in the same transaction. */
         SetPricesRequest: {
             prices: components["schemas"]["PriceRequest"][];
         };
+        /**
+         * @description How urgent an issue is; a `High` one offers to block the room.
+         * @enum {string}
+         */
+        Severity: "low" | "medium" | "high";
         /**
          * @description Ends the block early: the room is back from `to`. Sending the business date releases it now; a date on
          *     or before the block's start cancels it.
@@ -1664,6 +1867,10 @@ export interface components {
             notes?: string | null;
             phone?: string | null;
             residency?: components["schemas"]["Residency"] | null;
+        };
+        UpdateIssueRequest: {
+            /** @description Only `resolved` is accepted. */
+            status: components["schemas"]["IssueStatus"];
         };
         /** @description Fields left out stay as they are; `to` sent as `null` makes the supplement open-ended. */
         UpdateMealSupplementRequest: {
@@ -2502,6 +2709,82 @@ export interface operations {
             };
         };
     };
+    set_hk_assignments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetAssignmentsRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    copy_yesterdays_hk_assignments: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CopiedAssignments"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     create_meal_supplement: {
         parameters: {
             query?: never;
@@ -3004,7 +3287,12 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description empty, or an override reason */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CheckInRequest"] | null;
+            };
+        };
         responses: {
             200: {
                 headers: {
@@ -3512,6 +3800,113 @@ export interface operations {
             };
         };
     };
+    report_room_issue: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReportIssueRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    /** @description the issue's version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Issue"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_room_issue: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                issue: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateIssueRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the issue's version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Issue"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     create_room_type: {
         parameters: {
             query?: never;
@@ -3776,6 +4171,51 @@ export interface operations {
             };
         };
     };
+    set_room_conditions: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetConditionsRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoomConditionRow"][];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     reorder_rooms: {
         parameters: {
             query?: never;
@@ -3930,6 +4370,66 @@ export interface operations {
                 content?: never;
             };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_room_condition: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetConditionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the condition's version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoomConditionRow"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };

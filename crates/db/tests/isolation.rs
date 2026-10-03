@@ -489,6 +489,7 @@ enum Seed {
     Rates,
     Reservations,
     AccountsAndOccupants,
+    Housekeeping,
 }
 
 impl Seed {
@@ -497,6 +498,7 @@ impl Seed {
             Seed::Rates => seed_rates(pool, tenant).await,
             Seed::Reservations => seed_reservations(pool, tenant).await,
             Seed::AccountsAndOccupants => seed_accounts_and_occupants(pool, tenant).await,
+            Seed::Housekeeping => seed_housekeeping(pool, tenant).await,
         }
     }
 }
@@ -718,6 +720,61 @@ async fn reservation_guests_are_isolated_by_tenant(_: PgPoolOptions, opts: PgCon
         "insert into reservation_guest (tenant_id, property_id, reservation_room_id, guest_id)
          select $1, property_id, reservation_room_id, guest_id from reservation_guest",
         Seed::AccountsAndOccupants,
+    )
+    .await;
+}
+
+/// One room condition, one assignment and one open issue on top of [`seed_rooms`], for `tenant`'s room (5).
+async fn seed_housekeeping(pool: &PgPool, tenant: TenantId) {
+    seed_rooms(pool, tenant).await;
+    let mut tx = begin(pool, Scope::tenant(tenant)).await.unwrap();
+    let statements = [
+        "insert into room_condition (room_id, tenant_id, property_id)
+         select id, tenant_id, property_id from room where tenant_id = $1",
+        "insert into hk_assignment (tenant_id, property_id, business_date, room_id, user_id)
+         select tenant_id, property_id, current_date, id, gen_random_uuid() from room where tenant_id = $1",
+        "insert into room_issue (id, tenant_id, property_id, room_id, severity, description, reported_by)
+         select gen_random_uuid(), tenant_id, property_id, id, 'low', 'Dripping tap', gen_random_uuid()
+         from room where tenant_id = $1",
+    ];
+    for statement in statements {
+        sqlx::query(statement).bind(tenant.0).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn room_conditions_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "room_condition",
+        "insert into room_condition (room_id, tenant_id, property_id)
+         select gen_random_uuid(), $1, property_id from room_condition",
+        Seed::Housekeeping,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn hk_assignments_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "hk_assignment",
+        "insert into hk_assignment (tenant_id, property_id, business_date, room_id, user_id)
+         select $1, property_id, current_date + 1, room_id, gen_random_uuid() from hk_assignment",
+        Seed::Housekeeping,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn room_issues_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "room_issue",
+        "insert into room_issue (id, tenant_id, property_id, room_id, severity, description, reported_by)
+         select gen_random_uuid(), $1, property_id, room_id, 'low', 'Intruder', gen_random_uuid() from room_issue",
+        Seed::Housekeeping,
     )
     .await;
 }

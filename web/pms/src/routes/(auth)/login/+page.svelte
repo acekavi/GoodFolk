@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+	import { safeRedirect } from '$lib/redirect';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { rest } from '$lib/api/rest';
 	import { errorMessage, toApiError } from '$lib/api/problem';
@@ -28,7 +30,10 @@
 				return;
 			}
 			client.setQueryData(['me'], data);
-			await goto(resolve('/'));
+			// Back to the page that asked for sign-in, when it is one of ours.
+			const back = safeRedirect(page.url.searchParams.get('redirect'), page.url.origin);
+			// eslint-disable-next-line svelte/no-navigation-without-resolve -- same-origin path, checked above
+			await goto(back ?? resolve('/'));
 		} catch (err) {
 			error = errorMessage(err);
 		} finally {

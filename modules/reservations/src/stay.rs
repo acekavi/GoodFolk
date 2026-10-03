@@ -4,19 +4,20 @@
 use crate::{ReservationsError, audit, business_date, decode_error, notify, reservation_key, reservations_key};
 use db::{TenantId, Tx, UserId};
 use domain::{Action, RoomStatus};
+use housekeeping::{Condition, hk_key};
 use serde::Serialize;
 use time::{Date, Duration, OffsetDateTime};
 use uuid::Uuid;
 
-/// The room-condition gate for check-in. `docs/design/api-conventions.md`'s Phase 3b design reserves this for
-/// Phase 5, which adds a real room status (`clean`, `dirty`, `inspected`): once it exists,
-/// `require_clean_room` will refuse checking a guest into a room that isn't `clean` or `inspected`. Until then
-/// this is a no-op regardless of the flag -- the parameter exists now so the REST layer's config switch (e.g.
-/// `CHECKIN_REQUIRES_CLEAN_ROOM`) needs no further signature change here when Phase 5 lands.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct CheckInPolicy {
-    pub require_clean_room: bool,
+/// A manager's reason for checking a guest into a room that is not `clean` or `inspected`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckInOverride {
+    /// Not empty after trimming, at most [`MAX_OVERRIDE_REASON`] characters.
+    pub reason: String,
 }
+
+/// The longest override reason.
+pub const MAX_OVERRIDE_REASON: usize = 500;
 
 /// A room after [`check_in`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
@@ -56,15 +57,18 @@ pub struct CheckedOut {
 /// (`Conflict`). A confirmed room may still not check in today: its check-in date must be the business date,
 /// or this is `Conflict "check-in is only on the arrival date (<date>)"`. It must have an assigned room
 /// (`Conflict "assign a room first"` otherwise), and that room must be active and not blocked today (each a
-/// `Conflict`, worded as [`crate::assign_room`]'s own checks are). `policy` gates the still-unimplemented
-/// room-condition check; see [`CheckInPolicy`].
+/// `Conflict`, worded as [`crate::assign_room`]'s own checks are). The room's condition must be `clean` or
+/// `inspected`, or this is `Conflict "room 101 is Dirty"`, unless `override_` names a reason (`Invalid` when it
+/// is empty after trimming or longer than [`MAX_OVERRIDE_REASON`] characters); the caller decides who may
+/// override.
 ///
-/// Lock order: this row, then the assigned room -- see "Room assignment lock order" in
-/// `docs/design/api-conventions.md`. No inventory lock: check-in changes no counter, the stay was already sold
-/// at booking.
+/// Lock order: this row, then the assigned room, then its condition (shared) -- see "Room assignment lock
+/// order" in `docs/design/api-conventions.md`. No inventory lock: check-in changes no counter, the stay was
+/// already sold at booking.
 ///
-/// Sets `checked_in_at` to now and `checked_in_business_date` to the business date, bumps both versions,
-/// audits `reservation_room.checked_in` and notifies the reservation list, this reservation's detail, and the
+/// Sets `checked_in_at` to now and `checked_in_business_date` to the business date, remembers the room's
+/// condition in `condition_before_check_in` for [`undo_check_in`], bumps both versions, audits
+/// `reservation_room.checked_in` (with the override reason and condition when overridden) and notifies the reservation list, this reservation's detail, and the
 /// stay's tape months.
 pub async fn check_in(
     tx: &mut Tx,
@@ -73,8 +77,9 @@ pub async fn check_in(
     property: Uuid,
     id: Uuid,
     expected_version: i32,
-    policy: CheckInPolicy,
+    override_: Option<CheckInOverride>,
 ) -> Result<CheckedIn, ReservationsError> {
+    let override_reason = override_.map(|given| validated_reason(&given.reason)).transpose()?;
     let row: Option<CheckInRow> = sqlx::query_as(
         "select reservation_id, room_id, status, lower(stay) as check_in, upper(stay) as check_out, version
          from reservation_room where id = $1 and property_id = $2
@@ -122,18 +127,27 @@ pub async fn check_in(
         return Err(ReservationsError::Conflict(format!("room {number} is blocked from {from} to {to}")));
     }
 
-    // Room condition (clean/inspected) arrives in Phase 5; until then `require_clean_room` has nothing to
-    // check against, so checking in never refuses on it.
-    let CheckInPolicy { require_clean_room: _ } = policy;
+    // After the room lock, before anything is written: shared, so a housekeeper's change waits for this commit.
+    let condition: String = sqlx::query_scalar("select condition from room_condition where room_id = $1 for share")
+        .bind(room)
+        .fetch_one(&mut **tx)
+        .await?;
+    let condition = Condition::parse(&condition).ok_or_else(|| decode_error("condition", &condition))?;
+    let ready = matches!(condition, Condition::Clean | Condition::Inspected);
+    if !ready && override_reason.is_none() {
+        return Err(ReservationsError::Conflict(format!("room {number} is {}", title_case(condition.as_str()))));
+    }
 
     let (version, checked_in_at): (i32, OffsetDateTime) = sqlx::query_as(
         "update reservation_room
-         set status = 'checked_in', checked_in_at = now(), checked_in_business_date = $2, version = version + 1
+         set status = 'checked_in', checked_in_at = now(), checked_in_business_date = $2,
+             condition_before_check_in = $3, version = version + 1
          where id = $1
          returning version, checked_in_at",
     )
     .bind(id)
     .bind(today)
+    .bind(condition.as_str())
     .fetch_one(&mut **tx)
     .await?;
     sqlx::query("update reservation set version = version + 1 where id = $1")
@@ -141,13 +155,17 @@ pub async fn check_in(
         .execute(&mut **tx)
         .await?;
 
-    let data = serde_json::json!({
+    let mut data = serde_json::json!({
         "reservation_id": row.reservation_id,
         "room_id": room,
         "checked_in_business_date": today,
     });
+    if let Some(reason) = override_reason.filter(|_| !ready) {
+        data["override_reason"] = reason.into();
+        data["condition"] = condition.as_str().into();
+    }
     audit(tx, tenant, actor, "reservation_room.checked_in", "reservation_room", id, data).await?;
-    let keys = [reservations_key(property), reservation_key(row.reservation_id)]
+    let keys = [reservations_key(property), reservation_key(row.reservation_id), hk_key(property)]
         .into_iter()
         .chain(rooms::tape_keys(property, row.check_in, row.check_out))
         .collect();
@@ -167,9 +185,11 @@ pub async fn check_in(
 ///
 /// The room must be `checked_in`: [`domain::transition`] refuses every other status with its own message
 /// (`Conflict`). It must also still be the day it was checked in: once the business date has moved on, this is
-/// `Conflict "check-in can only be undone on the day it happened"`. Reverts to `confirmed` and clears
-/// `checked_in_at` and `checked_in_business_date`; bumps both versions, audits
-/// `reservation_room.check_in_undone` and notifies as [`check_in`] does.
+/// `Conflict "check-in can only be undone on the day it happened"`. Reverts to `confirmed`, clears
+/// `checked_in_at` and `checked_in_business_date` and puts the room back to the condition it had before the
+/// check-in (`clean` for a stay checked in before that was recorded), locking its condition after this row;
+/// bumps both versions, audits `reservation_room.check_in_undone` (with the restored condition) and notifies as
+/// [`check_in`] does, plus the housekeeping board.
 pub async fn undo_check_in(
     tx: &mut Tx,
     tenant: TenantId,
@@ -178,9 +198,9 @@ pub async fn undo_check_in(
     id: Uuid,
     expected_version: i32,
 ) -> Result<UndoneCheckIn, ReservationsError> {
-    let row: Option<(Uuid, String, Option<Date>, i32, Date, Date)> = sqlx::query_as(
+    let row: Option<UndoRow> = sqlx::query_as(
         "select reservation_id, status, checked_in_business_date, version, lower(stay) as check_in,
-                upper(stay) as check_out
+                upper(stay) as check_out, room_id, condition_before_check_in as before
          from reservation_room where id = $1 and property_id = $2
          for update",
     )
@@ -188,7 +208,7 @@ pub async fn undo_check_in(
     .bind(property)
     .fetch_optional(&mut **tx)
     .await?;
-    let (reservation_id, status, checked_in_business_date, version, check_in, check_out) =
+    let UndoRow { reservation_id, status, checked_in_business_date, version, check_in, check_out, room_id, before } =
         row.ok_or(ReservationsError::NotFound("reservation room"))?;
     if version != expected_version {
         return Err(ReservationsError::VersionMismatch("reservation room"));
@@ -201,9 +221,17 @@ pub async fn undo_check_in(
         return Err(ReservationsError::Conflict("check-in can only be undone on the day it happened".into()));
     }
 
+    let restored = match before {
+        Some(stored) => Condition::parse(&stored).ok_or_else(|| decode_error("condition_before_check_in", &stored))?,
+        None => Condition::Clean,
+    };
+    if let Some(room) = room_id {
+        set_room_condition(tx, actor, property, room, restored).await?;
+    }
     let new_version: i32 = sqlx::query_scalar(
         "update reservation_room
-         set status = 'confirmed', checked_in_at = null, checked_in_business_date = null, version = version + 1
+         set status = 'confirmed', checked_in_at = null, checked_in_business_date = null,
+             condition_before_check_in = null, version = version + 1
          where id = $1
          returning version",
     )
@@ -215,9 +243,9 @@ pub async fn undo_check_in(
         .execute(&mut **tx)
         .await?;
 
-    let data = serde_json::json!({ "reservation_id": reservation_id });
+    let data = serde_json::json!({ "reservation_id": reservation_id, "condition": restored.as_str() });
     audit(tx, tenant, actor, "reservation_room.check_in_undone", "reservation_room", id, data).await?;
-    let keys = [reservations_key(property), reservation_key(reservation_id)]
+    let keys = [reservations_key(property), reservation_key(reservation_id), hk_key(property)]
         .into_iter()
         .chain(rooms::tape_keys(property, check_in, check_out))
         .collect();
@@ -238,9 +266,10 @@ pub async fn undo_check_in(
 /// this room as held once its last night is over, so it can be blocked or deactivated (the Phase 3a carry-over
 /// this resolves).
 ///
-/// Bumps both versions, audits `reservation_room.checked_out` (recording the released nights, if any) and
-/// notifies the reservation list, this reservation's detail, the released range's inventory months, and the
-/// original (unshortened) range's tape months.
+/// Sets the room's condition to `dirty` (locking `room_condition` after this row, bumping its version), bumps
+/// both versions, audits `reservation_room.checked_out` (recording the released nights, if any, and the
+/// condition the room had) and notifies the reservation list, this reservation's detail, the housekeeping
+/// board, the released range's inventory months, and the original (unshortened) range's tape months.
 pub async fn check_out(
     tx: &mut Tx,
     tenant: TenantId,
@@ -250,7 +279,8 @@ pub async fn check_out(
     expected_version: i32,
 ) -> Result<CheckedOut, ReservationsError> {
     let row: Option<CheckOutRow> = sqlx::query_as(
-        "select reservation_id, room_type_id, status, lower(stay) as check_in, upper(stay) as check_out, version
+        "select reservation_id, room_type_id, room_id, status, lower(stay) as check_in, upper(stay) as check_out,
+                version
          from reservation_room where id = $1 and property_id = $2
          for update",
     )
@@ -265,6 +295,11 @@ pub async fn check_out(
     let current = RoomStatus::parse(&stay.status).ok_or_else(|| decode_error("status", &stay.status))?;
     domain::transition(current, Action::CheckOut).map_err(|invalid| ReservationsError::Conflict(invalid.message))?;
 
+    // Before the inventory days: room_condition comes ahead of room_block and inventory_day in the lock order.
+    let was = match stay.room_id {
+        Some(room) => Some(set_room_condition(tx, actor, property, room, Condition::Dirty).await?),
+        None => None,
+    };
     let today = business_date(tx, property).await?;
     let mut new_check_out = stay.check_out;
     let mut released_nights = Vec::new();
@@ -307,9 +342,13 @@ pub async fn check_out(
         .execute(&mut **tx)
         .await?;
 
-    let data = serde_json::json!({ "reservation_id": stay.reservation_id, "released_nights": released_nights });
+    let data = serde_json::json!({
+        "reservation_id": stay.reservation_id,
+        "released_nights": released_nights,
+        "condition_before": was.map(Condition::as_str),
+    });
     audit(tx, tenant, actor, "reservation_room.checked_out", "reservation_room", id, data).await?;
-    let mut keys = vec![reservations_key(property), reservation_key(stay.reservation_id)];
+    let mut keys = vec![reservations_key(property), reservation_key(stay.reservation_id), hk_key(property)];
     if !released_nights.is_empty() {
         keys.extend(rooms::month_keys(property, new_check_out, stay.check_out));
     }
@@ -326,6 +365,40 @@ pub async fn check_out(
         checked_out_at,
         released_nights,
     })
+}
+
+/// Locks `room`'s condition and sets it to `to`, returning the condition it had. The caller audits it inside
+/// its own entry and notifies the board.
+async fn set_room_condition(
+    tx: &mut Tx,
+    actor: UserId,
+    property: Uuid,
+    room: Uuid,
+    to: Condition,
+) -> Result<Condition, ReservationsError> {
+    housekeeping::lock_and_set(tx, actor, property, room, to).await.map_err(|err| match err {
+        housekeeping::HousekeepingError::NotFound(what) => ReservationsError::NotFound(what),
+        housekeeping::HousekeepingError::Database(err) => ReservationsError::Database(err),
+        // Locking a condition only fails when the row is missing or the database errs; anything else is a bug.
+        other => ReservationsError::Database(sqlx::Error::Protocol(format!("locking a condition failed: {other}"))),
+    })
+}
+
+/// `reason` trimmed, or `Invalid` when it is empty or longer than [`MAX_OVERRIDE_REASON`] characters.
+fn validated_reason(reason: &str) -> Result<String, ReservationsError> {
+    let reason = reason.trim();
+    if reason.is_empty() || reason.chars().count() > MAX_OVERRIDE_REASON {
+        return Err(ReservationsError::Invalid(format!(
+            "the override reason must be between 1 and {MAX_OVERRIDE_REASON} characters"
+        )));
+    }
+    Ok(reason.to_owned())
+}
+
+/// `dirty` as `Dirty`.
+fn title_case(word: &str) -> String {
+    let mut chars = word.chars();
+    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
 /// Whether `check_in` is the property's business date -- the day a room may check in. The one rule
@@ -398,8 +471,22 @@ struct CheckInRow {
 struct CheckOutRow {
     reservation_id: Uuid,
     room_type_id: Uuid,
+    room_id: Option<Uuid>,
     status: String,
     check_in: Date,
     check_out: Date,
     version: i32,
+}
+
+/// The parts of a `reservation_room` that undoing a check-in reads.
+#[derive(sqlx::FromRow)]
+struct UndoRow {
+    reservation_id: Uuid,
+    status: String,
+    checked_in_business_date: Option<Date>,
+    version: i32,
+    check_in: Date,
+    check_out: Date,
+    room_id: Option<Uuid>,
+    before: Option<String>,
 }

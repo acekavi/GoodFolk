@@ -21,6 +21,10 @@
 		open: boolean;
 		/** The first day suggested when the dialog opens. */
 		from: string;
+		/** The room chosen when the dialog opens; the first room, or the last one blocked, when absent. */
+		roomId?: string;
+		/** The note the dialog opens with. */
+		note?: string;
 	}
 
 	let {
@@ -30,7 +34,9 @@
 		roomTypes,
 		reasons,
 		open = $bindable(),
-		from
+		from,
+		roomId,
+		note
 	}: Props = $props();
 
 	const client = useQueryClient();
@@ -57,12 +63,12 @@
 		if (open && !dialog.open) {
 			const start = from < businessDate ? businessDate : from;
 			form = {
-				roomId: form.roomId || (activeRooms[0]?.id ?? ''),
+				roomId: roomId || form.roomId || (activeRooms[0]?.id ?? ''),
 				from: start,
 				until: addDays(start, 1),
 				kind: 'out_of_order',
 				reasonId: '',
-				note: ''
+				note: note ?? ''
 			};
 			problems = [];
 			blockKeys.reset();
@@ -123,7 +129,8 @@
 		<label>
 			Room
 			<select required bind:value={form.roomId}>
-				{#each activeRooms as room (room.id)}
+				<!-- A property can have hundreds of rooms: their options are made when the dialog opens, not with the page. -->
+				{#each open ? activeRooms : [] as room (room.id)}
 					<option value={room.id}>{room.number} · {typeCode.get(room.roomTypeId)}</option>
 				{/each}
 			</select>

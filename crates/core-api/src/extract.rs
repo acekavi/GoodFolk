@@ -1,14 +1,38 @@
 //! Request extractors whose rejections are problem details, like every other API error.
 
 use crate::error::ApiError;
+use axum::body::{Body, Bytes};
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
-use axum::extract::{FromRequest, FromRequestParts};
+use axum::extract::{FromRequest, FromRequestParts, OptionalFromRequest, Request};
+use axum::http::header::CONTENT_TYPE;
 use axum::response::{IntoResponse, Response};
+use serde::de::DeserializeOwned;
 
 /// `axum::Json` for request bodies: a malformed body is a 400 and a body of the wrong shape a 422.
 #[derive(Debug, FromRequest)]
 #[from_request(via(axum::Json), rejection(ApiError))]
 pub struct ApiJson<T>(pub T);
+
+/// An optional JSON body: an empty body is `None`, whatever its `Content-Type`, and anything else is read as
+/// [`ApiJson`] reads it. For commands whose body only carries optional extras.
+impl<S: Send + Sync, T: DeserializeOwned> OptionalFromRequest<S> for ApiJson<T> {
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Option<Self>, Self::Rejection> {
+        let content_type = req.headers().get(CONTENT_TYPE).cloned();
+        let bytes = Bytes::from_request(req, state)
+            .await
+            .map_err(|_| ApiError::bad_request("could not read the request body"))?;
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        let mut rebuilt = Request::new(Body::from(bytes));
+        if let Some(content_type) = content_type {
+            rebuilt.headers_mut().insert(CONTENT_TYPE, content_type);
+        }
+        <ApiJson<T> as FromRequest<S>>::from_request(rebuilt, state).await.map(Some)
+    }
+}
 
 /// A request body extractor that hides the request values in validation errors. Used for bodies that
 /// carry sensitive data like encrypted ID numbers: if serde's validation error quotes the number,

@@ -19,8 +19,7 @@ fn properties_document() -> (&'static String, &'static String) {
 
 /// An app whose API runs as in production, sharing `app`'s database.
 fn production(app: &TestApp) -> TestApp {
-    let state =
-        AppState::new(app.pool.clone(), true, db::testing::guest_id_keys(), reservations::CheckInPolicy::default());
+    let state = AppState::new(app.pool.clone(), true, db::testing::guest_id_keys());
     TestApp { router: router(state.clone()), state, pool: app.pool.clone() }
 }
 

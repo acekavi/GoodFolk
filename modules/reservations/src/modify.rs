@@ -422,8 +422,11 @@ pub async fn modify_room(
         .into_iter()
         .chain(rooms::tape_keys(property, new_check_in, new_check_out))
         .collect();
-    let keys =
-        [reservations_key(property), reservation_key(reservation_id)].into_iter().chain(months).chain(tape).collect();
+    let keys = [reservations_key(property), reservation_key(reservation_id), housekeeping::hk_key(property)]
+        .into_iter()
+        .chain(months)
+        .chain(tape)
+        .collect();
     notify(tx, tenant, property, keys).await?;
 
     Ok(ModifiedRoom {

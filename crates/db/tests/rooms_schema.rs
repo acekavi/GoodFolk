@@ -163,3 +163,19 @@ async fn existing_properties_get_a_business_date_and_block_reasons(pool: PgPool)
         .map(|(code, kind)| (code.to_owned(), kind.to_owned()))
     );
 }
+
+#[sqlx::test(migrations = false)]
+async fn existing_rooms_get_a_clean_condition(pool: PgPool) {
+    db::MIGRATOR.run_to(12, &pool).await.unwrap();
+    let hotel = hotel(&pool, "GAL").await;
+
+    db::MIGRATOR.run(&pool).await.unwrap();
+
+    let conditions: Vec<(Uuid, String, i32)> =
+        sqlx::query_as("select room_id, condition, version from room_condition where tenant_id = $1")
+            .bind(hotel.tenant)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(conditions, [(hotel.room, "clean".to_owned(), 1)]);
+}

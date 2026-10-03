@@ -12,9 +12,9 @@ Multi-tenant, cloud-hosted hotel property management system.
 | `crates/core-api` | axum HTTP API (REST commands, GraphQL reads, server-sent events) |
 | `crates/db` | Postgres pool, migrations, tenant-scoped transactions, change events |
 | `crates/domain` | Pure business rules with no I/O of their own, shared by callers instead of re-derived (the reservation-room state machine) |
-| `modules/*` | Domain modules (`identity`, `property`, `rooms`, `rates`, `reservations`, …) |
+| `modules/*` | Domain modules (`identity`, `property`, `rooms`, `rates`, `reservations`, `housekeeping`, …) |
 | `migrations/` | SQL migrations, applied by `core-api migrate` |
-| `web/pms` | SvelteKit staff app (single-page) |
+| `web/pms` | SvelteKit staff app (single-page), and the installable housekeeper app under `/hk` |
 
 ## Development
 
@@ -59,6 +59,7 @@ Run by hand, because shared CI machines make timings noisy, and one at a time (`
 # availability for 7 nights x 12 room types x 5 rate plans (derived plans included): p95 under 40 ms
 # tapeWindow for 10 rooms x 14 days, and x 42 days, of a 500-room property with 18 months of stays: p95 under 5 ms each
 # unassignedStays for 42 days: p95 under 5 ms; a tapeWindow response under 8 KB gzipped
+# housekeepingBoard for 500 rooms: p95 under 30 ms
 DATABASE_URL=$DATABASE_OWNER_URL cargo test --release -p core-api --test perf -- --ignored --nocapture --test-threads=1
 
 # the month grid for the same property renders in under 60 ms and scrolls at 60 fps (see End-to-end tests;
@@ -67,6 +68,8 @@ DATABASE_URL=$DATABASE_OWNER_URL cargo test --release -p core-api --test perf --
 # the tape chart on a 500-room property with 18 months of stays (seeds for several minutes): first open under
 # 400 ms and a page or picker change under 50 ms (each p90 of ten), scrolling at 58 fps with no long task over 50 ms,
 # the drag ghost within one frame, under 3,000 DOM nodes
+# the housekeeping board for 500 rooms renders in under 50 ms (p90 of ten) and the /hk app's first load on a throttled
+# 3G-class network, service worker included, takes under 2 s (p90 of five cold contexts)
 cd web/pms && E2E_PERF=1 E2E_DATABASE_URL=... bun run test:e2e --grep @perf
 ```
 
@@ -127,9 +130,9 @@ Check-in and check-out need a stay that arrives on the property's business date 
 3. **New reservation**: search today for 2 nights, 2 adults, non-resident. Take the `BAR · Room only` offer for `DLX` (`USD 200.00`). **New guest…**, add one, then in the review step set **Bill to account** to `Acme Corp · Company` and **Create reservation**: `STY-000001`. Its Account fact already reads `Acme Corp · Company` — no separate step needed to bill it.
 4. **Modify…** the room: change **Check-out** to one night later, **Save**. The Nights table grows from 2 rows to 3 and the total becomes `USD 300.00` — the added night is quoted at today's price, same as booking.
 5. Add a second room type `SUP` (same caps, no overbooking), one room `201`; edit `BAR` to also sell `SUP` and price it `150.00` a night for the same window. Back on the reservation, **Modify…** again: set **Room type** to `SUP`, tick **Keep the booked price (upgrade)**, **Save**. The room's heading becomes `SUP · 201` — a type change picks a room of the new type automatically, and `201` is the only `SUP` room — and the total stays `USD 300.00`, not the `USD 450.00` `SUP` would cost: the dates didn't change, so every night is "kept," and `keep_price` never touches an amount even though the type moved. (Without the tick, every night would be requoted at `SUP`'s `150.00`.)
-6. Click **Check in**: the room shows `Checked in`. There is nothing to assign first.
-7. Click **Check out…**: the confirmation reads `Checking out today releases 2 nights (<tomorrow>, <the day after>).` (an early departure, keeping only tonight). Click **Check out**: it shows `Checked out. Released 2 nights (<tomorrow>, <the day after>).` — and the released room can now be blocked or deactivated, which it couldn't while still held.
-8. Book a second reservation the same way (a fresh guest, 1 night, `DLX`, `BAR · Room only`, today). It is auto-assigned `101`, free again since the first booking moved to `SUP`. **Check in**, then **Undo check-in**: the room reverts to `Confirmed` and **Check in** reappears — undo only works the same business day the check-in happened.
+6. Click **Check in**: the room shows `Checked in`. There is nothing to assign first. Check-in needs a `Clean` or `Inspected` room, and every room starts `Clean`, so it goes through (a dirty room refuses it; see [Trying housekeeping by hand](#trying-housekeeping-by-hand)).
+7. Click **Check out…**: the confirmation reads `Checking out today releases 2 nights (<tomorrow>, <the day after>).` (an early departure, keeping only tonight). Click **Check out**: it shows `Checked out. Released 2 nights (<tomorrow>, <the day after>).` — and the released room can now be blocked or deactivated, which it couldn't while still held. Check-out also leaves room `201` `Dirty`, which matters only if you check another guest into it (see the housekeeping script).
+8. Book a second reservation the same way (a fresh guest, 1 night, `DLX`, `BAR · Room only`, today). It is auto-assigned `101`, free again since the first booking moved to `SUP`. **Check in** (`101` was never checked out of, so it is still `Clean`), then **Undo check-in**: the room reverts to `Confirmed` and **Check in** reappears — undo only works the same business day the check-in happened, and the room's condition goes back to what it was before the check-in.
 9. Create a second guest (start a third **New reservation**, **New guest…**, add e.g. `Grace Hopper`, then leave that reservation unfinished — the guest is created immediately, the reservation isn't). Back on the second reservation, under **Occupants**, **Add occupant…**, type `Grace` into **Find a guest**, pick her: she's listed with her masked ID, or none if she has none. **Remove** takes her off again.
 10. Overbooking: on a night none of the above used (e.g. ten days out, still inside the priced window), book `DLX` three times, one night each, a fresh guest each time: all three succeed, even though only two `DLX` rooms (`101`, `102`) physically exist. The first two are auto-assigned `101` and `102`; the third is created without a room, since none is free — it sells against the allowance (`physical 2 − sold 2 − out_of_order 0 + overbooking 1 > 0`). It also shows on **Tape chart** under **Needs a room (1)**, as `Overbooked` (see the next script). Try a fourth for that same night: **New reservation**'s `DLX` fieldset now reads `DLX · Deluxe · Sold out` and every offer under it is disabled (`2 − 3 − 0 + 1 = 0`).
 
@@ -157,6 +160,39 @@ For the block bars, block room `105` out of order from the inventory calendar fo
 
 Dragging, **Assign…** and the bar menu need the reservations-manage permission; without it the chart is read-only (no handles, no **Assign…**, no menu).
 
+### Trying housekeeping by hand
+
+This script sets up its own small hotel, and needs the API and `bun run dev` running (with migration `0013` applied, as the schema owner) and a second browser profile or private window for the other users. The business date does not roll before Phase 7's night audit, so everything here happens on one day.
+
+1. Sign up as the owner (say `owner@example.com`) and add a property coded `HKP`. On **Room types**, add `DLX` (2 adults, 1 child, max 3). On **Rooms**, bulk-add `DLX` rooms `101` to `104` with floor `1`, then `201` and `202` with floor `2`. On **Rate plans**, add `BAR` (standard, USD, segment IBE, meal plan RO only), and on **Rates** bulk-change it to `100.00` a night for the next two weeks. Book two reservations arriving today for 1 night each (**New reservation**, `BAR · Room only`, a new guest each time): `HKP-000001` lands in `101` and `HKP-000002` in `102`. Every room starts `Clean`: rooms get their condition when they are created.
+2. Add a housekeeper and a supervisor from the command line, as the schema owner (see [Adding staff](#adding-staff); the password file is read only for a new user and is removed afterwards):
+
+   ```sh
+   printf '%s' 'a password of at least 12 characters' > /tmp/staff-password
+   for who in "mala@example.com Mala housekeeping" "sunil@example.com Sunil hk_supervisor"; do
+     set -- $who
+     DATABASE_OWNER_URL=$DATABASE_OWNER_URL cargo run -p core-api -- add-staff \
+       --owner-email owner@example.com --email "$1" --password-file /tmp/staff-password \
+       --display-name "$2" --role "$3" --property HKP
+   done
+   rm /tmp/staff-password
+   ```
+
+   Running it again changes nothing and reports what already existed.
+3. As the owner, open **Housekeeping** in the nav. The heading shows the business date, and the filter bar reads `6 of 6 rooms`. Rooms `101` and `102` read `Due in`, the others `Vacant`, and all six are `Clean`. Set **Floor** to `2`: `2 of 6 rooms`. Set **Condition** to `Dirty`: `No rooms match the filters.` Put both back to `All`. The filters live in the URL, so a reload keeps them.
+4. Click the `101` tile, then Shift-click `102`: `2 selected`. In **Assign to…** choose `Mala`: `2 rooms assigned`, and both tiles show her initials. Set **Housekeeper** to `Mala`: `2 of 6 rooms`; `Unassigned` shows the other four. Click **Copy yesterday**: `Copied 0 assignments from yesterday`, since nothing was assigned on an earlier business date. (It copies the previous business date's assignments, skipping rooms now inactive or blocked and people who no longer hold a housekeeping role.) **Select all shown** and **Clear** change the selection.
+5. Issues. Under **Issues**, report room `201`, severity `low`, description `Dripping tap`: `Issue reported`, the tile shows a badge of `1` and the issue is listed under **Issues**. Report room `202`, severity `high`, description `Ceiling leak`. Only a high issue offers **Block room**, and only to someone who may both block rooms and supervise housekeeping (owner and manager); the front desk blocks rooms from **Inventory** instead, and an `hk_supervisor` may not block rooms at all. As the owner, click **Block room** on the `202` issue: it opens the **Block a room** dialog with `202` chosen, from today, and the issue's description in **Note**. Choose a reason, set **Until (first day back)** a few days out and submit **Block room**: the `202` tile carries an `OOO` marker (`OOS` if you chose the out of service kind). **Resolve** the `201` issue: `Issue in room 201 resolved`.
+6. In the other profile, sign in as `sunil@example.com` and open **Housekeeping**. The supervisor has the same board and tile actions, and **Resolve** on the `202` issue, but no **Block room** button. Back as the owner, select `101` and `102` and set **Set condition…** to `Inspected`: `2 rooms set to inspected`. Both tiles turn that colour. The other profile's board changes without a reload.
+7. Check-out makes a room dirty. On **Reservations**, open `HKP-000001` and click **Check in** (`Checked in`; its room shows `Condition` `Inspected`), then **Check out…** and **Check out**. On **Housekeeping**, `101` is now `Dirty` and `Vacant` without a reload (a stay checked out on its arrival day is never shown as arriving; a stay that arrived today and is checked in reads `Stay-over`), and so is the dot beside `101` in the room rail of **Tape chart** (hover it, or read its label: `Condition: Dirty`).
+8. A dirty room refuses check-in. On the board, select `102` and set it `Dirty`. Open `HKP-000002` and click **Check in**: it is refused with `room 102 is Dirty`, and a **Check in anyway** form with a **Reason** appears (only for someone who may both check in and supervise housekeeping: owner and manager. A front desk user sees the refusal and nothing else). Type `Guest waiting, room is ready` and **Check in anyway**: `Checked in`. The reason is kept in the check-in's audit entry. Click **Undo check-in**: the room goes back to `Dirty`, the condition it had before the check-in. Set `102` to `Clean` on the board and check in without any override.
+9. The housekeeper app is the same SvelteKit app under `/hk`, installable and usable offline; both need the production build, since the service worker that caches the app shell is registered by it. Keep `bun run dev` running: the owner's board stays on `http://localhost:5173` throughout. In another terminal, in `web/pms`, run `bun run build && bun run preview` (the preview serves port 4173, the port the end-to-end tests use, so do not run them at the same time, and it proxies the API like the dev server does). In a Chromium-based browser open a window about 400 px wide (or use the device toolbar in DevTools), go to `http://localhost:4173/hk` and sign in as `mala@example.com` (sessions are per address, so the owner stays signed in on 5173): the sign-in returns you to **My rooms** (only a path on this site is ever followed after sign-in). Rooms `101` and `102` are listed, each with large buttons. Install the app from the address bar's install icon (or the browser menu's **Install**): it opens in its own window as `GoodFolk Housekeeping`, with no browser chrome.
+10. In the app, `101` (dirty since step 7) offers **Start cleaning** and **Report issue**. Tap **Start cleaning**, then **Done**: `Cleaning`, then `Clean`, and the owner's board shows each change as it happens. A housekeeper moves only their own rooms, one step forward at a time; `Inspected` is a supervisor's step and is not offered. On the **Report issue** tab, choose room `101`, severity, a description and **Report issue**: `Issue reported for room 101.` The board's **Issues** list shows it.
+11. Offline. First, while still online, set `102` to `Dirty` on the owner's board and see it listed as `Dirty` in the app (this is not optional: an app that goes offline never learns about it, and offers no **Start cleaning**). Then in DevTools, **Network** → **Offline**. The app shows `You are offline. Changes are kept on this device and sent when you are back.` In the app tap **Start cleaning** then **Done** on `102`: it reads `Clean` with `Waiting to be sent`, and the banner says `2 changes waiting to be sent.` Report an issue for `102`: `Issue for room 102 saved on this device; it is sent when you are back online.` Reload the app while offline: it opens from the cache, and **My rooms** shows the last list with `Showing the list as it was on …`. Go back online: the changes are sent in the order they were made, the banner clears, and the board shows `102` `Clean` and the issue once, however often the connection flaps.
+12. A conflict. Online, set `101` and `102` to `Dirty` on the owner's board. Take the app offline and tap **Start cleaning** on both. On the board, set `101` to `Inspected`. Bring the app back online: `102` goes through, and `101` shows `Room 101 was changed to Inspected by someone else; your Start cleaning was not applied.` with **Retry** and **Discard**; the other change was not held up by it. **Discard** it (a retry would be refused again, since a housekeeper cannot move an `Inspected` room). If the day had rolled while the app was offline, the message would say `Your rooms changed since you went offline.` instead.
+13. Sign-out and the device. Set `101` and `102` to `Dirty` again on the owner's board (after step 12, `101` is `Inspected` and `102` `Cleaning`), repeat step 12's conflict but leave it showing, then tap **Sign out**: `1 change hasn't been sent and will be lost. Sign out anyway?` **Cancel** keeps everything; **OK** signs out and wipes that user's waiting changes and saved list from the device (other users' unsent work on a shared device is left alone, and is never sent or shown under anyone else). Sign in as Mala again: the app returns to **My rooms**, and the conflict is gone. If you sign in as a different user on the same device, they see neither Mala's list nor her changes, and a replay always checks who is signed in first.
+
+The board of a 500-room property draws only the rows in view, so scrolling stays smooth.
+
 ### Configuration
 
 The API (`core-api serve`) reads:
@@ -171,6 +207,24 @@ The API (`core-api serve`) reads:
 | `GUEST_ID_KEY_ID` | Name stored with each encrypted ID number: 1–16 letters, digits, `_` or `-` (default `k1`). |
 | `GUEST_ID_RETIRED_KEYS` | Optional, for rotation: `id1:base64,id2:base64`, one or more retired keys that can still open ID numbers sealed under them, even though `GUEST_ID_KEY`/`GUEST_ID_KEY_ID` no longer seals with them. To rotate, add the current key here under its existing id, set `GUEST_ID_KEY`/`GUEST_ID_KEY_ID` to a new key and id, and restart; re-encrypting already-stored numbers under the new key is not automatic. |
 | `APP_ENV` | `production` sets `Secure` cookies, disables GraphQL introspection and requires `DATABASE_LISTEN_URL`. |
-| `CHECKIN_REQUIRES_CLEAN_ROOM` | `true` or `false` (default `false`). The room-condition gate for check-in; a no-op until Phase 5 adds a real room status. |
 
 `core-api migrate` reads `DATABASE_OWNER_URL` (the schema owner) instead.
+
+### Adding staff
+
+Until invitations arrive (Phase 8), a hotel owner's staff are added from the command line, as the schema owner:
+
+```sh
+printf '%s' 'a password of at least 12 characters' > /tmp/staff-password
+DATABASE_OWNER_URL=$DATABASE_OWNER_URL cargo run -p core-api -- add-staff \
+  --owner-email owner@example.com --email nimal@example.com --password-file /tmp/staff-password \
+  --display-name Nimal --role front_desk [--property COL] [--tenant "Lagoon Hotels"]
+rm /tmp/staff-password
+```
+
+`--role` is `owner`, `manager`, `front_desk`, `housekeeping`, `accountant` or `hk_supervisor`. `--property` is a property
+code of the owner's tenant and limits the role to that property; without it the role covers the whole tenant.
+`--tenant` is needed only when `--owner-email` owns more than one tenant. The password is read from the file only (never
+an argument or environment variable) and is used only for a new user: an existing user keeps their password and name.
+The command refuses an `--owner-email` that is not a tenant-wide owner, and is safe to repeat: it creates what is
+missing and reports what already existed.

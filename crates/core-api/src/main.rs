@@ -1,6 +1,6 @@
 use anyhow::{Context, bail};
 use core_api::config::Config;
-use core_api::{AppState, events, router};
+use core_api::{AppState, events, router, staff};
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
@@ -12,7 +12,8 @@ async fn main() -> anyhow::Result<()> {
     match std::env::args().nth(1).as_deref() {
         None | Some("serve") => serve().await,
         Some("migrate") => migrate().await,
-        Some(other) => bail!("unknown command `{other}`; expected `serve` or `migrate`"),
+        Some("add-staff") => add_staff().await,
+        Some(other) => bail!("unknown command `{other}`; expected `serve`, `migrate` or `add-staff`"),
     }
 }
 
@@ -21,8 +22,7 @@ async fn serve() -> anyhow::Result<()> {
     init_tracing(config.production);
     let pool = db::connect(&config.database_url, config.database_max_connections).await?;
     db::assert_rls_applies(&pool).await?;
-    let checkin_policy = reservations::CheckInPolicy { require_clean_room: config.checkin_requires_clean_room };
-    let state = AppState::new(pool, config.production, config.guest_id_keys, checkin_policy);
+    let state = AppState::new(pool, config.production, config.guest_id_keys);
     // One direct connection, kept open, used only for LISTEN (and to reconnect it).
     let listen_pool = PgPoolOptions::new()
         .max_connections(1)
@@ -44,6 +44,17 @@ async fn migrate() -> anyhow::Result<()> {
     let pool = db::connect(&url, 1).await?;
     db::MIGRATOR.run(&pool).await?;
     tracing::info!("migrations applied");
+    Ok(())
+}
+
+/// Adds a staff user as the schema owner (`DATABASE_OWNER_URL`); the password comes from `--password-file`.
+async fn add_staff() -> anyhow::Result<()> {
+    init_tracing(false);
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let input = staff::parse_args(&args)?;
+    let url = std::env::var("DATABASE_OWNER_URL").context("DATABASE_OWNER_URL is required")?;
+    let pool = db::connect(&url, 1).await?;
+    println!("{}", staff::add_staff(&pool, input).await?);
     Ok(())
 }
 

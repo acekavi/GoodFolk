@@ -30,7 +30,8 @@ fn only_owners_create_properties() {
 
 #[test]
 fn roles_round_trip_through_their_database_names() {
-    for role in [Role::Owner, Role::Manager, Role::FrontDesk, Role::Housekeeping, Role::Accountant] {
+    for role in [Role::Owner, Role::Manager, Role::FrontDesk, Role::Housekeeping, Role::Accountant, Role::HkSupervisor]
+    {
         assert_eq!(Role::parse(role.as_str()), Some(role));
     }
     assert_eq!(Role::parse("root"), None);
@@ -52,8 +53,12 @@ fn each_role_has_exactly_its_permissions() {
         ReservationsView,
         ReservationsManage,
         FrontDeskCheckIn,
+        HousekeepingView,
+        HousekeepingUpdate,
+        HousekeepingSupervise,
+        RoomIssuesReport,
     ];
-    let expected: [(Role, &[Permission]); 5] = [
+    let expected: [(Role, &[Permission]); 6] = [
         (Role::Owner, &all),
         (
             Role::Manager,
@@ -69,6 +74,10 @@ fn each_role_has_exactly_its_permissions() {
                 ReservationsView,
                 ReservationsManage,
                 FrontDeskCheckIn,
+                HousekeepingView,
+                HousekeepingUpdate,
+                HousekeepingSupervise,
+                RoomIssuesReport,
             ],
         ),
         (
@@ -82,10 +91,38 @@ fn each_role_has_exactly_its_permissions() {
                 ReservationsView,
                 ReservationsManage,
                 FrontDeskCheckIn,
+                HousekeepingView,
+                RoomIssuesReport,
             ],
         ),
-        (Role::Housekeeping, &[PropertiesView, RoomsView, InventoryView, RatesView, ReservationsView]),
+        (
+            Role::Housekeeping,
+            &[
+                PropertiesView,
+                RoomsView,
+                InventoryView,
+                RatesView,
+                ReservationsView,
+                HousekeepingView,
+                HousekeepingUpdate,
+                RoomIssuesReport,
+            ],
+        ),
         (Role::Accountant, &[PropertiesView, RoomsView, InventoryView, RatesView, ReservationsView]),
+        (
+            Role::HkSupervisor,
+            &[
+                PropertiesView,
+                RoomsView,
+                InventoryView,
+                RatesView,
+                ReservationsView,
+                HousekeepingView,
+                HousekeepingUpdate,
+                HousekeepingSupervise,
+                RoomIssuesReport,
+            ],
+        ),
     ];
 
     for (role, permitted) in expected {
@@ -98,4 +135,40 @@ fn each_role_has_exactly_its_permissions() {
             );
         }
     }
+}
+
+fn roles_allowed(permission: Permission) -> Vec<Role> {
+    [Role::Owner, Role::Manager, Role::FrontDesk, Role::Housekeeping, Role::Accountant, Role::HkSupervisor]
+        .into_iter()
+        .filter(|role| allows(&[Grant { property_id: None, role: *role }], permission, Some(HOTEL)))
+        .collect()
+}
+
+#[test]
+fn housekeeping_view_is_for_the_front_desk_and_every_housekeeping_role() {
+    assert_eq!(
+        roles_allowed(Permission::HousekeepingView),
+        [Role::Owner, Role::Manager, Role::FrontDesk, Role::Housekeeping, Role::HkSupervisor]
+    );
+}
+
+#[test]
+fn housekeeping_update_excludes_the_front_desk() {
+    assert_eq!(
+        roles_allowed(Permission::HousekeepingUpdate),
+        [Role::Owner, Role::Manager, Role::Housekeeping, Role::HkSupervisor]
+    );
+}
+
+#[test]
+fn only_supervisors_supervise_housekeeping() {
+    assert_eq!(roles_allowed(Permission::HousekeepingSupervise), [Role::Owner, Role::Manager, Role::HkSupervisor]);
+}
+
+#[test]
+fn the_front_desk_may_report_a_room_issue() {
+    assert_eq!(
+        roles_allowed(Permission::RoomIssuesReport),
+        [Role::Owner, Role::Manager, Role::FrontDesk, Role::Housekeeping, Role::HkSupervisor]
+    );
 }

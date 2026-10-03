@@ -13,7 +13,10 @@ export default defineConfig({
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
 			// SPA: every route falls back to index.html; the API is served from the same origin.
-			adapter: adapter({ fallback: 'index.html' })
+			adapter: adapter({ fallback: 'index.html' }),
+			// Absolute asset URLs, so the one cached copy of the page (the housekeeper app's offline shell)
+			// loads its scripts at any depth, `/hk` or `/hk/issue`.
+			paths: { relative: false }
 		})
 	],
 	server: {

@@ -43,7 +43,9 @@ pub use reservations::{
     CreatedReservation, CreatedRoom, MAX_ROOMS_PER_RESERVATION, NewReservation, NewReservationRoom, ReservationChanges,
     Source, Total, UpdatedReservation, create_reservation, update_reservation,
 };
-pub use stay::{CheckInPolicy, CheckedIn, CheckedOut, UndoneCheckIn, check_in, check_out, undo_check_in};
+pub use stay::{
+    CheckInOverride, CheckedIn, CheckedOut, MAX_OVERRIDE_REASON, UndoneCheckIn, check_in, check_out, undo_check_in,
+};
 pub use tape::{
     MAX_TAPE_DAYS, MAX_TAPE_ROOMS, NeedsRoomReason, TapeBlock, TapeStay, TapeWindow, UnassignedStay, tape_window,
     unassigned_stays,

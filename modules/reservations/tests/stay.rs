@@ -2,11 +2,12 @@ mod common;
 
 use common::{Hotel, Plans, new_guest};
 use domain::RoomStatus;
+use housekeeping::{Actor, Condition};
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::TestRunner;
 use reservations::{
-    AssignedRoom, CancelledRoom, CheckInPolicy, CheckedIn, CheckedOut, ModifiedRoom, ReservationsError, RoomChanges,
+    AssignedRoom, CancelledRoom, CheckInOverride, CheckedIn, CheckedOut, ModifiedRoom, ReservationsError, RoomChanges,
     UndoneCheckIn,
 };
 use rooms::{BlockKind, NewBlockReason, Room};
@@ -16,17 +17,18 @@ use uuid::Uuid;
 
 impl Hotel {
     async fn try_check_in(&self, id: Uuid, version: i32) -> Result<CheckedIn, ReservationsError> {
+        self.try_check_in_with(id, version, None).await
+    }
+
+    async fn try_check_in_with(
+        &self,
+        id: Uuid,
+        version: i32,
+        override_: Option<CheckInOverride>,
+    ) -> Result<CheckedIn, ReservationsError> {
         let mut tx = self.tx().await;
-        let checked_in = reservations::check_in(
-            &mut tx,
-            self.tenant,
-            self.user,
-            self.property,
-            id,
-            version,
-            CheckInPolicy::default(),
-        )
-        .await?;
+        let checked_in =
+            reservations::check_in(&mut tx, self.tenant, self.user, self.property, id, version, override_).await?;
         tx.commit().await.unwrap();
         Ok(checked_in)
     }
@@ -77,6 +79,45 @@ impl Hotel {
     async fn numbered(&self, number: &str) -> Room {
         let rooms = rooms::list_rooms(&mut self.tx().await, self.property, None).await.unwrap();
         rooms.into_iter().find(|room| room.number == number).expect("a room with that number")
+    }
+
+    /// `room`'s condition and condition version.
+    async fn condition(&self, room: Uuid) -> (String, i32) {
+        sqlx::query_as("select condition, version from room_condition where room_id = $1")
+            .bind(room)
+            .fetch_one(&mut *self.tx().await)
+            .await
+            .unwrap()
+    }
+
+    /// Sets `room`'s condition as a supervisor, in its own transaction.
+    async fn set_condition(&self, room: Uuid, to: Condition) {
+        let (_, version) = self.condition(room).await;
+        let mut tx = self.tx().await;
+        let actor = Actor::Supervisor(self.user);
+        housekeeping::set_condition(&mut tx, self.tenant, actor, self.property, room, version, to).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    /// Books a stay from today for three nights, assigns it to room 101 and returns its id, its version and
+    /// room 101's id.
+    async fn assigned_stay(&self, plans: &Plans) -> (Uuid, i32, Uuid) {
+        let booker = self.guest(new_guest("Ada", "Silva")).await;
+        let booked =
+            self.try_book_unassigned(&booker, vec![self.room(self.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
+        let stay = booked.rooms[0].id;
+        let target = self.numbered("101").await;
+        self.try_assign(stay, 2, target.id).await.unwrap();
+        (stay, 3, target.id)
+    }
+
+    /// The audit data of every `action` entry, oldest first.
+    async fn audited(&self, action: &str) -> Vec<serde_json::Value> {
+        sqlx::query_scalar("select data from audit_log where action = $1 order by id")
+            .bind(action)
+            .fetch_all(&mut *self.tx().await)
+            .await
+            .unwrap()
     }
 
     /// `room`'s stored columns that check-in, undo and check-out read or write.
@@ -216,6 +257,70 @@ async fn checking_in_on_the_arrival_date_marks_the_room_and_bumps_versions(_: Pg
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn check_in_is_refused_on_a_dirty_or_cleaning_room(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let (stay, version, room) = hotel.assigned_stay(&plans).await;
+    for (condition, title) in [(Condition::Dirty, "Dirty"), (Condition::Cleaning, "Cleaning")] {
+        hotel.set_condition(room, condition).await;
+
+        let refused = conflict(hotel.try_check_in(stay, version).await);
+
+        assert_eq!(refused, format!("room 101 is {title}"));
+        assert_eq!(hotel.room_row(stay).await.status, "confirmed");
+    }
+    assert!(hotel.audited("reservation_room.checked_in").await.is_empty());
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn check_in_is_allowed_on_a_clean_or_inspected_room(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let (stay, version, room) = hotel.assigned_stay(&plans).await;
+    hotel.set_condition(room, Condition::Inspected).await;
+    let inspected = hotel.try_check_in(stay, version).await.unwrap();
+    assert_eq!(inspected.status, RoomStatus::CheckedIn);
+    let undone = hotel.try_undo_check_in(stay, inspected.version).await.unwrap();
+    hotel.set_condition(room, Condition::Clean).await;
+
+    let clean = hotel.try_check_in(stay, undone.version).await.unwrap();
+
+    assert_eq!(clean.status, RoomStatus::CheckedIn);
+    let audited = hotel.audited("reservation_room.checked_in").await;
+    assert!(audited.iter().all(|data| data.get("override_reason").is_none()), "{audited:?}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_override_checks_in_a_dirty_room_and_is_audited(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let (stay, version, room) = hotel.assigned_stay(&plans).await;
+    hotel.set_condition(room, Condition::Dirty).await;
+    let before = hotel.condition(room).await;
+
+    let reason = "  guest asked for it; cleaners are on the way  ".to_owned();
+    let checked_in = hotel.try_check_in_with(stay, version, Some(CheckInOverride { reason })).await.unwrap();
+
+    assert_eq!(checked_in.status, RoomStatus::CheckedIn);
+    assert_eq!(hotel.condition(room).await, before, "check-in leaves the condition as it is");
+    let audited = hotel.audited("reservation_room.checked_in").await;
+    assert_eq!(audited.len(), 1);
+    assert_eq!(audited[0]["override_reason"], "guest asked for it; cleaners are on the way");
+    assert_eq!(audited[0]["condition"], "dirty");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_empty_or_overlong_override_reason_is_invalid(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let (stay, version, room) = hotel.assigned_stay(&plans).await;
+    hotel.set_condition(room, Condition::Dirty).await;
+
+    for reason in ["", "   ", &"x".repeat(501)] {
+        let refused = hotel.try_check_in_with(stay, version, Some(CheckInOverride { reason: reason.to_owned() })).await;
+        assert!(matches!(refused, Err(ReservationsError::Invalid(_))), "{reason:?}: {refused:?}");
+    }
+    let longest = hotel.try_check_in_with(stay, version, Some(CheckInOverride { reason: "x".repeat(500) })).await;
+    assert!(longest.is_ok(), "{longest:?}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn check_in_before_the_arrival_date_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
@@ -335,6 +440,103 @@ async fn undo_check_in_on_the_same_day_reverts_to_confirmed(_: PgPoolOptions, op
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn undo_check_in_restores_the_condition_the_room_had(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let (stay, version, room) = hotel.assigned_stay(&plans).await;
+    hotel.set_condition(room, Condition::Inspected).await;
+    let checked_in = hotel.try_check_in(stay, version).await.unwrap();
+    hotel.set_condition(room, Condition::Dirty).await;
+
+    hotel.try_undo_check_in(stay, checked_in.version).await.unwrap();
+
+    assert_eq!(hotel.condition(room).await.0, "inspected");
+    let audited = hotel.audited("reservation_room.check_in_undone").await;
+    assert_eq!(audited[0]["condition"], "inspected");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn undo_check_in_without_a_recorded_condition_restores_clean(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let (stay, version, room) = hotel.assigned_stay(&plans).await;
+    let checked_in = hotel.try_check_in(stay, version).await.unwrap();
+    hotel.set_condition(room, Condition::Dirty).await;
+    let mut tx = hotel.tx().await;
+    sqlx::query("update reservation_room set condition_before_check_in = null where id = $1")
+        .bind(stay)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    hotel.try_undo_check_in(stay, checked_in.version).await.unwrap();
+
+    assert_eq!(hotel.condition(room).await.0, "clean");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn check_out_leaves_the_room_dirty(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let (stay, version, room) = hotel.assigned_stay(&plans).await;
+    let checked_in = hotel.try_check_in(stay, version).await.unwrap();
+    let (_, before) = hotel.condition(room).await;
+
+    hotel.try_check_out(stay, checked_in.version).await.unwrap();
+
+    assert_eq!(hotel.condition(room).await, ("dirty".to_owned(), before + 1));
+    let audited = hotel.audited("reservation_room.checked_out").await;
+    assert_eq!(audited[0]["condition_before"], "clean");
+}
+
+/// A supervisor's `set_condition` and a check-out of the same room, 20 times: neither waits on the other
+/// forever, and the room always ends `dirty`: the change either ran first and check-out then overwrote it, or
+/// lost on a stale version.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn check_out_races_set_condition_without_deadlock(_: PgPoolOptions, opts: PgConnectOptions) {
+    const ROUNDS: usize = 20;
+    let (hotel, plans) = Hotel::for_booking(opts, ROUNDS).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let mut applied = 0;
+    for round in 0..ROUNDS {
+        let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
+        let stay = booked.rooms[0].id;
+        let row = hotel.room_row(stay).await;
+        let room = row.room_id.expect("booking auto-assigns a room");
+        let checked_in = hotel.try_check_in(stay, row.version).await.unwrap();
+        let (_, condition_version) = hotel.condition(room).await;
+
+        let set = async {
+            let mut tx = hotel.tx().await;
+            let actor = Actor::Supervisor(hotel.user);
+            let set = housekeeping::set_condition(
+                &mut tx,
+                hotel.tenant,
+                actor,
+                hotel.property,
+                room,
+                condition_version,
+                Condition::Cleaning,
+            )
+            .await;
+            if set.is_ok() {
+                tx.commit().await.unwrap();
+            }
+            set
+        };
+        let out = hotel.try_check_out(stay, checked_in.version);
+        let (set, out) = tokio::time::timeout(std::time::Duration::from_secs(10), async { tokio::join!(set, out) })
+            .await
+            .unwrap_or_else(|_| panic!("round {round} deadlocked"));
+
+        out.unwrap();
+        let condition = hotel.condition(room).await.0;
+        // Check-out writes last in every ordering; a change that came after it named a stale version.
+        assert_eq!(condition, "dirty", "round {round}: change {set:?}");
+        applied += usize::from(set.is_ok());
+        assert_eq!(hotel.audited("room.condition_changed").await.len(), applied, "round {round}: audit count");
+    }
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn undo_check_in_after_the_business_date_moves_on_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
@@ -417,6 +619,7 @@ async fn check_out_early_releases_the_right_nights_and_deletes_them(_: PgPoolOpt
         vec![serde_json::json!({
             "reservation_id": booked.id,
             "released_nights": [hotel.day(2), hotel.day(3), hotel.day(4)],
+            "condition_before": "clean",
         })]
     );
 }
@@ -550,21 +753,12 @@ async fn a_room_of_another_property_or_tenant_is_not_found(_: PgPoolOptions, opt
     let stranger = Hotel::new(opts).await;
 
     let mut tx = hotel.tx().await;
-    let check_in_elsewhere =
-        reservations::check_in(&mut tx, hotel.tenant, hotel.user, other.id, room, 1, CheckInPolicy::default()).await;
+    let check_in_elsewhere = reservations::check_in(&mut tx, hotel.tenant, hotel.user, other.id, room, 1, None).await;
     let undo_elsewhere = reservations::undo_check_in(&mut tx, hotel.tenant, hotel.user, other.id, room, 1).await;
     let check_out_elsewhere = reservations::check_out(&mut tx, hotel.tenant, hotel.user, other.id, room, 1).await;
     let mut tx = stranger.tx().await;
-    let check_in_other_tenant = reservations::check_in(
-        &mut tx,
-        stranger.tenant,
-        stranger.user,
-        stranger.property,
-        room,
-        1,
-        CheckInPolicy::default(),
-    )
-    .await;
+    let check_in_other_tenant =
+        reservations::check_in(&mut tx, stranger.tenant, stranger.user, stranger.property, room, 1, None).await;
 
     assert!(
         matches!(check_in_elsewhere, Err(ReservationsError::NotFound("reservation room"))),

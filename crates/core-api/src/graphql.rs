@@ -873,6 +873,179 @@ pub struct UnassignedStayNode {
     pub version: i32,
 }
 
+/// How ready a room is for a guest.
+#[derive(Enum, Clone, Copy, PartialEq, Eq)]
+#[graphql(name = "RoomCondition")]
+pub enum RoomConditionNode {
+    Dirty,
+    Cleaning,
+    Clean,
+    Inspected,
+}
+
+impl From<housekeeping::Condition> for RoomConditionNode {
+    fn from(condition: housekeeping::Condition) -> Self {
+        match condition {
+            housekeeping::Condition::Dirty => RoomConditionNode::Dirty,
+            housekeeping::Condition::Cleaning => RoomConditionNode::Cleaning,
+            housekeeping::Condition::Clean => RoomConditionNode::Clean,
+            housekeeping::Condition::Inspected => RoomConditionNode::Inspected,
+        }
+    }
+}
+
+/// What a room's stays make of it on the business date.
+#[derive(Enum, Clone, Copy, PartialEq, Eq)]
+#[graphql(name = "Occupancy")]
+pub enum OccupancyNode {
+    Vacant,
+    StayOver,
+    DueOut,
+    DueIn,
+    /// A guest leaves and another arrives the same day.
+    Turnover,
+}
+
+impl From<housekeeping::Occupancy> for OccupancyNode {
+    fn from(occupancy: housekeeping::Occupancy) -> Self {
+        match occupancy {
+            housekeeping::Occupancy::Vacant => OccupancyNode::Vacant,
+            housekeeping::Occupancy::StayOver => OccupancyNode::StayOver,
+            housekeeping::Occupancy::DueOut => OccupancyNode::DueOut,
+            housekeeping::Occupancy::DueIn => OccupancyNode::DueIn,
+            housekeeping::Occupancy::Turnover => OccupancyNode::Turnover,
+        }
+    }
+}
+
+/// How urgent a room issue is.
+#[derive(Enum, Clone, Copy, PartialEq, Eq)]
+#[graphql(name = "IssueSeverity")]
+pub enum IssueSeverityNode {
+    Low,
+    Medium,
+    High,
+}
+
+impl From<housekeeping::Severity> for IssueSeverityNode {
+    fn from(severity: housekeeping::Severity) -> Self {
+        match severity {
+            housekeeping::Severity::Low => IssueSeverityNode::Low,
+            housekeeping::Severity::Medium => IssueSeverityNode::Medium,
+            housekeeping::Severity::High => IssueSeverityNode::High,
+        }
+    }
+}
+
+/// Whether a room issue still needs work.
+#[derive(Enum, Clone, Copy, PartialEq, Eq)]
+#[graphql(name = "IssueStatus")]
+pub enum IssueStatusNode {
+    Open,
+    Resolved,
+}
+
+impl From<housekeeping::IssueStatus> for IssueStatusNode {
+    fn from(status: housekeeping::IssueStatus) -> Self {
+        match status {
+            housekeeping::IssueStatus::Open => IssueStatusNode::Open,
+            housekeeping::IssueStatus::Resolved => IssueStatusNode::Resolved,
+        }
+    }
+}
+
+impl From<IssueStatusNode> for housekeeping::IssueStatus {
+    fn from(status: IssueStatusNode) -> Self {
+        match status {
+            IssueStatusNode::Open => housekeeping::IssueStatus::Open,
+            IssueStatusNode::Resolved => housekeeping::IssueStatus::Resolved,
+        }
+    }
+}
+
+/// A user who can be assigned rooms.
+#[derive(SimpleObject)]
+pub struct HousekeeperNode {
+    pub user_id: Uuid,
+    pub display_name: String,
+}
+
+impl From<housekeeping::Housekeeper> for HousekeeperNode {
+    fn from(housekeeper: housekeeping::Housekeeper) -> Self {
+        Self { user_id: housekeeper.user_id, display_name: housekeeper.display_name }
+    }
+}
+
+/// A room on the housekeeping board, with its state for the business date.
+#[derive(SimpleObject)]
+pub struct BoardRoomNode {
+    pub room_id: Uuid,
+    pub number: String,
+    pub floor: Option<String>,
+    pub section_id: Option<Uuid>,
+    pub room_type_id: Uuid,
+    pub condition: RoomConditionNode,
+    /// Send as `If-Match: "<version>"` with a condition change; 0 for a room with no condition row.
+    pub condition_version: i32,
+    pub occupancy: OccupancyNode,
+    /// Who cleans the room on the business date.
+    pub assignee: Option<HousekeeperNode>,
+    pub open_issues: i32,
+    /// The kind of the block covering the business date, if any.
+    pub block_kind: Option<BlockKindNode>,
+}
+
+impl From<housekeeping::BoardRoom> for BoardRoomNode {
+    fn from(room: housekeeping::BoardRoom) -> Self {
+        Self {
+            room_id: room.room_id,
+            number: room.number,
+            floor: room.floor,
+            section_id: room.section_id,
+            room_type_id: room.room_type_id,
+            condition: room.condition.into(),
+            condition_version: room.condition_version,
+            occupancy: room.occupancy.into(),
+            assignee: room.assignee.map(Into::into),
+            open_issues: room.open_issues,
+            block_kind: room.block_kind.map(Into::into),
+        }
+    }
+}
+
+/// A problem found in a room.
+#[derive(SimpleObject)]
+pub struct RoomIssueNode {
+    pub id: Uuid,
+    pub room_id: Uuid,
+    pub severity: IssueSeverityNode,
+    pub description: String,
+    pub status: IssueStatusNode,
+    pub reported_by: Uuid,
+    pub reported_at: OffsetDateTime,
+    pub resolved_by: Option<Uuid>,
+    pub resolved_at: Option<OffsetDateTime>,
+    /// Send as `If-Match: "<version>"` when resolving.
+    pub version: i32,
+}
+
+impl From<housekeeping::Issue> for RoomIssueNode {
+    fn from(issue: housekeeping::Issue) -> Self {
+        Self {
+            id: issue.id,
+            room_id: issue.room_id,
+            severity: issue.severity.into(),
+            description: issue.description,
+            status: issue.status.into(),
+            reported_by: issue.reported_by,
+            reported_at: issue.reported_at,
+            resolved_by: issue.resolved_by,
+            resolved_at: issue.resolved_at,
+            version: issue.version,
+        }
+    }
+}
+
 impl From<rates::CancellationRule> for CancellationRuleNode {
     fn from(rule: rates::CancellationRule) -> Self {
         Self { days_before_arrival: rule.days_before_arrival, penalty: rule.penalty.into() }
@@ -1527,6 +1700,50 @@ impl Query {
                 version: s.version,
             })
             .collect())
+    }
+
+    /// Every active room of the property with its condition, occupancy, assignee, open issues and block for the
+    /// business date, in rail order.
+    async fn housekeeping_board(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+    ) -> async_graphql::Result<Vec<BoardRoomNode>> {
+        let mut tx = scoped(ctx, Permission::HousekeepingView, property_id).await?;
+        let rooms = housekeeping::board(&mut tx, property_id).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(rooms.into_iter().map(BoardRoomNode::from).collect())
+    }
+
+    /// The signed-in user's rooms for the business date: turnovers, departures, stay-overs, arrivals, then
+    /// empty rooms, each group in room order.
+    async fn my_rooms(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<BoardRoomNode>> {
+        let mut tx = scoped(ctx, Permission::HousekeepingView, property_id).await?;
+        let user = ctx.data::<TenantContext>()?.user;
+        let rooms = housekeeping::my_rooms(&mut tx, property_id, user).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(rooms.into_iter().map(BoardRoomNode::from).collect())
+    }
+
+    /// The property's room issues, newest first, at most 500; only those with `status` if given.
+    async fn room_issues(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        status: Option<IssueStatusNode>,
+    ) -> async_graphql::Result<Vec<RoomIssueNode>> {
+        let mut tx = scoped(ctx, Permission::HousekeepingView, property_id).await?;
+        let issues = housekeeping::list_issues(&mut tx, property_id, status.map(Into::into)).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(issues.into_iter().map(RoomIssueNode::from).collect())
+    }
+
+    /// Users who hold a housekeeping role at the property and can be assigned rooms, by name.
+    async fn housekeepers(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<HousekeeperNode>> {
+        let mut tx = scoped(ctx, Permission::HousekeepingView, property_id).await?;
+        let housekeepers = housekeeping::housekeepers(&mut tx, property_id).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(housekeepers.into_iter().map(HousekeeperNode::from).collect())
     }
 }
 

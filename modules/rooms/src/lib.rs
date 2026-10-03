@@ -63,6 +63,12 @@ pub fn rooms_key(property: Uuid) -> String {
     format!("rooms:{property}")
 }
 
+/// Cache key for a property's housekeeping data: room conditions, assignments, issues and the board. Defined here
+/// because `housekeeping` depends on this crate; `housekeeping::hk_key` is the same function.
+pub fn hk_key(property: Uuid) -> String {
+    format!("hk:{property}")
+}
+
 /// Whether `err` violated the named constraint.
 fn violates(err: &sqlx::Error, constraint: &str) -> bool {
     err.as_database_error().and_then(|db_err| db_err.constraint()).is_some_and(|name| name == constraint)

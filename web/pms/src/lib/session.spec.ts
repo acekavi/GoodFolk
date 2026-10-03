@@ -73,4 +73,37 @@ describe('can', () => {
 		expect(can(housekeeping, 'frontDeskCheckIn', 'p1')).toBe(false);
 		expect(can(accountant, 'frontDeskCheckIn', 'p1')).toBe(false);
 	});
+
+	it('mirrors the housekeeping grants, hk_supervisor included', () => {
+		const grant = (role: Profile['grants'][number]['role']) => profile([{ role }]);
+
+		for (const role of [
+			'owner',
+			'manager',
+			'front_desk',
+			'housekeeping',
+			'hk_supervisor'
+		] as const) {
+			expect(can(grant(role), 'housekeepingView', 'p1')).toBe(true);
+		}
+		expect(can(grant('accountant'), 'housekeepingView', 'p1')).toBe(false);
+
+		for (const role of ['owner', 'manager', 'hk_supervisor'] as const) {
+			expect(can(grant(role), 'housekeepingSupervise', 'p1')).toBe(true);
+		}
+		for (const role of ['front_desk', 'housekeeping', 'accountant'] as const) {
+			expect(can(grant(role), 'housekeepingSupervise', 'p1')).toBe(false);
+		}
+
+		for (const role of [
+			'owner',
+			'manager',
+			'hk_supervisor',
+			'housekeeping',
+			'front_desk'
+		] as const) {
+			expect(can(grant(role), 'roomIssuesReport', 'p1')).toBe(true);
+		}
+		expect(can(grant('accountant'), 'roomIssuesReport', 'p1')).toBe(false);
+	});
 });

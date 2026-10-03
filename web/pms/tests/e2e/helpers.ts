@@ -1,4 +1,7 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { expect, type APIRequestContext, type Page, type Request } from '@playwright/test';
 
 export const PASSWORD = 'a long enough password';
@@ -190,4 +193,152 @@ export async function book(
 		}))
 	});
 	return created.confirmation_no;
+}
+
+/**
+ * Adds a staff user with `role` (tenant-wide) to the owner's tenant through `core-api add-staff`, as the schema
+ * owner (`E2E_OWNER_URL`), and returns their email. They sign in with `PASSWORD`.
+ */
+export function addStaff(ownerEmail: string, role: string, displayName: string): { email: string } {
+	const owner = process.env.E2E_OWNER_URL;
+	if (!owner) throw new Error('set E2E_OWNER_URL to the e2e database, as goodfolk_owner');
+	const email = `staff-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`;
+	// The password is read from a file, never passed as an argument.
+	const dir = mkdtempSync(join(tmpdir(), 'goodfolk-staff-'));
+	try {
+		const passwordFile = join(dir, 'password');
+		writeFileSync(passwordFile, PASSWORD, { mode: 0o600 });
+		execFileSync(
+			'cargo',
+			[
+				'run',
+				'-q',
+				'-p',
+				'core-api',
+				'--',
+				'add-staff',
+				'--owner-email',
+				ownerEmail,
+				'--email',
+				email,
+				'--password-file',
+				passwordFile,
+				'--display-name',
+				displayName,
+				'--role',
+				role
+			],
+			{ cwd: '../..', env: { ...process.env, DATABASE_OWNER_URL: owner }, stdio: 'pipe' }
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+	return { email };
+}
+
+/** Signs `email` in on the login page and waits for the property list. */
+export async function signIn(page: Page, email: string): Promise<void> {
+	await page.goto('/login');
+	await page.getByLabel('Email').fill(email);
+	await page.getByLabel('Password').fill(PASSWORD);
+	await page.getByRole('button', { name: 'Sign in' }).click();
+	// The sign-in's own navigation to the property list has finished, so a `goto` that follows cannot race it.
+	await page.waitForURL((url) => url.pathname === '/');
+	await expect(page.getByRole('heading', { name: 'Properties' })).toBeVisible();
+}
+
+/** An assignment of a room to a housekeeper for a business date, as the board keeps it. */
+export interface Assignment {
+	tenant: string;
+	property: string;
+	date: string;
+	room: string;
+	user: string;
+}
+
+/**
+ * Inserts an `hk_assignment` row as the schema owner (`E2E_OWNER_URL`), in the tenant's scope as row-level
+ * security requires. The API only assigns for the current business date, so a past one needs this. Bun runs
+ * the insert because the e2e runner has no Postgres client.
+ */
+export function insertAssignment(assignment: Assignment): void {
+	const owner = process.env.E2E_OWNER_URL;
+	if (!owner) throw new Error('set E2E_OWNER_URL to the e2e database, as goodfolk_owner');
+	const script = `
+		const sql = new Bun.SQL(process.env.URL);
+		const a = JSON.parse(process.env.ASSIGNMENT);
+		await sql.begin(async (tx) => {
+			await tx\`select set_config('app.tenant_id', \${a.tenant}, true)\`;
+			await tx\`insert into hk_assignment (tenant_id, property_id, business_date, room_id, user_id)
+				values (\${a.tenant}, \${a.property}, \${a.date}, \${a.room}, \${a.user})\`;
+		});
+		await sql.close();
+	`;
+	execFileSync('bun', ['-e', script], {
+		env: { ...process.env, URL: owner, ASSIGNMENT: JSON.stringify(assignment) },
+		stdio: 'pipe'
+	});
+}
+
+/**
+ * Moves a property's business date one day on, as the night audit would, as the schema owner
+ * (`E2E_OWNER_URL`), in the tenant's scope as row-level security requires. Use a property the test made.
+ */
+export function rollBusinessDate(tenant: string, property: string): void {
+	const owner = process.env.E2E_OWNER_URL;
+	if (!owner) throw new Error('set E2E_OWNER_URL to the e2e database, as goodfolk_owner');
+	const script = `
+		const sql = new Bun.SQL(process.env.URL);
+		await sql.begin(async (tx) => {
+			await tx\`select set_config('app.tenant_id', \${process.env.TENANT}, true)\`;
+			await tx\`update property set business_date = business_date + 1 where id = \${process.env.PROPERTY}\`;
+		});
+		await sql.close();
+	`;
+	execFileSync('bun', ['-e', script], {
+		env: { ...process.env, URL: owner, TENANT: tenant, PROPERTY: property },
+		stdio: 'pipe'
+	});
+}
+
+/** Creates a property of `rooms` rooms, all dirty, `assigned` of them to a housekeeper; the owner's page stays on it. */
+export async function housekeepingProperty(
+	page: Page,
+	code: string,
+	rooms: number,
+	assigned: number
+) {
+	const { email } = await signUp(page);
+	await createProperty(page, code);
+	await bookableHotel(page, rooms, 2);
+	const propertyId = page.url().split('/p/')[1];
+	// Rooms added through the API get their condition row, so the board shows every one of them.
+	const { email: housekeeper } = addStaff(email, 'housekeeping', 'Kumari Silva');
+	const graphql = await page.request.post('/graphql', {
+		headers: { 'x-goodfolk-csrf': '1' },
+		data: {
+			query: `{ rooms(propertyId: "${propertyId}") { id number } housekeepers(propertyId: "${propertyId}") { userId } }`
+		}
+	});
+	const data = (await graphql.json()).data as {
+		rooms: { id: string; number: string }[];
+		housekeepers: { userId: string }[];
+	};
+	expect(data.rooms).toHaveLength(rooms);
+	const path = `/api/v1/properties/${propertyId}`;
+	const dirtied = await page.request.post(`${path}/rooms/conditions`, {
+		headers: { 'x-goodfolk-csrf': '1', 'Idempotency-Key': crypto.randomUUID() },
+		data: { room_ids: data.rooms.map((room) => room.id), condition: 'dirty' }
+	});
+	expect(dirtied.status(), await dirtied.text()).toBe(200);
+	const assignment = await page.request.put(`${path}/hk-assignments`, {
+		headers: { 'x-goodfolk-csrf': '1' },
+		data: {
+			assignments: data.rooms
+				.slice(0, assigned)
+				.map((room) => ({ room_id: room.id, user_id: data.housekeepers[0].userId }))
+		}
+	});
+	expect(assignment.status(), await assignment.text()).toBe(204);
+	return { propertyId, housekeeper };
 }

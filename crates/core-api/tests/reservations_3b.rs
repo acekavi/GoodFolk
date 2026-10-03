@@ -367,6 +367,75 @@ async fn housekeeping_and_accountants_are_refused_the_new_mutations_front_desk_c
     assert_eq!(checked_in.body["status"], "checked_in");
 }
 
+/// A dirty room refuses front desk's check-in; only a caller who can also supervise housekeeping may override.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn only_a_housekeeping_supervisor_may_override_a_dirty_room_at_check_in(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts).await;
+    let front_desk = app.staff(&hotel.superuser, &hotel.owner, "desk@example.com", "front_desk").await;
+    let guest = post(&app, &hotel.owner, &hotel.guests(), hotel.guest("Perera")).await.body;
+    let created = hotel.book_unassigned(&app, &guest, 0, 2).await;
+    let stay = hotel.stay(&created);
+    let assigned =
+        command(&app, &hotel.owner, &format!("{stay}/assign"), 2, Some(json!({"room_id": hotel.rooms[0]}))).await;
+    assert_eq!(assigned.status, StatusCode::OK, "{:?}", assigned.body);
+    sqlx::query("update room_condition set condition = 'dirty' where room_id = $1")
+        .bind(hotel.rooms[0])
+        .execute(&hotel.superuser)
+        .await
+        .unwrap();
+    let reason = Some(json!({"override_reason": "guest waiting, room being cleaned"}));
+
+    let refused = command(&app, &front_desk, &format!("{stay}/check-in"), 3, None).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    assert_eq!(refused.body["detail"], "room 101 is Dirty");
+    let forbidden = command(&app, &front_desk, &format!("{stay}/check-in"), 3, reason.clone()).await;
+    assert_eq!(forbidden.status, StatusCode::FORBIDDEN, "{:?}", forbidden.body);
+    let empty =
+        command(&app, &hotel.owner, &format!("{stay}/check-in"), 3, Some(json!({"override_reason": " "}))).await;
+    assert_eq!(empty.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", empty.body);
+    let empty_json_body = app
+        .send_with(
+            Method::POST,
+            &format!("{stay}/check-in"),
+            Some(&front_desk),
+            None,
+            &[("x-goodfolk-csrf", "1"), ("if-match", "\"3\""), ("content-type", "application/json")],
+        )
+        .await;
+    assert_eq!(
+        empty_json_body.status,
+        StatusCode::CONFLICT,
+        "no override, so the dirty room refuses it: {:?}",
+        empty_json_body.body
+    );
+    let overridden = command(&app, &hotel.owner, &format!("{stay}/check-in"), 3, reason).await;
+    assert_eq!(overridden.status, StatusCode::OK, "{:?}", overridden.body);
+    assert_eq!(overridden.body["status"], "checked_in");
+
+    // An empty body with a JSON content type is a check-in without an override, not a 400.
+    let undone = command(&app, &front_desk, &format!("{stay}/undo-check-in"), 4, None).await;
+    assert_eq!(undone.status, StatusCode::OK, "{:?}", undone.body);
+    sqlx::query("update room_condition set condition = 'clean' where room_id = $1")
+        .bind(hotel.rooms[0])
+        .execute(&hotel.superuser)
+        .await
+        .unwrap();
+    let plain = app
+        .send_with(
+            Method::POST,
+            &format!("{stay}/check-in"),
+            Some(&front_desk),
+            None,
+            &[("x-goodfolk-csrf", "1"), ("if-match", "\"5\""), ("content-type", "application/json")],
+        )
+        .await;
+    assert_eq!(plain.status, StatusCode::OK, "{:?}", plain.body);
+}
+
 /// Another tenant's account, reservation and room ids resolve to nothing through either property, and change
 /// nothing.
 #[sqlx::test(migrator = "db::MIGRATOR")]
