@@ -184,17 +184,19 @@ fn conflict<T: std::fmt::Debug>(result: Result<T, ReservationsError>) -> String 
 async fn checking_in_on_the_arrival_date_marks_the_room_and_bumps_versions(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
+    // Booking auto-assigns a room; these stay tests assign by hand, so the stay starts unassigned and every
+    // version below counts the unassign's bump.
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
     let room = booked.rooms[0].id;
     let target = hotel.numbered("101").await;
-    hotel.try_assign(room, 1, target.id).await.unwrap();
+    hotel.try_assign(room, 2, target.id).await.unwrap();
 
-    let checked_in = hotel.try_check_in(room, 2).await.unwrap();
+    let checked_in = hotel.try_check_in(room, 3).await.unwrap();
 
     assert_eq!(checked_in.id, room);
     assert_eq!(checked_in.reservation_id, booked.id);
     assert_eq!(checked_in.status, RoomStatus::CheckedIn);
-    assert_eq!(checked_in.version, 3);
+    assert_eq!(checked_in.version, 4);
     assert_eq!(checked_in.checked_in_business_date, hotel.day(0));
     let row = hotel.room_row(room).await;
     assert_eq!(row.status, "checked_in");
@@ -203,8 +205,8 @@ async fn checking_in_on_the_arrival_date_marks_the_room_and_bumps_versions(_: Pg
     assert_eq!(row.checked_in_at, Some(checked_in.checked_in_at));
     assert_eq!(row.checked_in_business_date, Some(hotel.day(0)));
     assert!(row.checked_out_at.is_none());
-    assert_eq!(row.version, 3);
-    assert_eq!(hotel.reservation_version(booked.id).await, 3);
+    assert_eq!(row.version, 4);
+    assert_eq!(hotel.reservation_version(booked.id).await, 4);
     let audited: Vec<Uuid> =
         sqlx::query_scalar("select entity_id from audit_log where action = 'reservation_room.checked_in'")
             .fetch_all(&mut *hotel.tx().await)
@@ -217,64 +219,72 @@ async fn checking_in_on_the_arrival_date_marks_the_room_and_bumps_versions(_: Pg
 async fn check_in_before_the_arrival_date_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 2, 5)]).await.unwrap();
+    // Booking auto-assigns a room; these stay tests assign by hand, so the stay starts unassigned and every
+    // version below counts the unassign's bump.
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 2, 5)]).await.unwrap();
     let room = booked.rooms[0].id;
     let target = hotel.numbered("101").await;
-    hotel.try_assign(room, 1, target.id).await.unwrap();
+    hotel.try_assign(room, 2, target.id).await.unwrap();
 
-    let refused = conflict(hotel.try_check_in(room, 2).await);
+    let refused = conflict(hotel.try_check_in(room, 3).await);
 
     assert_eq!(refused, format!("check-in is only on the arrival date ({})", hotel.day(2)));
     let row = hotel.room_row(room).await;
     assert_eq!(row.status, "confirmed");
-    assert_eq!(row.version, 2);
+    assert_eq!(row.version, 3);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn check_in_after_the_arrival_date_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 4)]).await.unwrap();
+    // Booking auto-assigns a room; these stay tests assign by hand, so the stay starts unassigned and every
+    // version below counts the unassign's bump.
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 4)]).await.unwrap();
     let room = booked.rooms[0].id;
     let target = hotel.numbered("101").await;
-    hotel.try_assign(room, 1, target.id).await.unwrap();
+    hotel.try_assign(room, 2, target.id).await.unwrap();
     hotel.move_business_date(1).await;
 
-    let refused = conflict(hotel.try_check_in(room, 2).await);
+    let refused = conflict(hotel.try_check_in(room, 3).await);
 
     assert_eq!(refused, format!("check-in is only on the arrival date ({})", hotel.day(0)));
     let row = hotel.room_row(room).await;
     assert_eq!(row.status, "confirmed");
-    assert_eq!(row.version, 2);
+    assert_eq!(row.version, 3);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn check_in_without_an_assigned_room_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
+    // Booking auto-assigns a room; these stay tests assign by hand, so the stay starts unassigned and every
+    // version below counts the unassign's bump.
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
     let room = booked.rooms[0].id;
 
-    let refused = conflict(hotel.try_check_in(room, 1).await);
+    let refused = conflict(hotel.try_check_in(room, 2).await);
 
     assert_eq!(refused, "assign a room first");
     let row = hotel.room_row(room).await;
     assert_eq!(row.status, "confirmed");
-    assert_eq!(row.version, 1);
-    assert_eq!(hotel.reservation_version(booked.id).await, 1);
+    assert_eq!(row.version, 2);
+    assert_eq!(hotel.reservation_version(booked.id).await, 2);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn check_in_on_a_blocked_room_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
+    // Booking auto-assigns a room; these stay tests assign by hand, so the stay starts unassigned and every
+    // version below counts the unassign's bump.
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
     let room = booked.rooms[0].id;
     let target = hotel.numbered("101").await;
-    hotel.try_assign(room, 1, target.id).await.unwrap();
+    hotel.try_assign(room, 2, target.id).await.unwrap();
     hotel.raw_block(target.id, 0, 1).await;
 
-    let refused = conflict(hotel.try_check_in(room, 2).await);
+    let refused = conflict(hotel.try_check_in(room, 3).await);
 
     assert_eq!(refused, format!("room 101 is blocked from {} to {}", hotel.day(0), hotel.day(1)));
 }
@@ -283,102 +293,112 @@ async fn check_in_on_a_blocked_room_is_refused(_: PgPoolOptions, opts: PgConnect
 async fn check_in_with_a_stale_version_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
+    // Booking auto-assigns a room; these stay tests assign by hand, so the stay starts unassigned and every
+    // version below counts the unassign's bump.
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
     let room = booked.rooms[0].id;
     let target = hotel.numbered("101").await;
-    hotel.try_assign(room, 1, target.id).await.unwrap();
+    hotel.try_assign(room, 2, target.id).await.unwrap();
 
-    let stale = hotel.try_check_in(room, 1).await;
+    let stale = hotel.try_check_in(room, 2).await;
 
     assert!(matches!(stale, Err(ReservationsError::VersionMismatch("reservation room"))), "{stale:?}");
     let row = hotel.room_row(room).await;
     assert_eq!(row.status, "confirmed");
-    assert_eq!(row.version, 2);
+    assert_eq!(row.version, 3);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn undo_check_in_on_the_same_day_reverts_to_confirmed(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
+    // Booking auto-assigns a room; these stay tests assign by hand, so the stay starts unassigned and every
+    // version below counts the unassign's bump.
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
     let room = booked.rooms[0].id;
     let target = hotel.numbered("101").await;
-    hotel.try_assign(room, 1, target.id).await.unwrap();
-    hotel.try_check_in(room, 2).await.unwrap();
+    hotel.try_assign(room, 2, target.id).await.unwrap();
+    hotel.try_check_in(room, 3).await.unwrap();
 
-    let undone = hotel.try_undo_check_in(room, 3).await.unwrap();
+    let undone = hotel.try_undo_check_in(room, 4).await.unwrap();
 
     assert_eq!(undone.status, RoomStatus::Confirmed);
-    assert_eq!(undone.version, 4);
+    assert_eq!(undone.version, 5);
     let row = hotel.room_row(room).await;
     assert_eq!(row.status, "confirmed");
     assert_eq!(row.room_id, Some(target.id), "the room stays assigned");
     assert!(row.checked_in_at.is_none());
     assert!(row.checked_in_business_date.is_none());
     assert!(row.checked_out_at.is_none());
-    assert_eq!(row.version, 4);
-    assert_eq!(hotel.reservation_version(booked.id).await, 4);
+    assert_eq!(row.version, 5);
+    assert_eq!(hotel.reservation_version(booked.id).await, 5);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn undo_check_in_after_the_business_date_moves_on_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 4)]).await.unwrap();
+    // Booking auto-assigns a room; these stay tests assign by hand, so the stay starts unassigned and every
+    // version below counts the unassign's bump.
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 4)]).await.unwrap();
     let room = booked.rooms[0].id;
     let target = hotel.numbered("101").await;
-    hotel.try_assign(room, 1, target.id).await.unwrap();
-    hotel.try_check_in(room, 2).await.unwrap();
+    hotel.try_assign(room, 2, target.id).await.unwrap();
+    hotel.try_check_in(room, 3).await.unwrap();
     hotel.move_business_date(1).await;
 
-    let refused = conflict(hotel.try_undo_check_in(room, 3).await);
+    let refused = conflict(hotel.try_undo_check_in(room, 4).await);
 
     assert_eq!(refused, "check-in can only be undone on the day it happened");
     let row = hotel.room_row(room).await;
     assert_eq!(row.status, "checked_in");
-    assert_eq!(row.version, 3);
+    assert_eq!(row.version, 4);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn undo_check_in_with_a_stale_version_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
+    // Booking auto-assigns a room; these stay tests assign by hand, so the stay starts unassigned and every
+    // version below counts the unassign's bump.
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
     let room = booked.rooms[0].id;
     let target = hotel.numbered("101").await;
-    hotel.try_assign(room, 1, target.id).await.unwrap();
-    hotel.try_check_in(room, 2).await.unwrap();
+    hotel.try_assign(room, 2, target.id).await.unwrap();
+    hotel.try_check_in(room, 3).await.unwrap();
 
-    let stale = hotel.try_undo_check_in(room, 2).await;
+    let stale = hotel.try_undo_check_in(room, 3).await;
 
     assert!(matches!(stale, Err(ReservationsError::VersionMismatch("reservation room"))), "{stale:?}");
     let row = hotel.room_row(room).await;
     assert_eq!(row.status, "checked_in");
-    assert_eq!(row.version, 3);
+    assert_eq!(row.version, 4);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn check_out_early_releases_the_right_nights_and_deletes_them(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 5)]).await.unwrap();
+    // Booking auto-assigns a room; these stay tests assign by hand, so the stay starts unassigned and every
+    // version below counts the unassign's bump.
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 5)]).await.unwrap();
     let room = booked.rooms[0].id;
     let target = hotel.numbered("101").await;
-    hotel.try_assign(room, 1, target.id).await.unwrap();
-    hotel.try_check_in(room, 2).await.unwrap();
+    hotel.try_assign(room, 2, target.id).await.unwrap();
+    hotel.try_check_in(room, 3).await.unwrap();
     hotel.move_business_date(2).await;
     let sold_before = hotel.sold(hotel.deluxe.id, 0, 6).await;
 
-    let checked_out = hotel.try_check_out(room, 3).await.unwrap();
+    let checked_out = hotel.try_check_out(room, 4).await.unwrap();
 
     assert_eq!(checked_out.status, RoomStatus::CheckedOut);
-    assert_eq!(checked_out.version, 4);
+    assert_eq!(checked_out.version, 5);
     assert_eq!(checked_out.released_nights, vec![hotel.day(2), hotel.day(3), hotel.day(4)]);
     let row = hotel.room_row(room).await;
     assert_eq!(row.status, "checked_out");
     assert_eq!((row.check_in, row.check_out), (hotel.day(0), hotel.day(2)));
     assert_eq!(row.checked_out_at, Some(checked_out.checked_out_at));
-    assert_eq!(row.version, 4);
+    assert_eq!(row.version, 5);
     assert_eq!(hotel.nights(room).await.len(), 2, "only day 0 and day 1 remain");
     let sold_after = hotel.sold(hotel.deluxe.id, 0, 6).await;
     assert_eq!(sold_after[2], sold_before[2] - 1);
@@ -405,13 +425,15 @@ async fn check_out_early_releases_the_right_nights_and_deletes_them(_: PgPoolOpt
 async fn check_out_on_the_arrival_day_keeps_one_night(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
+    // Booking auto-assigns a room; these stay tests assign by hand, so the stay starts unassigned and every
+    // version below counts the unassign's bump.
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
     let room = booked.rooms[0].id;
     let target = hotel.numbered("101").await;
-    hotel.try_assign(room, 1, target.id).await.unwrap();
-    hotel.try_check_in(room, 2).await.unwrap();
+    hotel.try_assign(room, 2, target.id).await.unwrap();
+    hotel.try_check_in(room, 3).await.unwrap();
 
-    let checked_out = hotel.try_check_out(room, 3).await.unwrap();
+    let checked_out = hotel.try_check_out(room, 4).await.unwrap();
 
     assert_eq!(checked_out.released_nights, vec![hotel.day(1), hotel.day(2)]);
     let row = hotel.room_row(room).await;
@@ -424,16 +446,18 @@ async fn check_out_on_the_arrival_day_keeps_one_night(_: PgPoolOptions, opts: Pg
 async fn a_late_check_out_changes_nothing(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 2)]).await.unwrap();
+    // Booking auto-assigns a room; these stay tests assign by hand, so the stay starts unassigned and every
+    // version below counts the unassign's bump.
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 2)]).await.unwrap();
     let room = booked.rooms[0].id;
     let target = hotel.numbered("101").await;
-    hotel.try_assign(room, 1, target.id).await.unwrap();
-    hotel.try_check_in(room, 2).await.unwrap();
+    hotel.try_assign(room, 2, target.id).await.unwrap();
+    hotel.try_check_in(room, 3).await.unwrap();
     hotel.move_business_date(2).await;
     let nights_before = hotel.nights(room).await;
     let sold_before = hotel.sold(hotel.deluxe.id, 0, 3).await;
 
-    let checked_out = hotel.try_check_out(room, 3).await.unwrap();
+    let checked_out = hotel.try_check_out(room, 4).await.unwrap();
 
     assert_eq!(checked_out.released_nights, Vec::<Date>::new());
     let row = hotel.room_row(room).await;
@@ -447,18 +471,20 @@ async fn a_late_check_out_changes_nothing(_: PgPoolOptions, opts: PgConnectOptio
 async fn check_out_with_a_stale_version_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
+    // Booking auto-assigns a room; these stay tests assign by hand, so the stay starts unassigned and every
+    // version below counts the unassign's bump.
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 3)]).await.unwrap();
     let room = booked.rooms[0].id;
     let target = hotel.numbered("101").await;
-    hotel.try_assign(room, 1, target.id).await.unwrap();
-    hotel.try_check_in(room, 2).await.unwrap();
+    hotel.try_assign(room, 2, target.id).await.unwrap();
+    hotel.try_check_in(room, 3).await.unwrap();
 
-    let stale = hotel.try_check_out(room, 2).await;
+    let stale = hotel.try_check_out(room, 3).await;
 
     assert!(matches!(stale, Err(ReservationsError::VersionMismatch("reservation room"))), "{stale:?}");
     let row = hotel.room_row(room).await;
     assert_eq!(row.status, "checked_in");
-    assert_eq!(row.version, 3);
+    assert_eq!(row.version, 4);
 }
 
 /// The Phase 3a carry-over this task resolves: `rooms::assigned_stay` used to see a checked-out room's stay as
@@ -468,13 +494,15 @@ async fn check_out_with_a_stale_version_is_refused(_: PgPoolOptions, opts: PgCon
 async fn after_an_early_check_out_the_room_can_be_blocked_or_deactivated(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 1).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 5)]).await.unwrap();
+    // Booking auto-assigns a room; these stay tests assign by hand, so the stay starts unassigned and every
+    // version below counts the unassign's bump.
+    let booked = hotel.try_book_unassigned(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 0, 5)]).await.unwrap();
     let room = booked.rooms[0].id;
     let target = hotel.numbered("101").await;
-    hotel.try_assign(room, 1, target.id).await.unwrap();
-    hotel.try_check_in(room, 2).await.unwrap();
+    hotel.try_assign(room, 2, target.id).await.unwrap();
+    hotel.try_check_in(room, 3).await.unwrap();
     hotel.move_business_date(2).await;
-    hotel.try_check_out(room, 3).await.unwrap();
+    hotel.try_check_out(room, 4).await.unwrap();
 
     let mut tx = hotel.tx().await;
     let reason = rooms::create_block_reason(

@@ -2,11 +2,15 @@
 
 use crate::auth::TenantContext;
 use crate::error::ApiError;
+use crate::persisted;
 use crate::state::AppState;
-use async_graphql::{Context, EmptyMutation, EmptySubscription, Enum, InputObject, Json, Object, Schema, SimpleObject};
-use async_graphql_axum::rejection::GraphQLRejection;
-use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
+use async_graphql::{
+    Context, EmptyMutation, EmptySubscription, Enum, InputObject, Json, Object, Request, Schema, SimpleObject,
+    Variables,
+};
+use async_graphql_axum::GraphQLResponse;
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use db::{Scope, Tx};
 use identity::Permission;
 use sqlx::PgPool;
@@ -21,13 +25,48 @@ pub fn build_schema(production: bool) -> GqlSchema {
     if production { builder.disable_introspection().finish() } else { builder.finish() }
 }
 
+/// A GraphQL POST body. `documentId` names a persisted document (see `persisted`).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphqlBody {
+    document_id: Option<String>,
+    query: Option<String>,
+    operation_name: Option<String>,
+    #[serde(default)]
+    variables: Variables,
+}
+
 pub async fn handler(
     State(state): State<AppState>,
     ctx: TenantContext,
-    request: Result<GraphQLRequest, GraphQLRejection>,
+    body: Result<axum::Json<GraphqlBody>, JsonRejection>,
 ) -> Result<GraphQLResponse, ApiError> {
-    let request = request.map_err(|rejection| ApiError::bad_request(rejection.0.to_string()))?;
-    Ok(state.schema.execute(request.into_inner().data(state.pool.clone()).data(ctx)).await.into())
+    let axum::Json(body) = body.map_err(|rejection| ApiError::bad_request(rejection.body_text()))?;
+    let mut request = resolve_request(&body, state.production)?.variables(body.variables);
+    if let Some(name) = body.operation_name {
+        request = request.operation_name(name);
+    }
+    Ok(state.schema.execute(request.data(state.pool.clone()).data(ctx)).await.into())
+}
+
+/// The request to run. A `documentId` runs the stored document, already parsed; a raw `query` runs only outside
+/// production, where a raw `query` sent beside an id (the development client does) wins, so a document that is
+/// not yet in the generated file still works.
+fn resolve_request(body: &GraphqlBody, production: bool) -> Result<Request, ApiError> {
+    match (&body.document_id, &body.query) {
+        (_, Some(query)) if !production => Ok(Request::new(query)),
+        (Some(id), query) => {
+            let document =
+                persisted::documents().get(id).ok_or_else(|| ApiError::bad_request("PersistedQueryNotFound"))?;
+            if query.as_ref().is_some_and(|query| *query != document.text) {
+                return Err(ApiError::bad_request("the query does not match the persisted document"));
+            }
+            let mut request = Request::new(&document.text);
+            request.set_parsed_query(document.parsed.clone());
+            Ok(request)
+        }
+        (None, _) => Err(ApiError::bad_request("production accepts only persisted queries")),
+    }
 }
 
 /// Logs a database error and hides it from the client, like `ApiError` does for REST.
@@ -217,6 +256,10 @@ mirror_enum!(PlanKindNode as "PlanKind" from rates::PlanKind { Standard, Derived
 mirror_enum!(SegmentNode as "Segment" from rates::Segment { FitF, FitL, Ota, Ta, Ibe });
 mirror_enum!(ResidencyNode as "Residency" from rates::Residency { Resident, NonResident });
 mirror_enum!(ChangeModeNode as "ChangeMode" from rates::ChangeMode { Percent, Amount });
+mirror_enum!(
+    /// Why a stay has no room.
+    NeedsRoomReasonNode as "NeedsRoomReason" from reservations::NeedsRoomReason { Overbooked, NoSingleRoom }
+);
 mirror_enum!(MealPlanNode as "MealPlan" from rates::MealPlan { Ro, Bb, Hb, Fb });
 mirror_enum!(PriceChangeModeNode as "PriceChangeMode" from rates::PriceChangeMode { Percent, Amount, Set });
 mirror_enum!(PenaltyKindNode as "PenaltyKind" from rates::PenaltyKind { Nights, Percent, Amount });
@@ -776,6 +819,58 @@ pub struct FreeRoomNode {
     pub number: String,
     /// The housekeeping section's name.
     pub section: Option<String>,
+}
+
+/// A stay in one of the tape chart's rooms.
+#[derive(SimpleObject)]
+pub struct TapeStayNode {
+    pub id: Uuid,
+    pub reservation_id: Uuid,
+    pub room_id: Uuid,
+    pub room_type_id: Uuid,
+    pub start: Date,
+    pub end: Date,
+    pub status: RoomStatusNode,
+    /// The primary guest as "Silva, A.".
+    pub guest_name: String,
+    pub account_name: Option<String>,
+    /// Send as `If-Match: "<version>"` with the stay's commands.
+    pub version: i32,
+}
+
+/// A room block in one of the tape chart's rooms.
+#[derive(SimpleObject)]
+pub struct TapeBlockNode {
+    pub id: Uuid,
+    pub room_id: Uuid,
+    pub start: Date,
+    pub end: Date,
+    /// The block reason's label.
+    pub reason: String,
+}
+
+#[derive(SimpleObject)]
+pub struct TapeWindowNode {
+    /// By room, then arrival.
+    pub stays: Vec<TapeStayNode>,
+    /// By room, then start.
+    pub blocks: Vec<TapeBlockNode>,
+}
+
+/// A confirmed stay that has no room yet.
+#[derive(SimpleObject)]
+pub struct UnassignedStayNode {
+    pub id: Uuid,
+    pub reservation_id: Uuid,
+    pub room_type_id: Uuid,
+    pub start: Date,
+    pub end: Date,
+    /// Always `CONFIRMED`: check-in needs a room, so only confirmed stays can be unassigned.
+    pub status: RoomStatusNode,
+    pub guest_name: String,
+    pub reason: NeedsRoomReasonNode,
+    /// Send as `If-Match: "<version>"` with the stay's commands.
+    pub version: i32,
 }
 
 impl From<rates::CancellationRule> for CancellationRuleNode {
@@ -1365,6 +1460,73 @@ impl Query {
             .map_err(reservations_error)?;
         tx.commit().await.map_err(internal)?;
         Ok(rooms.into_iter().map(|r| FreeRoomNode { id: r.id, number: r.number, section: r.section }).collect())
+    }
+
+    /// The stays and blocks of up to 10 rooms of the property that overlap `[from, to)` (at most 42 days),
+    /// for the tape chart.
+    async fn tape_window(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        room_ids: Vec<Uuid>,
+        from: Date,
+        to: Date,
+    ) -> async_graphql::Result<TapeWindowNode> {
+        let mut tx = scoped(ctx, Permission::ReservationsView, property_id).await?;
+        let window =
+            reservations::tape_window(&mut tx, property_id, &room_ids, from, to).await.map_err(reservations_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(TapeWindowNode {
+            stays: window
+                .stays
+                .into_iter()
+                .map(|s| TapeStayNode {
+                    id: s.id,
+                    reservation_id: s.reservation_id,
+                    room_id: s.room_id,
+                    room_type_id: s.room_type_id,
+                    start: s.start,
+                    end: s.end,
+                    status: s.status.into(),
+                    guest_name: s.guest_name,
+                    account_name: s.account_name,
+                    version: s.version,
+                })
+                .collect(),
+            blocks: window
+                .blocks
+                .into_iter()
+                .map(|b| TapeBlockNode { id: b.id, room_id: b.room_id, start: b.start, end: b.end, reason: b.reason })
+                .collect(),
+        })
+    }
+
+    /// Confirmed stays with no room that overlap `[from, to)` (at most 42 days), by arrival, each with why it
+    /// has none.
+    async fn unassigned_stays(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        from: Date,
+        to: Date,
+    ) -> async_graphql::Result<Vec<UnassignedStayNode>> {
+        let mut tx = scoped(ctx, Permission::ReservationsView, property_id).await?;
+        let stays = reservations::unassigned_stays(&mut tx, property_id, from, to).await.map_err(reservations_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(stays
+            .into_iter()
+            .map(|s| UnassignedStayNode {
+                id: s.id,
+                reservation_id: s.reservation_id,
+                room_type_id: s.room_type_id,
+                start: s.start,
+                end: s.end,
+                status: RoomStatusNode::Confirmed,
+                guest_name: s.guest_name,
+                reason: s.reason.into(),
+                version: s.version,
+            })
+            .collect())
     }
 }
 

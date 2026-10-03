@@ -1,10 +1,16 @@
 mod common;
 
 use common::Hotel;
-use rooms::{NewRoom, Room, RoomChanges, RoomRange, RoomTypeChanges, RoomsError};
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use db::{CHANNEL, Event};
+use rooms::{NewRoom, Room, RoomChanges, RoomRange, RoomTypeChanges, RoomsError, WINDOW_DAYS};
+use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions};
 use std::time::Duration;
 use uuid::Uuid;
+
+/// The `tape:` keys of `keys`, in order.
+fn tape_only(keys: &[String]) -> Vec<String> {
+    keys.iter().filter(|key| key.starts_with("tape:")).cloned().collect()
+}
 
 impl Hotel {
     async fn update_room(&self, room: &Room, changes: RoomChanges) -> Result<Room, RoomsError> {
@@ -247,4 +253,30 @@ async fn a_room_with_a_stay_still_to_come_keeps_its_type_and_stays_active(_: PgP
     );
     assert_eq!(moved.unwrap().floor.as_deref(), Some("2"), "other changes are fine");
     assert!(!other.unwrap().active);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn deactivating_a_room_announces_the_whole_window_and_a_plain_edit_announces_no_tape_key(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts).await;
+    let dlx = hotel.room_type("DLX").await;
+    let room = hotel.room(dlx.id, "101").await;
+    let mut listener = PgListener::connect_with(&hotel.pool).await.unwrap();
+    listener.listen(CHANNEL).await.unwrap();
+
+    let deactivated =
+        hotel.update_room(&room, RoomChanges { active: Some(false), ..RoomChanges::default() }).await.unwrap();
+    let received = tokio::time::timeout(Duration::from_secs(5), listener.recv()).await.unwrap().unwrap();
+    let event: Event = serde_json::from_str(received.payload()).unwrap();
+    assert_eq!(tape_only(&event.keys), rooms::tape_keys(hotel.property, hotel.day(0), hotel.day(WINDOW_DAYS)));
+
+    hotel
+        .update_room(&deactivated, RoomChanges { number: Some("101A".into()), ..RoomChanges::default() })
+        .await
+        .unwrap();
+    let received = tokio::time::timeout(Duration::from_secs(5), listener.recv()).await.unwrap().unwrap();
+    let event: Event = serde_json::from_str(received.payload()).unwrap();
+    assert_eq!(tape_only(&event.keys), Vec::<String>::new(), "a rename doesn't move the room on or off the chart");
 }

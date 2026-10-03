@@ -1,9 +1,21 @@
 import { expect, test, type Page } from '@playwright/test';
-import { addDays, bookableHotel, createProperty, post, signUp, type Hotel } from './helpers';
+import {
+	addDays,
+	bookableHotel,
+	createProperty,
+	post,
+	runsQuery,
+	signUp,
+	unassign,
+	type Hotel
+} from './helpers';
 
 const ID_NUMBER = 'P98765432';
 
-/** Books one DLX room on BAR for the business date's night and returns the reservation and its room. */
+/**
+ * Books one DLX room on BAR for the business date's night, takes it out of the room booking auto-assigned it
+ * (the flow below assigns by hand), and returns the reservation and its room.
+ */
 async function bookOneNight(api: Parameters<typeof post>[0], hotel: Hotel) {
 	const created = await post(api, `${hotel.path}/reservations`, {
 		booker_guest_id: hotel.guestId,
@@ -23,7 +35,7 @@ async function bookOneNight(api: Parameters<typeof post>[0], hotel: Hotel) {
 		id: created.id as string,
 		confirmation: created.confirmation_no as string,
 		roomId: created.rooms[0].id as string,
-		roomVersion: created.rooms[0].version as number
+		roomVersion: await unassign(api, hotel, created.rooms[0].id, created.rooms[0].version)
 	};
 }
 
@@ -95,7 +107,7 @@ test('a reservation opens in a modal over the table, where rooms are assigned, u
 	// answer) until 101 is picked, as for someone who opened it a moment before the other booking.
 	let offered: string | undefined;
 	await page.route('**/graphql', async (route) => {
-		if (!(route.request().postData() ?? '').includes('FreeRooms(')) return route.fallback();
+		if (!runsQuery(route.request(), 'FreeRooms')) return route.fallback();
 		offered ??= await (await route.fetch()).text();
 		await route.fulfill({ contentType: 'application/json', body: offered });
 	});
@@ -125,14 +137,19 @@ test('a reservation opens in a modal over the table, where rooms are assigned, u
 	const assignedRoom = dialog.getByRole('region', { name: 'DLX · 102' });
 	await expect(assignedRoom).toBeVisible();
 	await expect(row('DET-000002')).toContainText('DLX · 102');
-	await expect(history).toContainText('Room 102 assigned');
+	// The setup unassign already left "unassigned" rows (naming whichever room booking picked), so the step's own
+	// entry is the count going up by one, not the text appearing.
+	const unassignedRows = history.getByRole('row').filter({ hasText: /Room \d+ unassigned/ });
+	await expect(history.getByRole('row').filter({ hasText: 'Room 102 assigned' })).toHaveCount(1);
+	const unassignedBefore = await unassignedRows.count();
 
 	// Unassigning puts it back.
 	await assignedRoom.getByRole('button', { name: 'Unassign' }).click();
 	const unassigned = dialog.getByRole('region', { name: 'DLX · Unassigned' });
 	await expect(unassigned).toBeVisible();
 	await expect(row('DET-000002')).toContainText('DLX · unassigned');
-	await expect(history).toContainText('Room 102 unassigned');
+	await expect(unassignedRows).toHaveCount(unassignedBefore + 1);
+	await expect(unassignedRows.first()).toContainText('Room 102 unassigned');
 
 	// Cancelling shows what it costs before it is done, then what was recorded.
 	await unassigned.getByRole('button', { name: 'Cancel room…' }).click();

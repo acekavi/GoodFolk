@@ -1,5 +1,5 @@
 use crate::inventory::{WINDOW_DAYS, adjust, business_date, clamped_month_keys, extend_window, lock_days};
-use crate::{RoomsError, assigned_stay, audit, notify, rooms_key, violates};
+use crate::{RoomsError, assigned_stay, audit, notify, rooms_key, tape_keys, violates};
 use db::{TenantId, Tx, UserId};
 use serde::{Deserialize, Serialize};
 use time::{Date, Duration};
@@ -330,7 +330,11 @@ pub async fn create_block(
         serde_json::json!({ "room_id": block.room_id, "from": block.from, "to": block.to, "kind": block.kind }),
     )
     .await?;
-    notify(tx, tenant, property, clamped_month_keys(property, today, block.from, block.to)).await?;
+    let keys = clamped_month_keys(property, today, block.from, block.to)
+        .into_iter()
+        .chain(tape_keys(property, block.from, block.to))
+        .collect();
+    notify(tx, tenant, property, keys).await?;
     Ok(block)
 }
 
@@ -399,7 +403,13 @@ pub async fn shorten_block(
         serde_json::json!({ "to": to }),
     )
     .await?;
-    notify(tx, tenant, property, clamped_month_keys(property, today, restored_from, current.to)).await?;
+    // The original range, before shortening: the tape chart shows the block's whole span, not just the days
+    // whose counters changed.
+    let keys = clamped_month_keys(property, today, restored_from, current.to)
+        .into_iter()
+        .chain(tape_keys(property, current.from, current.to))
+        .collect();
+    notify(tx, tenant, property, keys).await?;
     Ok(block)
 }
 

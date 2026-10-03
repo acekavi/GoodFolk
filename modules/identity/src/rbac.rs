@@ -115,8 +115,12 @@ pub async fn load_grants(tx: &mut Tx, user: UserId) -> Result<Vec<Grant>, sqlx::
             .bind(user.0)
             .fetch_all(&mut **tx)
             .await?;
-    Ok(rows
-        .into_iter()
+    Ok(grants_from_rows(user, rows))
+}
+
+/// The grants in `rows` (`property_id`, `role`), skipping roles this build does not know.
+pub(crate) fn grants_from_rows(user: UserId, rows: Vec<(Option<Uuid>, String)>) -> Vec<Grant> {
+    rows.into_iter()
         .filter_map(|(property_id, role)| match Role::parse(&role) {
             Some(role) => Some(Grant { property_id, role }),
             None => {
@@ -124,5 +128,5 @@ pub async fn load_grants(tx: &mut Tx, user: UserId) -> Result<Vec<Grant>, sqlx::
                 None
             }
         })
-        .collect())
+        .collect()
 }

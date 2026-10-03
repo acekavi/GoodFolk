@@ -251,6 +251,12 @@ pub fn month_keys(property: Uuid, from: Date, to: Date) -> Vec<String> {
     months(from, to).into_iter().map(|month| format!("inventory:{property}:{month}")).collect()
 }
 
+/// Cache keys `tape:<property>:<yyyy-mm>` for every month that `[from, to)` touches: what the tape chart
+/// invalidates when a stay's dates, room, status or existence, or a block, changes there.
+pub fn tape_keys(property: Uuid, from: Date, to: Date) -> Vec<String> {
+    months(from, to).into_iter().map(|month| format!("tape:{property}:{month}")).collect()
+}
+
 /// Month keys for the days of `[from, to)` inside the counter window. Only those days have counters to
 /// change, and clamping keeps every event within the NOTIFY payload limit (under 8000 bytes).
 pub(crate) fn clamped_month_keys(property: Uuid, business_date: Date, from: Date, to: Date) -> Vec<String> {
@@ -278,6 +284,16 @@ mod tests {
         );
         assert_eq!(month_keys(p, date!(2026 - 12 - 31), date!(2027 - 01 - 02)).len(), 2);
         assert_eq!(month_keys(p, date!(2026 - 05 - 10), date!(2026 - 05 - 10)), Vec::<String>::new());
+    }
+
+    #[test]
+    fn tape_keys_cover_every_month_touched() {
+        let p = Uuid::nil();
+        assert_eq!(
+            super::tape_keys(p, date!(2026 - 12 - 30), date!(2027 - 01 - 02)),
+            vec![format!("tape:{p}:2026-12"), format!("tape:{p}:2027-01")]
+        );
+        assert_eq!(super::tape_keys(p, date!(2026 - 05 - 10), date!(2026 - 05 - 10)), Vec::<String>::new());
     }
 
     #[test]

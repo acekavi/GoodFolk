@@ -14,7 +14,8 @@ pub use blocks::{
     create_block_reason, list_block_reasons, list_blocks, seed_block_reasons, shorten_block, update_block_reason,
 };
 pub use inventory::{
-    InventoryDay, InventoryDrift, WINDOW_DAYS, extend_window, find_drift, list_inventory, lock_days, month_keys, months,
+    InventoryDay, InventoryDrift, WINDOW_DAYS, extend_window, find_drift, list_inventory, lock_days, month_keys,
+    months, tape_keys,
 };
 pub use room_types::{
     Bed, NewRoomType, RoomType, RoomTypeChanges, create_room_type, list_room_types, reorder_room_types,

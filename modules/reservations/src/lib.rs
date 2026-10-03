@@ -6,6 +6,7 @@
 
 mod accounts;
 mod assignment;
+mod autoassign;
 mod availability;
 mod cancellation;
 mod detail;
@@ -15,12 +16,14 @@ mod modify;
 mod occupants;
 mod reservations;
 mod stay;
+mod tape;
 
 pub use accounts::{
     Account, AccountChanges, AccountContact, AccountKind, MAX_ACCOUNT_LIST, NewAccount, create_account, get_account,
     list_accounts, update_account,
 };
 pub use assignment::{AssignedRoom, FreeRoom, assign_room, free_rooms, unassign_room};
+pub use autoassign::FIT_HORIZON_DAYS;
 pub use availability::{AvailabilityRequest, MAX_AVAILABILITY_NIGHTS, RoomTypeAvailability, availability};
 pub use cancellation::{CancellationTerms, CancelledRoom, cancel_room, cancellation_penalty};
 pub use detail::{
@@ -41,6 +44,10 @@ pub use reservations::{
     Source, Total, UpdatedReservation, create_reservation, update_reservation,
 };
 pub use stay::{CheckInPolicy, CheckedIn, CheckedOut, UndoneCheckIn, check_in, check_out, undo_check_in};
+pub use tape::{
+    MAX_TAPE_DAYS, MAX_TAPE_ROOMS, NeedsRoomReason, TapeBlock, TapeStay, TapeWindow, UnassignedStay, tape_window,
+    unassigned_stays,
+};
 
 use db::{Event, TenantId, Tx, UserId};
 use rates::RatesError;

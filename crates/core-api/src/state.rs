@@ -1,5 +1,6 @@
 use crate::events::LiveEvent;
 use crate::graphql::{GqlSchema, build_schema};
+use crate::persisted;
 use db::crypto::GuestIdKeys;
 use reservations::CheckInPolicy;
 use sqlx::PgPool;
@@ -22,6 +23,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(pool: PgPool, production: bool, guest_id_keys: GuestIdKeys, checkin_policy: CheckInPolicy) -> Self {
+        persisted::load();
         let (events, _) = broadcast::channel(1024);
         Self {
             schema: build_schema(production),

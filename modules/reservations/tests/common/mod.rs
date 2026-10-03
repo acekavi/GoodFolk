@@ -7,8 +7,8 @@ use rates::{
     CancellationRule, MealPlan, NewCancellationPolicy, NewMealSupplement, Penalty, PenaltyKind, RatePlan, Residency,
 };
 use reservations::{
-    Account, AccountChanges, AccountContact, AccountKind, CreatedReservation, Guest, GuestChanges, IdDocType,
-    NewAccount, NewGuest, NewReservation, NewReservationRoom, ReservationsError, Source,
+    Account, AccountChanges, AccountContact, AccountKind, CreatedReservation, CreatedRoom, Guest, GuestChanges,
+    IdDocType, NewAccount, NewGuest, NewReservation, NewReservationRoom, ReservationsError, Source,
 };
 use rooms::{NewRoomType, RoomType};
 use sqlx::PgPool;
@@ -342,6 +342,35 @@ impl Hotel {
         let created = reservations::create_reservation(&mut tx, self.tenant, self.user, self.property, input).await?;
         tx.commit().await.unwrap();
         Ok(created)
+    }
+
+    /// `try_book`, then takes every room out of the room booking auto-assigned it, for tests whose point is an
+    /// unassigned stay. The result carries no room and the versions after the unassigns.
+    pub async fn try_book_unassigned(
+        &self,
+        booker: &Guest,
+        rooms: Vec<NewReservationRoom>,
+    ) -> Result<CreatedReservation, ReservationsError> {
+        let mut created = self.try_book(booker, rooms).await?;
+        for stay in &mut created.rooms {
+            if stay.room_id.is_some() {
+                stay.version = self.unassigned(stay).await;
+                created.version += 1; // each unassign bumps the reservation too
+                stay.room_id = None;
+                stay.room_number = None;
+            }
+        }
+        Ok(created)
+    }
+
+    /// Unassigns `stay` in its own transaction, committed, and returns its new version.
+    pub async fn unassigned(&self, stay: &CreatedRoom) -> i32 {
+        let mut tx = self.tx().await;
+        let freed = reservations::unassign_room(&mut tx, self.tenant, self.user, self.property, stay.id, stay.version)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        freed.version
     }
 
     /// `sold` for `room_type` on each day in `[business date + from, business date + to)`.

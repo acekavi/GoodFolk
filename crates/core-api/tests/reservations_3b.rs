@@ -116,6 +116,23 @@ impl Hotel {
                           "check_in": self.day(from), "check_out": self.day(to), "adults": 2}]})
     }
 
+    /// Books `booking` over REST, then takes the booked room out of the room booking auto-assigned it, for tests
+    /// that start from an unassigned stay. The result shows no room and the room's version after the unassign.
+    async fn book_unassigned_with(&self, app: &TestApp, booking: Value) -> Value {
+        let mut created = post(app, &self.owner, &self.reservations(), booking).await.body;
+        let version = created["rooms"][0]["version"].as_i64().unwrap();
+        let freed = command(app, &self.owner, &format!("{}/unassign", self.stay(&created)), version, None).await;
+        assert_eq!(freed.status, StatusCode::OK, "{:?}", freed.body);
+        created["rooms"][0]["version"] = json!(version + 1);
+        created["rooms"][0]["room_id"] = Value::Null;
+        created["rooms"][0]["room_number"] = Value::Null;
+        created
+    }
+
+    async fn book_unassigned(&self, app: &TestApp, guest: &Value, from: i64, to: i64) -> Value {
+        self.book_unassigned_with(app, self.booking(guest, from, to)).await
+    }
+
     /// The path of the first room of a reservation `created` over REST.
     fn stay(&self, created: &Value) -> String {
         format!("{}/reservation-rooms/{}", self.path, created["rooms"][0]["id"].as_str().unwrap())
@@ -163,24 +180,28 @@ async fn a_booking_billed_to_an_account_is_modified_assigned_checked_in_and_chec
     assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
     assert_eq!(created.headers[header::ETAG], "\"1\"");
     let stay = hotel.stay(&created.body);
+    // Booking auto-assigned a room; take it out again so the assignment below is by hand.
+    let freed = command(&app, &hotel.owner, &format!("{stay}/unassign"), 1, None).await;
+    assert_eq!(freed.status, StatusCode::OK, "{:?}", freed.body);
+    assert_eq!(freed.headers[header::ETAG], "\"2\"");
     let before_extend = hotel.sold(0, 4).await;
 
     let modified =
-        command(&app, &hotel.owner, &format!("{stay}/modify"), 1, Some(json!({"check_out": hotel.day(4)}))).await;
+        command(&app, &hotel.owner, &format!("{stay}/modify"), 2, Some(json!({"check_out": hotel.day(4)}))).await;
     assert_eq!(modified.status, StatusCode::OK, "{:?}", modified.body);
-    assert_eq!(modified.headers[header::ETAG], "\"2\"");
+    assert_eq!(modified.headers[header::ETAG], "\"3\"");
     assert_eq!(modified.body["check_out"], hotel.day(4));
     assert_eq!(modified.body["total"], 40_000, "a fourth night at 100.00 was added");
     let after_extend = hotel.sold(0, 4).await;
 
     let assigned =
-        command(&app, &hotel.owner, &format!("{stay}/assign"), 2, Some(json!({"room_id": hotel.rooms[0]}))).await;
+        command(&app, &hotel.owner, &format!("{stay}/assign"), 3, Some(json!({"room_id": hotel.rooms[0]}))).await;
     assert_eq!(assigned.status, StatusCode::OK, "{:?}", assigned.body);
-    assert_eq!(assigned.headers[header::ETAG], "\"3\"");
+    assert_eq!(assigned.headers[header::ETAG], "\"4\"");
 
-    let checked_in = command(&app, &hotel.owner, &format!("{stay}/check-in"), 3, None).await;
+    let checked_in = command(&app, &hotel.owner, &format!("{stay}/check-in"), 4, None).await;
     assert_eq!(checked_in.status, StatusCode::OK, "{:?}", checked_in.body);
-    assert_eq!(checked_in.headers[header::ETAG], "\"4\"");
+    assert_eq!(checked_in.headers[header::ETAG], "\"5\"");
     assert_eq!(checked_in.body["status"], "checked_in");
     assert_eq!(checked_in.body["checked_in_business_date"], hotel.day(0));
 
@@ -188,9 +209,9 @@ async fn a_booking_billed_to_an_account_is_modified_assigned_checked_in_and_chec
     // own notification is found by its content (the NOTIFY listener delivers asynchronously, so earlier
     // steps' events may still arrive after this point).
     let mut events = app.state.events.subscribe();
-    let checked_out = command(&app, &hotel.owner, &format!("{stay}/check-out"), 4, None).await;
+    let checked_out = command(&app, &hotel.owner, &format!("{stay}/check-out"), 5, None).await;
     assert_eq!(checked_out.status, StatusCode::OK, "{:?}", checked_out.body);
-    assert_eq!(checked_out.headers[header::ETAG], "\"5\"");
+    assert_eq!(checked_out.headers[header::ETAG], "\"6\"");
     assert_eq!(checked_out.body["status"], "checked_out");
     assert_eq!(
         checked_out.body["released_nights"],
@@ -235,20 +256,20 @@ async fn the_new_commands_rules_are_problems(_: PgPoolOptions, opts: PgConnectOp
     let guest = post(&app, &hotel.owner, &hotel.guests(), hotel.guest("Silva")).await.body;
 
     // Check-in on the wrong date: arrives in five days, assigned, but today is not its arrival date.
-    let future = post(&app, &hotel.owner, &hotel.reservations(), hotel.booking(&guest, 5, 7)).await.body;
+    let future = hotel.book_unassigned(&app, &guest, 5, 7).await;
     let future_stay = hotel.stay(&future);
     let future_assigned =
-        command(&app, &hotel.owner, &format!("{future_stay}/assign"), 1, Some(json!({"room_id": hotel.rooms[0]})))
+        command(&app, &hotel.owner, &format!("{future_stay}/assign"), 2, Some(json!({"room_id": hotel.rooms[0]})))
             .await;
     assert_eq!(future_assigned.status, StatusCode::OK, "{:?}", future_assigned.body);
-    let wrong_date = command(&app, &hotel.owner, &format!("{future_stay}/check-in"), 2, None).await;
+    let wrong_date = command(&app, &hotel.owner, &format!("{future_stay}/check-in"), 3, None).await;
     assert_eq!(wrong_date.status, StatusCode::CONFLICT, "{:?}", wrong_date.body);
     assert_eq!(wrong_date.body["detail"], format!("check-in is only on the arrival date ({})", hotel.day(5)));
 
     // No room: arrives today, confirmed, but never assigned.
-    let unassigned = post(&app, &hotel.owner, &hotel.reservations(), hotel.booking(&guest, 0, 2)).await.body;
+    let unassigned = hotel.book_unassigned(&app, &guest, 0, 2).await;
     let unassigned_stay = hotel.stay(&unassigned);
-    let no_room = command(&app, &hotel.owner, &format!("{unassigned_stay}/check-in"), 1, None).await;
+    let no_room = command(&app, &hotel.owner, &format!("{unassigned_stay}/check-in"), 2, None).await;
     assert_eq!(no_room.status, StatusCode::CONFLICT, "{:?}", no_room.body);
     assert_eq!(no_room.body["detail"], "assign a room first");
 
@@ -336,12 +357,12 @@ async fn housekeeping_and_accountants_are_refused_the_new_mutations_front_desk_c
     }
 
     let guest = post(&app, &hotel.owner, &hotel.guests(), hotel.guest("Perera")).await.body;
-    let created = post(&app, &hotel.owner, &hotel.reservations(), hotel.booking(&guest, 0, 2)).await.body;
+    let created = hotel.book_unassigned(&app, &guest, 0, 2).await;
     let stay = hotel.stay(&created);
     let assigned =
-        command(&app, &hotel.owner, &format!("{stay}/assign"), 1, Some(json!({"room_id": hotel.rooms[0]}))).await;
+        command(&app, &hotel.owner, &format!("{stay}/assign"), 2, Some(json!({"room_id": hotel.rooms[0]}))).await;
     assert_eq!(assigned.status, StatusCode::OK, "{:?}", assigned.body);
-    let checked_in = command(&app, &front_desk, &format!("{stay}/check-in"), 2, None).await;
+    let checked_in = command(&app, &front_desk, &format!("{stay}/check-in"), 3, None).await;
     assert_eq!(checked_in.status, StatusCode::OK, "{:?}", checked_in.body);
     assert_eq!(checked_in.body["status"], "checked_in");
 }
@@ -359,12 +380,12 @@ async fn another_tenants_accounts_reservations_and_rooms_cannot_be_changed(_: Pg
     let guest = post(&app, &hotel.owner, &hotel.guests(), hotel.guest("Silva")).await.body;
     let mut booking = hotel.booking(&guest, 0, 2);
     booking["account_id"] = account["id"].clone();
-    let created = post(&app, &hotel.owner, &hotel.reservations(), booking).await.body;
+    let created = hotel.book_unassigned_with(&app, booking).await;
     let reservation_id = created["id"].as_str().unwrap();
     let room_id = created["rooms"][0]["id"].as_str().unwrap();
     let stay = hotel.stay(&created);
     let assigned =
-        command(&app, &hotel.owner, &format!("{stay}/assign"), 1, Some(json!({"room_id": hotel.rooms[0]}))).await;
+        command(&app, &hotel.owner, &format!("{stay}/assign"), 2, Some(json!({"room_id": hotel.rooms[0]}))).await;
     assert_eq!(assigned.status, StatusCode::OK, "{:?}", assigned.body);
 
     let intruder = app.signup_owner("intruder@example.com", "Other Hotels").await;
@@ -422,5 +443,6 @@ async fn another_tenants_accounts_reservations_and_rooms_cannot_be_changed(_: Pg
     .fetch_one(&hotel.superuser)
     .await
     .unwrap();
-    assert_eq!(untouched, (1, 2, 2, "confirmed".to_owned()), "nothing of the other tenant changed");
+    // The reservation and its room each moved by the unassign and the assignment that set the stay up.
+    assert_eq!(untouched, (1, 3, 3, "confirmed".to_owned()), "nothing of the other tenant changed");
 }

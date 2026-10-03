@@ -10,6 +10,7 @@ pub mod extract;
 pub mod graphql;
 pub mod idempotency;
 pub mod openapi;
+pub mod persisted;
 pub mod routes;
 pub mod state;
 

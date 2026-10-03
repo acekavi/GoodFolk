@@ -2,6 +2,7 @@
 //! counters move to match, and every night's price is fixed as booking did unless the caller asks to reprice.
 
 use crate::assignment::room_taken_conflict;
+use crate::autoassign::pick_room;
 use crate::{
     ReservationsError, SELLABLE, audit, business_date, check_window, decode_error, notify, reservation_key,
     reservations_key, violates,
@@ -30,6 +31,10 @@ pub struct RoomChanges {
     pub room_type_id: Option<Uuid>,
     pub adults: Option<i32>,
     pub children: Option<i32>,
+    /// Puts the stay in this room as part of the change: an active room of the property of the new type
+    /// (`Invalid` otherwise), checked for blocks and other stays over the new nights as `assign_room` does.
+    /// `None` keeps the stay's room if it still fits, else picks one.
+    pub room_id: Option<Uuid>,
     pub keep_price: bool,
     pub reprice: bool,
 }
@@ -43,7 +48,9 @@ pub struct ModifiedRoom {
     pub check_in: Date,
     pub check_out: Date,
     pub room_type_id: Uuid,
+    /// The room the stay is in after the change: kept, re-assigned by a type change, or none.
     pub room_id: Option<Uuid>,
+    pub room_number: Option<String>,
     /// Whether a type change unassigned the room it had (the old room isn't of the new type).
     pub unassigned: bool,
     pub total: i64,
@@ -57,9 +64,10 @@ pub struct ModifiedRoom {
 /// other field on a checked-in room, is a `Conflict`. The new stay must lie inside the counter window and
 /// arrive on or after the business date (unless the check-in is unchanged on a checked-in room).
 ///
-/// Lock order: this row, then (if a room is assigned) the `room` row, then `rooms::lock_days` once over the
-/// union of the old and new room types and the full `[min(old check-in, new check-in), max(old check-out,
-/// new check-out))` range -- see "Room assignment lock order" and the `inventory_day` lock order in
+/// Lock order: this row, then the `room` rows of the current room (if any) and the target room (if `room_id`
+/// is given) in ascending id order, so two modifies swapping rooms cannot deadlock, then `rooms::lock_days`
+/// once over the union of the old and new room types and the full `[min(old check-in, new check-in),
+/// max(old check-out, new check-out))` range -- see "Room assignment lock order" and the `inventory_day` lock order in
 /// `docs/design/api-conventions.md`. Nights the room no longer holds are released; nights it newly holds are
 /// taken, each checked against [`SELLABLE`] (nights it already holds count as held, so only the added nights
 /// need a free room); a night with none free is a `Conflict` naming it, exactly as booking one is. Only
@@ -71,10 +79,15 @@ pub struct ModifiedRoom {
 /// `keep_price`, in which case every night is requoted; added nights always come from the same quote. The
 /// room's currency never changes.
 ///
-/// A type change unassigns the room if it isn't of the new type (`unassigned: true` in the result); a room
-/// kept assigned across a date change may lose the room to `reservation_room_no_double_booking` (a
-/// `Conflict` naming the booking that holds it, via the savepoint pattern `assign_room` uses) or to a block
-/// over the new stay (`Conflict`, as `assign_room` checks).
+/// A type change drops the room if it isn't of the new type (`unassigned: true` in the result) and then
+/// re-assigns the tightest-fitting free room of the new type, as booking does, or leaves the stay unassigned if
+/// none fits; a stay with no room that changes type gets the same pick (`unassigned` stays false). The result's
+/// `room_id` and the audit entry's `room_id` name the room after the change. A room kept assigned across a date
+/// change may lose the room to `reservation_room_no_double_booking` (a `Conflict` naming the booking that
+/// holds it, via the savepoint pattern `assign_room` uses) or to a block over the new stay (`Conflict`, as
+/// `assign_room` checks). With `room_id`, the stay moves to that room together with the other changes: the
+/// target must be an active room of the new type (`Invalid`), and it is checked for a block (`Conflict`) and,
+/// through the same constraint and savepoint, for another stay over the new nights (`Conflict` naming it).
 pub async fn modify_room(
     tx: &mut Tx,
     tenant: TenantId,
@@ -123,6 +136,7 @@ pub async fn modify_room(
         || new_room_type_id != room_type_id
         || new_adults != adults
         || new_children != children
+        || changes.room_id.is_some_and(|target| Some(target) != room_id)
         || changes.reprice;
     if !changed {
         return Err(invalid("nothing to change".into()));
@@ -140,6 +154,7 @@ pub async fn modify_room(
                 || new_room_type_id != room_type_id
                 || new_adults != adults
                 || new_children != children
+                || changes.room_id.is_some_and(|target| Some(target) != room_id)
             {
                 return Err(ReservationsError::Conflict(
                     "a checked-in room can only have its check-out date changed".into(),
@@ -173,35 +188,78 @@ pub async fn modify_room(
         return Err(invalid(format!("{new_type_code} is no longer sold")));
     }
 
-    // Lock order: this row (already locked above), then the room, before any inventory lock.
+    // Lock order: this row (already locked above), then the current and target rooms in ascending id order,
+    // before any inventory lock.
     let mut new_room_id = room_id;
+    let mut new_room_number: Option<String> = None;
     let mut unassigned = false;
-    if let Some(rid) = room_id {
-        let locked: Option<(String, Uuid)> =
-            sqlx::query_as("select number, room_type_id from room where id = $1 and property_id = $2 for update")
-                .bind(rid)
-                .bind(property)
-                .fetch_optional(&mut **tx)
-                .await?;
-        let (number, assigned_type) = locked.ok_or(ReservationsError::NotFound("room"))?;
-        if assigned_type != new_room_type_id {
-            new_room_id = None;
-            unassigned = true;
-        } else if new_check_in != check_in || new_check_out != check_out {
-            let block: Option<(Date, Date)> = sqlx::query_as(
-                "select lower(period), upper(period) from room_block
-                 where room_id = $1 and released_at is null and period && daterange($2, $3)
-                 order by lower(period)
-                 limit 1",
-            )
-            .bind(rid)
-            .bind(new_check_in)
-            .bind(new_check_out)
-            .fetch_optional(&mut **tx)
-            .await?;
-            if let Some((from, to)) = block {
-                return Err(ReservationsError::Conflict(format!("room {number} is blocked from {from} to {to}")));
+    let mut to_lock: Vec<Uuid> = room_id.into_iter().chain(changes.room_id).collect();
+    to_lock.sort_unstable();
+    to_lock.dedup();
+    let locked: Vec<(Uuid, String, Uuid, bool)> = if to_lock.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as(
+            "select id, number, room_type_id, active from room where id = any($1) and property_id = $2
+             order by id for update",
+        )
+        .bind(&to_lock)
+        .bind(property)
+        .fetch_all(&mut **tx)
+        .await?
+    };
+    let find = |wanted: Uuid| locked.iter().find(|(id, ..)| *id == wanted);
+    let target = match changes.room_id {
+        Some(wanted) => {
+            let (_, number, room_type, active) = find(wanted).ok_or_else(|| invalid("no such room".into()))?;
+            if !active {
+                return Err(invalid(format!("room {number} is inactive")));
             }
+            if *room_type != new_room_type_id {
+                return Err(invalid(format!("room {number} is not a {new_type_code}")));
+            }
+            Some((wanted, number.clone()))
+        }
+        None => None,
+    };
+    if let Some(rid) = room_id {
+        let (_, number, assigned_type, _) = find(rid).ok_or(ReservationsError::NotFound("room"))?;
+        if let Some((target_id, target_number)) = &target {
+            new_room_id = Some(*target_id);
+            new_room_number = Some(target_number.clone());
+            if *target_id != rid || new_check_in != check_in || new_check_out != check_out {
+                check_not_blocked(tx, *target_id, target_number, new_check_in, new_check_out).await?;
+            }
+        } else {
+            new_room_number = Some(number.clone());
+            if *assigned_type != new_room_type_id {
+                new_room_id = None;
+                new_room_number = None;
+                unassigned = true;
+                // The dropped room's replacement is picked here, after the old room's lock and before
+                // `lock_days`, so the order stays reservation_room -> room -> inventory_day. No fit leaves it unassigned.
+                if let Some((picked, picked_number)) =
+                    pick_room(tx, property, new_room_type_id, new_check_in, new_check_out).await?
+                {
+                    new_room_id = Some(picked);
+                    new_room_number = Some(picked_number);
+                }
+            } else if new_check_in != check_in || new_check_out != check_out {
+                check_not_blocked(tx, rid, number, new_check_in, new_check_out).await?;
+            }
+        }
+    } else if let Some((target_id, target_number)) = target {
+        new_room_id = Some(target_id);
+        new_room_number = Some(target_number.clone());
+        check_not_blocked(tx, target_id, &target_number, new_check_in, new_check_out).await?;
+    } else if new_room_type_id != room_type_id {
+        // An unassigned stay changing type gets a room of the new type too, picked at the same point in the
+        // lock order (there is no old room to lock first).
+        if let Some((picked, picked_number)) =
+            pick_room(tx, property, new_room_type_id, new_check_in, new_check_out).await?
+        {
+            new_room_id = Some(picked);
+            new_room_number = Some(picked_number);
         }
     }
 
@@ -353,13 +411,19 @@ pub async fn modify_room(
         "keep_price": changes.keep_price,
         "reprice": changes.reprice,
         "unassigned": unassigned,
+        "room_id": new_room_id,
     });
     audit(tx, tenant, actor, "reservation_room.modified", "reservation_room", id, data).await?;
     let months: BTreeSet<String> = rooms::month_keys(property, check_in, check_out)
         .into_iter()
         .chain(rooms::month_keys(property, new_check_in, new_check_out))
         .collect();
-    let keys = [reservations_key(property), reservation_key(reservation_id)].into_iter().chain(months).collect();
+    let tape: BTreeSet<String> = rooms::tape_keys(property, check_in, check_out)
+        .into_iter()
+        .chain(rooms::tape_keys(property, new_check_in, new_check_out))
+        .collect();
+    let keys =
+        [reservations_key(property), reservation_key(reservation_id)].into_iter().chain(months).chain(tape).collect();
     notify(tx, tenant, property, keys).await?;
 
     Ok(ModifiedRoom {
@@ -370,10 +434,36 @@ pub async fn modify_room(
         check_out: new_check_out,
         room_type_id: new_room_type_id,
         room_id: new_room_id,
+        room_number: new_room_number,
         unassigned,
         total,
         currency,
     })
+}
+
+/// Refuses with `Conflict` if `room` is blocked on any night of `[check_in, check_out)`, naming the first block.
+async fn check_not_blocked(
+    tx: &mut Tx,
+    room: Uuid,
+    number: &str,
+    check_in: Date,
+    check_out: Date,
+) -> Result<(), ReservationsError> {
+    let block: Option<(Date, Date)> = sqlx::query_as(
+        "select lower(period), upper(period) from room_block
+         where room_id = $1 and released_at is null and period && daterange($2, $3)
+         order by lower(period)
+         limit 1",
+    )
+    .bind(room)
+    .bind(check_in)
+    .bind(check_out)
+    .fetch_optional(&mut **tx)
+    .await?;
+    match block {
+        Some((from, to)) => Err(ReservationsError::Conflict(format!("room {number} is blocked from {from} to {to}"))),
+        None => Ok(()),
+    }
 }
 
 fn invalid(message: String) -> ReservationsError {

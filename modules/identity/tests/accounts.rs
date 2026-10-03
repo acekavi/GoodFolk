@@ -1,8 +1,9 @@
 use db::testing::app_pool;
 use db::{Scope, begin};
 use identity::{
-    Grant, Permission, Role, SignupError, SignupInput, allows, authenticate, create_session, default_tenant,
-    delete_session, load_grants, load_profile, resolve_session, signup, switch_tenant,
+    Grant, Permission, Role, SignupError, SignupInput, TenantAccess, allows, authenticate, create_session,
+    default_tenant, delete_session, load_grants, load_profile, resolve_session, resolve_tenant_access, signup,
+    switch_tenant,
 };
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -79,6 +80,42 @@ async fn a_session_can_switch_only_to_tenants_the_user_belongs_to(_: PgPoolOptio
     assert!(!switch_tenant(&pool, &session, stranger_tenant).await.unwrap());
     assert!(switch_tenant(&pool, &session, tenant).await.unwrap());
     assert_eq!(resolve_session(&pool, &token).await.unwrap().unwrap().tenant, Some(tenant));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn tenant_access_is_the_session_membership_and_grants_in_one_query(_: PgPoolOptions, opts: PgConnectOptions) {
+    let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
+    let pool = app_pool(opts, 1).await;
+    let (user, tenant) = signup(&pool, input("owner@example.com", "A")).await.unwrap();
+    let (token, _) = create_session(&pool, user, Some(tenant)).await.unwrap();
+    let session = resolve_session(&pool, &token).await.unwrap().unwrap();
+    let mut tx = begin(&pool, Scope::tenant(tenant)).await.unwrap();
+    let grants = load_grants(&mut tx, user).await.unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(resolve_tenant_access(&pool, &token).await.unwrap(), TenantAccess::Member { session, tenant, grants });
+
+    // The settings it makes end with the query: the one pooled connection carries none to its next user.
+    let leaked: Option<String> =
+        sqlx::query_scalar("select current_setting('app.tenant_id', true)").fetch_one(&pool).await.unwrap();
+    assert!(leaked.is_none_or(|value| value.is_empty()));
+
+    sqlx::query("delete from membership").execute(&superuser).await.unwrap();
+    assert_eq!(resolve_tenant_access(&pool, &token).await.unwrap(), TenantAccess::NotMember);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn tenant_access_refuses_unknown_expired_and_tenantless_sessions(_: PgPoolOptions, opts: PgConnectOptions) {
+    let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
+    let pool = app_pool(opts, 1).await;
+    let (user, tenant) = signup(&pool, input("owner@example.com", "A")).await.unwrap();
+    let (token, _) = create_session(&pool, user, Some(tenant)).await.unwrap();
+    let (tenantless, _) = create_session(&pool, user, None).await.unwrap();
+
+    assert_eq!(resolve_tenant_access(&pool, "made-up-token").await.unwrap(), TenantAccess::NoSession);
+    assert_eq!(resolve_tenant_access(&pool, &tenantless).await.unwrap(), TenantAccess::NoTenant);
+    sqlx::query("update session set expires_at = now() - interval '1 second'").execute(&superuser).await.unwrap();
+    assert_eq!(resolve_tenant_access(&pool, &token).await.unwrap(), TenantAccess::NoSession);
 }
 
 /// Collects log output so a test can check what was logged.

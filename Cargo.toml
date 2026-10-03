@@ -23,6 +23,7 @@ async-graphql-axum = "7.2"
 axum = { version = "0.8", features = ["macros"] }
 axum-extra = { version = "0.12", features = ["cookie"] }
 base64 = "0.23"
+flate2 = "1"
 futures = "0.3"
 garde = { version = "0.23", features = ["derive", "email"] }
 getrandom = "0.3"

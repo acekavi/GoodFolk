@@ -232,6 +232,14 @@ type MealSupplementNode {
 }
 
 """
+Why a stay has no room.
+"""
+enum NeedsRoomReason {
+	OVERBOOKED
+	NO_SINGLE_ROOM
+}
+
+"""
 One way to sell a room type for the stay: a rate plan and meal plan, priced. Unsellable offers carry the
 reasons in `violations`.
 """
@@ -410,6 +418,16 @@ type Query {
 	assigned.
 	"""
 	freeRooms(propertyId: UUID!, roomTypeId: UUID!, checkIn: Date!, checkOut: Date!): [FreeRoomNode!]!
+	"""
+	The stays and blocks of up to 10 rooms of the property that overlap `[from, to)` (at most 42 days),
+	for the tape chart.
+	"""
+	tapeWindow(propertyId: UUID!, roomIds: [UUID!]!, from: Date!, to: Date!): TapeWindowNode!
+	"""
+	Confirmed stays with no room that overlap `[from, to)` (at most 42 days), by arrival, each with why it
+	has none.
+	"""
+	unassignedStays(propertyId: UUID!, from: Date!, to: Date!): [UnassignedStayNode!]!
 }
 
 type QuoteNightNode {
@@ -753,6 +771,53 @@ enum Source {
 	EMAIL
 }
 
+"""
+A room block in one of the tape chart's rooms.
+"""
+type TapeBlockNode {
+	id: UUID!
+	roomId: UUID!
+	start: Date!
+	end: Date!
+	"""
+	The block reason's label.
+	"""
+	reason: String!
+}
+
+"""
+A stay in one of the tape chart's rooms.
+"""
+type TapeStayNode {
+	id: UUID!
+	reservationId: UUID!
+	roomId: UUID!
+	roomTypeId: UUID!
+	start: Date!
+	end: Date!
+	status: RoomStatus!
+	"""
+	The primary guest as "Silva, A.".
+	"""
+	guestName: String!
+	accountName: String
+	"""
+	Send as `If-Match: "<version>"` with the stay's commands.
+	"""
+	version: Int!
+}
+
+type TapeWindowNode {
+	"""
+	By room, then arrival.
+	"""
+	stays: [TapeStayNode!]!
+	"""
+	By room, then start.
+	"""
+	blocks: [TapeBlockNode!]!
+}
+
 type TotalNode {
 	currency: String!
 	amount: Int!
@@ -769,6 +834,27 @@ entities without requiring a central allocating authority.
 * [RFC4122: A Universally Unique Identifier (UUID) URN Namespace](http://tools.ietf.org/html/rfc4122)
 """
 scalar UUID
+
+"""
+A confirmed stay that has no room yet.
+"""
+type UnassignedStayNode {
+	id: UUID!
+	reservationId: UUID!
+	roomTypeId: UUID!
+	start: Date!
+	end: Date!
+	"""
+	Always `CONFIRMED`: check-in needs a room, so only confirmed stays can be unassigned.
+	"""
+	status: RoomStatus!
+	guestName: String!
+	reason: NeedsRoomReason!
+	"""
+	Send as `If-Match: "<version>"` with the stay's commands.
+	"""
+	version: Int!
+}
 
 enum ViolationKind {
 	INVALID_STAY

@@ -1,6 +1,17 @@
-import { expect, type APIRequestContext, type Page } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { expect, type APIRequestContext, type Page, type Request } from '@playwright/test';
 
 export const PASSWORD = 'a long enough password';
+
+const persisted: Record<string, string> = JSON.parse(
+	readFileSync('src/lib/api/gql/persisted-documents.json', 'utf8')
+);
+
+/** Whether `request` runs the GraphQL query `name`. The built app sends a document id, not the query text. */
+export function runsQuery(request: Request, name: string): boolean {
+	const body: { documentId?: string } = JSON.parse(request.postData() ?? '{}');
+	return /^query (\w+)/.exec(persisted[body.documentId ?? ''] ?? '')?.[1] === name;
+}
 
 /** Signs up a new owner with a unique email and waits for the property list. */
 export async function signUp(page: Page): Promise<{ email: string }> {
@@ -63,6 +74,23 @@ export async function post(api: APIRequestContext, path: string, data: object) {
 	return response.json();
 }
 
+/**
+ * Takes a freshly booked room out of the room booking auto-assigned it, for flows that assign by hand or
+ * need an unassigned stay, and returns the room's version after the unassign.
+ */
+export async function unassign(
+	api: APIRequestContext,
+	hotel: Hotel,
+	roomId: string,
+	version: number
+): Promise<number> {
+	const response = await api.post(`${hotel.path}/reservation-rooms/${roomId}/unassign`, {
+		headers: { 'x-goodfolk-csrf': '1', 'If-Match': `"${version}"` }
+	});
+	expect(response.status(), await response.text()).toBe(200);
+	return (await response.json()).version;
+}
+
 /** `YYYY-MM-DD` plus `days`. */
 export function addDays(date: string, days: number): string {
 	const moved = new Date(`${date}T00:00:00Z`);
@@ -104,11 +132,14 @@ export async function bookableHotel(page: Page, rooms: number, nights: number): 
 		max_children: 1,
 		max_occupancy: 3
 	});
-	await post(api, `${path}/rooms/bulk`, {
-		room_type_id: roomType.id,
-		first: 101,
-		last: 100 + rooms
-	});
+	// The API adds at most 200 rooms at a time.
+	for (let first = 101; first <= 100 + rooms; first += 200) {
+		await post(api, `${path}/rooms/bulk`, {
+			room_type_id: roomType.id,
+			first,
+			last: Math.min(first + 199, 100 + rooms)
+		});
+	}
 	const plan = await post(api, `${path}/rate-plans`, {
 		code: 'BAR',
 		name: 'Best available',

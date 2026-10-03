@@ -1,11 +1,25 @@
 mod common;
 
 use common::Hotel;
+use db::{CHANNEL, Event};
 use rooms::{
     Block, BlockKind, BlockReasonChanges, NewBlock, NewBlockReason, Room, RoomChanges, RoomsError, WINDOW_DAYS,
 };
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions};
+use std::time::Duration;
 use uuid::Uuid;
+
+/// The `tape:` keys of `keys`, in order.
+fn tape_only(keys: &[String]) -> Vec<String> {
+    keys.iter().filter(|key| key.starts_with("tape:")).cloned().collect()
+}
+
+/// Waits for the next event on `listener` and returns its keys.
+async fn recv(listener: &mut PgListener) -> Vec<String> {
+    let received = tokio::time::timeout(Duration::from_secs(5), listener.recv()).await.unwrap().unwrap();
+    let event: Event = serde_json::from_str(received.payload()).unwrap();
+    event.keys
+}
 
 impl Hotel {
     /// Blocks `room` for `[business date + from, business date + to)`.
@@ -312,4 +326,34 @@ async fn a_room_is_not_blocked_on_the_nights_a_stay_is_assigned_to_it(_: PgPoolO
     }
     assert!(after.is_ok(), "{after:?}");
     assert_eq!(hotel.out_of_order_days(dlx.id).await, vec![5, 6, 7, 8, 9]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn create_block_announces_the_blocks_range(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let dlx = hotel.room_type("DLX").await;
+    let room = hotel.room(dlx.id, "101").await;
+    let mut listener = PgListener::connect_with(&hotel.pool).await.unwrap();
+    listener.listen(CHANNEL).await.unwrap();
+
+    hotel.block(&room, 2, 5, BlockKind::OutOfOrder).await.unwrap();
+
+    let keys = recv(&mut listener).await;
+    assert_eq!(tape_only(&keys), rooms::tape_keys(hotel.property, hotel.day(2), hotel.day(5)));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn shorten_block_announces_the_blocks_original_range(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let dlx = hotel.room_type("DLX").await;
+    let room = hotel.room(dlx.id, "101").await;
+    let block = hotel.block(&room, 0, 10, BlockKind::OutOfOrder).await.unwrap();
+    let mut listener = PgListener::connect_with(&hotel.pool).await.unwrap();
+    listener.listen(CHANNEL).await.unwrap();
+
+    hotel.shorten(&block, 4).await.unwrap();
+
+    let keys = recv(&mut listener).await;
+    // The whole [0, 10) span the block used to cover, not just [4, 10), the days its counters gave back.
+    assert_eq!(tape_only(&keys), rooms::tape_keys(hotel.property, hotel.day(0), hotel.day(10)));
 }
