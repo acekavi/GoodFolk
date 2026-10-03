@@ -79,7 +79,8 @@ impl TryFrom<Row> for BoardRoom {
 /// `reservation_room_long_stay_idx` (0011) and `room_block_long_idx` (0012): a shorter stay that reaches the
 /// business date arrived at most 31 days before it, and a longer one is found through its own index.
 /// A room with no `room_condition` row counts as clean at version 0. A checked-out stay's range was shrunk at check-out, so it makes the room occupied only while
-/// the business date is before its end and never due out: an early departure leaves the room vacant.
+/// the business date is before its end and never due out: an early departure leaves the room vacant, and it never counts as arriving, even on its
+/// arrival day. A stay that arrived today and is checked in is in the house, not arriving.
 const SQL: &str = "
 select r.id as room_id, r.number, r.floor, r.section_id, r.room_type_id,
        coalesce(c.condition, 'clean') as condition, coalesce(c.version, 0) as condition_version,
@@ -108,8 +109,9 @@ left join lateral (
 ) b on true
 cross join lateral (
   select coalesce(bool_or(s.arrival + s.nights = p.business_date and s.status <> 'checked_out'), false) as departs,
-         coalesce(bool_or(s.arrival = p.business_date), false) as arrives,
-         coalesce(bool_or(s.arrival < p.business_date and s.arrival + s.nights > p.business_date), false) as in_house
+         coalesce(bool_or(s.arrival = p.business_date and s.status not in ('checked_in', 'checked_out')), false) as arrives,
+         coalesce(bool_or((s.arrival < p.business_date or (s.arrival = p.business_date and s.status = 'checked_in'))
+                          and s.arrival + s.nights > p.business_date), false) as in_house
   from reservation_room s
   where s.room_id = r.id and s.status not in ('cancelled', 'no_show')
     and s.arrival <= p.business_date

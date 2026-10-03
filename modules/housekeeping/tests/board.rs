@@ -28,9 +28,12 @@ fn numbers(rooms: &[BoardRoom]) -> Vec<&str> {
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn occupancy_follows_the_stays_of_the_business_date(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;
-    let rooms =
-        hotel.rooms(&["vacant", "stay", "out", "in", "turn", "early", "late", "same", "gone", "past", "next"]).await;
-    let [vacant, stay, out, due_in, turnover, early, late, same, gone, past, next] = rooms[..] else { panic!() };
+    let rooms = hotel
+        .rooms(&["vacant", "stay", "out", "in", "turn", "early", "late", "same", "gone", "past", "next", "day", "here"])
+        .await;
+    let [vacant, stay, out, due_in, turnover, early, late, same, gone, past, next, day, here] = rooms[..] else {
+        panic!()
+    };
 
     hotel.stay(stay, -2, 2, "checked_in").await;
     hotel.stay(out, -1, 0, "checked_in").await;
@@ -47,6 +50,9 @@ async fn occupancy_follows_the_stays_of_the_business_date(_: PgPoolOptions, opts
     hotel.stay(gone, 0, 2, "no_show").await;
     hotel.stay(past, -9, -4, "checked_out").await;
     hotel.stay(next, 1, 3, "confirmed").await;
+    // Checked out on its arrival day, and arrived and checked in today.
+    hotel.stay(day, 0, 1, "checked_out").await;
+    hotel.stay(here, 0, 2, "checked_in").await;
 
     let expected = [
         (vacant, Occupancy::Vacant),
@@ -60,6 +66,8 @@ async fn occupancy_follows_the_stays_of_the_business_date(_: PgPoolOptions, opts
         (gone, Occupancy::Vacant),
         (past, Occupancy::Vacant),
         (next, Occupancy::Vacant),
+        (day, Occupancy::Vacant),
+        (here, Occupancy::StayOver),
     ];
     let board = hotel.board().await;
     for (room, occupancy) in expected {
