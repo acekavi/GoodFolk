@@ -13,12 +13,13 @@
 	import { ApiError, errorMessage } from '$lib/api/problem';
 	import { connectEvents } from '$lib/events';
 	import HkSyncBanner from '$lib/components/HkSyncBanner.svelte';
-	import { sync } from '$lib/hk-sync.svelte';
-	import { loadSnapshot, type Snapshot } from '$lib/hk-snapshot';
+	import { sameOwner } from '$lib/hk-db';
+	import { REMEMBERED_PROPERTY, sync, wipeDevice } from '$lib/hk-sync.svelte';
+	import { snapshots, type Snapshot } from '$lib/hk-snapshot';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
-	import { can, fetchMe } from '$lib/session';
-
-	const REMEMBERED = 'goodfolk.hk.property';
+	import { can, fetchMe, ownerOf } from '$lib/session';
+	import { rest } from '$lib/api/rest';
+	import { toApiError } from '$lib/api/problem';
 
 	let { children } = $props();
 
@@ -32,7 +33,24 @@
 	}));
 
 	$effect(() => {
-		if (me.error instanceof ApiError && me.error.status === 401) void goto(resolve('/login'));
+		if (me.error instanceof ApiError && me.error.status === 401) {
+			sync.owner = null;
+			// Back to where the user was once they have signed in again.
+			const back = encodeURIComponent(page.url.pathname + page.url.search);
+			void goto(resolve(`/login?redirect=${back}`));
+		}
+	});
+
+	// Everything kept on the device belongs to the user the session proves; nobody else's is sent or shown.
+	$effect(() => {
+		if (!me.data) return;
+		const owner = ownerOf(me.data);
+		if (sameOwner(owner, sync.owner)) return;
+		sync.owner = owner;
+		void snapshots.saveOwner(owner);
+	});
+	$effect(() => {
+		if (sync.owner) void sync.replay();
 	});
 
 	const eligible = $derived(
@@ -41,7 +59,7 @@
 
 	function remembered(): string | null {
 		try {
-			return localStorage.getItem(REMEMBERED);
+			return localStorage.getItem(REMEMBERED_PROPERTY);
 		} catch {
 			return null;
 		}
@@ -58,7 +76,7 @@
 	$effect(() => {
 		if (!chosen) return;
 		try {
-			localStorage.setItem(REMEMBERED, chosen.id);
+			localStorage.setItem(REMEMBERED_PROPERTY, chosen.id);
 		} catch {
 			// Remembering is a convenience only.
 		}
@@ -77,8 +95,10 @@
 	// `null` once looked for and not found.
 	let snapshot = $state<Snapshot | null>();
 	$effect(() => {
-		if (!offline || me.data) return;
-		void loadSnapshot(requested ?? remembered()).then((saved) => (snapshot = saved ?? null));
+		if (!offline || me.data || !sync.viewer) return;
+		void snapshots
+			.load(requested ?? remembered(), sync.viewer)
+			.then((saved) => (snapshot = saved ?? null));
 	});
 	$effect(() => {
 		if (offline && !me.data && snapshot && requested !== snapshot.propertyId) {
@@ -91,7 +111,8 @@
 	// Waiting changes are sent when the connection returns and when the app is opened or focused again.
 	onMount(() => {
 		sync.online = navigator.onLine;
-		void sync.replay();
+		void snapshots.loadOwner().then((owner) => (sync.remembered ??= owner ?? null));
+		void sync.refresh();
 		const goOnline = () => {
 			sync.online = true;
 			void sync.replay();
@@ -112,6 +133,41 @@
 		};
 	});
 
+	let leaving = $state(false);
+	let leaveError = $state('');
+
+	/** Signs out, and takes the offline work off the device, warning first about what has not been sent. */
+	async function signOut() {
+		const unsent = sync.waiting.length;
+		if (
+			unsent > 0 &&
+			!confirm(
+				`${unsent} ${unsent === 1 ? 'change hasn' : 'changes haven'}'t been sent and will be lost. Sign out anyway?`
+			)
+		) {
+			return;
+		}
+		leaving = true;
+		leaveError = '';
+		try {
+			const { error: problem, response } = await rest.POST('/api/v1/auth/logout');
+			// 401: the session had already ended, which is what signing out wants.
+			if (!response.ok && response.status !== 401) {
+				leaveError = toApiError(problem, response.status).message;
+				return;
+			}
+			await wipeDevice();
+			client.clear();
+			await goto(resolve('/login'));
+			// Anything the screens saved while they were still mounted.
+			await wipeDevice();
+		} catch (err) {
+			leaveError = errorMessage(err);
+		} finally {
+			leaving = false;
+		}
+	}
+
 	const signedIn = $derived(!!me.data);
 	$effect(() => {
 		if (signedIn && chosen) return connectEvents(client, chosen.id);
@@ -130,7 +186,11 @@
 
 {#snippet shell(id: string, name: string)}
 	<header>
-		<strong>{name}</strong>
+		<div class="title">
+			<strong>{name}</strong>
+			<button type="button" class="signout" disabled={leaving} onclick={signOut}>Sign out</button>
+		</div>
+		{#if leaveError}<p class="error" role="alert">{leaveError}</p>{/if}
 		<nav aria-label="Housekeeping">
 			<a href={resolve(`/hk?property=${id}`)} aria-current={onIssue ? undefined : 'page'}
 				>My rooms</a
@@ -171,6 +231,11 @@
 		{/if}
 	{:else if offline && snapshot}
 		{@render shell(snapshot.propertyId, snapshot.propertyName)}
+	{:else if offline && sync.remembered === null}
+		<main>
+			<h1>You are offline</h1>
+			<p role="alert">Sign in to see your rooms.</p>
+		</main>
 	{:else if offline && snapshot === null}
 		<main>
 			<h1>You are offline</h1>
@@ -206,6 +271,15 @@
 		padding: 0.5rem 1rem 0;
 		border-bottom: 1px solid var(--border);
 		background: var(--surface);
+	}
+	.title {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+	}
+	.signout {
+		min-height: 48px;
+		padding: 0 1rem;
 	}
 	nav {
 		display: grid;

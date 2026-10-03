@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import type { QueueItem } from '$lib/hk-queue';
 	import { sync } from '$lib/hk-sync.svelte';
@@ -19,7 +20,7 @@
 		enabled: !!propertyId
 	}));
 
-	const here = $derived(sync.items.filter((item) => item.propertyId === propertyId));
+	const here = $derived(sync.mine.filter((item) => item.propertyId === propertyId));
 	const waiting = $derived(here.filter((item) => item.status === 'waiting'));
 	const conflicts = $derived(here.filter((item) => item.status === 'conflict'));
 
@@ -61,7 +62,7 @@
 	}
 </script>
 
-{#if !sync.online || waiting.length > 0 || conflicts.length > 0 || sync.signIn}
+{#if !sync.online || waiting.length > 0 || conflicts.length > 0 || sync.signIn || sync.others.length > 0}
 	<section class="banner" aria-label="Connection">
 		{#if !sync.online}
 			<p role="status">
@@ -77,7 +78,17 @@
 		{#if sync.signIn}
 			<p role="alert">
 				Your session has expired.
-				<a href={resolve('/login')}>Sign in</a> to send the waiting changes.
+				<a
+					href={resolve(
+						`/login?redirect=${encodeURIComponent(page.url.pathname + page.url.search)}`
+					)}>Sign in</a
+				> to send the waiting changes.
+			</p>
+		{/if}
+		{#if sync.others.length > 0}
+			<p role="status">
+				Saved by another user on this device: {sync.others.length} (not sent).
+				<button type="button" onclick={() => sync.discardOthers()}>Discard all</button>
 			</p>
 		{/if}
 		{#if conflicts.length > 0}

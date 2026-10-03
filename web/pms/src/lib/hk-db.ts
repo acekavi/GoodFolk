@@ -32,3 +32,18 @@ export async function withStore<T>(
 		request.onerror = () => reject(request.error);
 	});
 }
+
+/** Whose data this is: everything the app keeps on the device is tagged with one, and shown or sent only to them. */
+export interface Owner {
+	userId: string;
+	tenantId: string;
+}
+
+export function sameOwner(a: Owner | null | undefined, b: Owner | null | undefined): boolean {
+	return !!a && !!b && a.userId === b.userId && a.tenantId === b.tenantId;
+}
+
+/** Empties one object store. */
+export async function clearStore(store: 'queue' | 'kv'): Promise<void> {
+	await withStore(store, 'readwrite', (objects) => objects.clear());
+}

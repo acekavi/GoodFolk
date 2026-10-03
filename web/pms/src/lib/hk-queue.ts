@@ -1,6 +1,6 @@
 import { ApiError } from './api/problem';
 import { idempotencyKey } from './api/rest';
-import { withStore } from './hk-db';
+import { clearStore, sameOwner, withStore, type Owner } from './hk-db';
 import type { Condition, Severity } from './housekeeping';
 
 /**
@@ -9,7 +9,7 @@ import type { Condition, Severity } from './housekeeping';
  *
  * - A `412`, `409`, `403` (or any other client error) is that item's own conflict: it stays, marked, for the
  *   housekeeper to retry or discard, and replay carries on with the rest.
- * - A network error or a server error stops replay with the queue intact; a `401` stops it with a request to
+ * - A network error (a `TypeError` from `fetch`) or a server error stops replay with the queue intact; a `401` stops it with a request to
  *   sign in. Nothing is lost either way.
  * - An issue carries an `Idempotency-Key` from the moment it is queued, so a replay that reached the server
  *   twice creates it once.
@@ -18,6 +18,8 @@ import type { Condition, Severity } from './housekeeping';
 interface Base {
 	/** Assigned by the store; ascending, so it is also the queue order. */
 	id: number;
+	/** Who made the change; replay sends it only under this user. */
+	owner: Owner;
 	propertyId: string;
 	roomId: string;
 	roomNumber: string;
@@ -63,6 +65,7 @@ export interface Store {
 	add(item: WithoutId<QueueItem>): Promise<QueueItem>;
 	put(item: QueueItem): Promise<void>;
 	remove(id: number): Promise<void>;
+	clear(): Promise<void>;
 }
 
 export interface ReplayResult {
@@ -86,7 +89,8 @@ export function idbStore(): Store {
 		},
 		remove: async (id) => {
 			await withStore('queue', 'readwrite', (store) => store.delete(id));
-		}
+		},
+		clear: () => clearStore('queue')
 	};
 }
 
@@ -106,6 +110,9 @@ export function memoryStore(): Store {
 		},
 		remove: async (id) => {
 			items.delete(id);
+		},
+		clear: async () => {
+			items.clear();
 		}
 	};
 }
@@ -114,18 +121,21 @@ type Outcome = 'conflict' | 'network' | 'sign-in';
 
 /** What a failed send means for the queue. */
 function classify(error: unknown): { outcome: Outcome; status?: number } {
-	if (!(error instanceof ApiError)) return { outcome: 'network' };
+	// `fetch` rejects with a TypeError when there is no connection.
+	if (error instanceof TypeError) return { outcome: 'network' };
+	// Anything else is not a connection problem: retrying would only fail again, so it is a conflict.
+	if (!(error instanceof ApiError)) return { outcome: 'conflict' };
 	const { status } = error;
 	if (status === 401) return { outcome: 'sign-in' };
 	// The first attempt of this very key is still running: wait, do not call it a conflict.
 	if (status === 409 && error.problem.detail?.includes('in progress'))
 		return { outcome: 'network' };
-	if (status === 429 || status >= 500) return { outcome: 'network' };
+	if (status === 408 || status === 429 || status >= 500) return { outcome: 'network' };
 	return { outcome: 'conflict', status };
 }
 
 const sameRoom = (a: QueueItem, b: QueueItem) =>
-	a.propertyId === b.propertyId && a.roomId === b.roomId;
+	sameOwner(a.owner, b.owner) && a.propertyId === b.propertyId && a.roomId === b.roomId;
 
 export function createQueue(store: Store) {
 	let running: Promise<ReplayResult> | undefined;
@@ -166,14 +176,24 @@ export function createQueue(store: Store) {
 		}
 	}
 
-	async function run(send: Send): Promise<ReplayResult> {
+	async function run(send: Send, owner: Owner): Promise<ReplayResult> {
 		for (;;) {
-			const item = (await store.all()).find((candidate) => candidate.status === 'waiting');
+			const item = (await store.all()).find(
+				(candidate) => candidate.status === 'waiting' && sameOwner(candidate.owner, owner)
+			);
 			if (!item) return { stopped: null };
+			// Nothing to base it on (what it was queued behind is gone): it cannot be sent.
+			if (item.kind === 'condition' && item.version === null) {
+				await store.put({ ...item, status: 'conflict' });
+				await cascade(item, undefined);
+				continue;
+			}
 			try {
 				const sent = await send(item);
-				await store.remove(item.id);
+				// The next change learns its version before this one leaves the queue, so a crash between
+				// the two writes cannot strand it without one.
 				await passVersion(item, sent?.version);
+				await store.remove(item.id);
 			} catch (error) {
 				const { outcome, status } = classify(error);
 				if (outcome !== 'conflict') return { stopped: outcome };
@@ -186,9 +206,9 @@ export function createQueue(store: Store) {
 	return {
 		enqueue,
 		items: () => store.all(),
-		/** Sends every waiting item in order. A second call while one runs shares it. */
-		replay(send: Send): Promise<ReplayResult> {
-			running ??= run(send).finally(() => {
+		/** Sends `owner`'s waiting items in order, never anyone else's. A second call while one runs shares it. */
+		replay(send: Send, owner: Owner): Promise<ReplayResult> {
+			running ??= run(send, owner).finally(() => {
 				running = undefined;
 			});
 			return running;
@@ -226,7 +246,15 @@ export function createQueue(store: Store) {
 				}
 			}
 		},
-		discard: (id: number) => store.remove(id)
+		discard: (id: number) => store.remove(id),
+		/** Drops every item that is not `owner`'s. */
+		async discardOthers(owner: Owner) {
+			for (const item of await store.all()) {
+				if (!sameOwner(item.owner, owner)) await store.remove(item.id);
+			}
+		},
+		/** Empties the queue, for sign-out. */
+		clear: () => store.clear()
 	};
 }
 

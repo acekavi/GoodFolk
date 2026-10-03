@@ -10,6 +10,11 @@ export async function fetchMe(): Promise<Profile> {
 	return data;
 }
 
+/** Who the profile is, for tagging what the housekeeper app keeps on the device. */
+export function ownerOf(profile: Profile): { userId: string; tenantId: string } {
+	return { userId: profile.user_id, tenantId: profile.current_tenant ?? '' };
+}
+
 /** UI hint only; the API enforces permissions. */
 export function isTenantOwner(profile: Profile): boolean {
 	return profile.grants.some((grant) => grant.role === 'owner' && grant.property_id == null);

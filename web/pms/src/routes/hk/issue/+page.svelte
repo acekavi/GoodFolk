@@ -8,9 +8,9 @@
 	import { ApiError, errorMessage } from '$lib/api/problem';
 	import { formKeys } from '$lib/api/rest';
 	import { sync } from '$lib/hk-sync.svelte';
-	import { loadChoices, loadSnapshot, saveChoices, type RoomChoice } from '$lib/hk-snapshot';
+	import { snapshots, type RoomChoice } from '$lib/hk-snapshot';
 	import { fetchBoard, hkKey, issuesKey, reportIssue, type Severity } from '$lib/housekeeping';
-	import { can, fetchMe } from '$lib/session';
+	import { can, fetchMe, ownerOf } from '$lib/session';
 
 	const SEVERITIES: Severity[] = ['LOW', 'MEDIUM', 'HIGH'];
 	const SEVERITY_LABELS: Record<Severity, string> = { LOW: 'Low', MEDIUM: 'Medium', HIGH: 'High' };
@@ -28,16 +28,22 @@
 	// The rooms to choose from without a connection: those saved when this page last had them, else My rooms.
 	let saved = $state<RoomChoice[]>([]);
 	$effect(() => {
+		const viewer = sync.viewer;
+		if (!viewer) {
+			saved = [];
+			return;
+		}
 		void (async () => {
-			const choices = await loadChoices(propertyId);
-			const snapshot = choices ? undefined : await loadSnapshot(propertyId || null);
+			const choices = await snapshots.loadChoices(propertyId, viewer);
+			const snapshot = choices ? undefined : await snapshots.load(propertyId || null, viewer);
 			saved = choices ?? snapshot?.rooms.map(({ roomId, number }) => ({ roomId, number })) ?? [];
 		})();
 	});
 	$effect(() => {
-		if (board.data && propertyId) {
-			void saveChoices(
+		if (board.data && propertyId && me.data) {
+			void snapshots.saveChoices(
 				propertyId,
+				ownerOf(me.data),
 				board.data.map(({ roomId, number }) => ({ roomId, number }))
 			);
 		}

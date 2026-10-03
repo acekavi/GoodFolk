@@ -9,7 +9,7 @@
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { ApiError, errorMessage } from '$lib/api/problem';
 	import { sync } from '$lib/hk-sync.svelte';
-	import { loadSnapshot, saveSnapshot, type Snapshot } from '$lib/hk-snapshot';
+	import { snapshots, type Snapshot } from '$lib/hk-snapshot';
 	import {
 		conditionLabel,
 		fetchMyRooms,
@@ -24,7 +24,7 @@
 	} from '$lib/housekeeping';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
 	import { fetchRoomTypes, roomTypesKey } from '$lib/rooms';
-	import { can, fetchMe } from '$lib/session';
+	import { can, fetchMe, ownerOf } from '$lib/session';
 
 	const propertyId = $derived(page.url.searchParams.get('property') ?? '');
 	const client = useQueryClient();
@@ -49,30 +49,43 @@
 	// The last list read online, kept on the device: it is what shows when there is no connection.
 	let saved = $state<Snapshot>();
 	$effect(() => {
-		void loadSnapshot(propertyId || null).then((snapshot) => (saved = snapshot));
+		const viewer = sync.viewer;
+		saved = undefined;
+		if (viewer) void snapshots.load(propertyId || null, viewer).then((found) => (saved = found));
 	});
 	$effect(() => {
-		const name = properties.data?.find((property) => property.id === propertyId)?.name;
-		if (!rooms.data || !roomTypes.data || !me.data || !name) return;
-		const snapshot: Snapshot = {
+		const property = properties.data?.find((candidate) => candidate.id === propertyId);
+		if (!rooms.data || !roomTypes.data || !me.data || !property) return;
+		void snapshots.save({
+			owner: ownerOf(me.data),
 			propertyId,
-			propertyName: name,
+			propertyName: property.name,
+			businessDate: property.businessDate,
 			savedAt: rooms.dataUpdatedAt,
 			supervise,
 			rooms: rooms.data,
 			typeCodes: roomTypes.data.map((type) => [type.id, type.code])
-		};
-		void saveSnapshot(snapshot);
+		});
 	});
-	const stale = $derived(!rooms.data && (!sync.online || !!rooms.error) ? saved : undefined);
+	// Saved data stands in when there is no connection or the API cannot be reached, never after a 401.
+	const signedOut = $derived(rooms.error instanceof ApiError && rooms.error.status === 401);
+	const stale = $derived(
+		!rooms.data && !signedOut && (!sync.online || !!rooms.error) ? saved : undefined
+	);
 	const list = $derived(rooms.data ?? stale?.rooms);
 	const typeCode = $derived(
 		new Map(roomTypes.data ? roomTypes.data.map((type) => [type.id, type.code]) : stale?.typeCodes)
 	);
 	const asSupervisor = $derived(me.data ? supervise : (stale?.supervise ?? false));
-	const takenAt = $derived(stale?.savedAt ?? (sync.online ? 0 : rooms.dataUpdatedAt));
-	const clock = (time: number) =>
-		new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+	// Shown whenever the list is not a fresh read, with its date, and a warning when it is for an earlier day.
+	const takenAt = $derived(
+		stale?.savedAt ?? (!sync.online || rooms.error ? rooms.dataUpdatedAt : 0)
+	);
+	const earlierDay = $derived(
+		!!stale && stale.businessDate < new Date().toLocaleDateString('en-CA')
+	);
+	const taken = (time: number) =>
+		`${new Date(time).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })} at ${new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
 
 	/** The rooms as they will be once what waits has been sent: a queued change shows at once. */
 	const queued = $derived(
@@ -127,7 +140,9 @@
 <h1>My rooms</h1>
 {#if message}<p class="error" role="alert">{message}</p>{/if}
 {#if takenAt}
-	<p class="hint" role="status">Showing the list as it was at {clock(takenAt)}.</p>
+	<p class="hint" role="status">
+		Showing the list as it was on {taken(takenAt)}.{earlierDay ? " This is yesterday's list." : ''}
+	</p>
 {/if}
 {#if !list && rooms.isPending}
 	<p>Loading…</p>
