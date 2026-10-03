@@ -3,16 +3,20 @@
 	multi-select for bulk condition and assignment, Copy yesterday, and the open issues. Supervisor actions need
 	`housekeepingSupervise`; the server enforces it. Tiles are one button each and read from the three cached
 	lists, so a tile makes no query of its own. The issue badge counts the open issues list (`issues:`), the rest
-	of the tile comes from the board (`hk:`), so either event refreshes what it feeds.
+	of the tile comes from the board (`hk:`), so either event refreshes what it feeds. Tiles have a fixed size and
+	only the rows in view (plus overscan) are in the DOM; the grid holds the full height, and one tile at a time
+	takes Tab (a roving tab stop) and the arrow, Home, End and Page keys.
 -->
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
+	import { onMount, tick, untrack } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { errorMessage } from '$lib/api/problem';
 	import { formKeys } from '$lib/api/rest';
+	import { revealRow, visibleRows } from '$lib/grid';
 	import BlockDialog from '$lib/components/BlockDialog.svelte';
 	import {
 		assignRooms,
@@ -29,6 +33,7 @@
 		initials,
 		issueCounts,
 		issuesKey,
+		moveTile,
 		nextConditions,
 		NO_FLOOR,
 		OCCUPANCIES,
@@ -57,6 +62,15 @@
 		TURNOVER: '⇄'
 	};
 	const SEVERITIES: Severity[] = ['LOW', 'MEDIUM', 'HIGH'];
+
+	// Tile geometry, in rems so that it follows the user's text size: a tile is `TILE` high and at least
+	// `TILE_MIN` wide, with `GAP` between tiles, and the rows have a fixed pitch for the scroll maths.
+	const TILE = 4.3;
+	const TILE_MIN = 7.5;
+	const GAP = 0.4;
+	const OVERSCAN = 1;
+	const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+	const pitch = (TILE + GAP) * rem;
 
 	const propertyId = $derived(page.params.property ?? '');
 	const client = useQueryClient();
@@ -112,6 +126,74 @@
 	);
 	const sections = $derived(rooms.data?.sections ?? []);
 
+	// The issues, with the report form's option for every room, are below the board: they are made once the
+	// board has painted, so they do not add to the time before it shows.
+	let belowFold = $state(false);
+	onMount(() => {
+		const list = () => (belowFold = true);
+		if ('requestIdleCallback' in window) {
+			const id = requestIdleCallback(list, { timeout: 1000 });
+			return () => cancelIdleCallback(id);
+		}
+		const id = setTimeout(list, 100);
+		return () => clearTimeout(id);
+	});
+
+	let grid = $state<HTMLDivElement>();
+	let scrollTop = $state(0);
+	let width = $state(0);
+	let height = $state(0);
+	// The tile that takes Tab, by room id so that a refetch or a filter does not move it, kept rendered
+	// wherever the board is scrolled.
+	let activeId = $state<string>();
+	const columns = $derived(Math.max(1, Math.floor((width / rem + GAP) / (TILE_MIN + GAP))));
+	const rowCount = $derived(Math.ceil(shown.length / columns));
+	const active = $derived(
+		Math.max(
+			0,
+			shown.findIndex((room) => room.roomId === activeId)
+		)
+	);
+	const range = $derived(visibleRows(scrollTop, height, pitch, rowCount, OVERSCAN));
+	const rendered = $derived.by(() => {
+		const inView = Array.from({ length: range.end - range.start }, (_, i) => range.start + i);
+		const row = Math.floor(active / columns);
+		return shown.length > 0 && (row < range.start || row >= range.end) ? [row, ...inView] : inView;
+	});
+
+	// A new filter is a new list: back to its top.
+	$effect(() => {
+		void filtersToSearchParams(filters).toString();
+		untrack(() => {
+			scrollTop = 0;
+			if (grid) grid.scrollTop = 0;
+		});
+	});
+
+	async function keydown(event: KeyboardEvent, index: number) {
+		if (!grid || event.altKey || event.metaKey) return;
+		const next = moveTile(
+			index,
+			event.key,
+			event.ctrlKey,
+			columns,
+			shown.length,
+			Math.max(1, Math.floor(height / pitch) - 1)
+		);
+		if (next === null) return;
+		event.preventDefault();
+		activeId = shown[next].roomId;
+		grid.scrollTop = revealRow(
+			Math.floor(next / columns),
+			grid.scrollTop,
+			height - GAP * rem,
+			pitch
+		);
+		scrollTop = grid.scrollTop;
+		await tick();
+		grid.querySelector<HTMLElement>(`[data-index="${next}"]`)?.focus({ preventScroll: true });
+	}
+
 	const selected = new SvelteSet<string>();
 	let anchor: string | undefined;
 	let status = $state('');
@@ -138,6 +220,7 @@
 
 	function pick(roomId: string, shift: boolean) {
 		if (!supervise) return;
+		activeId = roomId;
 		if (shift) {
 			for (const id of rangeBetween(
 				shown.map((room) => room.roomId),
@@ -249,6 +332,25 @@
 		}
 	});
 </script>
+
+{#snippet tileBody(room: BoardRoom)}
+	{@const issueCount = counts.get(room.roomId)}
+	<span class="number">{room.number}</span>
+	<span class="condition" aria-hidden="true">{conditionLabel(room.condition)}</span>
+	<span class="occupancy" aria-hidden="true"
+		>{OCCUPANCY_GLYPH[room.occupancy]} {occupancyLabel(room.occupancy)}</span
+	>
+	<!-- Most tiles carry none of these three; one block decides for all of them. -->
+	{#if room.assignee || issueCount || room.blockKind}
+		{#if room.assignee}<span class="who" aria-hidden="true"
+				>{initials(room.assignee.displayName)}</span
+			>{/if}
+		{#if issueCount}<span class="badge" aria-hidden="true">{issueCount}</span>{/if}
+		{#if room.blockKind}<span class="block" aria-hidden="true"
+				>{room.blockKind === 'OUT_OF_ORDER' ? 'OOO' : 'OOS'}</span
+			>{/if}
+	{/if}
+{/snippet}
 
 <div class="title">
 	<h1>Housekeeping</h1>
@@ -389,95 +491,119 @@
 	{:else if shown.length === 0}
 		<p>No rooms match the filters.</p>
 	{:else}
-		<div class="grid" role="group" aria-label="Rooms">
-			{#each shown as room (room.roomId)}
-				<!-- Only a supervisor can act on a tile; for everyone else it is a plain element with the same label. -->
-				<svelte:element
-					this={supervise ? 'button' : 'div'}
-					type={supervise ? 'button' : undefined}
-					role={supervise ? undefined : 'img'}
-					class="tile"
-					data-condition={room.condition}
-					aria-label={tileName(room)}
-					aria-pressed={supervise ? selected.has(room.roomId) : undefined}
-					onclick={supervise ? (event: MouseEvent) => pick(room.roomId, event.shiftKey) : undefined}
-				>
-					<span class="number">{room.number}</span>
-					<span class="condition" aria-hidden="true">{conditionLabel(room.condition)}</span>
-					<span class="occupancy" aria-hidden="true"
-						>{OCCUPANCY_GLYPH[room.occupancy]} {occupancyLabel(room.occupancy)}</span
-					>
-					{#if room.assignee}<span class="who" aria-hidden="true"
-							>{initials(room.assignee.displayName)}</span
-						>{/if}
-					{#if counts.get(room.roomId)}<span class="badge" aria-hidden="true"
-							>{counts.get(room.roomId)}</span
-						>{/if}
-					{#if room.blockKind}<span class="block" aria-hidden="true"
-							>{room.blockKind === 'OUT_OF_ORDER' ? 'OOO' : 'OOS'}</span
-						>{/if}
-				</svelte:element>
-			{/each}
+		<div
+			class="grid"
+			role="grid"
+			aria-label="Rooms"
+			aria-rowcount={rowCount}
+			aria-colcount={columns}
+			bind:this={grid}
+			bind:clientWidth={width}
+			bind:clientHeight={height}
+			onscroll={() => (scrollTop = grid?.scrollTop ?? 0)}
+			style:--columns={columns}
+			style:--tile="{TILE}rem"
+			style:--gap="{GAP}rem"
+		>
+			<!-- Nothing is drawn until the grid has a width: its first measure comes before the first paint. -->
+			<div class="canvas" role="rowgroup" style:height="{rowCount * pitch - GAP * rem}px">
+				{#each width > 0 ? rendered : [] as row (row)}
+					<div class="row" role="row" aria-rowindex={row + 1} style:top="{row * pitch}px">
+						{#each shown.slice(row * columns, (row + 1) * columns) as room, column (room.roomId)}
+							{@const index = row * columns + column}
+							<div role="gridcell" aria-colindex={column + 1}>
+								<!-- Only a supervisor can act on a tile; for everyone else it is a plain element with the same label. -->
+								{#if supervise}
+									<button
+										type="button"
+										class="tile"
+										data-index={index}
+										data-condition={room.condition}
+										aria-label={tileName(room)}
+										aria-pressed={selected.has(room.roomId)}
+										tabindex={index === active ? 0 : -1}
+										onclick={(event) => pick(room.roomId, event.shiftKey)}
+										onkeydown={(event) => keydown(event, index)}
+									>
+										{@render tileBody(room)}
+									</button>
+								{:else}
+									<div
+										class="tile"
+										role="img"
+										data-condition={room.condition}
+										aria-label={tileName(room)}
+									>
+										{@render tileBody(room)}
+									</div>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				{/each}
+			</div>
 		</div>
 	{/if}
 
-	<section class="issues" aria-labelledby="issues-title">
-		<h2 id="issues-title">Issues</h2>
-		{#if mayReport}
-			<form class="inline-form" aria-label="Report an issue" onsubmit={submitReport}>
-				<label>
-					Room
-					<select required bind:value={report.roomId}>
-						<option value="" disabled>Choose a room</option>
-						{#each all as room (room.roomId)}
-							<option value={room.roomId}>{room.number}</option>
-						{/each}
-					</select>
-				</label>
-				<label>
-					Severity
-					<select bind:value={report.severity}>
-						{#each SEVERITIES as severity (severity)}
-							<option value={severity}>{severity.toLowerCase()}</option>
-						{/each}
-					</select>
-				</label>
-				<label>
-					Description
-					<input required maxlength="500" bind:value={report.description} />
-				</label>
-				<button disabled={pending.has('report')}>Report issue</button>
-			</form>
-		{/if}
-		{#if issues.data.length === 0}
-			<p class="hint">No open issues.</p>
-		{:else}
-			<ul class="issue-list" aria-label="Open issues">
-				{#each issues.data as issue (issue.id)}
-					<li>
-						<strong>Room {numberOf.get(issue.roomId) ?? '?'}</strong>
-						<span class="severity" data-severity={issue.severity}
-							>{issue.severity.toLowerCase()}</span
-						>
-						<span class="description">{issue.description}</span>
-						{#if supervise}
-							<button
-								type="button"
-								class="secondary"
-								disabled={pending.has(issue.id)}
-								onclick={() => resolveOne(issue)}>Resolve</button
+	{#if belowFold}
+		<section class="issues" aria-labelledby="issues-title">
+			<h2 id="issues-title">Issues</h2>
+			{#if mayReport}
+				<form class="inline-form" aria-label="Report an issue" onsubmit={submitReport}>
+					<label>
+						Room
+						<select required bind:value={report.roomId}>
+							<option value="" disabled>Choose a room</option>
+							{#each all as room (room.roomId)}
+								<option value={room.roomId}>{room.number}</option>
+							{/each}
+						</select>
+					</label>
+					<label>
+						Severity
+						<select bind:value={report.severity}>
+							{#each SEVERITIES as severity (severity)}
+								<option value={severity}>{severity.toLowerCase()}</option>
+							{/each}
+						</select>
+					</label>
+					<label>
+						Description
+						<input required maxlength="500" bind:value={report.description} />
+					</label>
+					<button disabled={pending.has('report')}>Report issue</button>
+				</form>
+			{/if}
+			{#if issues.data.length === 0}
+				<p class="hint">No open issues.</p>
+			{:else}
+				<ul class="issue-list" aria-label="Open issues">
+					{#each issues.data as issue (issue.id)}
+						<li>
+							<strong>Room {numberOf.get(issue.roomId) ?? '?'}</strong>
+							<span class="severity" data-severity={issue.severity}
+								>{issue.severity.toLowerCase()}</span
 							>
-							{#if mayBlock && issue.severity === 'HIGH'}
-								<button type="button" class="secondary" onclick={() => blockRoom(issue)}
-									>Block room</button
+							<span class="description">{issue.description}</span>
+							{#if supervise}
+								<button
+									type="button"
+									class="secondary"
+									disabled={pending.has(issue.id)}
+									onclick={() => resolveOne(issue)}>Resolve</button
 								>
+								{#if mayBlock && issue.severity === 'HIGH'}
+									<button type="button" class="secondary" onclick={() => blockRoom(issue)}
+										>Block room</button
+									>
+								{/if}
 							{/if}
-						{/if}
-					</li>
-				{/each}
-			</ul>
-		{/if}
-	</section>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		</section>
+	{/if}
 {/if}
 
 {#if mayBlock && rooms.data && roomTypes.data && businessDate}
@@ -520,11 +646,29 @@
 		align-items: center;
 	}
 	.grid {
+		overflow: auto;
+		max-height: 70vh;
+	}
+	.canvas {
+		position: relative;
+	}
+	.row {
+		position: absolute;
+		left: 0;
+		right: 0;
+		height: var(--tile);
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
-		gap: 0.4rem;
+		grid-template-columns: repeat(var(--columns), 1fr);
+		gap: var(--gap);
+	}
+	[role='gridcell'] {
+		min-width: 0;
 	}
 	.tile {
+		width: 100%;
+		height: var(--tile);
+		box-sizing: border-box;
+		align-content: start;
 		--tint: var(--muted);
 		position: relative;
 		display: grid;

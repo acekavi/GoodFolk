@@ -37,7 +37,7 @@ async function board(page: Page) {
 
 const tile = (page: Page, number: string) =>
 	page
-		.getByRole('group', { name: 'Rooms' })
+		.getByRole('grid', { name: 'Rooms' })
 		.getByRole('button', { name: new RegExp(`^${number},`) });
 
 /** Signs a staff user with `role` in, in a context of its own, on the board of `propertyId`. */
@@ -58,7 +58,7 @@ async function staffOnBoard(
 test('the board shows every room with its condition and occupancy', async ({ page }) => {
 	await board(page);
 
-	await expect(page.getByRole('group', { name: 'Rooms' }).getByRole('button')).toHaveCount(4);
+	await expect(page.getByRole('grid', { name: 'Rooms' }).getByRole('button')).toHaveCount(4);
 	await expect(tile(page, '101')).toHaveAttribute('aria-label', /Due in/);
 	await expect(tile(page, '102')).toHaveAttribute('aria-label', /Vacant/);
 	await expect(tile(page, '101')).toHaveAttribute(
@@ -73,7 +73,7 @@ test('the filters are kept in the URL', async ({ page }) => {
 	await page.getByLabel('Occupancy').selectOption('DUE_IN');
 
 	await expect(page).toHaveURL(/occupancy=due_in/);
-	await expect(page.getByRole('group', { name: 'Rooms' }).getByRole('button')).toHaveCount(1);
+	await expect(page.getByRole('grid', { name: 'Rooms' }).getByRole('button')).toHaveCount(1);
 	await page.reload();
 	await expect(page.getByLabel('Occupancy')).toHaveValue('DUE_IN');
 	await expect(tile(page, '101')).toBeVisible();
@@ -132,7 +132,7 @@ test('rooms are assigned to a housekeeper, and Copy yesterday brings over the pr
 	await expect(tile(page, '102').getByText('KS')).toBeVisible();
 
 	await page.getByLabel('Housekeeper').selectOption({ label: 'Kumari Silva' });
-	await expect(page.getByRole('group', { name: 'Rooms' }).getByRole('button')).toHaveCount(1);
+	await expect(page.getByRole('grid', { name: 'Rooms' }).getByRole('button')).toHaveCount(1);
 	await page.getByLabel('Housekeeper').selectOption('');
 
 	await page.getByRole('button', { name: 'Copy yesterday' }).click();
@@ -198,8 +198,8 @@ test('a front desk user sees the board and can report, but has no supervisor act
 	const { page: desk, context } = await staffOnBoard(browser, email, 'front_desk', propertyId);
 
 	// Without supervise, tiles are plain labelled elements, not buttons.
-	await expect(desk.getByRole('group', { name: 'Rooms' }).getByRole('img')).toHaveCount(4);
-	await expect(desk.getByRole('group', { name: 'Rooms' }).getByRole('button')).toHaveCount(0);
+	await expect(desk.getByRole('grid', { name: 'Rooms' }).getByRole('img')).toHaveCount(4);
+	await expect(desk.getByRole('grid', { name: 'Rooms' }).getByRole('button')).toHaveCount(0);
 	await expect(desk.getByRole('form', { name: 'Report an issue' })).toBeVisible();
 	await expect(desk.getByRole('button', { name: 'Copy yesterday' })).toHaveCount(0);
 	await expect(desk.getByRole('toolbar', { name: 'Selected rooms' })).toHaveCount(0);
@@ -339,4 +339,71 @@ test('another user blocking a room shows its marker on the board without a reloa
 
 	await expect(tile(page, '103')).toHaveAttribute('aria-label', /out of (order|service)/);
 	await manager.context.close();
+});
+
+test.describe('a board of 500 rooms draws only the rooms in view', () => {
+	test.describe.configure({ mode: 'serial' });
+	const ROOMS = 500;
+	let page: Page;
+
+	test.beforeAll(async ({ browser }) => {
+		test.setTimeout(120_000);
+		page = await browser.newPage();
+		await signUp(page);
+		await createProperty(page, 'HKL');
+		await bookableHotel(page, ROOMS, 2);
+		const propertyId = page.url().split('/p/')[1];
+		await page.goto(`/p/${propertyId}/housekeeping`);
+		await expect(page.getByRole('heading', { name: 'Housekeeping' })).toBeVisible();
+	});
+
+	test.afterAll(async () => {
+		await page.close();
+	});
+
+	const selection = () => page.getByRole('status').filter({ hasText: 'selected' });
+
+	test('the DOM holds far fewer than 500 tiles, and the grid reports all of them', async () => {
+		const grid = page.getByRole('grid', { name: 'Rooms' });
+		await expect(tile(page, '101')).toBeVisible();
+		const mounted = await grid.getByRole('button').count();
+		expect(mounted).toBeGreaterThan(0);
+		expect(mounted).toBeLessThan(150);
+		expect(Number(await grid.getAttribute('aria-rowcount'))).toBe(
+			Math.ceil(ROOMS / Number(await grid.getAttribute('aria-colcount')))
+		);
+		// One tab stop for the whole grid.
+		await expect(grid.locator('button[tabindex="0"]')).toHaveCount(1);
+		await expect(page.getByText(`${ROOMS} of ${ROOMS} rooms`)).toBeVisible();
+	});
+
+	test('the keyboard reaches a tile far down: it mounts and takes focus', async () => {
+		await expect(tile(page, '600')).toHaveCount(0);
+		await tile(page, '101').focus();
+		await page.keyboard.press('Control+End');
+		await expect(tile(page, '600')).toBeFocused();
+		await expect(tile(page, '101')).toHaveCount(0);
+		await page.keyboard.press('ArrowLeft');
+		await expect(tile(page, '599')).toBeFocused();
+		await page.keyboard.press('Control+Home');
+		await expect(tile(page, '101')).toBeFocused();
+		await page.keyboard.press('PageDown');
+		await expect(page.locator('.tile:focus')).not.toHaveAttribute('aria-label', /^101,/);
+		await page.keyboard.press('Space');
+		await expect(selection()).toHaveText('1 selected');
+		await page.keyboard.press('Space');
+		await expect(selection()).toHaveText('0 selected');
+	});
+
+	test('a shift-click selects the range across rows that are not mounted', async () => {
+		await tile(page, '101').scrollIntoViewIfNeeded();
+		await tile(page, '101').click();
+		await tile(page, '101').focus();
+		await page.keyboard.press('Control+End');
+		await expect(tile(page, '600')).toBeFocused();
+		await tile(page, '600').click({ modifiers: ['Shift'] });
+		await expect(selection()).toHaveText(`${ROOMS} selected`);
+		await page.getByRole('button', { name: 'Clear' }).click();
+		await expect(selection()).toHaveText('0 selected');
+	});
 });

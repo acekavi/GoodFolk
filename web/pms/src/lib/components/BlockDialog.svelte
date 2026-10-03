@@ -129,7 +129,8 @@
 		<label>
 			Room
 			<select required bind:value={form.roomId}>
-				{#each activeRooms as room (room.id)}
+				<!-- A property can have hundreds of rooms: their options are made when the dialog opens, not with the page. -->
+				{#each open ? activeRooms : [] as room (room.id)}
 					<option value={room.id}>{room.number} · {typeCode.get(room.roomTypeId)}</option>
 				{/each}
 			</select>

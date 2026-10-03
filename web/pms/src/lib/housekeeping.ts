@@ -227,6 +227,42 @@ export function rangeBetween(order: readonly string[], from: string | undefined,
 	return order.slice(Math.min(a, b), Math.max(a, b) + 1);
 }
 
+/**
+ * The index of the tile a navigation key moves to in a board of `count` tiles laid out `columns` to a row, or
+ * `null` if the key does not navigate. Arrows move by tile and row, Home and End go to the ends of the row
+ * (Ctrl to the ends of the board), PageUp and PageDown move `pageRows` rows. The last row may be short.
+ */
+export function moveTile(
+	index: number,
+	key: string,
+	ctrl: boolean,
+	columns: number,
+	count: number,
+	pageRows: number
+): number | null {
+	const clamp = (value: number) => Math.max(0, Math.min(count - 1, value));
+	switch (key) {
+		case 'ArrowLeft':
+			return clamp(index - 1);
+		case 'ArrowRight':
+			return clamp(index + 1);
+		case 'ArrowUp':
+			return clamp(index - columns);
+		case 'ArrowDown':
+			return clamp(index + columns);
+		case 'PageUp':
+			return clamp(index - pageRows * columns);
+		case 'PageDown':
+			return clamp(index + pageRows * columns);
+		case 'Home':
+			return ctrl ? 0 : index - (index % columns);
+		case 'End':
+			return ctrl ? count - 1 : clamp(index - (index % columns) + columns - 1);
+		default:
+			return null;
+	}
+}
+
 /** The button for moving a room to `condition`: a housekeeper's two steps, or a supervisor's "Set …". */
 export function stepLabel(condition: Condition): string {
 	if (condition === 'CLEANING') return 'Start cleaning';

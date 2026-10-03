@@ -9,6 +9,7 @@ import {
 	issueCounts,
 	isConditionRefusal,
 	issuesKey,
+	moveTile,
 	nextConditions,
 	NO_FILTERS,
 	occupancyLabel,
@@ -123,6 +124,28 @@ describe('selection helpers', () => {
 				['b', 1]
 			])
 		);
+	});
+
+	it('moves between tiles by arrows, pages and row ends, staying on the board', () => {
+		// 10 tiles, 4 to a row: the last row holds two.
+		const move = (index: number, key: string, ctrl = false) => moveTile(index, key, ctrl, 4, 10, 2);
+		expect(move(5, 'ArrowLeft')).toBe(4);
+		expect(move(5, 'ArrowRight')).toBe(6);
+		expect(move(5, 'ArrowUp')).toBe(1);
+		expect(move(5, 'ArrowDown')).toBe(9);
+		expect(move(7, 'ArrowDown')).toBe(9);
+		expect(move(0, 'ArrowLeft')).toBe(0);
+		expect(move(9, 'ArrowRight')).toBe(9);
+		expect(move(1, 'ArrowUp')).toBe(0);
+		expect(move(6, 'Home')).toBe(4);
+		expect(move(5, 'End')).toBe(7);
+		expect(move(9, 'End')).toBe(9);
+		expect(move(8, 'End')).toBe(9);
+		expect(move(6, 'Home', true)).toBe(0);
+		expect(move(1, 'End', true)).toBe(9);
+		expect(move(1, 'PageDown')).toBe(9);
+		expect(move(9, 'PageUp')).toBe(1);
+		expect(move(1, 'a')).toBeNull();
 	});
 
 	it('spans a shift-click range in either direction', () => {

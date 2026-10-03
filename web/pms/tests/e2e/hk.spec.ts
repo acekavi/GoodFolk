@@ -83,10 +83,10 @@ test('a housekeeper sees only their rooms and takes one from dirty to clean', as
 
 	await page.goto(`/p/${propertyId}/housekeeping`);
 	await expect(
-		page.getByRole('group', { name: 'Rooms' }).getByRole('button', { name: /^101, Clean,/ })
+		page.getByRole('grid', { name: 'Rooms' }).getByRole('button', { name: /^101, Clean,/ })
 	).toBeVisible();
 	await expect(
-		page.getByRole('group', { name: 'Rooms' }).getByRole('button', { name: /^102, Dirty,/ })
+		page.getByRole('grid', { name: 'Rooms' }).getByRole('button', { name: /^102, Dirty,/ })
 	).toBeVisible();
 	await context.close();
 });
@@ -99,7 +99,7 @@ test('a change made on the board shows in My rooms without a reload', async ({ p
 	await expect(first).toContainText('Dirty');
 
 	await page.goto(`/p/${propertyId}/housekeeping`);
-	await page.getByRole('group', { name: 'Rooms' }).getByRole('button', { name: /^101,/ }).click();
+	await page.getByRole('grid', { name: 'Rooms' }).getByRole('button', { name: /^101,/ }).click();
 	await page.getByLabel('Set condition…').selectOption('INSPECTED');
 
 	await expect(first).toContainText('Inspected');
@@ -119,10 +119,10 @@ test('a stale change is refused with a clear message and the list refreshes', as
 	await expect(first).toContainText('Dirty');
 
 	await page.goto(`/p/${propertyId}/housekeeping`);
-	await page.getByRole('group', { name: 'Rooms' }).getByRole('button', { name: /^101,/ }).click();
+	await page.getByRole('grid', { name: 'Rooms' }).getByRole('button', { name: /^101,/ }).click();
 	await page.getByLabel('Set condition…').selectOption('INSPECTED');
 	await expect(
-		page.getByRole('group', { name: 'Rooms' }).getByRole('button', { name: /^101, Inspected,/ })
+		page.getByRole('grid', { name: 'Rooms' }).getByRole('button', { name: /^101, Inspected,/ })
 	).toBeVisible();
 
 	await first.getByRole('button', { name: 'Start cleaning' }).click();
@@ -237,7 +237,7 @@ test('Start then Done offline is sent in order when the connection returns', asy
 
 	await page.goto(`/p/${propertyId}/housekeeping`);
 	await expect(
-		page.getByRole('group', { name: 'Rooms' }).getByRole('button', { name: /^101, Clean,/ })
+		page.getByRole('grid', { name: 'Rooms' }).getByRole('button', { name: /^101, Clean,/ })
 	).toBeVisible();
 	await context.close();
 });
@@ -258,10 +258,10 @@ test('a change made stale while offline is a visible conflict, and the rest stil
 	await rooms.nth(1).getByRole('button', { name: 'Start cleaning' }).click();
 
 	await page.goto(`/p/${propertyId}/housekeeping`);
-	await page.getByRole('group', { name: 'Rooms' }).getByRole('button', { name: /^101,/ }).click();
+	await page.getByRole('grid', { name: 'Rooms' }).getByRole('button', { name: /^101,/ }).click();
 	await page.getByLabel('Set condition…').selectOption('INSPECTED');
 	await expect(
-		page.getByRole('group', { name: 'Rooms' }).getByRole('button', { name: /^101, Inspected,/ })
+		page.getByRole('grid', { name: 'Rooms' }).getByRole('button', { name: /^101, Inspected,/ })
 	).toBeVisible();
 
 	await context.setOffline(false);
@@ -557,7 +557,7 @@ test("A's waiting changes are not sent when another window has signed in as B", 
 	await expect(one.getByText('Saved by another user on this device: 1 (not sent).')).toBeVisible();
 	await page.goto(`/p/${propertyId}/housekeeping`);
 	await expect(
-		page.getByRole('group', { name: 'Rooms' }).getByRole('button', { name: /^101, Dirty,/ })
+		page.getByRole('grid', { name: 'Rooms' }).getByRole('button', { name: /^101, Dirty,/ })
 	).toBeVisible();
 	await context.close();
 });
