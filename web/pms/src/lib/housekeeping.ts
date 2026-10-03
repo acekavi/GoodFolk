@@ -1,5 +1,5 @@
 import { graphql } from './api/gql';
-import type { HousekeepingBoardQuery, RoomIssuesQuery } from './api/gql/graphql';
+import type { HousekeepingBoardQuery, MyRoomsQuery, RoomIssuesQuery } from './api/gql/graphql';
 import { query } from './api/graphql';
 import { idempotencyKey, ifMatch, rest, unwrap } from './api/rest';
 
@@ -18,6 +18,21 @@ export const HousekeepingBoardDocument = graphql(`
 				userId
 				displayName
 			}
+			blockKind
+		}
+	}
+`);
+
+export const MyRoomsDocument = graphql(`
+	query MyRooms($propertyId: UUID!) {
+		myRooms(propertyId: $propertyId) {
+			roomId
+			number
+			roomTypeId
+			condition
+			conditionVersion
+			occupancy
+			openIssues
 			blockKind
 		}
 	}
@@ -47,6 +62,7 @@ export const RoomIssuesDocument = graphql(`
 `);
 
 export type BoardRoom = HousekeepingBoardQuery['housekeepingBoard'][number];
+export type MyRoom = MyRoomsQuery['myRooms'][number];
 export type RoomIssue = RoomIssuesQuery['roomIssues'][number];
 export type Condition = BoardRoom['condition'];
 export type Occupancy = BoardRoom['occupancy'];
@@ -57,6 +73,11 @@ export function hkKey(propertyId: string) {
 	return [`hk:${propertyId}`] as const;
 }
 
+/** The housekeeper app's list, under the property's `hk:` key so its events refresh it. */
+export function myRoomsKey(propertyId: string) {
+	return [`hk:${propertyId}`, 'mine'] as const;
+}
+
 /** Room issues change under `issues:<property>`. */
 export function issuesKey(propertyId: string) {
 	return [`issues:${propertyId}`] as const;
@@ -64,6 +85,10 @@ export function issuesKey(propertyId: string) {
 
 export async function fetchBoard(propertyId: string, signal?: AbortSignal) {
 	return (await query(HousekeepingBoardDocument, { propertyId }, signal)).housekeepingBoard;
+}
+
+export async function fetchMyRooms(propertyId: string, signal?: AbortSignal) {
+	return (await query(MyRoomsDocument, { propertyId }, signal)).myRooms;
 }
 
 export async function fetchHousekeepers(propertyId: string, signal?: AbortSignal) {
@@ -200,6 +225,28 @@ export function rangeBetween(order: readonly string[], from: string | undefined,
 	if (b < 0) return [];
 	if (a < 0) return [to];
 	return order.slice(Math.min(a, b), Math.max(a, b) + 1);
+}
+
+/** The button for moving a room to `condition`: a housekeeper's two steps, or a supervisor's "Set …". */
+export function stepLabel(condition: Condition): string {
+	if (condition === 'CLEANING') return 'Start cleaning';
+	if (condition === 'CLEAN') return 'Done';
+	return `Set ${conditionLabel(condition).toLowerCase()}`;
+}
+
+/** Sets one room's condition; `version` is the condition version it was read at, sent as If-Match. */
+export async function setCondition(
+	propertyId: string,
+	roomId: string,
+	condition: Condition,
+	version: number
+) {
+	return unwrap(
+		await rest.PUT('/api/v1/properties/{property}/rooms/{room}/condition', {
+			params: { path: { property: propertyId, room: roomId }, header: ifMatch(version) },
+			body: { condition: condition.toLowerCase() as Lowercase<Condition> }
+		})
+	);
 }
 
 /** Sets the condition of every room in `roomIds` (at most 500); the key makes a retry safe. */

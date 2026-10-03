@@ -13,6 +13,7 @@ import {
 	NO_FILTERS,
 	occupancyLabel,
 	rangeBetween,
+	stepLabel,
 	type BoardRoom,
 	type RoomIssue
 } from './housekeeping';
@@ -147,5 +148,14 @@ describe('isConditionRefusal', () => {
 			isConditionRefusal(409, 'only a confirmed stay can check in; this one is Cancelled')
 		).toBe(false);
 		expect(isConditionRefusal(409, undefined)).toBe(false);
+	});
+});
+
+describe('stepLabel', () => {
+	it("names a housekeeper's two steps and a supervisor's other settings", () => {
+		expect(stepLabel('CLEANING')).toBe('Start cleaning');
+		expect(stepLabel('CLEAN')).toBe('Done');
+		expect(stepLabel('INSPECTED')).toBe('Set inspected');
+		expect(stepLabel('DIRTY')).toBe('Set dirty');
 	});
 });

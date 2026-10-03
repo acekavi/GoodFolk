@@ -164,6 +164,13 @@ export type HousekeepingBoardQueryVariables = Exact<{
 
 export type HousekeepingBoardQuery = { housekeepingBoard: Array<{ roomId: string, number: string, floor: string | null, sectionId: string | null, roomTypeId: string, condition: RoomCondition, conditionVersion: number, occupancy: Occupancy, blockKind: BlockKind | null, assignee: { userId: string, displayName: string } | null }> };
 
+export type MyRoomsQueryVariables = Exact<{
+  propertyId: string;
+}>;
+
+
+export type MyRoomsQuery = { myRooms: Array<{ roomId: string, number: string, roomTypeId: string, condition: RoomCondition, conditionVersion: number, occupancy: Occupancy, openIssues: number, blockKind: BlockKind | null }> };
+
 export type HousekeepersQueryVariables = Exact<{
   propertyId: string;
 }>;
@@ -384,6 +391,20 @@ export const HousekeepingBoardDocument = new TypedDocumentString(`
   }
 }
     `, {"hash":"sha256:e25aabd727d0b329661f3d73dbcda4a8211c9786700938b2730d837fedc83137"}) as unknown as TypedDocumentString<HousekeepingBoardQuery, HousekeepingBoardQueryVariables>;
+export const MyRoomsDocument = new TypedDocumentString(`
+    query MyRooms($propertyId: UUID!) {
+  myRooms(propertyId: $propertyId) {
+    roomId
+    number
+    roomTypeId
+    condition
+    conditionVersion
+    occupancy
+    openIssues
+    blockKind
+  }
+}
+    `, {"hash":"sha256:543a1e3deb517d6d94cb8c461265a37d9e224306e59939fd482655a78f9cd2ca"}) as unknown as TypedDocumentString<MyRoomsQuery, MyRoomsQueryVariables>;
 export const HousekeepersDocument = new TypedDocumentString(`
     query Housekeepers($propertyId: UUID!) {
   housekeepers(propertyId: $propertyId) {
