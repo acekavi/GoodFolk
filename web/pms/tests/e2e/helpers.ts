@@ -242,6 +242,8 @@ export async function signIn(page: Page, email: string): Promise<void> {
 	await page.getByLabel('Email').fill(email);
 	await page.getByLabel('Password').fill(PASSWORD);
 	await page.getByRole('button', { name: 'Sign in' }).click();
+	// The sign-in's own navigation to the property list has finished, so a `goto` that follows cannot race it.
+	await page.waitForURL((url) => url.pathname === '/');
 	await expect(page.getByRole('heading', { name: 'Properties' })).toBeVisible();
 }
 
@@ -297,4 +299,46 @@ export function rollBusinessDate(tenant: string, property: string): void {
 		env: { ...process.env, URL: owner, TENANT: tenant, PROPERTY: property },
 		stdio: 'pipe'
 	});
+}
+
+/** Creates a property of `rooms` rooms, all dirty, `assigned` of them to a housekeeper; the owner's page stays on it. */
+export async function housekeepingProperty(
+	page: Page,
+	code: string,
+	rooms: number,
+	assigned: number
+) {
+	const { email } = await signUp(page);
+	await createProperty(page, code);
+	await bookableHotel(page, rooms, 2);
+	const propertyId = page.url().split('/p/')[1];
+	// Rooms added through the API get their condition row, so the board shows every one of them.
+	const { email: housekeeper } = addStaff(email, 'housekeeping', 'Kumari Silva');
+	const graphql = await page.request.post('/graphql', {
+		headers: { 'x-goodfolk-csrf': '1' },
+		data: {
+			query: `{ rooms(propertyId: "${propertyId}") { id number } housekeepers(propertyId: "${propertyId}") { userId } }`
+		}
+	});
+	const data = (await graphql.json()).data as {
+		rooms: { id: string; number: string }[];
+		housekeepers: { userId: string }[];
+	};
+	expect(data.rooms).toHaveLength(rooms);
+	const path = `/api/v1/properties/${propertyId}`;
+	const dirtied = await page.request.post(`${path}/rooms/conditions`, {
+		headers: { 'x-goodfolk-csrf': '1', 'Idempotency-Key': crypto.randomUUID() },
+		data: { room_ids: data.rooms.map((room) => room.id), condition: 'dirty' }
+	});
+	expect(dirtied.status(), await dirtied.text()).toBe(200);
+	const assignment = await page.request.put(`${path}/hk-assignments`, {
+		headers: { 'x-goodfolk-csrf': '1' },
+		data: {
+			assignments: data.rooms
+				.slice(0, assigned)
+				.map((room) => ({ room_id: room.id, user_id: data.housekeepers[0].userId }))
+		}
+	});
+	expect(assignment.status(), await assignment.text()).toBe(204);
+	return { propertyId, housekeeper };
 }

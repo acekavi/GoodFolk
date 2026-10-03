@@ -5,7 +5,8 @@
 	lists, so a tile makes no query of its own. The issue badge counts the open issues list (`issues:`), the rest
 	of the tile comes from the board (`hk:`), so either event refreshes what it feeds. Tiles have a fixed size and
 	only the rows in view (plus overscan) are in the DOM; the grid holds the full height, and one tile at a time
-	takes Tab (a roving tab stop) and the arrow, Home, End and Page keys.
+	takes Tab (a roving tab stop) and the arrow, Home, End and Page keys. For everyone else the same markup is a
+	read-only table whose scroller takes Tab itself, so the keyboard can scroll it.
 -->
 <script lang="ts">
 	import { goto } from '$app/navigation';
@@ -491,9 +492,12 @@
 	{:else if shown.length === 0}
 		<p>No rooms match the filters.</p>
 	{:else}
+		<!-- A scrollable region must take focus for the keyboard to scroll it. -->
+		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 		<div
 			class="grid"
-			role="grid"
+			role={supervise ? 'grid' : 'table'}
+			tabindex={supervise ? undefined : 0}
 			aria-label="Rooms"
 			aria-rowcount={rowCount}
 			aria-colcount={columns}
@@ -511,7 +515,7 @@
 					<div class="row" role="row" aria-rowindex={row + 1} style:top="{row * pitch}px">
 						{#each shown.slice(row * columns, (row + 1) * columns) as room, column (room.roomId)}
 							{@const index = row * columns + column}
-							<div role="gridcell" aria-colindex={column + 1}>
+							<div role={supervise ? 'gridcell' : 'cell'} aria-colindex={column + 1}>
 								<!-- Only a supervisor can act on a tile; for everyone else it is a plain element with the same label. -->
 								{#if supervise}
 									<button

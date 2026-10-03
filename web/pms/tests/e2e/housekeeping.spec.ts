@@ -197,9 +197,16 @@ test('a front desk user sees the board and can report, but has no supervisor act
 	const { email, propertyId } = await board(page);
 	const { page: desk, context } = await staffOnBoard(browser, email, 'front_desk', propertyId);
 
-	// Without supervise, tiles are plain labelled elements, not buttons.
-	await expect(desk.getByRole('grid', { name: 'Rooms' }).getByRole('img')).toHaveCount(4);
-	await expect(desk.getByRole('grid', { name: 'Rooms' }).getByRole('button')).toHaveCount(0);
+	// Without supervise, tiles are plain labelled elements, not buttons, in a read-only table whose scroller
+	// the keyboard can reach to scroll it.
+	const rooms = desk.getByRole('table', { name: 'Rooms' });
+	await expect(desk.getByRole('grid', { name: 'Rooms' })).toHaveCount(0);
+	await expect(rooms.getByRole('img')).toHaveCount(4);
+	await expect(rooms.getByRole('cell')).toHaveCount(4);
+	await expect(rooms.getByRole('button')).toHaveCount(0);
+	await expect(rooms).toHaveAttribute('tabindex', '0');
+	await rooms.focus();
+	await expect(rooms).toBeFocused();
 	await expect(desk.getByRole('form', { name: 'Report an issue' })).toBeVisible();
 	await expect(desk.getByRole('button', { name: 'Copy yesterday' })).toHaveCount(0);
 	await expect(desk.getByRole('toolbar', { name: 'Selected rooms' })).toHaveCount(0);
