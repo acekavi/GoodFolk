@@ -8,6 +8,8 @@
 	import { page } from '$app/state';
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { ApiError, errorMessage } from '$lib/api/problem';
+	import { sync } from '$lib/hk-sync.svelte';
+	import { loadSnapshot, saveSnapshot, type Snapshot } from '$lib/hk-snapshot';
 	import {
 		conditionLabel,
 		fetchMyRooms,
@@ -20,6 +22,7 @@
 		type Condition,
 		type MyRoom
 	} from '$lib/housekeeping';
+	import { fetchProperties, propertiesKey } from '$lib/properties';
 	import { fetchRoomTypes, roomTypesKey } from '$lib/rooms';
 	import { can, fetchMe } from '$lib/session';
 
@@ -37,7 +40,48 @@
 		queryFn: ({ signal }) => fetchRoomTypes(propertyId, signal),
 		enabled: !!propertyId
 	}));
-	const typeCode = $derived(new Map((roomTypes.data ?? []).map((type) => [type.id, type.code])));
+	const properties = createQuery(() => ({
+		queryKey: propertiesKey,
+		queryFn: ({ signal }) => fetchProperties(signal),
+		enabled: !!me.data?.current_tenant
+	}));
+
+	// The last list read online, kept on the device: it is what shows when there is no connection.
+	let saved = $state<Snapshot>();
+	$effect(() => {
+		void loadSnapshot(propertyId || null).then((snapshot) => (saved = snapshot));
+	});
+	$effect(() => {
+		const name = properties.data?.find((property) => property.id === propertyId)?.name;
+		if (!rooms.data || !roomTypes.data || !me.data || !name) return;
+		const snapshot: Snapshot = {
+			propertyId,
+			propertyName: name,
+			savedAt: rooms.dataUpdatedAt,
+			supervise,
+			rooms: rooms.data,
+			typeCodes: roomTypes.data.map((type) => [type.id, type.code])
+		};
+		void saveSnapshot(snapshot);
+	});
+	const stale = $derived(!rooms.data && (!sync.online || !!rooms.error) ? saved : undefined);
+	const list = $derived(rooms.data ?? stale?.rooms);
+	const typeCode = $derived(
+		new Map(roomTypes.data ? roomTypes.data.map((type) => [type.id, type.code]) : stale?.typeCodes)
+	);
+	const asSupervisor = $derived(me.data ? supervise : (stale?.supervise ?? false));
+	const takenAt = $derived(stale?.savedAt ?? (sync.online ? 0 : rooms.dataUpdatedAt));
+	const clock = (time: number) =>
+		new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+	/** The rooms as they will be once what waits has been sent: a queued change shows at once. */
+	const queued = $derived(
+		new Map(
+			sync.waiting
+				.filter((item) => item.kind === 'condition' && item.propertyId === propertyId)
+				.map((item) => [item.roomId, item])
+		)
+	);
 
 	let busyRoom = $state('');
 	let message = $state('');
@@ -55,29 +99,51 @@
 	async function move(room: MyRoom, condition: Condition) {
 		busyRoom = room.roomId;
 		message = '';
+		const behind = queued.has(room.roomId);
+		const queue = () =>
+			sync.enqueue({
+				kind: 'condition',
+				propertyId,
+				roomId: room.roomId,
+				roomNumber: room.number,
+				condition,
+				// Behind a waiting change on this room, it is based on what that change produces.
+				version: behind ? null : room.conditionVersion
+			});
 		try {
-			await setCondition(propertyId, room.roomId, condition, room.conditionVersion);
+			// Changes are sent in the order they were made, so nothing jumps ahead of what waits.
+			if (!sync.online || sync.waiting.length > 0) await queue();
+			else await setCondition(propertyId, room.roomId, condition, room.conditionVersion);
 		} catch (err) {
-			message = `Room ${room.number}: ${explain(err)}`;
+			if (err instanceof ApiError) message = `Room ${room.number}: ${explain(err)}`;
+			else await queue();
 		} finally {
 			busyRoom = '';
-			await client.invalidateQueries({ queryKey: hkKey(propertyId) });
+			if (sync.online) await client.invalidateQueries({ queryKey: hkKey(propertyId) });
 		}
 	}
 </script>
 
 <h1>My rooms</h1>
 {#if message}<p class="error" role="alert">{message}</p>{/if}
-{#if rooms.isPending}
+{#if takenAt}
+	<p class="hint" role="status">Showing the list as it was at {clock(takenAt)}.</p>
+{/if}
+{#if !list && rooms.isPending}
 	<p>Loading…</p>
-{:else if rooms.error}
+{:else if !list && rooms.error}
 	<p class="error" role="alert">{errorMessage(rooms.error)}</p>
 	<button onclick={() => rooms.refetch()}>Retry</button>
-{:else if rooms.data.length === 0}
+{:else if !list}
+	<p>Loading…</p>
+{:else if list.length === 0}
 	<p class="hint">No rooms are assigned to you today.</p>
 {:else}
 	<ul aria-label="Rooms">
-		{#each rooms.data as room (room.roomId)}
+		{#each list as listed (listed.roomId)}
+			{@const waiting = queued.get(listed.roomId)}
+			{@const room =
+				waiting?.kind === 'condition' ? { ...listed, condition: waiting.condition } : listed}
 			<li data-condition={room.condition}>
 				<div class="head">
 					<strong class="number">{room.number}</strong>
@@ -88,13 +154,14 @@
 					<span>{occupancyLabel(room.occupancy)}</span>
 					{#if room.blockKind}<span>Blocked</span>{/if}
 					{#if room.openIssues > 0}<span>{room.openIssues} open issues</span>{/if}
+					{#if waiting}<span>Waiting to be sent</span>{/if}
 				</p>
 				<div class="steps">
-					{#each nextConditions(supervise ? 'supervisor' : 'housekeeper', room.condition) as condition (condition)}
+					{#each nextConditions(asSupervisor ? 'supervisor' : 'housekeeper', room.condition) as condition (condition)}
 						<button
 							type="button"
 							disabled={busyRoom === room.roomId}
-							onclick={() => move(room, condition)}
+							onclick={() => move(listed, condition)}
 						>
 							{stepLabel(condition)}
 						</button>

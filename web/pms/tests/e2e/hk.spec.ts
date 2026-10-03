@@ -177,3 +177,144 @@ test('a signed-out visitor is sent to sign in', async ({ page }) => {
 	await page.goto('/hk');
 	await expect(page).toHaveURL(/\/login/);
 });
+
+/** Waits until the page's service worker is active, so the app shell is cached and works offline. */
+async function shellCached(page: Page) {
+	await page.evaluate(() => navigator.serviceWorker.ready.then(() => undefined));
+}
+
+test('the housekeeper app is installable', async ({ page }) => {
+	await page.goto('/hk');
+	await expect(page.locator('link[rel="manifest"]')).toHaveAttribute(
+		'href',
+		'/manifest.webmanifest'
+	);
+	const response = await page.request.get('/manifest.webmanifest');
+	const manifest = await response.json();
+	expect(manifest).toMatchObject({ start_url: '/hk', display: 'standalone' });
+	for (const icon of manifest.icons) {
+		expect((await page.request.get(icon.src)).headers()['content-type']).toContain('image/png');
+	}
+	expect(manifest.icons.map((icon: { sizes: string }) => icon.sizes)).toEqual(
+		expect.arrayContaining(['192x192', '512x512'])
+	);
+	expect(manifest.icons.some((icon: { purpose?: string }) => icon.purpose === 'maskable')).toBe(
+		true
+	);
+});
+
+test('Start then Done offline is sent in order when the connection returns', async ({
+	page,
+	browser
+}) => {
+	const { housekeeper, propertyId } = await hotelWithHousekeeper(page);
+	const { page: hk, context } = await phone(browser, housekeeper);
+	await hk.goto(`/hk?property=${propertyId}`);
+	const first = hk.getByRole('list', { name: 'Rooms' }).getByRole('listitem').first();
+	await expect(first).toContainText('Dirty');
+	await shellCached(hk);
+
+	await context.setOffline(true);
+	await expect(hk.getByText('You are offline.')).toBeVisible();
+	await first.getByRole('button', { name: 'Start cleaning' }).click();
+	await first.getByRole('button', { name: 'Done' }).click();
+	await expect(first).toContainText('Clean');
+	await expect(first).toContainText('Waiting to be sent');
+	await expect(hk.getByText('2 changes waiting to be sent.')).toBeVisible();
+
+	await context.setOffline(false);
+	await expect(hk.getByRole('region', { name: 'Connection' })).toHaveCount(0);
+	await expect(first).not.toContainText('Waiting to be sent');
+	await expect(first).toContainText('Clean');
+
+	await page.goto(`/p/${propertyId}/housekeeping`);
+	await expect(
+		page.getByRole('group', { name: 'Rooms' }).getByRole('button', { name: /^101, Clean,/ })
+	).toBeVisible();
+	await context.close();
+});
+
+test('a change made stale while offline is a visible conflict, and the rest still go', async ({
+	page,
+	browser
+}) => {
+	const { housekeeper, propertyId } = await hotelWithHousekeeper(page);
+	const { page: hk, context } = await phone(browser, housekeeper);
+	await hk.goto(`/hk?property=${propertyId}`);
+	const rooms = hk.getByRole('list', { name: 'Rooms' }).getByRole('listitem');
+	await expect(rooms.first()).toContainText('Dirty');
+	await shellCached(hk);
+
+	await context.setOffline(true);
+	await rooms.nth(0).getByRole('button', { name: 'Start cleaning' }).click();
+	await rooms.nth(1).getByRole('button', { name: 'Start cleaning' }).click();
+
+	await page.goto(`/p/${propertyId}/housekeeping`);
+	await page.getByRole('group', { name: 'Rooms' }).getByRole('button', { name: /^101,/ }).click();
+	await page.getByLabel('Set condition…').selectOption('INSPECTED');
+	await expect(
+		page.getByRole('group', { name: 'Rooms' }).getByRole('button', { name: /^101, Inspected,/ })
+	).toBeVisible();
+
+	await context.setOffline(false);
+	const conflicts = hk.getByRole('list', { name: 'Conflicts' });
+	await expect(conflicts).toContainText(
+		'Room 101 was changed to Inspected by someone else; your Start cleaning was not applied.'
+	);
+	// Room 102 went through even though 101, ahead of it, did not.
+	await expect(rooms.nth(1)).toContainText('Cleaning');
+	await expect(rooms.nth(1)).not.toContainText('Waiting to be sent');
+
+	await conflicts.getByRole('button', { name: 'Discard' }).click();
+	await expect(hk.getByRole('region', { name: 'Connection' })).toHaveCount(0);
+	await expect(rooms.nth(0)).toContainText('Inspected');
+	await context.close();
+});
+
+test('a report made offline is sent once when the connection returns', async ({
+	page,
+	browser
+}) => {
+	const { housekeeper, propertyId } = await hotelWithHousekeeper(page);
+	const { page: hk, context } = await phone(browser, housekeeper);
+	await hk.goto(`/hk/issue?property=${propertyId}`);
+	const form = hk.getByRole('form', { name: 'Report an issue' });
+	await expect(form.getByLabel('Room').locator('option')).toHaveCount(5);
+	await shellCached(hk);
+
+	await context.setOffline(true);
+	await form.getByLabel('Room').selectOption({ label: '103' });
+	await form.getByLabel('Description').fill('Cracked window');
+	await form.getByRole('button', { name: 'Report issue' }).click();
+	await expect(hk.getByText('saved on this device')).toBeVisible();
+	await expect(hk.getByText('1 change waiting to be sent.')).toBeVisible();
+
+	await context.setOffline(false);
+	await expect(hk.getByRole('region', { name: 'Connection' })).toHaveCount(0);
+
+	await page.goto(`/p/${propertyId}/housekeeping`);
+	const issue = page.getByRole('list', { name: 'Open issues' }).getByRole('listitem');
+	await expect(issue).toHaveCount(1);
+	await expect(issue).toContainText('Cracked window');
+	await context.close();
+});
+
+test('a reload offline still shows My rooms, labelled with its time', async ({ page, browser }) => {
+	const { housekeeper, propertyId } = await hotelWithHousekeeper(page);
+	const { page: hk, context } = await phone(browser, housekeeper);
+	await hk.goto(`/hk?property=${propertyId}`);
+	await expect(hk.getByRole('list', { name: 'Rooms' }).getByRole('listitem')).toHaveCount(2);
+	await shellCached(hk);
+	// Let the saved list reach IndexedDB before the connection goes.
+	await hk.waitForTimeout(500);
+
+	await context.setOffline(true);
+	await hk.goto('/hk');
+	const rooms = hk.getByRole('list', { name: 'Rooms' }).getByRole('listitem');
+	await expect(rooms).toHaveCount(2);
+	await expect(rooms.nth(0)).toContainText('101');
+	await expect(rooms.nth(0)).toContainText('DLX');
+	await expect(hk.getByText(/^Showing the list as it was at /)).toBeVisible();
+	await expect(hk.getByText('You are offline.')).toBeVisible();
+	await context.close();
+});

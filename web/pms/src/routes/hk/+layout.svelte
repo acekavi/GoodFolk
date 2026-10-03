@@ -5,12 +5,16 @@
 	property is told so. The property stays in the URL, so every link and a reload keep it.
 -->
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { ApiError, errorMessage } from '$lib/api/problem';
 	import { connectEvents } from '$lib/events';
+	import HkSyncBanner from '$lib/components/HkSyncBanner.svelte';
+	import { sync } from '$lib/hk-sync.svelte';
+	import { loadSnapshot, type Snapshot } from '$lib/hk-snapshot';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
 	import { can, fetchMe } from '$lib/session';
 
@@ -19,6 +23,7 @@
 	let { children } = $props();
 
 	const client = useQueryClient();
+	sync.attach(client);
 	const me = createQuery(() => ({ queryKey: ['me'], queryFn: fetchMe }));
 	const properties = createQuery(() => ({
 		queryKey: propertiesKey,
@@ -64,6 +69,49 @@
 		}
 	});
 
+	// Without a connection (or an API that cannot be reached) the shell comes from the last saved list.
+	const unreachable = $derived(
+		[me.error, properties.error].some((error) => !!error && !(error instanceof ApiError))
+	);
+	const offline = $derived(!sync.online || unreachable);
+	// `null` once looked for and not found.
+	let snapshot = $state<Snapshot | null>();
+	$effect(() => {
+		if (!offline || me.data) return;
+		void loadSnapshot(requested ?? remembered()).then((saved) => (snapshot = saved ?? null));
+	});
+	$effect(() => {
+		if (offline && !me.data && snapshot && requested !== snapshot.propertyId) {
+			const url = new URL(page.url);
+			url.searchParams.set('property', snapshot.propertyId);
+			void goto(here(url.searchParams.toString()), { replaceState: true });
+		}
+	});
+
+	// Waiting changes are sent when the connection returns and when the app is opened or focused again.
+	onMount(() => {
+		sync.online = navigator.onLine;
+		void sync.replay();
+		const goOnline = () => {
+			sync.online = true;
+			void sync.replay();
+		};
+		const goOffline = () => (sync.online = false);
+		const focused = () => {
+			if (document.visibilityState === 'visible') void sync.replay();
+		};
+		window.addEventListener('online', goOnline);
+		window.addEventListener('offline', goOffline);
+		window.addEventListener('focus', focused);
+		document.addEventListener('visibilitychange', focused);
+		return () => {
+			window.removeEventListener('online', goOnline);
+			window.removeEventListener('offline', goOffline);
+			window.removeEventListener('focus', focused);
+			document.removeEventListener('visibilitychange', focused);
+		};
+	});
+
 	const signedIn = $derived(!!me.data);
 	$effect(() => {
 		if (signedIn && chosen) return connectEvents(client, chosen.id);
@@ -80,22 +128,28 @@
 	}
 </script>
 
+{#snippet shell(id: string, name: string)}
+	<header>
+		<strong>{name}</strong>
+		<nav aria-label="Housekeeping">
+			<a href={resolve(`/hk?property=${id}`)} aria-current={onIssue ? undefined : 'page'}
+				>My rooms</a
+			>
+			<a href={resolve(`/hk/issue?property=${id}`)} aria-current={onIssue ? 'page' : undefined}
+				>Report issue</a
+			>
+		</nav>
+	</header>
+	<main>
+		<HkSyncBanner propertyId={id} />
+		{@render children()}
+	</main>
+{/snippet}
+
 <div class="shell">
 	{#if me.data && properties.data}
 		{#if chosen}
-			<header>
-				<strong>{chosen.name}</strong>
-				<nav aria-label="Housekeeping">
-					<a href={resolve(`/hk?property=${chosen.id}`)} aria-current={onIssue ? undefined : 'page'}
-						>My rooms</a
-					>
-					<a
-						href={resolve(`/hk/issue?property=${chosen.id}`)}
-						aria-current={onIssue ? 'page' : undefined}>Report issue</a
-					>
-				</nav>
-			</header>
-			<main>{@render children()}</main>
+			{@render shell(chosen.id, chosen.name)}
 		{:else if eligible.length > 1}
 			<main>
 				<h1>Choose a property</h1>
@@ -115,6 +169,15 @@
 				<p role="alert">Your account has no housekeeping role at any property.</p>
 			</main>
 		{/if}
+	{:else if offline && snapshot}
+		{@render shell(snapshot.propertyId, snapshot.propertyName)}
+	{:else if offline && snapshot === null}
+		<main>
+			<h1>You are offline</h1>
+			<p role="alert">
+				There is no saved list on this device yet. Open My rooms once while connected.
+			</p>
+		</main>
 	{:else if me.error && !(me.error instanceof ApiError && me.error.status === 401)}
 		<main>
 			<p class="error" role="alert">{errorMessage(me.error)}</p>

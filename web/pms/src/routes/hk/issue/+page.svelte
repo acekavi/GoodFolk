@@ -7,6 +7,8 @@
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { ApiError, errorMessage } from '$lib/api/problem';
 	import { formKeys } from '$lib/api/rest';
+	import { sync } from '$lib/hk-sync.svelte';
+	import { loadChoices, loadSnapshot, saveChoices, type RoomChoice } from '$lib/hk-snapshot';
 	import { fetchBoard, hkKey, issuesKey, reportIssue, type Severity } from '$lib/housekeeping';
 	import { can, fetchMe } from '$lib/session';
 
@@ -23,6 +25,25 @@
 		enabled: !!propertyId
 	}));
 
+	// The rooms to choose from without a connection: those saved when this page last had them, else My rooms.
+	let saved = $state<RoomChoice[]>([]);
+	$effect(() => {
+		void (async () => {
+			const choices = await loadChoices(propertyId);
+			const snapshot = choices ? undefined : await loadSnapshot(propertyId || null);
+			saved = choices ?? snapshot?.rooms.map(({ roomId, number }) => ({ roomId, number })) ?? [];
+		})();
+	});
+	$effect(() => {
+		if (board.data && propertyId) {
+			void saveChoices(
+				propertyId,
+				board.data.map(({ roomId, number }) => ({ roomId, number }))
+			);
+		}
+	});
+	const choices = $derived<RoomChoice[]>(board.data ?? saved);
+
 	let roomId = $state(page.url.searchParams.get('room') ?? '');
 	let severity = $state<Severity>('LOW');
 	let description = $state('');
@@ -37,16 +58,33 @@
 		error = '';
 		sent = '';
 		const text = description.trim();
-		try {
-			await reportIssue(
+		const number = choices.find((room) => room.roomId === roomId)?.number ?? '';
+		const key = keys.keyFor({ roomId, severity, text });
+		// Without a connection the report waits on the device, under the key of this very submit.
+		const queue = () =>
+			sync.enqueue({
+				kind: 'issue',
 				propertyId,
 				roomId,
+				roomNumber: number,
 				severity,
-				text,
-				keys.keyFor({ roomId, severity, text })
-			);
-			const number = board.data?.find((room) => room.roomId === roomId)?.number;
-			sent = `Issue reported for room ${number ?? ''}.`;
+				description: text,
+				key
+			});
+		try {
+			if (!sync.online || sync.waiting.length > 0) {
+				await queue();
+				sent = `Issue for room ${number} saved on this device; it is sent when you are back online.`;
+			} else {
+				try {
+					await reportIssue(propertyId, roomId, severity, text, key);
+					sent = `Issue reported for room ${number}.`;
+				} catch (err) {
+					if (err instanceof ApiError) throw err;
+					await queue();
+					sent = `Issue for room ${number} saved on this device; it is sent when you are back online.`;
+				}
+			}
 			description = '';
 			roomId = '';
 			severity = 'LOW';
@@ -77,7 +115,7 @@
 			Room
 			<select bind:value={roomId} required>
 				<option value="" disabled>Choose a room</option>
-				{#each board.data ?? [] as room (room.roomId)}
+				{#each choices as room (room.roomId)}
 					<option value={room.roomId}>{room.number}</option>
 				{/each}
 			</select>
