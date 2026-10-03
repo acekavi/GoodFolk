@@ -162,15 +162,32 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
     - the type chip is labelled `DLX Deluxe` in suggestions but `DLX` once parsed from the URL;
     - a few `tape_events` and drag tests cover only a partial shorten, a rename, or the first of two paths.
 
-## Phase 5 — Housekeeping ([spec](specs/phase-5-housekeeping.md))
+## Phase 5 — Housekeeping ([spec](specs/phase-5-housekeeping.md), [plan](superpowers/plans/2026-10-02-phase-5-housekeeping.md))
 
-- Room condition (`dirty → cleaning → clean → inspected`), set `dirty` on check-out, restored on undo check-in.
-- Check-in requires a clean or inspected room, with a manager override and reason; `CHECKIN_REQUIRES_CLEAN_ROOM` is removed.
-- A `hk_supervisor` role; the housekeeping board (conditions, derived occupancy, assignments, issues, bulk changes, copy yesterday).
-- The installable housekeeper app under `/hk`: my rooms, one-tap conditions, issue reports, an offline queue with visible conflicts.
-- Issue reports (photos arrive with Phase 6).
-- Linen and guest laundry moved to [laundry.md](specs/laundry.md), built with or after Phase 7 (the owner's decision).
-- **Performance gates:** board for 500 rooms p95 under 30 ms server time and renders under 50 ms; housekeeper app first load on 3G-class network under 2 s.
+- **Room condition: done.** `room_condition` (`dirty → cleaning → clean → inspected`), one row per room, created with the room (migration `0013` backfilled existing rooms `clean`). Check-out sets `dirty`, undo check-in restores the condition recorded on the check-in. Check-in needs `clean` or `inspected`; otherwise `409` "room 101 is Dirty", and an owner or manager (who hold both `FrontDeskCheckIn` and `HousekeepingSupervise`) can override with a reason, kept in the check-in's audit entry. `CHECKIN_REQUIRES_CLEAN_ROOM` is removed. Lock order is `reservation_room` → `room` → `room_condition` → `room_block` → `inventory_day`: `check_out` takes `room_condition` before `lock_days` ([api-conventions.md](design/api-conventions.md)).
+- **Roles and permissions: done.** A `hk_supervisor` role (any condition, bulk, assign, copy yesterday, resolve issues) and four permissions (`HousekeepingView`, `HousekeepingUpdate`, `HousekeepingSupervise`, `RoomIssuesReport`). Ruling: `hk_supervisor` also gets the housekeeping role's base reads (properties, rooms, inventory, rates and reservations view), since a role without them cannot open the app; supervisors therefore see rates and reservations read-only. Ruling: **Block room** (from a high issue) is shown only to people who hold `InventoryBlock` (owner, manager, front desk), not `hk_supervisor`; widening a supervisor's powers is the owner's call.
+- **Board, assignments and issues: done.** `housekeepingBoard` (one statement; occupancy derived at read time from stays and the business date), bulk conditions (at most 500 rooms), assignments for the business date and **Copy yesterday**, and issue reports with severity and an idempotency key. Events: `hk:<property>` (conditions, assignments, check-in, check-out, undo check-in, and blocks, so a block marker is live on other boards) and `issues:<property>`. The board is virtualized: it draws only the tile rows in view (an owner decision, 2026-10-03, to keep the 50 ms gate at 500 rooms). The tape chart's room rail shows a condition dot and the reservation modal the room's condition.
+- **Housekeeper app: done.** `/hk` in the same SvelteKit app, installable (web app manifest, `GoodFolk Housekeeping`), **My rooms** with **Start cleaning** / **Done**, **Report issue**. A service worker caches the app shell (never the API or GraphQL); changes and reports queue in IndexedDB and replay strictly in order on reconnect or focus. A refused change is a visible conflict (**Retry** / **Discard**) that does not hold up the rest; a queue replayed after the business date rolled says so. The queue is tagged per user: a **fresh** `/api/v1/me` is read before every replay and the owner must match, a staff sign-out wipes the signer's own items and saved list, and one user's unsent work is never sent or shown under another. Sign-in redirects follow same-origin paths only (re-checked after URL normalisation). An expired session keeps the queue and asks to sign in.
+- **Interim `add-staff` command: done.** `cargo run -p core-api -- add-staff` adds a user with a role (README, "Adding staff"), as the schema owner, because nothing else can create a housekeeper before Phase 8's invitations. To be replaced then (an admin command to remove).
+- **Performance gates: done**, on `powersave` with no other heavy job running (the 500-room fixtures check themselves, as for the tape chart):
+
+  | Gate | Spec | Measured |
+  |---|---|---|
+  | `housekeepingBoard` for 500 rooms, in-process through the router, release | p95 < 30 ms | p95 22.85, 21.60 and 22.49 ms on three runs |
+  | Board render, 500 rooms (browser, p90 of ten) | < 50 ms | p90 40, 43 and 42 ms after the profiling pass (145–155 ms before virtualizing; 47–50 ms after it, before the profiling pass) |
+  | `/hk` first load on throttled 3G (1.6 Mbps, 150 ms latency, the service worker's own fetches throttled too; p90 of five cold contexts) | < 2 s | p90 about 1.66 s (1659 and 1660 ms) |
+  | `/hk` reload offline after install | opens from the cache | passes |
+
+  The board's margin on this laptop is thin (a few ms), so re-measure with the `performance` governor before relying on it. Run with `E2E_PERF=1` (see the README).
+- Carried over from the Phase 5 reviews:
+  - **A supervisor can unassign a room while its housekeeper's change is in flight**, and that one late tap lands after the unassignment. Accepted: assignment is advisory and the change is audited.
+  - **The queue's guard against another user's replay is a fresh `/me` check with a window of milliseconds before the send.** A server-side owner check on the change would close it.
+  - **`hk-queue` and the board:** the stamp prefers the properties cache over a newer snapshot, `today()` is fetched once per refused item, and rolled conflicts re-invalidate the properties on every replay.
+  - **Authorization order:** the version check precedes the permission check, so an unassigned housekeeper's stale-version guess gets `412`, not `403`.
+  - **`add-staff`:** an existing user of another tenant is silently added and their `--display-name` ignored; a tenant-wide rerun and the audit payload are untested. All Phase 8 (invitations).
+  - **Copy yesterday and assignments:** the room-active check of a copy takes no room lock, and its "lost the role" case is tested only by removing every grant; the assignments no-write check reads `room.unassigned` audit rows; replaying copy-yesterday returns `{copied: 0}` either way.
+  - **Test gaps:** issue and block regressions would not trip the board gate (tiny tables), the block insert count is unchecked, the margin on `powersave` is about 7 ms; a `{roomId, condition}` read would be lighter than the full board query the tape rail and room card reuse; no e2e for `hk_supervisor` (who has supervise but not check-in); the `addStaff` e2e helper runs `cargo` on every call, which is slow; the two-window e2e's "101 stays Dirty" is weak and a blocked IndexedDB open can leave a stray connection; the override is detected from the refusal text (`room 101 is Dirty`), where a structured `condition` field in the problem would be sturdier.
+  - **Photos** on issues, and linen and guest laundry ([laundry.md](specs/laundry.md)), come later (Phase 6 and with or after Phase 7).
 
 ## Phase 6 — Media engine ([spec](specs/phase-6-media.md))
 
