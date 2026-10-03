@@ -816,3 +816,42 @@ async fn commands_tell_the_board_and_the_issues_list(_: PgPoolOptions, opts: PgC
     hotel.issue(&app).await;
     expect_event(&mut events, &format!("issues:{}", hotel.id)).await;
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_booking_tells_the_board(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    spawn_listener(PgPool::connect_with(opts.clone()).await.unwrap(), app.state.events.clone()).await.unwrap();
+    let hotel = Hotel::new(&app, opts).await;
+    let key = || Uuid::now_v7().to_string();
+    let day = |offset: i64| (hotel.business_date + Days::days(offset)).to_string();
+    let bar = json!({"code": "BAR", "name": "Best available", "kind": "standard", "segment": "IBE",
+                     "currency": "USD", "room_type_ids": [hotel.deluxe]});
+    let bar = uuid(&post(&app, &hotel.owner, &format!("{}/rate-plans", hotel.path), &key(), bar).await.body["id"]);
+    let prices: Vec<Value> = (0..2)
+        .map(|d| json!({"room_type_id": hotel.deluxe, "date": day(d), "occupancy": 2, "amount": 10_000}))
+        .collect();
+    put(&app, &hotel.owner, &format!("{}/rate-plans/{bar}/prices", hotel.path), json!({"prices": prices})).await;
+    let guest = json!({"first_name": "Ada", "last_name": "Silva", "residency": "non_resident"});
+    let guest = post(&app, &hotel.owner, &format!("{}/guests", hotel.path), &key(), guest).await.body;
+    let mut events = app.state.events.subscribe();
+
+    let booking = json!({"booker_guest_id": guest["id"], "source": "front_desk",
+        "rooms": [{"room_type_id": hotel.deluxe, "rate_plan_id": bar, "meal_plan": "RO",
+                   "check_in": day(0), "check_out": day(1), "adults": 2}]});
+    let booked = post(&app, &hotel.owner, &format!("{}/reservations", hotel.path), &key(), booking).await;
+    assert_eq!(booked.status, StatusCode::CREATED, "{:?}", booked.body);
+
+    // The booking's own event names the reservation and the board; earlier setup events name no reservation.
+    let reservation = format!("reservation:{}", booked.body["id"].as_str().unwrap());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let received = tokio::time::timeout(remaining, events.recv()).await.expect("the booking's event").unwrap();
+        if let LiveEvent::Invalidate(event) = received
+            && event.keys.contains(&reservation)
+        {
+            assert!(event.keys.contains(&format!("hk:{}", hotel.id)), "{:?}", event.keys);
+            break;
+        }
+    }
+}

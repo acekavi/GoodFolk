@@ -402,8 +402,11 @@ async fn a_booking_tells_screens_to_refetch_the_list_the_reservation_and_its_inv
         [hotel.day(1), hotel.day(2)].iter().map(|night| format!("inventory:{}:{}", hotel.id, &night[..7])).collect();
     let tape: BTreeSet<String> =
         [hotel.day(1), hotel.day(2)].iter().map(|night| format!("tape:{}:{}", hotel.id, &night[..7])).collect();
-    let mut expected =
-        vec![format!("reservations:{}", hotel.id), format!("reservation:{}", created["id"].as_str().unwrap())];
+    let mut expected = vec![
+        format!("reservations:{}", hotel.id),
+        format!("reservation:{}", created["id"].as_str().unwrap()),
+        format!("hk:{}", hotel.id),
+    ];
     expected.extend(months);
     expected.extend(tape);
     assert_eq!(event.property_id, Some(hotel.id));

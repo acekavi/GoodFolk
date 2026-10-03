@@ -330,3 +330,27 @@ async fn deactivating_a_room_announces_the_whole_window_and_a_plain_edit_announc
     let event: Event = serde_json::from_str(received.payload()).unwrap();
     assert_eq!(tape_only(&event.keys), Vec::<String>::new(), "a rename doesn't move the room on or off the chart");
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn room_commands_tell_the_housekeeping_board(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let dlx = hotel.room_type("DLX").await;
+    let mut listener = PgListener::connect_with(&hotel.pool).await.unwrap();
+    listener.listen(CHANNEL).await.unwrap();
+    let board = rooms::hk_key(hotel.property);
+    assert_eq!(board, format!("hk:{}", hotel.property));
+
+    let first = hotel.room(dlx.id, "101").await;
+    let second = hotel.room(dlx.id, "102").await;
+    hotel.update_room(&first, RoomChanges { number: Some("101A".into()), ..RoomChanges::default() }).await.unwrap();
+    let mut tx = hotel.tx().await;
+    rooms::reorder_rooms(&mut tx, hotel.tenant, hotel.property, &[second.id, first.id]).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // Create, create, update, reorder: each one's event carries the board key.
+    for what in ["create", "create", "update", "reorder"] {
+        let received = tokio::time::timeout(Duration::from_secs(5), listener.recv()).await.unwrap().unwrap();
+        let event: Event = serde_json::from_str(received.payload()).unwrap();
+        assert!(event.keys.contains(&board), "{what} tells the board: {:?}", event.keys);
+    }
+}

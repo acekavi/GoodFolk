@@ -42,10 +42,7 @@ pub enum HousekeepingError {
     Database(#[from] sqlx::Error),
 }
 
-/// Cache key for a property's housekeeping data: room conditions, assignments and issues.
-pub fn hk_key(property: Uuid) -> String {
-    format!("hk:{property}")
-}
+pub use rooms::hk_key;
 
 /// Cache key for a property's room issues.
 pub fn issues_key(property: Uuid) -> String {

@@ -63,9 +63,9 @@ pub fn rooms_key(property: Uuid) -> String {
     format!("rooms:{property}")
 }
 
-/// The housekeeping board's cache key, `housekeeping::hk_key`. A block shows on the board, but `housekeeping`
-/// depends on this crate, so the key is spelled here too.
-fn hk_key(property: Uuid) -> String {
+/// Cache key for a property's housekeeping data: room conditions, assignments, issues and the board. Defined here
+/// because `housekeeping` depends on this crate; `housekeeping::hk_key` is the same function.
+pub fn hk_key(property: Uuid) -> String {
     format!("hk:{property}")
 }
 

@@ -152,7 +152,7 @@ pub async fn cancel_room(
     audit(tx, tenant, actor, "reservation_room.cancelled", "reservation_room", id, data).await?;
     // The tape key covers the stay's whole range, not just the nights `from` released: the chart shows a
     // cancelled stay's past nights too.
-    let keys = [reservations_key(property), reservation_key(stay.reservation_id)]
+    let keys = [reservations_key(property), reservation_key(stay.reservation_id), housekeeping::hk_key(property)]
         .into_iter()
         .chain(rooms::month_keys(property, from, stay.check_out))
         .chain(rooms::tape_keys(property, stay.check_in, stay.check_out))

@@ -1,5 +1,5 @@
 use crate::inventory::{WINDOW_DAYS, adjust, business_date, contribute, extend_window, lock_days, window_keys};
-use crate::{RoomsError, assigned_stay, audit, notify, reorder, rooms_key, tape_keys, violates};
+use crate::{RoomsError, assigned_stay, audit, hk_key, notify, reorder, rooms_key, tape_keys, violates};
 use db::{TenantId, Tx, UserId};
 use serde::Serialize;
 use time::{Date, Duration};
@@ -203,7 +203,7 @@ async fn insert_rooms(
     // One entry for the batch, on the room type the rooms were added to.
     audit(tx, tenant, actor, "rooms.created", "room_type", room_type, serde_json::json!({ "numbers": numbers }))
         .await?;
-    let mut keys = vec![rooms_key(property)];
+    let mut keys = vec![rooms_key(property), hk_key(property)];
     keys.extend(window_keys(property, today));
     notify(tx, tenant, property, keys).await?;
     Ok(created)
@@ -289,7 +289,7 @@ pub async fn update_room(
         }
         Err(err) => return Err(err.into()),
     };
-    let mut keys = vec![rooms_key(property)];
+    let mut keys = vec![rooms_key(property), hk_key(property)];
     if moves_counts {
         for (room_type, active, sign) in shares {
             contribute(tx, property, today, id, room_type, active, sign).await?;
@@ -318,7 +318,7 @@ pub async fn update_room(
 pub async fn reorder_rooms(tx: &mut Tx, tenant: TenantId, property: Uuid, ids: &[Uuid]) -> Result<(), RoomsError> {
     business_date(tx, property).await?;
     reorder(tx, "room", property, ids).await?;
-    notify(tx, tenant, property, vec![rooms_key(property)]).await?;
+    notify(tx, tenant, property, vec![rooms_key(property), hk_key(property)]).await?;
     Ok(())
 }
 
