@@ -379,7 +379,8 @@ async fn set_room_condition(
     housekeeping::lock_and_set(tx, actor, property, room, to).await.map_err(|err| match err {
         housekeeping::HousekeepingError::NotFound(what) => ReservationsError::NotFound(what),
         housekeeping::HousekeepingError::Database(err) => ReservationsError::Database(err),
-        other => unreachable!("locking a condition cannot fail with {other:?}"),
+        // Locking a condition only fails when the row is missing or the database errs; anything else is a bug.
+        other => ReservationsError::Database(sqlx::Error::Protocol(format!("locking a condition failed: {other}"))),
     })
 }
 

@@ -241,6 +241,47 @@ async fn setting_and_copying_emit_the_housekeeping_key(_: PgPoolOptions, opts: P
     assert!(copy.contains(&hk_key(hotel.property)));
 }
 
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn removing_an_assignment_that_does_not_exist_writes_no_audit_and_no_event(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts).await;
+    let rooms = hotel.rooms(&["101", "102"]).await;
+    let ann = hotel.member(Some("housekeeping"), None).await;
+    let mut listener = PgListener::connect_with(&hotel.pool).await.unwrap();
+    listener.listen(CHANNEL).await.unwrap();
+
+    hotel.set(&[(rooms[0], None)]).await.unwrap();
+    assert_eq!(hotel.audit_actions("room.unassigned").await, 0);
+    let heard = tokio::time::timeout(Duration::from_millis(500), listener.recv()).await;
+    assert!(heard.is_err(), "nothing changed, so nothing is announced");
+
+    hotel.set(&[(rooms[1], Some(ann))]).await.unwrap();
+    next_keys(&mut listener).await;
+    hotel.set(&[(rooms[1], None), (rooms[0], None)]).await.unwrap();
+    assert_eq!(hotel.audit_actions("room.unassigned").await, 1, "only the real removal is audited");
+    next_keys(&mut listener).await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn overlapping_bulk_assignments_in_opposite_orders_do_not_deadlock(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let rooms = hotel.rooms(&["101", "102", "103", "104"]).await;
+    let ann = hotel.member(Some("housekeeping"), None).await;
+    let bob = hotel.member(Some("housekeeping"), None).await;
+    let forward: Vec<_> = rooms.iter().map(|room| (*room, Some(ann))).collect();
+    let backward: Vec<_> = rooms.iter().rev().map(|room| (*room, Some(bob))).collect();
+
+    for round in 0..20 {
+        let both = async { tokio::join!(hotel.set(&forward), hotel.set(&backward)) };
+        let (first, second) =
+            tokio::time::timeout(Duration::from_secs(10), both).await.unwrap_or_else(|_| panic!("round {round} hung"));
+        first.unwrap_or_else(|err| panic!("round {round}: {err:?}"));
+        second.unwrap_or_else(|err| panic!("round {round}: {err:?}"));
+    }
+}
+
 async fn next_keys(listener: &mut PgListener) -> Vec<String> {
     let received = tokio::time::timeout(Duration::from_secs(5), listener.recv()).await.unwrap().unwrap();
     serde_json::from_str::<Event>(received.payload()).unwrap().keys

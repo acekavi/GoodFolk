@@ -14,8 +14,10 @@ pub struct Housekeeper {
 }
 
 /// Sets, replaces or (with `None`) removes the assignment of each room for the business date, at most
-/// [`MAX_BULK_ROOMS`] rooms, each named once. Every room must be an active room of the property (`NotFound`) and
-/// every assignee must hold a housekeeping role there (`Invalid`); on any error nothing is written.
+/// [`MAX_BULK_ROOMS`] rooms, each named once. It writes in ascending room order, so two overlapping bulk changes
+/// cannot deadlock. Removing an assignment that does not exist writes no audit entry and sends no event.
+/// Every room must be an active room of the property (`NotFound`) and every assignee must hold a housekeeping
+/// role there (`Invalid`); on any error nothing is written.
 pub async fn set_assignments(
     tx: &mut Tx,
     tenant: TenantId,
@@ -46,7 +48,10 @@ pub async fn set_assignments(
     if role_holders(tx, property, &users).await?.len() != users.len() {
         return Err(HousekeepingError::Invalid("a housekeeper must hold a housekeeping role at this property".into()));
     }
-    for (room, user) in changes {
+    let mut ordered = changes.to_vec();
+    ordered.sort_unstable_by_key(|(room, _)| *room);
+    let mut changed = false;
+    for (room, user) in &ordered {
         match user {
             Some(user) => {
                 sqlx::query(
@@ -63,20 +68,30 @@ pub async fn set_assignments(
                 .await?;
                 let data = serde_json::json!({ "business_date": date.to_string(), "user_id": user.0 });
                 audit(tx, tenant, actor, "room.assigned", "room", *room, data).await?;
+                changed = true;
             }
             None => {
-                sqlx::query("delete from hk_assignment where property_id = $1 and business_date = $2 and room_id = $3")
-                    .bind(property)
-                    .bind(date)
-                    .bind(room)
-                    .execute(&mut **tx)
-                    .await?;
+                let removed = sqlx::query(
+                    "delete from hk_assignment where property_id = $1 and business_date = $2 and room_id = $3",
+                )
+                .bind(property)
+                .bind(date)
+                .bind(room)
+                .execute(&mut **tx)
+                .await?
+                .rows_affected();
+                if removed == 0 {
+                    continue;
+                }
+                changed = true;
                 let data = serde_json::json!({ "business_date": date.to_string() });
                 audit(tx, tenant, actor, "room.unassigned", "room", *room, data).await?;
             }
         }
     }
-    notify(tx, tenant, property, vec![hk_key(property)]).await?;
+    if changed {
+        notify(tx, tenant, property, vec![hk_key(property)]).await?;
+    }
     Ok(())
 }
 

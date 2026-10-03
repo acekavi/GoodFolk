@@ -179,6 +179,39 @@ async fn a_bulk_change_sets_every_room_and_audits_each(_: PgPoolOptions, opts: P
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_bulk_change_leaves_rooms_already_at_the_target_alone_but_returns_them(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts).await;
+    let rooms = hotel.rooms(&["101", "102"]).await;
+    hotel.force(rooms[0], Condition::Dirty).await;
+    let mut listener = PgListener::connect_with(&hotel.pool).await.unwrap();
+    listener.listen(CHANNEL).await.unwrap();
+
+    let mut tx = hotel.tx().await;
+    let rows =
+        set_conditions(&mut tx, hotel.tenant, hotel.user, hotel.property, &rooms, Condition::Dirty).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // 101 was already dirty (version 2 after the force); 102 was clean and is written.
+    let by_room = |room: Uuid| rows.iter().find(|row| row.room_id == room).unwrap();
+    assert_eq!((by_room(rooms[0]).condition, by_room(rooms[0]).version), (Condition::Dirty, 2));
+    assert_eq!((by_room(rooms[1]).condition, by_room(rooms[1]).version), (Condition::Dirty, 2));
+    assert_eq!(hotel.condition(rooms[0]).await, ("dirty".into(), 2));
+    assert_eq!(hotel.audit_count().await, 2, "the force and the one real change");
+
+    let mut again = hotel.tx().await;
+    set_conditions(&mut again, hotel.tenant, hotel.user, hotel.property, &rooms, Condition::Dirty).await.unwrap();
+    again.commit().await.unwrap();
+    assert_eq!(hotel.condition(rooms[1]).await, ("dirty".into(), 2), "a retry changes nothing");
+    assert_eq!(hotel.audit_count().await, 2);
+    next_keys(&mut listener).await;
+    let heard = tokio::time::timeout(Duration::from_millis(500), listener.recv()).await;
+    assert!(heard.is_err(), "a retry with nothing to change announces nothing");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn a_bulk_change_naming_another_propertys_room_writes_nothing(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;
     let mut rooms = hotel.rooms(&["101", "102"]).await;

@@ -94,8 +94,8 @@ pub async fn set_condition(
 }
 
 /// Sets the condition of every room in `rooms`, at most [`MAX_BULK_ROOMS`], for a supervisor. A room outside
-/// the property is `NotFound` and nothing is written. No version is checked, and a room already at `to`
-/// is written like any other.
+/// the property is `NotFound` and nothing is written. No version is checked. A room already at `to` is
+/// returned as it is: no version bump and no audit entry, so a retried bulk change leaves no second trace.
 pub async fn set_conditions(
     tx: &mut Tx,
     tenant: TenantId,
@@ -110,8 +110,8 @@ pub async fn set_conditions(
     let mut ids = rooms.to_vec();
     ids.sort_unstable();
     ids.dedup();
-    let locked: Vec<(Uuid, String)> = sqlx::query_as(
-        "select room_id, condition from room_condition where property_id = $1 and room_id = any($2)
+    let locked: Vec<(Uuid, String, i32)> = sqlx::query_as(
+        "select room_id, condition, version from room_condition where property_id = $1 and room_id = any($2)
          order by room_id for update",
     )
     .bind(property)
@@ -122,10 +122,19 @@ pub async fn set_conditions(
         return Err(HousekeepingError::NotFound("room"));
     }
     let mut written = Vec::with_capacity(locked.len());
-    for (room, from) in locked {
-        written.push(write(tx, tenant, actor, property, room, parse(&from)?, to).await?);
+    let mut changed = false;
+    for (room, from, version) in locked {
+        let from = parse(&from)?;
+        if from == to {
+            written.push(RoomConditionRow { room_id: room, condition: to, version });
+        } else {
+            written.push(write(tx, tenant, actor, property, room, from, to).await?);
+            changed = true;
+        }
     }
-    notify(tx, tenant, property, vec![hk_key(property)]).await?;
+    if changed {
+        notify(tx, tenant, property, vec![hk_key(property)]).await?;
+    }
     Ok(written)
 }
 
