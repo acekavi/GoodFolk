@@ -442,7 +442,8 @@ pub fn backoff(attempts: i32) -> Duration; // 1 s doubling, capped at 300 s
   - **Configuration.** It reads `PUSH_ENDPOINT_<TOPIC_UPPER_SNAKE>`, for example `PUSH_ENDPOINT_MEDIA_PROCESS`.
   - **Request.** It POSTs the envelope with a 10-minute timeout and the svc-auth header from Task 5 (pass a
     `Fn() -> String` header provider so the crates don't depend on each other).
-  - **Outcome.** A 2xx is success; anything else is a `BusError`.
+  - **Outcome.** A 2xx is success. A 4xx other than 408 and 429 is permanent: the relay marks the row sent, keeps
+    `last_error` and logs an error. Anything else is a retryable `BusError`.
 - `PubSubBus` POSTs `projects/{p}/topics/{t}:publish` with `messages: [{data, attributes: {message_id}}]`. In
   production it uses a metadata-server access token; with the emulator it uses none.
 
@@ -528,8 +529,8 @@ pub enum MediaResult {
   1. Decode the envelope into a `ProcessJob`.
   2. Take a worker permit, get the upload bytes, and run the worker subprocess (`current_exe() worker`) with the job and
      bytes on stdin. Bound it with `RAYON_NUM_THREADS = max(1, cpus / MEDIA_WORKERS)`, a 60 s timeout (kill on
-     expiry) and a 1 GiB address-space limit, set through the `rlimit` crate in `pre_exec`. That needs `unsafe`, so
-     use `std::process::Command` with `rlimit::setrlimit` called from inside the worker at startup instead.
+     expiry) and a 1 GiB address-space limit, set by the worker itself at startup with the safe `rlimit` crate
+     (`pre_exec` would need `unsafe`).
   3. The worker writes length-prefixed artefacts to stdout.
   4. On success:
      - write the archive (private) and renditions (public for `Gallery` with `IMMUTABLE`, otherwise private);
@@ -637,7 +638,7 @@ as $$ … $$;  -- implementer writes: expired guest documents, orphan assets (>2
 ```
 
 Add forced RLS and the `tenant_isolation` policy to the four tables, as in 0013. Grant `app.media_sweep_due()` the
-same way 0004 grants `search_guest_ids` in 0009. Verify the real foreign-key target names (`tenant`, `app_user`) before
+same way 0009 grants `search_guest_ids`. Verify the real foreign-key target names (`tenant`, `app_user`) before
 writing them.
 
 **Permissions** (exact):
@@ -735,7 +736,7 @@ Add `pending_target jsonb` to `media_asset` in 0015; it is cleared once the link
 - **`/internal/events`** sits outside the session, CSRF and timeout layers, behind `svc_auth::layer`:
   - decode the envelope, then in one tenant-scoped transaction run `first_seen` and `apply_result`;
   - answer `204`, or `204` for a duplicate;
-  - a malformed body gets `400`, which Pub/Sub does not retry forever because it is dead-lettered.
+  - a malformed body gets `400`, which is permanent (see Task 4).
 - **Background tasks in `serve`.** `events::run_relay` and a sweep loop (hourly tick; it runs when the advisory lock
   `pg_try_advisory_lock(hashtext('media_sweep'))` is free and the last run was ≥ 24 h ago). The loop deletes the
   report's objects through `Storage`. Both stop on shutdown.
