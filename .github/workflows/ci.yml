@@ -28,9 +28,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Create database roles
         run: psql "$DATABASE_URL" -f deploy/dev/postgres-init.sql
+      # nasm: rav1e's assembly. lzip: libjxl.sh unpacks libjxl's release archive.
+      - name: Install build tools for the imaging crate
+        run: sudo apt-get update && sudo apt-get install -y nasm lzip
+      # cjxl and djxl land in ~/.cache/goodfolk-libjxl/bin, where the imaging crate looks by default.
+      - name: Install libjxl's command line tools
+        run: sh deploy/dev/libjxl.sh install
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # The exact SSIMULACRA2 checks need optimised code: minutes in a debug build.
+      - name: Image quality gate and metric equivalence, in release
+        run: cargo test -p imaging --release --lib --test quality_gate
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   web:
