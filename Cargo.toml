@@ -13,6 +13,7 @@ domain = { path = "crates/domain" }
 housekeeping = { path = "modules/housekeeping" }
 identity = { path = "modules/identity" }
 imaging = { path = "crates/imaging" }
+media-types = { path = "crates/media-types" }
 property = { path = "modules/property" }
 rates = { path = "modules/rates" }
 reservations = { path = "modules/reservations" }
@@ -34,7 +35,7 @@ http-body-util = "0.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 infer = "0.22"
 mimalloc = "0.1"
-moxcms = "0.9"
+moxcms = "0.8"
 proptest = "1"
 ravif = { version = "0.13", default-features = false, features = ["asm", "threading"] }
 # Already in the tree through rustls; keep the same version so no second copy is built.
