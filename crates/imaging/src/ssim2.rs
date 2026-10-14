@@ -183,14 +183,12 @@ const WEIGHT: [f64; 108] = [
     0.000_108_540_578_584_115_37,
 ];
 
-/// `a * b + c`, fused when `FUSED`. The original computes the blur with fused multiply-adds, which on
-/// the baseline x86-64 target is a call into a software routine five times slower than the plain
-/// operations. The recursive filter amplifies the different rounding, moving a score by up to about
-/// 0.2 (the original's own test tolerates 0.25), so the pipeline uses the plain form and the tests
-/// check the port against the original with the fused form.
+/// `a * b + c` with one rounding, as the original computes it. The recursive filter amplifies rounding
+/// differences (plain arithmetic moves a score by up to about 0.2), so the port keeps the fused form; the
+/// workspace targets x86-64-v3, where it is a single FMA instruction.
 #[inline(always)]
-fn fma<const FUSED: bool>(a: f32, b: f32, c: f32) -> f32 {
-    if FUSED { a.mul_add(b, c) } else { a * b + c }
+fn fma(a: f32, b: f32, c: f32) -> f32 {
+    a.mul_add(b, c)
 }
 
 /// Pixels as linear RGB.
@@ -286,12 +284,12 @@ fn downscale_by_2(input: &Linear) -> Linear {
 }
 
 /// XYB planes of `rows` rows of linear RGB, in the positive range the metric works in.
-fn xyb_planes<const FUSED: bool>(linear: &[[f32; 3]], width: usize, rows: usize) -> [Vec<f32>; 3] {
+fn xyb_planes(linear: &[[f32; 3]], width: usize, rows: usize) -> [Vec<f32>; 3] {
     let xyb = Xyb::from(LinearRgb::new(linear.to_vec(), width, rows).expect("rows and data agree"));
     let mut planes = [vec![0f32; width * rows], vec![0f32; width * rows], vec![0f32; width * rows]];
     for (i, pix) in xyb.data().iter().enumerate() {
         // Get all components in more or less 0..1 range.
-        planes[0][i] = fma::<FUSED>(pix[0], 14.0, 0.42);
+        planes[0][i] = fma(pix[0], 14.0, 0.42);
         planes[1][i] = pix[1] + 0.01;
         planes[2][i] = (pix[2] - pix[1]) + 0.55;
     }
@@ -316,10 +314,6 @@ fn pyramid(image: Linear, mut visit: impl FnMut(usize, &Linear)) {
 impl Reference {
     /// Prepares `image` as a reference. Images with a side under 8 pixels score 0 against anything.
     pub fn new(image: &RgbaImage) -> Self {
-        Self::build::<false>(image)
-    }
-
-    fn build<const FUSED: bool>(image: &RgbaImage) -> Self {
         let (width, height) = (image.width() as usize, image.height() as usize);
         let mut scales = Vec::new();
         let linear = if width >= 8 && height >= 8 { linear_of(image) } else { None };
@@ -330,7 +324,7 @@ impl Reference {
                     .map(|band| {
                         let y0 = band * BAND_ROWS;
                         let rows = BAND_ROWS.min(level.height - y0);
-                        xyb_planes::<FUSED>(&level.data[y0 * level.width..(y0 + rows) * level.width], level.width, rows)
+                        xyb_planes(&level.data[y0 * level.width..(y0 + rows) * level.width], level.width, rows)
                     })
                     .collect();
                 let planes = std::array::from_fn(|c| bands.iter().flat_map(|b| b[c].iter().copied()).collect());
@@ -343,10 +337,6 @@ impl Reference {
     /// SSIMULACRA2 of `distorted` against this reference: 100 is identical. Dimensions that differ, or a
     /// side under 8 pixels, score 0.
     pub fn score(&self, distorted: &RgbaImage) -> f64 {
-        self.score_with::<false>(distorted)
-    }
-
-    fn score_with<const FUSED: bool>(&self, distorted: &RgbaImage) -> f64 {
         if self.scales.is_empty()
             || distorted.width() as usize != self.width
             || distorted.height() as usize != self.height
@@ -357,7 +347,7 @@ impl Reference {
             return 0.0;
         };
         let mut scales = Vec::new();
-        pyramid(linear, |scale, level| scales.push(scale_sums::<FUSED>(&self.scales[scale], level)));
+        pyramid(linear, |scale, level| scales.push(scale_sums(&self.scales[scale], level)));
         weighted_score(&scales)
     }
 }
@@ -378,13 +368,11 @@ impl Sums {
 }
 
 /// The partial sums of every band of one scale, added.
-fn scale_sums<const FUSED: bool>(reference: &Planes, distorted: &Linear) -> ScaleScores {
+fn scale_sums(reference: &Planes, distorted: &Linear) -> ScaleScores {
     let (width, height) = (reference.width, reference.height);
     let sums = (0..height.div_ceil(BAND_ROWS))
         .into_par_iter()
-        .map(|band| {
-            band_sums::<FUSED>(reference, distorted, band * BAND_ROWS, (band * BAND_ROWS + BAND_ROWS).min(height))
-        })
+        .map(|band| band_sums(reference, distorted, band * BAND_ROWS, (band * BAND_ROWS + BAND_ROWS).min(height)))
         .reduce(Sums::default, Sums::add);
     let one_per_pixels = 1.0f64 / (width * height) as f64;
     let mut out = ScaleScores::default();
@@ -408,28 +396,28 @@ struct ScaleScores {
 }
 
 /// Rows `y0..y1` of one scale: XYB of the distorted rows, the five blurred quantities and the sums.
-fn band_sums<const FUSED: bool>(reference: &Planes, distorted: &Linear, y0: usize, y1: usize) -> Sums {
+fn band_sums(reference: &Planes, distorted: &Linear, y0: usize, y1: usize) -> Sums {
     let width = reference.width;
     let height = reference.height;
     // Rows the blur of rows y0..y1 reads; everything outside is zero for the recursion.
     let lo = y0.saturating_sub(RADIUS);
     let hi = (y1 + RADIUS - 1).min(height);
     let rows = hi - lo;
-    let img2 = xyb_planes::<FUSED>(&distorted.data[lo * width..hi * width], width, rows);
+    let img2 = xyb_planes(&distorted.data[lo * width..hi * width], width, rows);
     let mut sums = Sums::default();
     let mut product = vec![0f32; width * rows];
     let band = Band { width, lo, hi, y0, y1 };
     for c in 0..3 {
         let img1 = &reference.planes[c][lo * width..hi * width];
         let img2 = &img2[c];
-        let mu1 = band.blur::<FUSED>(img1);
-        let mu2 = band.blur::<FUSED>(img2);
+        let mu1 = band.blur(img1);
+        let mu2 = band.blur(img2);
         multiply(img1, img1, &mut product);
-        let s11 = band.blur::<FUSED>(&product);
+        let s11 = band.blur(&product);
         multiply(img2, img2, &mut product);
-        let s22 = band.blur::<FUSED>(&product);
+        let s22 = band.blur(&product);
         multiply(img1, img2, &mut product);
-        let s12 = band.blur::<FUSED>(&product);
+        let s12 = band.blur(&product);
 
         let first = (y0 - lo) * width;
         let img1 = &img1[first..first + (y1 - y0) * width];
@@ -443,8 +431,8 @@ fn band_sums<const FUSED: bool>(reference: &Planes, distorted: &Linear, y0: usiz
             let mu12 = m1 * m2;
             let mu_diff = m1 - m2;
             // The denominator of the original SSIM luma term is dropped; see the ssimulacra2 source.
-            let num_m = fma::<FUSED>(mu_diff, -mu_diff, 1.0f32);
-            let num_s = fma::<FUSED>(2f32, s12[i] - mu12, C2);
+            let num_m = fma(mu_diff, -mu_diff, 1.0f32);
+            let num_s = fma(2f32, s12[i] - mu12, C2);
             let denom_s = (s11[i] - mu11) + (s22[i] - mu22) + C2;
             let d = (1.0f64 - f64::from((num_m * num_s) / denom_s)).max(0.0);
             ssim[0] += d;
@@ -483,19 +471,19 @@ struct Band {
 
 impl Band {
     /// Gaussian blur of the plane rows `lo..hi`, returning rows `y0..y1`.
-    fn blur<const FUSED: bool>(&self, plane: &[f32]) -> Vec<f32> {
+    fn blur(&self, plane: &[f32]) -> Vec<f32> {
         let mut horizontal = vec![0f32; plane.len()];
         for (input, output) in plane.chunks_exact(self.width).zip(horizontal.chunks_exact_mut(self.width)) {
-            horizontal_row::<FUSED>(input, output, self.width);
+            horizontal_row(input, output, self.width);
         }
         let mut out = vec![0f32; (self.y1 - self.y0) * self.width];
         let mut x = 0;
         while x + COLUMNS <= self.width {
-            self.vertical::<COLUMNS, FUSED>(&horizontal, &mut out, x);
+            self.vertical::<COLUMNS>(&horizontal, &mut out, x);
             x += COLUMNS;
         }
         while x < self.width {
-            self.vertical::<1, FUSED>(&horizontal, &mut out, x);
+            self.vertical::<1>(&horizontal, &mut out, x);
             x += 1;
         }
         out
@@ -503,7 +491,7 @@ impl Band {
 
     /// Vertical pass over `N` columns starting at `x`. The recursion starts `2 * RADIUS - 1` rows above the
     /// first wanted row, with the rows above `lo` read as zero.
-    fn vertical<const N: usize, const FUSED: bool>(&self, input: &[f32], out: &mut [f32], x: usize) {
+    fn vertical<const N: usize>(&self, input: &[f32], out: &mut [f32], x: usize) {
         let big_n = RADIUS as isize;
         let zeroes = [0f32; N];
         // The state of the three resonators for the last three rows, used in turn: this row is written
@@ -525,12 +513,12 @@ impl Band {
             let mut sums = [0f32; N];
             for i in 0..N {
                 let sum = top[i] + bottom[i];
-                let out1 = fma::<FUSED>(prev[0][i], VERT_MUL_PREV_1, prev2[0][i]);
-                let out3 = fma::<FUSED>(prev[1][i], VERT_MUL_PREV_3, prev2[1][i]);
-                let out5 = fma::<FUSED>(prev[2][i], VERT_MUL_PREV_5, prev2[2][i]);
-                let out1 = fma::<FUSED>(sum, VERT_MUL_IN_1, -out1);
-                let out3 = fma::<FUSED>(sum, VERT_MUL_IN_3, -out3);
-                let out5 = fma::<FUSED>(sum, VERT_MUL_IN_5, -out5);
+                let out1 = fma(prev[0][i], VERT_MUL_PREV_1, prev2[0][i]);
+                let out3 = fma(prev[1][i], VERT_MUL_PREV_3, prev2[1][i]);
+                let out5 = fma(prev[2][i], VERT_MUL_PREV_5, prev2[2][i]);
+                let out1 = fma(sum, VERT_MUL_IN_1, -out1);
+                let out3 = fma(sum, VERT_MUL_IN_3, -out3);
+                let out5 = fma(sum, VERT_MUL_IN_5, -out5);
                 cur[0][i] = out1;
                 cur[1][i] = out3;
                 cur[2][i] = out5;
@@ -546,7 +534,7 @@ impl Band {
 }
 
 /// Horizontal pass of the recursive Gaussian on one row (Charalampidis 2016, truncated cosines).
-fn horizontal_row<const FUSED: bool>(input: &[f32], output: &mut [f32], width: usize) {
+fn horizontal_row(input: &[f32], output: &mut [f32], width: usize) {
     let big_n = RADIUS as isize;
     let (mut prev_1, mut prev_3, mut prev_5) = (0f32, 0f32, 0f32);
     let (mut prev2_1, mut prev2_3, mut prev2_5) = (0f32, 0f32, 0f32);
@@ -562,16 +550,16 @@ fn horizontal_row<const FUSED: bool>(input: &[f32], output: &mut [f32], width: u
         let mut out_3 = sum * MUL_IN_3;
         let mut out_5 = sum * MUL_IN_5;
 
-        out_1 = fma::<FUSED>(MUL_PREV2_1, prev2_1, out_1);
-        out_3 = fma::<FUSED>(MUL_PREV2_3, prev2_3, out_3);
-        out_5 = fma::<FUSED>(MUL_PREV2_5, prev2_5, out_5);
+        out_1 = fma(MUL_PREV2_1, prev2_1, out_1);
+        out_3 = fma(MUL_PREV2_3, prev2_3, out_3);
+        out_5 = fma(MUL_PREV2_5, prev2_5, out_5);
         prev2_1 = prev_1;
         prev2_3 = prev_3;
         prev2_5 = prev_5;
 
-        out_1 = fma::<FUSED>(MUL_PREV_1, prev_1, out_1);
-        out_3 = fma::<FUSED>(MUL_PREV_3, prev_3, out_3);
-        out_5 = fma::<FUSED>(MUL_PREV_5, prev_5, out_5);
+        out_1 = fma(MUL_PREV_1, prev_1, out_1);
+        out_3 = fma(MUL_PREV_3, prev_3, out_3);
+        out_5 = fma(MUL_PREV_5, prev_5, out_5);
         prev_1 = out_1;
         prev_3 = out_3;
         prev_5 = out_5;
@@ -654,8 +642,7 @@ mod tests {
         out
     }
 
-    /// The port equals the `ssimulacra2` crate it was taken from: within 0.01 with the same fused arithmetic,
-    /// and within 0.3 (that crate's own test tolerance is 0.25) with the plain arithmetic the pipeline uses.
+    /// The port equals the `ssimulacra2` crate it was taken from, within 0.01.
     #[test]
     #[cfg_attr(debug_assertions, ignore = "slow in debug: cargo test -p imaging --release --lib")]
     fn the_port_equals_the_stock_crate_on_every_fixture_and_size() {
@@ -668,7 +655,7 @@ mod tests {
             ("alpha.png", SourceType::Png),
             ("photo.webp", SourceType::Webp),
         ];
-        let (mut worst_fused, mut worst_plain, mut compared) = (0.0f64, 0.0f64, 0);
+        let (mut worst, mut compared) = (0.0f64, 0);
         for (name, ty) in fixtures {
             let source = decode(&fixture(name), ty).unwrap();
             for reference in references(&source) {
@@ -680,21 +667,18 @@ mod tests {
                         image::load_from_memory_with_format(&webp, image::ImageFormat::WebP).unwrap().into_rgba8();
                     let stock =
                         ssimulacra2::compute_frame_ssimulacra2(stock_rgb(&reference), stock_rgb(&distorted)).unwrap();
-                    let fused = Reference::build::<true>(&reference).score_with::<true>(&distorted);
-                    let plain = Reference::new(&reference).score(&distorted);
+                    let port = Reference::new(&reference).score(&distorted);
                     println!(
-                        "{name:<15} {}x{:<5} q{quality} stock {stock:8.4} fused {fused:8.4} plain {plain:8.4}",
+                        "{name:<15} {}x{:<5} q{quality} stock {stock:8.4} port {port:8.4}",
                         reference.width(),
                         reference.height()
                     );
-                    worst_fused = worst_fused.max((fused - stock).abs());
-                    worst_plain = worst_plain.max((plain - stock).abs());
+                    worst = worst.max((port - stock).abs());
                     compared += 1;
                 }
             }
         }
-        println!("{compared} comparisons: largest deviation {worst_fused:.5} fused, {worst_plain:.5} plain");
-        assert!(worst_fused < 0.01, "fused deviation {worst_fused}");
-        assert!(worst_plain < 0.3, "plain deviation {worst_plain}");
+        println!("{compared} comparisons: largest deviation {worst:.5}");
+        assert!(worst < 0.01, "deviation {worst}");
     }
 }

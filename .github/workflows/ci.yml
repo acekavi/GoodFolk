@@ -31,6 +31,10 @@ jobs:
       # nasm: rav1e's assembly. lzip: libjxl.sh unpacks libjxl's release archive.
       - name: Install build tools for the imaging crate
         run: sudo apt-get update && sudo apt-get install -y nasm lzip
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/goodfolk-libjxl
+          key: libjxl-${{ hashFiles('deploy/dev/libjxl.sh') }}
       # cjxl and djxl land in ~/.cache/goodfolk-libjxl/bin, where the imaging crate looks by default.
       - name: Install libjxl's command line tools
         run: sh deploy/dev/libjxl.sh install
