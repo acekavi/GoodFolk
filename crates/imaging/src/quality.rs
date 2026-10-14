@@ -52,35 +52,58 @@ pub fn score(reference: &RgbaImage, distorted: &RgbaImage) -> f64 {
     ssimulacra2::compute_frame_ssimulacra2(reference, distorted).unwrap_or(0.0)
 }
 
-/// Images above this many pixels are scored on a sample (see [`sample`]). SSIMULACRA2 takes about
-/// 1.5 s per megapixel on one core, which would make the 2400 px renditions the whole job.
-const FULL_SCORE_PIXELS: u64 = 300_000;
-/// The sample is a grid of this many tiles per side, each of up to `SAMPLE_TILE` pixels.
-const SAMPLE_GRID: u32 = 3;
-const SAMPLE_TILE: u32 = 128;
+/// Probes of the quality search score images above this many pixels as strips (see [`score_up_to`]).
+/// SSIMULACRA2 takes about 1.5 s per megapixel on one core, which would make the 2400 px renditions
+/// the whole job.
+const SEARCH_FULL_PIXELS: u64 = 300_000;
+/// The final score of a rendition is of the whole image up to `md` (1024 x 768) and of strips above it.
+const FINAL_FULL_PIXELS: u64 = 800_000;
+/// Tiles scored per large image: few in the search, which only needs a starting point, more at the end.
+const SEARCH_TILES: usize = 2;
+const FINAL_TILES: usize = 4;
+/// Large images are scored tile by tile, in parallel (one metric run is mostly single-threaded). Tiles
+/// are about this many pixels on a side: small enough to be quick, large enough to keep every scale
+/// of the metric (thin strips lose the coarse scales and read several points off).
+const TILE_SIDE: u32 = 512;
+/// The mean over tiles reads 1 to 2 points above the whole image's score (measured on the 12 MP photo).
+const TILED_MARGIN: f64 = 2.5;
 
-/// Tiles cut at native resolution from evenly spread places in the image and laid side by side. Pixel
-/// level artefacts, which is what the encoder quality controls, are all kept; only the area shrinks.
-fn sample(img: &RgbaImage) -> RgbaImage {
-    let tile = SAMPLE_TILE.min(img.width()).min(img.height());
-    let origin = |size: u32, i: u32| ((2 * i + 1) * size / (2 * SAMPLE_GRID)).saturating_sub(tile / 2).min(size - tile);
-    let mut mosaic = RgbaImage::new(tile * SAMPLE_GRID, tile * SAMPLE_GRID);
-    for row in 0..SAMPLE_GRID {
-        for col in 0..SAMPLE_GRID {
-            let view = image::imageops::crop_imm(img, origin(img.width(), col), origin(img.height(), row), tile, tile);
-            image::imageops::replace(&mut mosaic, &*view, i64::from(col * tile), i64::from(row * tile));
+/// Tiles of about `TILE_SIDE` covering `width` x `height`, as (x, y, width, height).
+fn tiles(width: u32, height: u32) -> Vec<(u32, u32, u32, u32)> {
+    let split = |size: u32| ((size + TILE_SIDE / 2) / TILE_SIDE).max(1);
+    let (columns, rows) = (split(width), split(height));
+    let edge = |size: u32, count: u32, i: u32| {
+        u32::try_from(u64::from(size) * u64::from(i) / u64::from(count)).unwrap_or(size)
+    };
+    let mut out = Vec::new();
+    for row in 0..rows {
+        for col in 0..columns {
+            let (x0, x1) = (edge(width, columns, col), edge(width, columns, col + 1));
+            let (y0, y1) = (edge(height, rows, row), edge(height, rows, row + 1));
+            out.push((x0, y0, x1 - x0, y1 - y0));
         }
     }
-    mosaic
+    out
 }
 
-/// [`score`] for the pipeline: the whole image when it is small, otherwise a sample of it.
-pub(crate) fn score_sampled(reference: &RgbaImage, distorted: &RgbaImage) -> f64 {
-    if u64::from(reference.width()) * u64::from(reference.height()) <= FULL_SCORE_PIXELS {
-        score(reference, distorted)
-    } else {
-        score(&sample(reference), &sample(distorted))
+/// [`score`] for the pipeline: the whole image up to `full_pixels`, otherwise the mean over up to
+/// `max_tiles` tiles spread over it, less `TILED_MARGIN`, so it can be compared with the target as it is.
+fn score_up_to(reference: &RgbaImage, distorted: &RgbaImage, full_pixels: u64, max_tiles: usize) -> f64 {
+    let (width, height) = reference.dimensions();
+    if u64::from(width) * u64::from(height) <= full_pixels {
+        return score(reference, distorted);
     }
+    let all = tiles(width, height);
+    // At most `max_tiles` of them, spread evenly over the image.
+    let cells: Vec<_> = (0..max_tiles.min(all.len())).map(|i| all[i * all.len() / max_tiles.min(all.len())]).collect();
+    let total: f64 = cells
+        .par_iter()
+        .map(|&(x, y, w, h)| {
+            let cut = |img: &RgbaImage| image::imageops::crop_imm(img, x, y, w, h).to_image();
+            score(&cut(reference), &cut(distorted))
+        })
+        .sum();
+    total / cells.len() as f64 - TILED_MARGIN
 }
 
 /// One encode of one rendition, as it decodes.
@@ -143,8 +166,14 @@ fn decode_back(bytes: &[u8], format: Format) -> Result<RgbaImage, ImagingError> 
 /// Encodes `img` at `quality` and scores what a viewer would see against `img`.
 pub(crate) fn probe(img: &RgbaImage, format: Format, quality: u8) -> Result<Encoded, ImagingError> {
     let bytes = encode(img, format, quality)?;
-    let score = score_sampled(img, &decode_back(&bytes, format)?);
+    let score = score_up_to(img, &decode_back(&bytes, format)?, SEARCH_FULL_PIXELS, SEARCH_TILES);
     Ok(Encoded { bytes, quality, score })
+}
+
+/// The final score of `bytes` as a rendition of `img`, and whether it clears the target.
+fn judge(img: &RgbaImage, bytes: &[u8], format: Format) -> Result<(f64, bool), ImagingError> {
+    let score = score_up_to(img, &decode_back(bytes, format)?, FINAL_FULL_PIXELS, FINAL_TILES);
+    Ok((score, score >= QUALITY_TARGET))
 }
 
 /// The lowest quality in `SEARCH_MIN..=SEARCH_MAX` whose encode of `img` scores at least the target,
@@ -178,32 +207,32 @@ pub(crate) fn search(img: &RgbaImage, format: Format) -> Result<(u8, Option<Enco
     Ok((pass, best.filter(|b| b.quality == pass)))
 }
 
-/// WebP the lossy encoder could not bring up to the target, stored without loss.
-fn lossless_webp(img: &RgbaImage) -> Result<Encoded, ImagingError> {
-    let bytes = encode_webp_lossless(img)?;
-    let score = score_sampled(img, &decode_back(&bytes, Format::Webp)?);
-    Ok(Encoded { bytes, quality: QUALITY_CEILING, score })
-}
-
-/// Encodes `img` at `quality`, stepping the quality up by `BUMP` until the score reaches the target. Past
-/// the ceiling a WebP is stored lossless; an AVIF stays at the ceiling. `known` is an encode of `img` already made at `quality`.
+/// Encodes `img` at `quality`, stepping the quality up by `BUMP` until the final score clears the target.
+/// Past the ceiling a WebP is stored lossless; an AVIF stays at the ceiling. `known` is an encode of
+/// `img` already made at `quality` by the search, which scored it more coarsely.
 pub(crate) fn climb(
     img: &RgbaImage,
     format: Format,
     mut quality: u8,
     known: Option<Encoded>,
 ) -> Result<Encoded, ImagingError> {
-    let mut known = known.filter(|k| k.quality == quality);
+    let mut known = known.filter(|k| k.quality == quality).map(|k| k.bytes);
     loop {
-        let encoded = match known.take() {
-            Some(k) => k,
-            None => probe(img, format, quality)?,
+        let bytes = match known.take() {
+            Some(bytes) => bytes,
+            None => encode(img, format, quality)?,
         };
-        if encoded.score >= QUALITY_TARGET {
-            return Ok(encoded);
+        let (score, passes) = judge(img, &bytes, format)?;
+        if passes {
+            return Ok(Encoded { bytes, quality, score });
         }
         if quality >= QUALITY_CEILING {
-            return if format == Format::Webp { lossless_webp(img) } else { Ok(encoded) };
+            if format == Format::Webp {
+                let bytes = encode_webp_lossless(img)?;
+                let (score, _) = judge(img, &bytes, format)?;
+                return Ok(Encoded { bytes, quality, score });
+            }
+            return Ok(Encoded { bytes, quality, score });
         }
         quality = (quality + BUMP).min(QUALITY_CEILING);
     }
