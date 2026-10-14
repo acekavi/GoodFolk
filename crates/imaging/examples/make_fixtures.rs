@@ -24,6 +24,7 @@ fn main() -> Result<()> {
     fs::write(dir.join("gps.jpg"), with_exif(&small_jpg, &exif(None, true)))?;
     fs::write(dir.join("truncated.jpg"), &small_jpg[..small_jpg.len() * 2 / 5])?;
     fs::write(dir.join("p3.jpg"), p3_patches()?)?;
+    fs::write(dir.join("onesided.jpg"), jpeg(&one_sided(&photo), None)?)?;
 
     alpha_png().save(dir.join("alpha.png"))?;
     let small_rgba = image::DynamicImage::ImageRgb8(small).into_rgba8();
@@ -45,6 +46,14 @@ fn jpeg(img: &RgbImage, icc: Option<Vec<u8>>) -> Result<Vec<u8>> {
     }
     encoder.write_image(img.as_raw(), img.width(), img.height(), image::ExtendedColorType::Rgb8)?;
     Ok(out)
+}
+
+/// A 2400 x 1800 crop of the photo whose left half is blurred smooth and whose right half keeps its
+/// detail, so a quality chosen from a sample of the smooth side would be wrong for the other.
+fn one_sided(photo: &RgbImage) -> RgbImage {
+    let crop = imageops::crop_imm(photo, 800, 600, 2400, 1800).to_image();
+    let smooth = imageops::blur(&crop, 40.0);
+    RgbImage::from_fn(2400, 1800, |x, y| if x < 1200 { *smooth.get_pixel(x, y) } else { *crop.get_pixel(x, y) })
 }
 
 /// Four flat patches, written as Display P3 values and tagged with a Display P3 profile.

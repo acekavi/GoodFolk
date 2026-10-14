@@ -18,6 +18,7 @@ Total size stays under 12 MB.
 | `rotated.jpg` | `small.jpg` with an EXIF orientation of 6 |
 | `gps.jpg` | `small.jpg` with an EXIF GPS position (6 55' 37.6" N, 79 51' 40.3" E) |
 | `p3.jpg` | four flat patches tagged with a Display P3 ICC profile |
+| `onesided.jpg` | a 2400x1800 crop of `photo-12mp.jpg` (from 800,600), the left half blurred (sigma 40), JPEG quality 80 |
 | `truncated.jpg` | the first 40% of `small.jpg` |
 | `alpha.png` | generated 256x256 radial alpha gradient |
 | `photo.webp` | `small.jpg` as lossy WebP, quality 80 |

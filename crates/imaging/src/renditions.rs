@@ -1,6 +1,6 @@
 //! The whole per-image job: archive, size ladder and quality-gated renditions.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use fast_image_resize::{
     FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer,
@@ -15,6 +15,7 @@ use crate::{
     decode::{decode, jpeg_is_complete},
     dimensions,
     quality::{Encoded, climb, search},
+    ssim2::Reference,
 };
 
 pub struct Rendition {
@@ -97,6 +98,10 @@ fn search_level(levels: &[(Size, RgbaImage)]) -> Option<usize> {
 /// The whole job for one upload: decode once, archive the original, cut the size ladder and encode
 /// every size as AVIF and WebP at the lowest quality that still scores SSIMULACRA2 >= 80 (the
 /// quality is searched on `md` and used for every size, and a rendition that misses is bumped up).
+/// Every rendition is scored exactly against its own reference, and `Rendition::score` says what it
+/// got. A rendition can come back below 80 only at the encoder's ceiling (an AVIF at quality 100; a
+/// WebP is stored lossless instead) or for dimensions the metric cannot score (a side under 8 pixels,
+/// which scores 0), so a caller that needs the guarantee checks the score.
 /// A PDF is returned as its own archive with no renditions. Work runs on rayon's global pool, which
 /// the caller sizes with `RAYON_NUM_THREADS`.
 pub fn process(bytes: &[u8], ty: SourceType, profile: Profile) -> Result<Processed, ImagingError> {
@@ -151,31 +156,68 @@ struct Chosen {
     encoded: Mutex<Option<Encoded>>,
 }
 
+/// A size of the ladder, with its pixels and, once something needs it, the prepared reference for scoring.
+struct Level {
+    size: Size,
+    img: RgbaImage,
+    reference: OnceLock<Reference>,
+}
+
+impl Level {
+    fn reference(&self) -> &Reference {
+        self.reference.get_or_init(|| Reference::new(&self.img))
+    }
+}
+
+/// Levels above this many pixels try the next quality step alongside the current one.
+const SPECULATE_PIXELS: u64 = 800_000;
+
 /// Picks one quality per format on the search level, then encodes every level in both formats.
 fn render(levels: Vec<(Size, RgbaImage)>) -> Result<Vec<Rendition>, ImagingError> {
     let Some(at) = search_level(&levels) else {
         return Ok(Vec::new());
     };
-    let reference = &levels[at].1;
-    let (avif, webp) = rayon::join(|| search(reference, Format::Avif), || search(reference, Format::Webp));
+    let levels: Vec<Level> =
+        levels.into_iter().map(|(size, img)| Level { size, img, reference: OnceLock::new() }).collect();
+    let search_on = &levels[at];
+    // The other levels' references are prepared while the search runs, largest first.
+    let (found, ()) = rayon::join(
+        || {
+            rayon::join(
+                || search(&search_on.img, search_on.reference(), Format::Avif),
+                || search(&search_on.img, search_on.reference(), Format::Webp),
+            )
+        },
+        || {
+            levels.par_iter().filter(|l| l.size.long_edge() > search_on.size.long_edge()).for_each(|l| {
+                l.reference();
+            })
+        },
+    );
+    let (avif, webp) = found;
     let mut chosen = Vec::new();
     for (format, found) in [(Format::Avif, avif), (Format::Webp, webp)] {
         let (quality, encoded) = found?;
         chosen.push(Chosen { format, quality, encoded: Mutex::new(encoded) });
     }
 
-    let jobs: Vec<(usize, &Chosen)> = (0..levels.len()).flat_map(|i| chosen.iter().map(move |c| (i, c))).collect();
+    // Largest first, so the long jobs start early rather than last.
+    let mut jobs: Vec<(usize, &Chosen)> = (0..levels.len()).flat_map(|i| chosen.iter().map(move |c| (i, c))).collect();
+    jobs.sort_by_key(|(i, _)| std::cmp::Reverse(levels[*i].size.long_edge()));
     let mut renditions = jobs
         .into_par_iter()
+        .with_max_len(1)
         .map(|(i, chosen)| {
-            let (size, img) = &levels[i];
+            let level = &levels[i];
             let known = if i == at { chosen.encoded.lock().ok().and_then(|mut e| e.take()) } else { None };
-            let encoded = climb(img, chosen.format, chosen.quality, known)?;
+            let big = u64::from(level.img.width()) * u64::from(level.img.height()) > SPECULATE_PIXELS
+                && chosen.format == Format::Avif;
+            let encoded = climb(&level.img, level.reference(), chosen.format, chosen.quality, known, big)?;
             Ok(Rendition {
-                size: *size,
+                size: level.size,
                 format: chosen.format,
-                width: img.width(),
-                height: img.height(),
+                width: level.img.width(),
+                height: level.img.height(),
                 bytes: encoded.bytes,
                 score: encoded.score,
             })

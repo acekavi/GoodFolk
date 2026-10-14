@@ -18,9 +18,10 @@ fn fixture(name: &str) -> Vec<u8> {
 /// each size from the one above it). Lanczos3 from `fast_image_resize`, the pipeline's resampler: another
 /// Lanczos3 (the `image` crate's) differs from it by about as much as the quality target allows for.
 fn resized(src: &RgbaImage, width: u32, height: u32) -> RgbaImage {
+    let opaque = src.pixels().all(|p| p.0[3] == u8::MAX);
     let view = ImageRef::new(src.width(), src.height(), src.as_raw(), PixelType::U8x4).unwrap();
     let mut dst = Image::new(width, height, PixelType::U8x4);
-    let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3)).use_alpha(false);
+    let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3)).use_alpha(!opaque);
     Resizer::new().resize(&view, &mut dst, &options).unwrap();
     RgbaImage::from_raw(width, height, dst.into_vec()).unwrap()
 }
@@ -54,7 +55,7 @@ fn pixels_of(r: &Rendition) -> RgbaImage {
 
 /// The exact check: every rendition of every image fixture, as delivered, scored at full size against
 /// the decoded source resized independently (centre square for the thumb). The pipeline's own score is
-/// sampled for speed and is only printed here.
+/// exact too; it is printed beside this one, and the two can differ by the resampler and the banding.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "run in release: cargo test -p imaging --release --test quality_gate")]
 fn quality_gate() {
@@ -64,6 +65,7 @@ fn quality_gate() {
         ("rotated.jpg", SourceType::Jpeg),
         ("gps.jpg", SourceType::Jpeg),
         ("p3.jpg", SourceType::Jpeg),
+        ("onesided.jpg", SourceType::Jpeg),
         ("alpha.png", SourceType::Png),
         ("photo.webp", SourceType::Webp),
     ];

@@ -129,17 +129,20 @@ fn no_metadata_survives() {
     let gps_pointer: &[u8] = if little { &[0x25, 0x88] } else { &[0x88, 0x25] };
     assert!(contains(&tiff[..256], gps_pointer), "gps.jpg has no GPS IFD tag (0x8825)");
 
+    // Structural markers, not words: a bare "GPS" can occur by chance in compressed data.
+    let markers: [(&str, &[u8]); 6] = [
+        ("Exif header", b"Exif\0\0"),
+        ("little-endian TIFF header", b"II*\0"),
+        ("big-endian TIFF header", b"MM\0*"),
+        ("XMP namespace", b"http://ns.adobe.com/xap"),
+        ("XMP packet", b"<x:xmpmeta"),
+        ("XMP packet header", b"<?xpacket"),
+    ];
     let done = process(&gps, SourceType::Jpeg, Profile::Gallery).unwrap();
     assert!(!done.renditions.is_empty());
     for r in &done.renditions {
-        for marker in [&b"Exif"[..], b"GPS", b"EXIF", b"http://ns.adobe.com/xap", b"<x:xmpmeta"] {
-            assert!(
-                !contains(&r.bytes, marker),
-                "{:?} {:?} holds {:?}",
-                r.size,
-                r.format,
-                String::from_utf8_lossy(marker)
-            );
+        for (what, marker) in markers {
+            assert!(!contains(&r.bytes, marker), "{:?} {:?} holds an {what}", r.size, r.format);
         }
     }
 }
