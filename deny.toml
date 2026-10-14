@@ -22,6 +22,9 @@ allow = [
   "Zlib",
 ]
 
+# rav1e lists libfuzzer-sys under cfg(fuzzing) only; it is never built. NCSA is the permissive LLVM/Illinois licence.
+exceptions = [{ allow = ["NCSA"], crate = "libfuzzer-sys" }]
+
 [licenses.private]
 ignore = true
 

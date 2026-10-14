@@ -33,7 +33,7 @@ This phase also brings in the infrastructure deferred from Phase 0, because `med
 ## Limits and checks
 
 - **Accepted types**, decided from the file's bytes and never from its name:
-  - **photos:** JPEG, PNG, WebP, HEIC, at most 25 MB;
+  - **photos:** JPEG, PNG, WebP, at most 25 MB. HEIC is recognised and refused (ruling, 2026-10-14: no HEVC decoder can be vendored under our licence policy; the owner agreed this fallback). Browsers usually hand over a JPEG when a phone uploads.
   - **guest documents:** those image types plus PDF, at most 15 MB.
 - **Refused uploads.** An upload is refused (`422`) when its type doesn't match the purpose, or when its size or
   SHA-256 differs from what was declared at start. An image over 100 megapixels is refused before it is decoded.
@@ -46,7 +46,8 @@ This phase also brings in the infrastructure deferred from Phase 0, because `med
 
 - **Archive** (private bucket, kept for the asset's life):
   - JPEG becomes a JPEG XL lossless transcode. It is reversible byte for byte and about 20% smaller.
-  - PNG, WebP and HEIC become lossless JPEG XL of the decoded pixels.
+  - PNG and WebP become lossless JPEG XL of the decoded pixels.
+  - JPEG XL is written by libjxl's own BSD-licensed `cjxl`/`djxl` tools (v0.12.0), run as subprocesses (ruling: the Rust bindings are GPL, which `deny.toml` forbids).
   - PDF is kept as uploaded (ruling: linearizing needs qpdf, a native tool we don't ship; revisit with 6b's tooling).
 
   The raw upload is deleted once the archive has been written and read back successfully.
@@ -127,13 +128,10 @@ This phase also brings in the infrastructure deferred from Phase 0, because `med
 
   Processing results arrive at `POST /internal/events` (`media.ready`, `media.failed`).
 - **Image libraries:**
-  - `image` for decoding JPEG, PNG and WebP, and `libheif-rs` (embedded libheif) for HEIC;
-  - `jpegxl-rs` (vendored libjxl) for the archive;
+  - `image` for decoding JPEG, PNG and WebP;
+  - libjxl's `cjxl`/`djxl` (v0.12.0 static binaries) for the archive;
   - `ravif` for AVIF and `webp` (libwebp) for WebP;
   - `fast_image_resize` for resizing, `moxcms` for colour, and `ssimulacra2` for the quality score.
-
-  If HEIC can't be built here and in the container image, HEIC is refused for now (the owner agreed this fallback).
-  Browsers usually hand over a JPEG when a phone uploads anyway.
 
 ## Flow
 
@@ -241,7 +239,7 @@ over):
 
 - **Upload checks.** Over-limit size; a disguised file (PDF named `.jpg`, an executable named `.png`); SHA-256 or size
   mismatch; a decompression bomb (above 100 MP) refused before decode.
-- **Archive.** JPEG → JXL → JPEG is byte-identical. PNG and HEIC archives decode to the same pixels.
+- **Archive.** JPEG → JXL → JPEG is byte-identical. PNG and WebP archives decode to the same pixels. HEIC is refused with "This file type is not accepted here".
 - **Renditions.**
   - Sizes skip what the original can't reach.
   - The thumb is a centred square.

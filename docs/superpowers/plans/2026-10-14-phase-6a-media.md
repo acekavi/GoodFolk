@@ -62,6 +62,12 @@ names. Video and audio are out of scope ([phase-6b-video-audio.md](../../specs/p
   - After an API change, run `bun run api:schemas && bun run codegen` and commit the generated files, including
     `persisted-documents.json`.
 - **Commits.** Use the exact commit messages given. No body, no trailer, no AI attribution.
+- **Rulings from Task 1:**
+  - **HEIC** is recognised and refused ("This file type is not accepted here").
+  - **JPEG XL** is written by libjxl v0.12.0's static `cjxl`/`djxl`, run as subprocesses found through `JXL_BIN_DIR`
+    (default `~/.cache/goodfolk-libjxl/bin`, installed by `deploy/dev/libjxl.sh install`). The container image must
+    ship both binaries.
+  - **No GPL dependencies** (see `deny.toml`).
 - **`unsafe_code = "forbid"`** stays workspace-wide. Native libraries come only through their safe wrapper crates.
 - **Purposes** are exactly `gallery`, `issue_photo` and `guest_document`. **Statuses** are exactly `uploading`,
   `processing`, `ready` and `failed`. **Sizes** are exactly `thumb` (320 square crop), `sm` 640, `md` 1024, `lg` 1600
@@ -69,9 +75,9 @@ names. Video and audio are out of scope ([phase-6b-video-audio.md](../../specs/p
 
   | Purpose | Visibility | Sizes | Types | Max bytes |
   |---|---|---|---|---|
-  | `gallery` | public | thumb sm md lg xl | jpeg png webp heic | 25 MiB (26_214_400) |
-  | `issue_photo` | private | thumb sm md lg | jpeg png webp heic | 25 MiB |
-  | `guest_document` | private | thumb md (images only) | jpeg png webp heic pdf | 15 MiB (15_728_640) |
+  | `gallery` | public | thumb sm md lg xl | jpeg png webp | 25 MiB (26_214_400) |
+  | `issue_photo` | private | thumb sm md lg | jpeg png webp | 25 MiB |
+  | `guest_document` | private | thumb md (images only) | jpeg png webp pdf | 15 MiB (15_728_640) |
 
 - **Limits:**
   - Images up to 100 megapixels (`MAX_PIXELS = 100_000_000`). At most 5 photos per issue.
