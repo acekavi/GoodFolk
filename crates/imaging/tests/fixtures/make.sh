@@ -9,6 +9,8 @@
 # Derived: small.jpg, rotated.jpg, gps.jpg, p3.jpg, truncated.jpg, alpha.png, photo.webp,
 #          bomb.png, doc.pdf, fake.jpg, elf.png.
 # elf.png is 4 KiB of fixed ELF-header-like bytes plus deterministic filler.
+# No progressive JPEG fixture: the marker walker is pinned in src/decode.rs by a hand-built stream
+# (SOF2 plus several scans), since no local tool is guaranteed to write one.
 set -eu
 
 dir=$(cd "$(dirname "$0")" && pwd)

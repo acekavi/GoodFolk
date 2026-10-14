@@ -6,12 +6,18 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+avif-decode.workspace = true
+fast_image_resize.workspace = true
 image.workspace = true
 infer.workspace = true
+media-types.workspace = true
 moxcms.workspace = true
 ravif.workspace = true
+rayon.workspace = true
+ssimulacra2.workspace = true
 thiserror.workspace = true
 webp.workspace = true
+yuvxyb.workspace = true
 
 [lints]
 workspace = true

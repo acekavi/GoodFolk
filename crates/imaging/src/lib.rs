@@ -9,10 +9,15 @@ mod archive;
 mod decode;
 mod encode;
 mod jxl;
+mod quality;
+mod renditions;
 
 pub use archive::{archive, reconstruct_jpeg};
 pub use decode::{decode, dimensions};
 pub use encode::{encode_avif, encode_webp};
+pub use media_types::{Format, Profile, Size};
+pub use quality::{QUALITY_TARGET, score};
+pub use renditions::{Processed, Rendition, process};
 
 /// Images above this many pixels are refused before they are decoded.
 pub const MAX_PIXELS: u64 = 100_000_000;

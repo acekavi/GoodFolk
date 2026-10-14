@@ -21,9 +21,14 @@ fn check_quality(quality: u8) -> Result<f32, ImagingError> {
 
 /// AVIF at speed 6. The alpha channel is encoded only when some pixel is not fully opaque.
 pub fn encode_avif(img: &RgbaImage, quality: u8) -> Result<Vec<u8>, ImagingError> {
+    encode_avif_at(img, quality, AVIF_SPEED)
+}
+
+/// [`encode_avif`] at an explicit rav1e speed (0 slowest, 10 fastest).
+pub(crate) fn encode_avif_at(img: &RgbaImage, quality: u8, speed: u8) -> Result<Vec<u8>, ImagingError> {
     let quality = check_quality(quality)?;
     let (width, height) = (img.width() as usize, img.height() as usize);
-    let encoder = Encoder::new().with_quality(quality).with_alpha_quality(quality).with_speed(AVIF_SPEED);
+    let encoder = Encoder::new().with_quality(quality).with_alpha_quality(quality).with_speed(speed);
     let opaque = img.pixels().all(|p| p.0[3] == u8::MAX);
     let encoded = if opaque {
         let pixels: Vec<RGB8> = img.pixels().map(|p| RGB8::new(p.0[0], p.0[1], p.0[2])).collect();
@@ -46,5 +51,12 @@ pub fn encode_webp(img: &RgbaImage, quality: u8) -> Result<Vec<u8>, ImagingError
     let encoded = WebpEncoder::from_rgba(img.as_raw(), img.width(), img.height())
         .encode_advanced(&config)
         .map_err(|e| encode_err(format!("{e:?}")))?;
+    Ok(encoded.to_vec())
+}
+
+/// Lossless WebP: the fallback for an image lossy WebP cannot reach the quality target on, such as a
+/// tiny one made of hard colour edges, where chroma subsampling alone costs more than the target allows.
+pub(crate) fn encode_webp_lossless(img: &RgbaImage) -> Result<Vec<u8>, ImagingError> {
+    let encoded = WebpEncoder::from_rgba(img.as_raw(), img.width(), img.height()).encode_lossless();
     Ok(encoded.to_vec())
 }

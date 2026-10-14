@@ -23,10 +23,11 @@ anyhow = "1"
 argon2 = "0.6"
 async-graphql = { version = "7.2", default-features = false, features = ["uuid", "time"] }
 async-graphql-axum = "7.2"
+avif-decode = { version = "1.0.2", default-features = false }
 axum = { version = "0.8", features = ["macros"] }
 axum-extra = { version = "0.12", features = ["cookie"] }
 base64 = "0.23"
-fast_image_resize = "6"
+fast_image_resize = { version = "6", features = ["rayon"] }
 flate2 = "1"
 futures = "0.3"
 garde = { version = "0.23", features = ["derive", "email"] }
@@ -37,6 +38,7 @@ infer = "0.22"
 mimalloc = "0.1"
 moxcms = "0.8"
 proptest = "1"
+rayon = "1"
 ravif = { version = "0.13", default-features = false, features = ["asm", "threading"] }
 # Already in the tree through rustls; keep the same version so no second copy is built.
 ring = "0.17.14"
@@ -45,6 +47,7 @@ serde_json = "1"
 sha2 = "0.11"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "time", "json", "migrate", "macros"] }
 ssimulacra2 = "0.5"
+yuvxyb = "0.4"
 thiserror = "2"
 time = { version = "0.3", features = ["macros", "serde", "serde-well-known", "serde-human-readable"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
@@ -68,3 +71,7 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 opt-level = 3
+
+# Dependencies are optimised in dev builds so the imaging tests (AVIF encoding, SSIMULACRA2) do not take minutes.
+[profile.dev.package."*"]
+opt-level = 2

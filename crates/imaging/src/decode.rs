@@ -5,6 +5,9 @@ use moxcms::{ColorProfile, DataColorSpace, Layout, TransformOptions};
 
 use crate::{ImagingError, MAX_PIXELS, SourceType};
 
+/// Rows converted per call when applying a colour profile.
+const CONVERT_ROWS: usize = 64;
+
 fn format_of(ty: SourceType) -> Result<ImageFormat, ImagingError> {
     match ty {
         SourceType::Jpeg => Ok(ImageFormat::Jpeg),
@@ -72,9 +75,17 @@ fn to_srgb(img: &mut RgbaImage, icc: &[u8]) {
     ) else {
         return;
     };
-    let mut out = vec![0u8; img.as_raw().len()];
-    if transform.transform(img.as_raw(), &mut out).is_ok() {
-        img.copy_from_slice(&out);
+    // Rows go through a small buffer so the conversion needs no second full-size image.
+    let row_bytes = img.width() as usize * 4;
+    if row_bytes == 0 {
+        return;
+    }
+    let mut out = vec![0u8; row_bytes * CONVERT_ROWS];
+    for rows in img.chunks_mut(row_bytes * CONVERT_ROWS) {
+        let out = &mut out[..rows.len()];
+        if transform.transform(rows, out).is_ok() {
+            rows.copy_from_slice(out);
+        }
     }
 }
 
@@ -82,7 +93,7 @@ fn to_srgb(img: &mut RgbaImage, icc: &[u8]) {
 /// missing scan data with grey instead of failing, so a truncated upload would otherwise pass as a
 /// photo. Bytes after the first end-of-image marker (camera trailers, multi-picture data) are not
 /// examined.
-fn jpeg_is_complete(bytes: &[u8]) -> bool {
+pub(crate) fn jpeg_is_complete(bytes: &[u8]) -> bool {
     let mut i = 2;
     while i + 1 < bytes.len() {
         if bytes[i] != 0xFF {
@@ -117,4 +128,42 @@ fn skip_entropy_data(bytes: &[u8], mut i: usize) -> usize {
         i += 1;
     }
     bytes.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::jpeg_is_complete;
+
+    /// A marker segment: 0xFF, the marker, a length that counts itself, the payload.
+    fn segment(marker: u8, payload: &[u8]) -> Vec<u8> {
+        let len = u16::try_from(payload.len() + 2).unwrap().to_be_bytes();
+        [&[0xFF, marker][..], &len, payload].concat()
+    }
+
+    /// A progressive JPEG's marker structure: SOF2, then several scans, each with stuffed bytes and a
+    /// restart marker in its entropy data. No image data is decodable; only the markers are walked.
+    fn progressive() -> Vec<u8> {
+        let mut jpeg = vec![0xFF, 0xD8];
+        jpeg.extend(segment(0xC2, &[8, 0, 8, 0, 8, 1, 1, 0x11, 0]));
+        for scan in [[0x12u8, 0x34], [0xAB, 0xCD]] {
+            jpeg.extend(segment(0xDA, &[1, 1, 0, 0, 5, 0]));
+            jpeg.extend([scan[0], 0xFF, 0x00, scan[1], 0xFF, 0xD0, scan[0]]);
+        }
+        jpeg
+    }
+
+    #[test]
+    fn a_progressive_jpeg_is_complete_only_after_its_last_scan_and_the_end_marker() {
+        let whole = [progressive(), vec![0xFF, 0xD9]].concat();
+        assert!(jpeg_is_complete(&whole));
+        // Cut anywhere in the second scan, or before the end marker: incomplete.
+        assert!(!jpeg_is_complete(&progressive()));
+        assert!(!jpeg_is_complete(&whole[..whole.len() - 6]));
+    }
+
+    #[test]
+    fn bytes_after_the_end_marker_are_ignored() {
+        let with_trailer = [progressive(), vec![0xFF, 0xD9], b"camera trailer \xFF\xD8 not a marker".to_vec()].concat();
+        assert!(jpeg_is_complete(&with_trailer));
+    }
 }
