@@ -1,4 +1,6 @@
-//! Photo decoding, lossless archiving and encoding with vendored native codecs.
+//! Photo decoding, lossless archiving and encoding. AVIF and WebP encode in-process; the JPEG XL
+//! archive runs libjxl's own `cjxl` and `djxl` (installed by `deploy/dev/libjxl.sh`, found through
+//! `JXL_BIN_DIR`).
 //!
 //! Every function here works on bytes in memory. Pixels leave [`decode`] upright, in sRGB and
 //! stripped of metadata.
@@ -6,6 +8,7 @@
 mod archive;
 mod decode;
 mod encode;
+mod jxl;
 
 pub use archive::{archive, reconstruct_jpeg};
 pub use decode::{decode, dimensions};

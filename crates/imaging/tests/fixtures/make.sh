@@ -8,7 +8,7 @@
 # Downloaded (CC0, see SOURCES.md): photo-12mp.jpg, photo.heic.
 # Derived: small.jpg, rotated.jpg, gps.jpg, p3.jpg, truncated.jpg, alpha.png, photo.webp,
 #          bomb.png, doc.pdf, fake.jpg, elf.png.
-# elf.png is the first 4 KiB of the generator's own binary, so it changes with every rebuild.
+# elf.png is 4 KiB of fixed ELF-header-like bytes plus deterministic filler.
 set -eu
 
 dir=$(cd "$(dirname "$0")" && pwd)

@@ -24,4 +24,4 @@ Total size stays under 12 MB.
 | `bomb.png` | a PNG header claiming 20000x20000 pixels, with no pixel data |
 | `doc.pdf` | a generated one page PDF |
 | `fake.jpg` | the bytes of `doc.pdf` |
-| `elf.png` | the first 4 KiB of the generator's own (debug build) executable |
+| `elf.png` | 4 KiB starting `\x7fELF` with an x86-64 header-like prefix and deterministic filler |

@@ -33,8 +33,7 @@ fn main() -> Result<()> {
     let pdf = pdf();
     fs::write(dir.join("doc.pdf"), &pdf)?;
     fs::write(dir.join("fake.jpg"), &pdf)?;
-    let own_binary = fs::read(std::env::current_exe()?)?;
-    fs::write(dir.join("elf.png"), &own_binary[..4096])?;
+    fs::write(dir.join("elf.png"), elf_like())?;
     Ok(())
 }
 
@@ -185,5 +184,20 @@ fn with_exif(jpeg: &[u8], tiff: &[u8]) -> Vec<u8> {
     out.extend(((payload.len() + 2) as u16).to_be_bytes());
     out.extend(payload);
     out.extend(&jpeg[2..]);
+    out
+}
+
+/// 4 KiB that start like an x86-64 ELF executable and carry deterministic filler after the header.
+fn elf_like() -> Vec<u8> {
+    let mut out = b"\x7fELF\x02\x01\x01\x00".to_vec();
+    out.resize(16, 0);
+    // e_type EXEC, e_machine x86-64, e_version 1, then entry point and header table offsets.
+    out.extend([2, 0, 0x3E, 0, 1, 0, 0, 0]);
+    out.extend(0x40_1000u64.to_le_bytes());
+    out.extend(0x40u64.to_le_bytes());
+    out.resize(4096, 0);
+    for (i, byte) in out.iter_mut().enumerate().skip(64) {
+        *byte = (i.wrapping_mul(31) % 251) as u8;
+    }
     out
 }

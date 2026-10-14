@@ -8,7 +8,6 @@ publish.workspace = true
 [dependencies]
 image.workspace = true
 infer.workspace = true
-jpegxl-rs.workspace = true
 moxcms.workspace = true
 ravif.workspace = true
 thiserror.workspace = true

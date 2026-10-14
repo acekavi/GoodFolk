@@ -33,7 +33,6 @@ getrandom = "0.3"
 http-body-util = "0.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 infer = "0.22"
-jpegxl-rs = { version = "0.16", default-features = false, features = ["vendored"] }
 mimalloc = "0.1"
 moxcms = "0.9"
 proptest = "1"

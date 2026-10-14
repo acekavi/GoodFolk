@@ -1,25 +1,38 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    io::Write,
+    path::PathBuf,
+    process::{Command, Stdio},
+};
 
 use image::RgbaImage;
 use imaging::{
     ImagingError, SourceType, archive, decode, dimensions, encode_avif, encode_webp, reconstruct_jpeg, sniff,
 };
-use jpegxl_rs::decode::PixelFormat;
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
     fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-/// Decodes an archive made of pixels back to RGBA8.
-fn decode_archive(jxl: &[u8], width: u32, height: u32) -> RgbaImage {
-    let decoder = jpegxl_rs::decoder_builder()
-        .pixel_format(PixelFormat { num_channels: 4, ..PixelFormat::default() })
-        .build()
+/// Decodes an archive made of pixels back to RGBA8 with the `djxl` tool.
+fn decode_archive(jxl: &[u8]) -> RgbaImage {
+    let bin = std::env::var_os("JXL_BIN_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap()).join(".cache/goodfolk-libjxl/bin"));
+    let mut child = Command::new(bin.join("djxl"))
+        .args(["-", "-", "--output_format", "png", "--quiet"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
         .unwrap();
-    let (meta, pixels) = decoder.decode_with::<u8>(jxl).unwrap();
-    assert_eq!((meta.width, meta.height), (width, height));
-    RgbaImage::from_raw(width, height, pixels).unwrap()
+    let mut stdin = child.stdin.take().unwrap();
+    let png = std::thread::scope(|scope| {
+        scope.spawn(move || stdin.write_all(jxl).unwrap());
+        child.wait_with_output().unwrap()
+    });
+    assert!(png.status.success());
+    image::load_from_memory_with_format(&png.stdout, image::ImageFormat::Png).unwrap().into_rgba8()
 }
 
 #[test]
@@ -104,7 +117,7 @@ fn lossless_archives_decode_to_the_same_pixels() {
         let bytes = fixture(name);
         let pixels = decode(&bytes, ty).unwrap();
         let jxl = archive(&bytes, ty).unwrap();
-        let back = decode_archive(&jxl, pixels.width(), pixels.height());
+        let back = decode_archive(&jxl);
         assert!(back == pixels, "{name} did not survive the archive");
     }
 }
