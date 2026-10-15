@@ -137,7 +137,7 @@ crates/svc-auth/     tower layer: Google ID token | shared secret              (
 crates/imaging/      decode, orient, colour, resize, encode, archive, quality  (Tasks 1-2)
 crates/media-svc/    gRPC server, /work, worker subprocess                     (Task 6)
 modules/media/       assets, links, dedup, signed links, sweep                 (Task 7)
-migrations/0014_outbox.sql, 0015_definer_search_path.sql, 0016_media.sql       (Tasks 4, 7)
+migrations/0014_outbox.sql, 0015_definer_search_path.sql, 0016_media.sql, 0017_media_hardening.sql, 0018_media_retention_recheck.sql (Tasks 4, 7)
 modules/identity/src/rbac.rs                         2 permissions             (Task 7)
 crates/core-api/src/{config,state,main,graphql}.rs, routes/{media,internal}.rs (Task 8)
 crates/core-api/tests/{media,perf}.rs                                          (Tasks 8, 9)

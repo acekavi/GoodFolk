@@ -37,8 +37,10 @@ This phase also brings in the infrastructure deferred from Phase 0, because `med
   - **guest documents:** those image types plus PDF, at most 15 MB.
 - **Refused uploads.** An upload is refused (`422`) when its type doesn't match the purpose, or when its size or
   SHA-256 differs from what was declared at start. An image over 100 megapixels is refused before it is decoded.
-- **Duplicates.** Within one tenant and purpose, the same file (same BLAKE3) is stored once. A second upload links to
-  the existing asset. Files are never matched across tenants, so no upload can learn that another tenant holds a file.
+- **Duplicates.** Within one property and purpose, the same file (same BLAKE3) is stored once. A second upload links
+  to the existing asset. Files are never matched across tenants, so no upload can learn that another tenant holds a
+  file. They are not matched across a tenant's properties either (ruling, 2026-10-16), so each property's media lives
+  and is deleted with that property.
   - A `failed` match is queued for processing again.
   - A `processing` or `ready` match is reused as it is.
 
@@ -149,7 +151,7 @@ This phase also brings in the infrastructure deferred from Phase 0, because `med
    `POST …/media/uploads/{id}/complete {parts: [{number, etag}]}`.
 3. **Complete:**
    1. core-api calls `Finalize`.
-   2. **Duplicate check** (unique on tenant, purpose and BLAKE3). On a duplicate, the link points at the existing
+   2. **Duplicate check** (unique on tenant, property, purpose and BLAKE3). On a duplicate, the link points at the existing
       asset, the new row and the raw object are removed, and the reply carries the existing asset.
    3. **Otherwise**, in one transaction:
       - status becomes `processing`;
@@ -175,7 +177,7 @@ Migrations 0014 (outbox), 0015 (definer functions ignore temp schemas) and 0016 
   - `upload_key`, `s3_upload_id`, `archive_key`, `renditions` (jsonb: `[{size, format, width, height, bytes, key}]`);
   - `created_by`, `created_at`, `ready_at`.
 
-  It is unique on `(tenant_id, purpose, blake3)` where `blake3` is not null.
+  It is unique on `(tenant_id, property_id, purpose, blake3)` where `blake3` is not null (migration 0017).
 - `room_type_media` (`room_type_id`, `asset_id`, `position`, `caption`), keyed on `(room_type_id, asset_id)`.
 - `room_issue_media` (`issue_id`, `asset_id`), keyed the same way.
 - `guest_document` (`id`, `guest_id`, `asset_id`, `kind` (`passport`, `nic`, `driving_licence`, `other`),
