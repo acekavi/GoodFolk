@@ -9,8 +9,10 @@
 //! each rendition's bytes, back to back, at the lengths the header gives. Nothing else is written to stdout; the
 //! worker logs to stderr.
 //!
-//! **Exit status:** 0 when a header was written (a finished job, or a file that cannot be read). Anything else (an
-//! encoder failure, a panic, a signal) is a crash, which the parent may retry.
+//! **Exit status:** 0 when a header was written (a finished job, or a file that cannot be read).
+//! [`EXIT_OUT_OF_ADDRESS_SPACE`] when the worker found an allocation refused by its cap; a retry would meet the same
+//! cap, so the job fails at once. Anything else (an encoder failure, a panic, a signal) is a crash, which the parent
+//! may retry.
 
 use std::io::{self, BufWriter, Read, Write};
 use std::path::Path;
@@ -22,8 +24,13 @@ use media_types::{Format, ProcessJob, Size};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// Each worker's address-space cap.
-pub const MEMORY_LIMIT: u64 = 1 << 30;
+/// Each worker's `RLIMIT_AS`. This caps virtual address space, not memory in use: rayon's threads, glibc's
+/// per-thread arenas and the codecs reserve far more than they touch (a 12 MP job on 8 threads peaks near 1.8 GiB of
+/// address space with about 1.3 GiB resident). It is a backstop against runaway allocation; decompression bombs are
+/// stopped earlier by the 100 MP header check. cjxl and djxl inherit it, each in its own address space.
+pub const WORKER_ADDRESS_SPACE: u64 = 3 << 30;
+/// The worker's exit code when an allocation was refused by [`WORKER_ADDRESS_SPACE`].
+pub const EXIT_OUT_OF_ADDRESS_SPACE: u8 = 3;
 /// How long one attempt may run.
 pub const TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_JOB_LINE: usize = 4096;
@@ -71,6 +78,8 @@ pub enum Outcome {
     Done(Output),
     /// The file is corrupt, of an unsupported type or too large; retrying cannot help.
     Unreadable(String),
+    /// The job needs more address space than a worker has; retrying cannot help.
+    OutOfAddressSpace,
 }
 
 /// An attempt that did not finish; another may.
@@ -132,7 +141,13 @@ pub async fn run(
         Err(_) => Err(WorkerError::TimedOut),
         Ok((out, status)) => {
             let status = status?;
-            if status.success() { parse(&out?) } else { Err(WorkerError::Exited(status)) }
+            if status.success() {
+                parse(&out?)
+            } else if status.code() == Some(i32::from(EXIT_OUT_OF_ADDRESS_SPACE)) {
+                Ok(Outcome::OutOfAddressSpace)
+            } else {
+                Err(WorkerError::Exited(status))
+            }
         }
     };
     if outcome.is_err() {
@@ -199,7 +214,9 @@ pub fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     #[cfg(debug_assertions)]
-    test_hooks::on_start();
+    if let Some(exit) = test_hooks::on_start() {
+        return exit;
+    }
 
     let mut input = Vec::new();
     if let Err(error) = io::stdin().lock().read_to_end(&mut input) {
@@ -264,10 +281,10 @@ pub fn main() -> ExitCode {
     }
 }
 
-/// Lowers the address-space limit to [`MEMORY_LIMIT`], or keeps a lower limit already in place.
+/// Lowers the address-space limit to [`WORKER_ADDRESS_SPACE`], or keeps a lower limit already in place.
 fn limit_memory() -> io::Result<()> {
     use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
-    let cap = getrlimit(Resource::As).maximum.map_or(MEMORY_LIMIT, |hard| hard.min(MEMORY_LIMIT));
+    let cap = getrlimit(Resource::As).maximum.map_or(WORKER_ADDRESS_SPACE, |hard| hard.min(WORKER_ADDRESS_SPACE));
     setrlimit(Resource::As, Rlimit { current: Some(cap), maximum: Some(cap) })?;
     Ok(())
 }
@@ -287,7 +304,8 @@ fn write<'a>(header: &Header, pieces: impl Iterator<Item = &'a [u8]>) -> io::Res
 /// Test hooks, compiled into debug builds only:
 /// - `MEDIA_TEST_WORKER_CRASH=1`: abort at start;
 /// - `MEDIA_TEST_WORKER_SPAWNS=<file>`: append a line per start;
-/// - `MEDIA_TEST_WORKER_HANG=<file>`: start `sleep`, append "<worker pid> <sleep pid>", then never finish.
+/// - `MEDIA_TEST_WORKER_HANG=<file>`: start `sleep`, append "<worker pid> <sleep pid>", then never finish;
+/// - `MEDIA_TEST_WORKER_ALLOC=<bytes>`: reserve that much first; refused, exit [`EXIT_OUT_OF_ADDRESS_SPACE`].
 ///
 /// The parent honours `MEDIA_TEST_WORKER_TIMEOUT_MS` (see [`timeout`]).
 #[cfg(debug_assertions)]
@@ -300,7 +318,8 @@ mod test_hooks {
         writeln!(file, "{line}").expect("write the hook file");
     }
 
-    pub(super) fn on_start() {
+    /// `Some` when the worker should exit now with that code.
+    pub(super) fn on_start() -> Option<std::process::ExitCode> {
         if let Ok(path) = std::env::var("MEDIA_TEST_WORKER_SPAWNS") {
             append(&path, "spawn");
         }
@@ -322,6 +341,14 @@ mod test_hooks {
                 std::thread::park();
             }
         }
+        if let Some(bytes) = std::env::var("MEDIA_TEST_WORKER_ALLOC").ok().and_then(|v| v.parse().ok()) {
+            let mut block = Vec::<u8>::new();
+            if block.try_reserve_exact(bytes).is_err() {
+                tracing::error!(bytes, "an allocation was refused by the address-space cap");
+                return Some(std::process::ExitCode::from(super::EXIT_OUT_OF_ADDRESS_SPACE));
+            }
+        }
+        None
     }
 }
 

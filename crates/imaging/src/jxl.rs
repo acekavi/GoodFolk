@@ -24,11 +24,13 @@ fn bin_dir() -> Result<PathBuf, ToolError> {
     Ok(PathBuf::from(home).join(".cache/goodfolk-libjxl/bin"))
 }
 
-/// Runs `tool` with `args`, feeding `input` on stdin and returning stdout.
+/// Runs `tool` with `args`, feeding `input` on stdin and returning stdout. The tool gets as many threads as rayon's
+/// global pool (sized by `RAYON_NUM_THREADS`), so it keeps to the caller's CPU share; left alone it takes every core.
 pub(crate) fn run(tool: &str, args: &[&str], input: &[u8]) -> Result<Vec<u8>, ToolError> {
     let path = bin_dir()?.join(tool);
     let mut child = Command::new(&path)
         .args(args)
+        .arg(format!("--num_threads={}", rayon::current_num_threads()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

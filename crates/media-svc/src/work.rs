@@ -86,10 +86,12 @@ async fn handle(state: &WorkState, job: &ProcessJob) -> anyhow::Result<()> {
 enum Attempts {
     Done(Output),
     Unreadable,
+    /// Out of attempts, or out of address space.
     Exhausted,
 }
 
-/// Up to [`ATTEMPTS`] runs: a crash, a timeout or a non-zero exit is retried; an unreadable file is not.
+/// Up to [`ATTEMPTS`] runs: a crash, a timeout or a non-zero exit is retried; an unreadable file or a job too big
+/// for a worker's address space is not.
 async fn attempts(state: &WorkState, job: &ProcessJob, bytes: &[u8]) -> Attempts {
     for attempt in 0..ATTEMPTS {
         match worker::run(&state.svc.worker_exe, job, bytes, state.rayon_threads, worker::timeout()).await {
@@ -97,6 +99,10 @@ async fn attempts(state: &WorkState, job: &ProcessJob, bytes: &[u8]) -> Attempts
             Ok(Outcome::Unreadable(detail)) => {
                 tracing::info!(asset = %job.asset_id, detail, "the file cannot be read");
                 return Attempts::Unreadable;
+            }
+            Ok(Outcome::OutOfAddressSpace) => {
+                tracing::warn!(asset = %job.asset_id, "the job needs more address space than a worker has");
+                return Attempts::Exhausted;
             }
             Err(error) => {
                 tracing::warn!(asset = %job.asset_id, attempt = attempt + 1, %error, "a worker attempt failed");

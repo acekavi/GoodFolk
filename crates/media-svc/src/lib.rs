@@ -41,11 +41,11 @@ pub struct MediaSvc {
 
 /// gRPC (tonic) + health + HTTP (/work behind svc-auth, /healthz) on one port (tonic's axum router).
 ///
-/// Each worker's rayon pool is sized from the permits `svc.workers` holds now, so build the router before any are
-/// taken.
+/// Each worker's threads come from `MEDIA_WORKER_THREADS`, or else from the permits `svc.workers` holds now, so build
+/// the router before any are taken.
 pub fn router(svc: MediaSvc, verifier: Arc<Verifier>) -> axum::Router {
     let auth = svc_auth::layer(verifier);
-    let rayon_threads = config::rayon_threads(svc.workers.available_permits());
+    let rayon_threads = config::worker_threads(svc.workers.available_permits());
     // The overall status ("") starts as serving, which is what probes ask for.
     let (_reporter, health) = tonic_health::server::health_reporter();
 

@@ -192,6 +192,20 @@ async fn timeout_kills_the_worker_and_its_children() {
 }
 
 #[tokio::test]
+async fn a_runaway_allocation_fails_without_retry() {
+    let test = "a_runaway_allocation_fails_without_retry";
+    let Some(dir) = hooked(test, &[("MEDIA_TEST_WORKER_ALLOC", "4294967296")]) else { return };
+    let server = start().await;
+    let job = uploaded(&server, Profile::Gallery, fixture("small.jpg"), "image/jpeg").await;
+    let MediaResult::Failed { reason, .. } = process(&server, &job).await else { panic!("not failed") };
+    assert_eq!(reason, "Processing failed");
+    assert_eq!(lines(dir.join("spawns")).len(), 1, "refused by the cap, not retried");
+    let response = http().get(format!("http://{}/healthz", server.addr)).send().await.unwrap();
+    assert_eq!(response.status(), 200, "the service keeps serving");
+    server.storage.delete(Bucket::Private, &upload_key(job.tenant_id, job.asset_id)).await.unwrap();
+}
+
+#[tokio::test]
 async fn work_rejects_unauthenticated() {
     let server = start().await;
     let job = ProcessJob {
