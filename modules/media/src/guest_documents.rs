@@ -19,6 +19,8 @@ pub struct GuestDocumentRow {
     pub status: AssetStatus,
     pub mime: Option<String>,
     pub uploaded_by: Option<Uuid>,
+    /// The uploader's display name; `None` once their account is gone.
+    pub uploaded_by_name: Option<String>,
     pub uploaded_at: OffsetDateTime,
 }
 
@@ -28,8 +30,10 @@ pub const MAX_LISTED_DOCUMENTS: i64 = 50;
 /// The guest's documents uploaded at the property, newest first, at most [`MAX_LISTED_DOCUMENTS`].
 pub async fn guest_documents(tx: &mut Tx, property: Uuid, guest: Uuid) -> Result<Vec<GuestDocumentRow>, MediaError> {
     Ok(sqlx::query_as(
-        "select d.id, d.guest_id, d.asset_id, d.kind, a.status, a.mime, d.uploaded_by, d.uploaded_at
+        "select d.id, d.guest_id, d.asset_id, d.kind, a.status, a.mime, d.uploaded_by,
+                u.display_name as uploaded_by_name, d.uploaded_at
          from guest_document d join media_asset a on a.id = d.asset_id
+         left join app_user u on u.id = d.uploaded_by
          where d.guest_id = $1 and a.property_id = $2
          order by d.uploaded_at desc, d.id desc
          limit $3",

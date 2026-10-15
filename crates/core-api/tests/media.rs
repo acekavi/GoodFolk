@@ -42,7 +42,7 @@ const ISSUE_PHOTOS: &str = "query ($p: UUID!) {
     roomIssues(propertyId: $p) { id photos { assetId status renditions { size format url } } }
 }";
 const GUEST_DOCUMENTS: &str = "query ($p: UUID!, $g: UUID!) {
-    guestDocuments(propertyId: $p, guestId: $g) { id kind status mime uploadedAt uploadedBy }
+    guestDocuments(propertyId: $p, guestId: $g) { id kind status mime uploadedAt uploadedBy uploadedByName }
 }";
 
 /// Reads the event stream until an invalidation naming `key` arrives, for up to `within`.
@@ -342,12 +342,29 @@ async fn housekeeper_cannot_list_or_link_guest_documents(_: PgPoolOptions, opts:
     assert_eq!(listed["errors"][0]["message"], "you do not have permission for this property", "{listed:?}");
     assert_eq!(link.status, StatusCode::FORBIDDEN, "{:?}", link.body);
     assert_eq!(delete.status, StatusCode::FORBIDDEN, "{:?}", delete.body);
-    let allowed = graphql(&app, &desk, GUEST_DOCUMENTS, variables).await;
+    let allowed = graphql(&app, &desk, GUEST_DOCUMENTS, variables.clone()).await;
     let documents = &allowed["data"]["guestDocuments"];
     assert_eq!(documents.as_array().unwrap().len(), 1, "{allowed:?}");
     assert_eq!(documents[0]["id"], json!(document));
     assert_eq!(documents[0]["kind"], "PASSPORT");
     assert_eq!(documents[0]["status"], "READY");
+    assert_eq!(documents[0]["uploadedByName"], json!(null), "no uploader, no name");
+
+    // The uploader is named the way the reservation history names its actors.
+    let (uploader, name): (Uuid, String) =
+        sqlx::query_as("select id, display_name from app_user where email = 'owner@example.com'")
+            .fetch_one(&superuser)
+            .await
+            .unwrap();
+    sqlx::query("update guest_document set uploaded_by = $1 where id = $2")
+        .bind(uploader)
+        .bind(document)
+        .execute(&superuser)
+        .await
+        .unwrap();
+    let named = graphql(&app, &desk, GUEST_DOCUMENTS, variables).await;
+    assert_eq!(named["data"]["guestDocuments"][0]["uploadedBy"], json!(uploader));
+    assert_eq!(named["data"]["guestDocuments"][0]["uploadedByName"], json!(name));
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -359,7 +376,7 @@ async fn no_graphql_field_exposes_guest_document_urls(_: PgPoolOptions, opts: Pg
 
     let fields: Vec<&str> =
         body["data"]["__type"]["fields"].as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap()).collect();
-    assert_eq!(fields, ["id", "kind", "status", "mime", "uploadedAt", "uploadedBy"]);
+    assert_eq!(fields, ["id", "kind", "status", "mime", "uploadedAt", "uploadedBy", "uploadedByName"]);
     for field in fields {
         let lower = field.to_lowercase();
         assert!(!["url", "link", "key", "href", "src"].iter().any(|bad| lower.contains(bad)), "{field}");

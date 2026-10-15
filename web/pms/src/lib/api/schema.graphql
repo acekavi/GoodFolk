@@ -194,6 +194,10 @@ type GuestDocumentNode {
 	mime: String
 	uploadedAt: DateTime!
 	uploadedBy: UUID
+	"""
+	The uploader's display name; null once their account is gone.
+	"""
+	uploadedByName: String
 }
 
 """

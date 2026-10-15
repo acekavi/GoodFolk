@@ -379,6 +379,8 @@ pub struct GuestDocumentNode {
     pub mime: Option<String>,
     pub uploaded_at: OffsetDateTime,
     pub uploaded_by: Option<Uuid>,
+    /// The uploader's display name; null once their account is gone.
+    pub uploaded_by_name: Option<String>,
 }
 
 impl From<media::GuestDocumentRow> for GuestDocumentNode {
@@ -390,6 +392,7 @@ impl From<media::GuestDocumentRow> for GuestDocumentNode {
             mime: document.mime,
             uploaded_at: document.uploaded_at,
             uploaded_by: document.uploaded_by,
+            uploaded_by_name: document.uploaded_by_name,
         }
     }
 }
