@@ -20,7 +20,7 @@ This phase also brings in the infrastructure deferred from Phase 0, because `med
 | Purpose | Who uploads | Who views | Visibility | Renditions |
 |---|---|---|---|---|
 | `gallery` (room type) | `MediaManage`: owner, manager | anyone with `RoomsView` | public, immutable URLs | thumb, sm, md, lg, xl |
-| `issue_photo` (room issue, at most 5) | `RoomIssuesReport` | `HousekeepingView` | private, 60-minute links | thumb, sm, md, lg |
+| `issue_photo` (room issue, at most 5) | `RoomIssuesReport` (removal: the uploader or `HousekeepingSupervise`) | `HousekeepingView` | private, 60-minute links | thumb, sm, md, lg |
 | `guest_document` (guest's ID) | `GuestDocumentsManage`: owner, manager, front_desk | `GuestDocumentsManage` | private, 5-minute links, every link audited | thumb, md (images only) |
 
 - **Galleries.** Photos are ordered, can be reordered, and have an optional caption of up to 200 characters. Removing
@@ -28,7 +28,8 @@ This phase also brings in the infrastructure deferred from Phase 0, because `med
 - **Issue photos** are attached when the issue is reported (from `/hk` or the board), or later. Uploading needs a
   connection. The offline queue carries text-only reports, as in Phase 5.
 - **Guest documents** sit with the guest, are shown in the reservation modal's guest section, and are deleted 1 year
-  after the guest's last departure (see "Retention").
+  after the guest's last departure (see "Retention"). They stay with the property they were uploaded at: another
+  property of the same tenant can neither list, view nor delete them (ruling, 2026-10-16).
 
 ## Limits and checks
 
