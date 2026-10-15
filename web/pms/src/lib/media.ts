@@ -9,6 +9,7 @@ export const RoomTypeGalleriesDocument = graphql(`
 			media {
 				assetId
 				status
+				error
 				caption
 				width
 				height

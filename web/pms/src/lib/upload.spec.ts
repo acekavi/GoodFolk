@@ -1,16 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, NETWORK_ERROR } from './api/problem';
 import {
+	MissingEtag,
 	PartFailed,
+	UploadUnfinished,
 	UploadRefused,
 	fileType,
 	partRanges,
 	putPart,
 	refusal,
+	retryableComplete,
 	retryablePart,
 	sha256Hex,
 	uploadErrorMessage,
 	uploadFile,
+	uploadQueue,
 	withRetry,
 	type UploadApi
 } from './upload';
@@ -157,6 +161,27 @@ describe('withRetry', () => {
 	});
 });
 
+describe('retryableComplete', () => {
+	const problem = (status: number, detail?: string) =>
+		new ApiError({ type: 'about:blank', title: 'x', status, detail });
+
+	it('retries no answer, server errors, timeouts, throttling and a request still in progress', () => {
+		expect(retryableComplete(new TypeError('Failed to fetch'))).toBe(true);
+		expect(retryableComplete(problem(502))).toBe(true);
+		expect(retryableComplete(problem(408))).toBe(true);
+		expect(retryableComplete(problem(429))).toBe(true);
+		expect(retryableComplete(problem(409, 'A request with this key is still in progress'))).toBe(
+			true
+		);
+	});
+
+	it('does not retry a refusal', () => {
+		expect(retryableComplete(problem(422, 'This file could not be read'))).toBe(false);
+		expect(retryableComplete(problem(409, 'Already completed'))).toBe(false);
+		expect(retryableComplete(problem(404))).toBe(false);
+	});
+});
+
 describe('retryablePart', () => {
 	it('retries no answer, server errors, timeouts and throttling only', () => {
 		expect(retryablePart(new PartFailed(null))).toBe(true);
@@ -171,11 +196,25 @@ describe('retryablePart', () => {
 describe('putPart', () => {
 	const signal = new AbortController().signal;
 
-	it('returns the ETag exactly as storage sent it', async () => {
+	it('returns the ETag exactly as storage sent it, sending no cookies', async () => {
 		const put = vi.fn().mockResolvedValue(new Response(null, { headers: { etag: '"abc"' } }));
 
 		expect(await putPart('https://s3/part', new Blob(['x']), signal, put)).toBe('"abc"');
-		expect(put).toHaveBeenCalledWith('https://s3/part', expect.objectContaining({ method: 'PUT' }));
+		expect(put).toHaveBeenCalledWith(
+			'https://s3/part',
+			expect.objectContaining({ method: 'PUT', credentials: 'omit' })
+		);
+	});
+
+	it('says to check CORS when storage hides the ETag', async () => {
+		const put = vi.fn().mockResolvedValue(new Response(null));
+
+		const failed = putPart('u', new Blob(['x']), signal, put);
+
+		await expect(failed).rejects.toBeInstanceOf(MissingEtag);
+		expect(uploadErrorMessage(await failed.catch((error: unknown) => error))).toBe(
+			'Storage did not return the upload’s ETag (check the bucket’s CORS settings)'
+		);
 	});
 
 	it('turns a network failure and a refusal into PartFailed', async () => {
@@ -298,11 +337,142 @@ describe('uploadFile', () => {
 		expect(api.complete).not.toHaveBeenCalled();
 	});
 
+	describe('completing', () => {
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+		/** Waits for `done` without moving the fake clock (hashing runs off the event loop's timers). */
+		async function until(done: () => boolean) {
+			while (!done()) await new Promise((resolve) => setImmediate(resolve));
+		}
+		const etagged = () =>
+			vi.fn().mockImplementation(async () => new Response(null, { headers: { etag: '"e"' } }));
+
+		it('retries after 1 s, 2 s and 4 s with the same key', async () => {
+			vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+			const api = fakeApi(etagged());
+			api.complete
+				.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+				.mockRejectedValueOnce(new ApiError({ type: 'about:blank', title: 'x', status: 502 }))
+				.mockResolvedValueOnce(asset);
+			const result = uploadFile(photo(), options, api);
+			await until(() => api.complete.mock.calls.length === 1);
+
+			await vi.advanceTimersByTimeAsync(999);
+			expect(api.complete).toHaveBeenCalledTimes(1);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(api.complete).toHaveBeenCalledTimes(2);
+			await vi.advanceTimersByTimeAsync(2000);
+
+			expect(await result).toEqual(asset);
+			const keys = api.complete.mock.calls.map((call) => call[3]);
+			expect(keys).toEqual([keys[0], keys[0], keys[0]]);
+			expect(api.cancel).not.toHaveBeenCalled();
+		});
+
+		it('gives up after the retries without cancelling, since it may have arrived', async () => {
+			vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+			const api = fakeApi(etagged());
+			api.complete.mockRejectedValue(new TypeError('Failed to fetch'));
+			const result = uploadFile(photo(), options, api).catch((error: unknown) => error);
+			await until(() => api.complete.mock.calls.length === 1);
+
+			await vi.advanceTimersByTimeAsync(7000);
+
+			const error = await result;
+			expect(error).toBeInstanceOf(UploadUnfinished);
+			expect(uploadErrorMessage(error)).toBe('Upload could not be finished; try again');
+			expect(api.complete).toHaveBeenCalledTimes(4);
+			expect(api.cancel).not.toHaveBeenCalled();
+		});
+
+		it('shows a refusal at once', async () => {
+			const api = fakeApi(etagged());
+			const refused = new ApiError({
+				type: 'about:blank',
+				title: 'x',
+				status: 422,
+				detail: 'This file type is not accepted here'
+			});
+			api.complete.mockRejectedValue(refused);
+
+			await expect(uploadFile(photo(), options, api)).rejects.toBe(refused);
+			expect(api.complete).toHaveBeenCalledTimes(1);
+			expect(api.cancel).not.toHaveBeenCalled();
+		});
+
+		it('is not stopped by an abort, such as the page being left', async () => {
+			const controller = new AbortController();
+			const api = fakeApi(etagged());
+			let answer: (value: typeof asset) => void = () => {};
+			api.complete.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+			const result = uploadFile(photo(), { ...options, signal: controller.signal }, api);
+			await vi.waitFor(() => expect(api.complete).toHaveBeenCalled());
+
+			controller.abort();
+			answer(asset);
+
+			expect(await result).toEqual(asset);
+			expect(api.cancel).not.toHaveBeenCalled();
+		});
+	});
+
 	it('cancels the upload when a part fails for good', async () => {
 		const put = vi.fn().mockResolvedValue(new Response(null, { status: 403 }));
 		const api = fakeApi(put);
 
 		await expect(uploadFile(photo(), options, api)).rejects.toEqual(new PartFailed(403));
 		expect(api.cancel).toHaveBeenCalledWith('p1', 'u1');
+	});
+});
+
+describe('uploadQueue', () => {
+	function deferred() {
+		let resolve: () => void = () => {};
+		const promise = new Promise<void>((r) => (resolve = r));
+		return { promise, resolve };
+	}
+
+	it('runs at most `limit` at a time, in order', async () => {
+		const runs = new Map<string, ReturnType<typeof deferred>>();
+		const run = vi.fn((item: string) => {
+			const d = deferred();
+			runs.set(item, d);
+			return d.promise;
+		});
+		const queue = uploadQueue(2, run);
+
+		for (const item of ['a', 'b', 'c']) queue.add(item);
+		expect(run.mock.calls.map(([item]) => item)).toEqual(['a', 'b']);
+
+		runs.get('a')!.resolve();
+		await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(3));
+		expect(run).toHaveBeenLastCalledWith('c');
+	});
+
+	it('keeps going after a failed run', async () => {
+		const run = vi.fn().mockRejectedValueOnce(new Error('x')).mockResolvedValue(undefined);
+		const queue = uploadQueue(1, run);
+
+		queue.add('a');
+		queue.add('b');
+
+		await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+	});
+
+	it('drops waiting uploads and takes no more once stopped', async () => {
+		const first = deferred();
+		const run = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue(undefined);
+		const queue = uploadQueue(1, run);
+		queue.add('a');
+		queue.add('b');
+
+		queue.stop();
+		queue.add('c');
+		first.resolve();
+		await first.promise;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(run).toHaveBeenCalledTimes(1);
 	});
 });

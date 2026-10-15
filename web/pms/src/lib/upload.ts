@@ -69,9 +69,29 @@ export class PartFailed extends Error {
 	}
 }
 
+/** Storage answered a part without exposing its `ETag`, which its CORS rules must allow. */
+export class MissingEtag extends Error {
+	constructor() {
+		super('Storage did not return the upload’s ETag (check the bucket’s CORS settings)');
+	}
+}
+
+/**
+ * Completing got no usable answer, even after retries. The server may have completed it, so the upload
+ * is not cancelled.
+ */
+export class UploadUnfinished extends Error {
+	constructor() {
+		super('Upload could not be finished; try again');
+	}
+}
+
 /** The words to show for a failed upload. */
 export function uploadErrorMessage(error: unknown): string {
-	return error instanceof ApiError || error instanceof UploadRefused
+	return error instanceof ApiError ||
+		error instanceof UploadRefused ||
+		error instanceof MissingEtag ||
+		error instanceof UploadUnfinished
 		? error.message
 		: NETWORK_ERROR;
 }
@@ -135,6 +155,18 @@ export function retryablePart(error: unknown): boolean {
 	return status === null || status >= 500 || status === 408 || status === 429;
 }
 
+/**
+ * Completing may pass on a retry with the same key after no answer, a server error, a timeout,
+ * throttling, or a 409 because the first request is still in progress; the server replays its answer.
+ */
+export function retryableComplete(error: unknown): boolean {
+	// fetch rejects with a TypeError when no answer comes.
+	if (!(error instanceof ApiError)) return error instanceof TypeError;
+	const { status } = error;
+	if (status === 409) return error.problem.detail?.includes('in progress') ?? false;
+	return status >= 500 || status === 408 || status === 429;
+}
+
 /** PUTs one part to its presigned URL and returns the `ETag` storage answered, quotes and all. */
 export async function putPart(
 	url: string,
@@ -144,7 +176,8 @@ export async function putPart(
 ): Promise<string> {
 	let response: Response;
 	try {
-		response = await put(url, { method: 'PUT', body, signal });
+		// A presigned URL carries its own authorization; the app's cookies must never go to storage.
+		response = await put(url, { method: 'PUT', body, signal, credentials: 'omit' });
 	} catch (error) {
 		if (signal.aborted) throw error;
 		throw new PartFailed(null);
@@ -152,7 +185,7 @@ export async function putPart(
 	if (!response.ok) throw new PartFailed(response.status);
 	const etag = response.headers.get('etag');
 	// Missing only when storage does not expose the header to this origin (its CORS rules).
-	if (!etag) throw new Error('Storage did not expose the part’s ETag');
+	if (!etag) throw new MissingEtag();
 	return etag;
 }
 
@@ -244,8 +277,10 @@ export interface UploadOptions {
 /**
  * Uploads a file straight to storage: checks it, hashes it, starts the upload, PUTs its parts to their
  * presigned URLs ({@link PARALLEL_PARTS} at a time, each retried after {@link RETRY_DELAYS}), then
- * completes it. Returns the asset, usually still `processing`. Throws {@link UploadRefused}, an
- * `ApiError` (such as the server's 422 refusal), a part failure, or the signal's reason once aborted.
+ * completes it, retrying with the same key. Returns the asset, usually still `processing`. Throws
+ * {@link UploadRefused}, an `ApiError` (such as the server's 422 refusal), a part failure,
+ * {@link UploadUnfinished}, or the signal's reason once aborted before completing. Once completing,
+ * an abort no longer stops it: the server may already hold the file.
  */
 export async function uploadFile(
 	file: File,
@@ -313,7 +348,15 @@ export async function uploadFile(
 		completing = true;
 		onProgress?.({ phase: 'completing', loaded, total });
 		uploaded.sort((a, b) => a.number - b.number);
-		return await api.complete(propertyId, started.upload_id, uploaded, idempotencyKey());
+		const key = idempotencyKey();
+		try {
+			return await withRetry(
+				() => api.complete(propertyId, started.upload_id, uploaded, key),
+				retryableComplete
+			);
+		} catch (error) {
+			throw retryableComplete(error) ? new UploadUnfinished() : error;
+		}
 	} catch (error) {
 		// Once complete is sent the server owns the upload: it keeps it or has already removed it.
 		if (!completing) void api.cancel(propertyId, started.upload_id).catch(() => {});
@@ -321,4 +364,37 @@ export async function uploadFile(
 	} finally {
 		signal?.removeEventListener('abort', forward);
 	}
+}
+
+/**
+ * Runs uploads at most `limit` at a time, in the order added. `stop()` drops those still waiting, as
+ * when the page that started them goes away; the caller aborts the running ones.
+ */
+export function uploadQueue<T>(limit: number, run: (item: T) => Promise<void>) {
+	const waiting: T[] = [];
+	let running = 0;
+	let stopped = false;
+	function pump() {
+		while (!stopped && running < limit && waiting.length > 0) {
+			const item = waiting.shift()!;
+			running++;
+			void run(item)
+				.catch(() => {})
+				.finally(() => {
+					running--;
+					pump();
+				});
+		}
+	}
+	return {
+		add(item: T) {
+			if (stopped) return;
+			waiting.push(item);
+			pump();
+		},
+		stop() {
+			stopped = true;
+			waiting.length = 0;
+		}
+	};
 }

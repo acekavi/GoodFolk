@@ -7,11 +7,18 @@
 -->
 <script lang="ts">
 	import { useQueryClient } from '@tanstack/svelte-query';
+	import { onDestroy } from 'svelte';
 	import { errorMessage } from '$lib/api/problem';
 	import { rest, unwrap } from '$lib/api/rest';
 	import { dropIndex, mediaKey, type Box, type MediaItem } from '$lib/media';
 	import { moveItem } from '$lib/rooms';
-	import { refusal, uploadErrorMessage, uploadFile, type UploadProgress } from '$lib/upload';
+	import {
+		refusal,
+		uploadErrorMessage,
+		uploadFile,
+		uploadQueue,
+		type UploadProgress
+	} from '$lib/upload';
 	import MediaUploader from './MediaUploader.svelte';
 	import Picture from './Picture.svelte';
 
@@ -26,6 +33,7 @@
 
 	const client = useQueryClient();
 	const CAPTION_MAX = 200;
+	const PROCESSING_FAILED = 'Processing failed';
 	/** Files uploaded at once; each sends up to three parts in parallel. */
 	const PARALLEL_FILES = 3;
 	/** A pointer-down becomes a drag once it has moved this far (px); less is a click. */
@@ -44,8 +52,19 @@
 	}
 
 	let uploads = $state<Upload[]>([]);
-	let running = 0;
-	const queue: Upload[] = [];
+	const queue = uploadQueue(PARALLEL_FILES, send);
+	/** Set when the panel goes away; from then on nothing may touch its state. */
+	let destroyed = false;
+
+	// Leaving the page stops its uploads: those waiting never start, and those sending are aborted,
+	// which deletes them on the server. One already completing is left to finish.
+	onDestroy(() => {
+		destroyed = true;
+		queue.stop();
+		for (const upload of uploads) {
+			upload.controller.abort(new DOMException('The page was left', 'AbortError'));
+		}
+	});
 
 	// A finished upload's tile goes once the gallery shows its photo, for good: a later removal of the
 	// photo must not bring the tile back.
@@ -74,45 +93,40 @@
 				assetId: null
 			});
 			// The pushed object is the reactive proxy; updates must go through it.
-			if (!reason) queue.push(uploads[uploads.length - 1]);
-		}
-		pump();
-	}
-
-	function pump() {
-		while (running < PARALLEL_FILES && queue.length > 0) {
-			const upload = queue.shift()!;
-			running++;
-			void send(upload).finally(() => {
-				running--;
-				pump();
-			});
+			if (!reason) queue.add(uploads[uploads.length - 1]);
 		}
 	}
 
 	async function send(upload: Upload) {
 		if (upload.controller.signal.aborted) return;
 		upload.state = 'sending';
+		let asset;
 		try {
-			const asset = await uploadFile(upload.file, {
+			asset = await uploadFile(upload.file, {
 				propertyId,
 				purpose: 'gallery',
 				targetId: roomType.id,
 				signal: upload.controller.signal,
-				onProgress: (progress) => (upload.progress = progress)
+				onProgress: (progress) => {
+					if (!destroyed) upload.progress = progress;
+				}
 			});
-			if (asset.status === 'failed') {
-				upload.state = 'failed';
-				upload.error = asset.error ?? 'Processing failed';
-			} else {
-				upload.state = 'processing';
-				upload.assetId = asset.asset_id;
-			}
-			await client.invalidateQueries({ queryKey: mediaKey(propertyId) });
 		} catch (err) {
+			if (destroyed) return;
 			if (upload.controller.signal.aborted) return dismiss(upload);
 			upload.state = 'failed';
 			upload.error = uploadErrorMessage(err);
+			return;
+		}
+		// The refetch shows the photo even if the panel has gone, for the next visit.
+		void client.invalidateQueries({ queryKey: mediaKey(propertyId) });
+		if (destroyed) return;
+		if (asset.status === 'failed') {
+			upload.state = 'failed';
+			upload.error = asset.error ?? PROCESSING_FAILED;
+		} else {
+			upload.state = 'processing';
+			upload.assetId = asset.asset_id;
 		}
 	}
 
@@ -279,7 +293,7 @@
 							variant="thumb"
 						/>
 					{:else if item.status === 'FAILED'}
-						<p class="state error">Processing failed</p>
+						<p class="state error">{item.error ?? PROCESSING_FAILED}</p>
 					{:else}
 						<p class="state">Processing…</p>
 					{/if}

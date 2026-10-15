@@ -219,7 +219,7 @@ export type RoomTypeGalleriesQueryVariables = Exact<{
 }>;
 
 
-export type RoomTypeGalleriesQuery = { roomTypes: Array<{ id: string, media: Array<{ assetId: string, status: MediaStatus, caption: string | null, width: number | null, height: number | null, renditions: Array<{ size: RenditionSize, format: ImageFormat, width: number, height: number, url: string }> }> }> };
+export type RoomTypeGalleriesQuery = { roomTypes: Array<{ id: string, media: Array<{ assetId: string, status: MediaStatus, error: string | null, caption: string | null, width: number | null, height: number | null, renditions: Array<{ size: RenditionSize, format: ImageFormat, width: number, height: number, url: string }> }> }> };
 
 export type PropertiesQueryVariables = Exact<{ [key: string]: never; }>;
 
@@ -482,6 +482,7 @@ export const RoomTypeGalleriesDocument = new TypedDocumentString(`
     media {
       assetId
       status
+      error
       caption
       width
       height
@@ -495,7 +496,7 @@ export const RoomTypeGalleriesDocument = new TypedDocumentString(`
     }
   }
 }
-    `, {"hash":"sha256:5e5fea486b90dc5c6bd5917b53e135fe4760016b98394aaeed1ee2e855c19994"}) as unknown as TypedDocumentString<RoomTypeGalleriesQuery, RoomTypeGalleriesQueryVariables>;
+    `, {"hash":"sha256:98199afa545df6979c304af243fc998f32d6e775527f04fbd6b2d1ca1b6e538c"}) as unknown as TypedDocumentString<RoomTypeGalleriesQuery, RoomTypeGalleriesQueryVariables>;
 export const PropertiesDocument = new TypedDocumentString(`
     query Properties {
   properties {
