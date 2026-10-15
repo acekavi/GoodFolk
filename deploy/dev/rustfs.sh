@@ -64,10 +64,11 @@ start() {
         >"$logfile" 2>&1 </dev/null &
     echo $! >"$pidfile"
     i=0
-    while ! answers; do
+    until alive && answers; do
         i=$((i + 1))
         if [ "$i" -gt 60 ] || ! alive; then
             echo "RustFS did not come up; see $logfile" >&2
+            rm -f "$pidfile"
             exit 1
         fi
         sleep 0.5
@@ -77,7 +78,17 @@ start() {
 
 stop() {
     if alive; then
-        kill "$(cat "$pidfile")"
+        pid=$(cat "$pidfile")
+        kill "$pid"
+        i=0
+        while alive; do
+            i=$((i + 1))
+            if [ "$i" -gt 50 ]; then
+                echo "RustFS (pid $pid) did not exit within 5 s" >&2
+                exit 1
+            fi
+            sleep 0.1
+        done
         echo "RustFS stopped"
     else
         echo "RustFS not running"

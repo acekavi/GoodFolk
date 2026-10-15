@@ -63,11 +63,23 @@ async fn complete_refuses_gaps_in_part_numbers() {
 }
 
 #[tokio::test]
+async fn complete_refuses_part_numbers_out_of_range() {
+    let storage = storage().await;
+    let zero = [(0u16, "a".to_owned())];
+    let too_many: Vec<(u16, String)> = (1..=10_001u16).map(|n| (n, "a".to_owned())).collect();
+    for parts in [&zero[..], &too_many[..]] {
+        let err = storage.complete_multipart(Bucket::Private, &fresh_key(), "any", parts).await.unwrap_err();
+        assert!(matches!(err, StorageError::InvalidParts));
+    }
+}
+
+#[tokio::test]
 async fn put_and_get_round_trip() {
     let storage = storage().await;
     let key = fresh_key();
     storage.put(Bucket::Private, &key, b"hello".to_vec(), "text/plain", None).await.unwrap();
     assert_eq!(&storage.get(Bucket::Private, &key).await.unwrap()[..], b"hello");
+    storage.delete(Bucket::Private, &key).await.unwrap();
     storage.delete(Bucket::Private, &key).await.unwrap();
     assert!(matches!(
         storage.get(Bucket::Private, &key).await,

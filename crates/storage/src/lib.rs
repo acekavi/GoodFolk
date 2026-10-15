@@ -19,6 +19,10 @@ use uuid::Uuid;
 /// Size of every multipart part but the last.
 pub const PART_SIZE: u64 = 8 * 1024 * 1024;
 /// Cache-Control for objects whose key never changes content.
+/// The largest object [`Storage::get`] will buffer.
+pub const MAX_OBJECT_BYTES: u64 = 32 * 1024 * 1024;
+/// S3 allows at most this many parts in one multipart upload, numbered from 1.
+const MAX_PARTS: usize = 10_000;
 pub const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
 /// How long a signed request made by this client stays valid.
@@ -33,7 +37,7 @@ pub fn install_tls_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct StorageConfig {
     pub endpoint: Url,
     pub region: String,
@@ -43,6 +47,21 @@ pub struct StorageConfig {
     pub private_bucket: String,
     pub path_style: bool,
     pub public_base_url: Url,
+}
+
+impl std::fmt::Debug for StorageConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StorageConfig")
+            .field("endpoint", &self.endpoint.as_str())
+            .field("region", &self.region)
+            .field("access_key", &"<redacted>")
+            .field("secret_key", &"<redacted>")
+            .field("public_bucket", &self.public_bucket)
+            .field("private_bucket", &self.private_bucket)
+            .field("path_style", &self.path_style)
+            .field("public_base_url", &self.public_base_url.as_str())
+            .finish()
+    }
 }
 
 impl StorageConfig {
@@ -96,13 +115,22 @@ pub enum Bucket {
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
     #[error("storage request failed: {0}")]
-    Transport(#[from] reqwest::Error),
+    Transport(reqwest::Error),
     #[error("storage answered {status}: {body}")]
     Status { status: StatusCode, body: String },
     #[error("storage answered something unreadable: {0}")]
     Unreadable(String),
-    #[error("parts must be numbered 1..=n without gaps or repeats")]
+    #[error("parts must be numbered 1..=n without gaps or repeats, at most 10000")]
     InvalidParts,
+    #[error("object is larger than {limit} bytes")]
+    TooLarge { limit: u64 },
+}
+
+impl From<reqwest::Error> for StorageError {
+    /// A reqwest error prints the request URL, and for presigned requests that carries the credential and signature.
+    fn from(error: reqwest::Error) -> Self {
+        Self::Transport(error.without_url())
+    }
 }
 
 pub struct Storage {
@@ -149,8 +177,9 @@ impl Storage {
         Ok(parsed.upload_id().to_owned())
     }
 
-    /// A URL the browser PUTs one part to. `part` counts from 1.
+    /// A URL the browser PUTs one part to. `part` counts from 1 and must be at most 10000.
     pub fn presign_part(&self, bucket: Bucket, key: &str, upload_id: &str, part: u16, ttl: Duration) -> Url {
+        debug_assert!((1..=MAX_PARTS).contains(&usize::from(part)), "part numbers run from 1 to 10000");
         UploadPart::new(self.bucket(bucket), Some(&self.credentials), key, part, upload_id).sign(ttl)
     }
 
@@ -165,7 +194,7 @@ impl Storage {
         let mut ordered: Vec<&(u16, String)> = etags.iter().collect();
         ordered.sort_by_key(|(number, _)| *number);
         let contiguous = ordered.iter().zip(1u16..).all(|((number, _), expected)| *number == expected);
-        if ordered.is_empty() || !contiguous {
+        if ordered.is_empty() || ordered.len() > MAX_PARTS || !contiguous {
             return Err(StorageError::InvalidParts);
         }
         let action = CompleteMultipartUpload::new(
@@ -198,7 +227,8 @@ impl Storage {
         GetObject::new(self.bucket(bucket), Some(&self.credentials), key).sign(ttl)
     }
 
-    /// The anonymous URL of an object in the public bucket.
+    /// The anonymous URL of an object in the public bucket. `key` must be a plain object key: no leading `/`, and no
+    /// `?` or `#`, which would be read as a query or fragment.
     pub fn public_url(&self, key: &str) -> Url {
         self.public_base_url.join(key).expect("an object key joins onto the public base URL")
     }
@@ -222,9 +252,25 @@ impl Storage {
         Ok(())
     }
 
+    /// Reads an object of at most [`MAX_OBJECT_BYTES`]; a larger one is refused with [`StorageError::TooLarge`].
     pub async fn get(&self, bucket: Bucket, key: &str) -> Result<Bytes, StorageError> {
+        self.get_capped(bucket, key, MAX_OBJECT_BYTES).await
+    }
+
+    async fn get_capped(&self, bucket: Bucket, key: &str, limit: u64) -> Result<Bytes, StorageError> {
         let action = GetObject::new(self.bucket(bucket), Some(&self.credentials), key);
-        Ok(self.send(HttpMethod::GET, action.sign(REQUEST_TTL), &[], Bytes::new()).await?.bytes().await?)
+        let mut response = self.send(HttpMethod::GET, action.sign(REQUEST_TTL), &[], Bytes::new()).await?;
+        if response.content_length().is_some_and(|length| length > limit) {
+            return Err(StorageError::TooLarge { limit });
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if u64::try_from(body.len() + chunk.len()).map_or(true, |total| total > limit) {
+                return Err(StorageError::TooLarge { limit });
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(Bytes::from(body))
     }
 
     /// The object's size, or `None` when it does not exist.
@@ -336,17 +382,17 @@ fn xml_escape(text: &str) -> String {
 
 /// Where a raw upload lands, in the private bucket.
 pub fn upload_key(tenant: Uuid, asset: Uuid) -> String {
-    format!("uploads/{tenant}/{asset}")
+    format!("t/{tenant}/a/{asset}/upload")
 }
 
 /// The lossless archive of an asset, in the private bucket.
 pub fn archive_key(tenant: Uuid, asset: Uuid, ext: &str) -> String {
-    format!("archive/{tenant}/{asset}.{ext}")
+    format!("t/{tenant}/a/{asset}/archive.{ext}")
 }
 
 /// A delivered rendition, in the public bucket.
 pub fn rendition_key(tenant: Uuid, asset: Uuid, size: &str, format: &str) -> String {
-    format!("media/{tenant}/{asset}/{size}.{format}")
+    format!("t/{tenant}/a/{asset}/{size}.{format}")
 }
 
 #[cfg(test)]
@@ -356,9 +402,48 @@ mod tests {
     #[test]
     fn keys_are_deterministic_and_scoped_by_tenant() {
         let (t, a) = (Uuid::nil(), Uuid::max());
-        assert_eq!(upload_key(t, a), format!("uploads/{t}/{a}"));
-        assert_eq!(archive_key(t, a, "jxl"), format!("archive/{t}/{a}.jxl"));
-        assert_eq!(rendition_key(t, a, "md", "avif"), format!("media/{t}/{a}/md.avif"));
+        assert_eq!(upload_key(t, a), format!("t/{t}/a/{a}/upload"));
+        assert_eq!(archive_key(t, a, "jxl"), format!("t/{t}/a/{a}/archive.jxl"));
+        assert_eq!(rendition_key(t, a, "md", "avif"), format!("t/{t}/a/{a}/md.avif"));
+    }
+
+    #[test]
+    fn debug_output_hides_credentials() {
+        let cfg = StorageConfig::from_lookup(
+            |name| match name {
+                "S3_ACCESS_KEY" => Some("AKIDEXAMPLE".into()),
+                "S3_SECRET_KEY" => Some("s3cr3t-value".into()),
+                _ => None,
+            },
+            Some(()),
+        )
+        .unwrap();
+        let shown = format!("{cfg:?}");
+        assert!(!shown.contains("AKIDEXAMPLE") && !shown.contains("s3cr3t-value"), "{shown}");
+    }
+
+    #[tokio::test]
+    async fn transport_errors_do_not_print_the_signed_url() {
+        let mut cfg = StorageConfig::dev().unwrap();
+        cfg.endpoint = "http://127.0.0.1:1".parse().unwrap();
+        let storage = Storage::new(cfg).unwrap();
+        let err = storage.get(Bucket::Private, "k").await.unwrap_err();
+        assert!(matches!(err, StorageError::Transport(_)));
+        let shown = format!("{err} {err:?}");
+        assert!(!shown.contains("X-Amz-Signature") && !shown.contains("X-Amz-Credential"), "{shown}");
+    }
+
+    #[tokio::test]
+    async fn get_refuses_objects_over_the_cap() {
+        let storage = Storage::new(StorageConfig::dev().unwrap()).unwrap();
+        storage.ensure_dev_buckets().await.expect("start RustFS: deploy/dev/rustfs.sh start");
+        let key = format!("test/{}", Uuid::now_v7());
+        storage.put(Bucket::Private, &key, vec![0; 100], "application/octet-stream", None).await.unwrap();
+        let refused = storage.get_capped(Bucket::Private, &key, 10).await;
+        let allowed = storage.get_capped(Bucket::Private, &key, 100).await;
+        storage.delete(Bucket::Private, &key).await.unwrap();
+        assert!(matches!(refused, Err(StorageError::TooLarge { limit: 10 })));
+        assert_eq!(allowed.unwrap().len(), 100);
     }
 
     #[test]
