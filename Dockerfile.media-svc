@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1
+# media-svc on glibc (the vendored C and C++ codecs are reliable there, unlike on musl) on a distroless base (no shell,
+# runs as non-root), with libjxl's static cjxl and djxl for the JPEG XL archive.
+FROM rust:1.97-bookworm AS build
+# cmake and nasm build the vendored codecs; lzip unpacks the libjxl release.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends cmake nasm lzip \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+RUN sh deploy/dev/libjxl.sh install \
+    && mkdir /jxl \
+    && cp "$(sh deploy/dev/libjxl.sh path)/cjxl" "$(sh deploy/dev/libjxl.sh path)/djxl" /jxl/
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release -p media-svc --bin media-svc && cp target/release/media-svc /media-svc
+
+FROM gcr.io/distroless/cc-debian12:nonroot
+COPY --from=build /media-svc /media-svc
+COPY --from=build /jxl/ /opt/libjxl/bin/
+ENV APP_ENV=production PORT=8090 JXL_BIN_DIR=/opt/libjxl/bin
+EXPOSE 8090
+ENTRYPOINT ["/media-svc"]
+CMD ["serve"]

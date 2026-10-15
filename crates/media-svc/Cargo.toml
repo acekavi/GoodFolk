@@ -1,0 +1,37 @@
+[package]
+name = "media-svc"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+# gRPC (HTTP/2, cleartext) and the push endpoint (HTTP/1.1) share one port.
+axum = { workspace = true, features = ["http2"] }
+blake3 = "1"
+events.workspace = true
+imaging.workspace = true
+media-types.workspace = true
+proto.workspace = true
+# Safe wrappers for the worker's address-space limit and for killing a timed-out worker's process group.
+rustix = { version = "1", features = ["process"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+storage.workspace = true
+svc-auth.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "process"] }
+tonic = { workspace = true, features = ["router"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+base64.workspace = true
+reqwest.workspace = true
+
+[lints]
+workspace = true
