@@ -30,7 +30,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use subtle::ConstantTimeEq;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tower::{Layer, Service};
 
 const GOOGLE_JWKS_URL: &str = "https://www.googleapis.com/oauth2/v3/certs";
@@ -43,6 +43,11 @@ const DEFAULT_JWKS_TTL: Duration = Duration::from_secs(3600);
 const UNKNOWN_KID_REFETCH_INTERVAL: Duration = Duration::from_secs(60);
 /// After a failed fetch of expired keys, wait this long before trying again.
 const FAILED_FETCH_BACKOFF: Duration = Duration::from_secs(5);
+/// If a refetch fails after the TTL, the previous keys stay usable for this long past the TTL; then verification fails
+/// closed.
+const STALE_GRACE: Duration = Duration::from_secs(24 * 3600);
+const MAX_JWKS_BYTES: usize = 64 * 1024;
+const MAX_JWKS_KEYS: usize = 20;
 const CLOCK_LEEWAY_SECS: u64 = 60;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// A metadata token is renewed this long before it expires.
@@ -135,6 +140,9 @@ fn non_empty(lookup: &impl Fn(&str) -> Option<String>, name: &str) -> anyhow::Re
 
 fn shared_secret(lookup: &impl Fn(&str) -> Option<String>) -> anyhow::Result<String> {
     let secret = lookup("INTERNAL_SHARED_SECRET").unwrap_or_default();
+    if secret != secret.trim() {
+        bail!("INTERNAL_SHARED_SECRET must not have surrounding whitespace");
+    }
     if secret.len() < MIN_SECRET_LEN {
         bail!("INTERNAL_SHARED_SECRET must be at least {MIN_SECRET_LEN} bytes");
     }
@@ -148,7 +156,7 @@ fn shared_secret(lookup: &impl Fn(&str) -> Option<String>) -> anyhow::Result<Str
 /// Builds the tower layer for an internal endpoint. A request that fails authentication gets a 401 problem+json.
 pub fn layer(verifier: Arc<Verifier>) -> SvcAuthLayer {
     let jwks = match verifier.as_ref() {
-        Verifier::Google { jwks_url, .. } => Some(Arc::new(JwksCache::new(jwks_url.clone()))),
+        Verifier::Google { jwks_url, .. } => Some(Arc::new(JwksCache::new(jwks_url.clone(), STALE_GRACE))),
         Verifier::SharedSecret(_) => None,
     };
     SvcAuthLayer { verifier, jwks }
@@ -158,6 +166,16 @@ pub fn layer(verifier: Arc<Verifier>) -> SvcAuthLayer {
 pub struct SvcAuthLayer {
     verifier: Arc<Verifier>,
     jwks: Option<Arc<JwksCache>>,
+}
+
+impl SvcAuthLayer {
+    /// Overrides how long old keys survive a failed refetch (24 hours by default), for tests.
+    pub fn with_stale_grace(mut self, grace: Duration) -> Self {
+        if let Verifier::Google { jwks_url, .. } = self.verifier.as_ref() {
+            self.jwks = Some(Arc::new(JwksCache::new(jwks_url.clone(), grace)));
+        }
+        self
+    }
 }
 
 impl<S> Layer<S> for SvcAuthLayer {
@@ -196,9 +214,11 @@ where
         let verifier = self.verifier.clone();
         let jwks = self.jwks.clone();
         Box::pin(async move {
-            let token = request
-                .headers()
-                .get(header::AUTHORIZATION)
+            // Exactly one Authorization header: with several, proxies and this layer could disagree on which counts.
+            let mut authorization = request.headers().get_all(header::AUTHORIZATION).iter();
+            let token = authorization
+                .next()
+                .filter(|_| authorization.next().is_none())
                 .and_then(|value| value.to_str().ok())
                 .and_then(bearer_token)
                 .map(str::to_owned);
@@ -243,16 +263,40 @@ async fn authenticate(verifier: &Verifier, jwks: Option<&JwksCache>, token: &str
 struct TokenHeader {
     alg: String,
     kid: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    crit: Option<()>,
+}
+
+/// Distinguishes a member that is present (even as `null`) from one that is absent.
+fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<()>, D::Error> {
+    serde::de::IgnoredAny::deserialize(deserializer).map(|_| Some(()))
 }
 
 #[derive(Deserialize)]
 struct GoogleClaims {
     iss: String,
-    aud: String,
+    aud: Audience,
     exp: u64,
     iat: Option<u64>,
     email: Option<String>,
     email_verified: Option<BoolOrString>,
+}
+
+/// `aud` is a string or an array of strings.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Audience {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Audience {
+    fn contains(&self, audience: &str) -> bool {
+        match self {
+            Self::One(one) => one == audience,
+            Self::Many(many) => many.iter().any(|a| a == audience),
+        }
+    }
 }
 
 /// Google's own libraries have emitted `email_verified` both as a boolean and as a string.
@@ -287,6 +331,10 @@ async fn verify_google(
     };
     let decode = |part: &str| URL_SAFE_NO_PAD.decode(part).map_err(|_| "bad base64url");
     let header: TokenHeader = serde_json::from_slice(&decode(header_b64)?).map_err(|_| "unreadable header")?;
+    // `crit` lists extensions that must be understood; none are, so a token that names any is refused.
+    if header.crit.is_some() {
+        return Err("token has critical extensions");
+    }
     // RS256 only: never `none`, never a symmetric algorithm keyed by public material.
     if header.alg != "RS256" {
         return Err("algorithm is not RS256");
@@ -305,7 +353,7 @@ async fn verify_google(
     if !GOOGLE_ISSUERS.contains(&claims.iss.as_str()) {
         return Err("wrong issuer");
     }
-    if claims.aud != audience {
+    if !claims.aud.contains(audience) {
         return Err("wrong audience");
     }
     if claims.exp.saturating_add(CLOCK_LEEWAY_SECS) < now {
@@ -346,6 +394,9 @@ struct JwkSet {
 struct Jwk {
     kid: Option<String>,
     kty: String,
+    #[serde(rename = "use")]
+    use_: Option<String>,
+    alg: Option<String>,
     n: Option<String>,
     e: Option<String>,
 }
@@ -365,67 +416,102 @@ struct JwksState {
     last_unknown_kid_refetch: Option<Instant>,
 }
 
-/// Signing keys by `kid`. The lock is held across a fetch, so concurrent misses wait for one fetch instead of each
-/// making their own.
+/// Signing keys by `kid`.
+///
+/// Hits are served under a short read lock. Fetches are serialised by a separate gate, so concurrent misses share one
+/// fetch and a slow refetch never blocks verification of a known kid.
+///
+/// Keys are trusted for the response's `max-age`. If a refetch after that fails, the previous keys keep working for
+/// up to 24 hours past their TTL (each failure is logged at `warn`); after that verification fails closed.
 struct JwksCache {
     url: String,
     client: reqwest::Client,
-    state: Mutex<JwksState>,
+    stale_grace: Duration,
+    state: RwLock<JwksState>,
+    gate: Mutex<()>,
 }
 
 impl JwksCache {
-    fn new(url: String) -> Self {
+    fn new(url: String, stale_grace: Duration) -> Self {
         install_tls_provider();
-        let client = reqwest::Client::builder().timeout(FETCH_TIMEOUT).build().unwrap_or_default();
+        let client = reqwest::Client::builder()
+            .timeout(FETCH_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("the HTTP client builds");
         Self {
             url,
             client,
-            state: Mutex::new(JwksState {
+            stale_grace,
+            state: RwLock::new(JwksState {
                 keys: HashMap::new(),
                 expires_at: None,
                 last_failure: None,
                 last_unknown_kid_refetch: None,
             }),
+            gate: Mutex::new(()),
         }
     }
 
     async fn key(&self, kid: &str) -> Option<RsaKey> {
-        let mut state = self.state.lock().await;
-        let now = Instant::now();
-        let fresh = state.expires_at.is_some_and(|expires| now < expires);
-        if fresh && let Some(key) = state.keys.get(kid) {
-            return Some(key.clone());
+        if let Some(key) = self.fresh_hit(kid).await {
+            return Some(key);
         }
-        if fresh {
-            // An unknown kid: Google may have rotated, but not more than once a minute.
-            if state.last_unknown_kid_refetch.is_some_and(|at| now.duration_since(at) < UNKNOWN_KID_REFETCH_INTERVAL) {
-                return None;
-            }
-            state.last_unknown_kid_refetch = Some(now);
-        } else if state.last_failure.is_some_and(|at| now.duration_since(at) < FAILED_FETCH_BACKOFF) {
-            return None;
+        let _gate = self.gate.lock().await;
+        // Whoever held the gate before may have fetched what is needed.
+        if let Some(key) = self.fresh_hit(kid).await {
+            return Some(key);
         }
-        match self.fetch().await {
-            Ok((keys, ttl)) => {
-                state.keys = keys;
-                state.expires_at = Some(Instant::now() + ttl);
-            }
-            Err(error) => {
-                tracing::warn!(%error, "fetching the signing keys failed");
-                state.last_failure = Some(Instant::now());
-                if !fresh {
-                    state.keys.clear();
-                    state.expires_at = None;
+        if self.may_fetch().await {
+            match self.fetch().await {
+                Ok((keys, ttl)) => {
+                    let mut state = self.state.write().await;
+                    state.keys = keys;
+                    state.expires_at = Some(Instant::now() + ttl);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "fetching the signing keys failed");
+                    self.state.write().await.last_failure = Some(Instant::now());
                 }
             }
         }
-        state.keys.get(kid).cloned()
+        let state = self.state.read().await;
+        let usable = state.expires_at.is_some_and(|expires| Instant::now() < expires + self.stale_grace);
+        if usable { state.keys.get(kid).cloned() } else { None }
+    }
+
+    async fn fresh_hit(&self, kid: &str) -> Option<RsaKey> {
+        let state = self.state.read().await;
+        if state.expires_at.is_some_and(|expires| Instant::now() < expires) {
+            state.keys.get(kid).cloned()
+        } else {
+            None
+        }
+    }
+
+    /// Whether a fetch is allowed now, recording that an unknown-kid refetch is being made.
+    async fn may_fetch(&self) -> bool {
+        let mut state = self.state.write().await;
+        let now = Instant::now();
+        if state.expires_at.is_some_and(|expires| now < expires) {
+            // An unknown kid: Google may have rotated, but not more than once a minute.
+            if state.last_unknown_kid_refetch.is_some_and(|at| now.duration_since(at) < UNKNOWN_KID_REFETCH_INTERVAL) {
+                return false;
+            }
+            state.last_unknown_kid_refetch = Some(now);
+            true
+        } else {
+            !state.last_failure.is_some_and(|at| now.duration_since(at) < FAILED_FETCH_BACKOFF)
+        }
     }
 
     async fn fetch(&self) -> anyhow::Result<(HashMap<String, RsaKey>, Duration)> {
-        let response = self.client.get(&self.url).send().await.map_err(|e| e.without_url())?;
+        let mut response = self.client.get(&self.url).send().await.map_err(|e| e.without_url())?;
         if !response.status().is_success() {
             bail!("the key endpoint answered {}", response.status());
+        }
+        if response.content_length().is_some_and(|len| len > MAX_JWKS_BYTES as u64) {
+            bail!("the key set is larger than {MAX_JWKS_BYTES} bytes");
         }
         let ttl = response
             .headers()
@@ -433,11 +519,25 @@ impl JwksCache {
             .and_then(|value| value.to_str().ok())
             .and_then(max_age)
             .unwrap_or(DEFAULT_JWKS_TTL);
-        let set: JwkSet = response.json().await.context("reading the key set")?;
+        // Chunked bodies carry no length up front, so the cap is enforced as the bytes arrive.
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|e| e.without_url())? {
+            if body.len() + chunk.len() > MAX_JWKS_BYTES {
+                bail!("the key set is larger than {MAX_JWKS_BYTES} bytes");
+            }
+            body.extend_from_slice(&chunk);
+        }
+        let set: JwkSet = serde_json::from_slice(&body).context("reading the key set")?;
+        if set.keys.len() > MAX_JWKS_KEYS {
+            bail!("the key set has more than {MAX_JWKS_KEYS} keys");
+        }
         let keys = set
             .keys
             .into_iter()
             .filter(|jwk| jwk.kty == "RSA")
+            // A key not meant for signatures, or for another algorithm, must not verify tokens.
+            .filter(|jwk| jwk.use_.as_deref().is_none_or(|u| u == "sig"))
+            .filter(|jwk| jwk.alg.as_deref().is_none_or(|a| a == "RS256"))
             .filter_map(|jwk| {
                 let key = RsaKey { n: URL_SAFE_NO_PAD.decode(jwk.n?).ok()?, e: URL_SAFE_NO_PAD.decode(jwk.e?).ok()? };
                 Some((jwk.kid?, key))
@@ -528,7 +628,11 @@ pub struct MetadataTokens {
 impl MetadataTokens {
     fn new(audience: String, base_url: String) -> Self {
         install_tls_provider();
-        let client = reqwest::Client::builder().timeout(FETCH_TIMEOUT).build().unwrap_or_default();
+        let client = reqwest::Client::builder()
+            .timeout(FETCH_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("the HTTP client builds");
         Self { audience, base_url, client, cached: Mutex::new(None) }
     }
 

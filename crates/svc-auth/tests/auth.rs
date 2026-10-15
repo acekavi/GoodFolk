@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::Router;
@@ -41,29 +42,53 @@ async fn serve(app: Router) -> SocketAddr {
 
 struct Jwks {
     fetches: AtomicUsize,
-    keys: Vec<(&'static str, &'static str)>,
+    keys: Mutex<Vec<(&'static str, &'static str)>>,
     cache_control: Option<&'static str>,
+    /// Answer 500.
+    fail: AtomicBool,
+    /// Hold the answer until cleared.
+    block: AtomicBool,
+    /// Answer with this body instead of the key set.
+    raw: Mutex<Option<String>>,
 }
 
-async fn jwks_handler(State(jwks): State<Arc<Jwks>>) -> impl IntoResponse {
+async fn jwks_handler(State(jwks): State<Arc<Jwks>>) -> axum::response::Response {
     jwks.fetches.fetch_add(1, Ordering::SeqCst);
-    let keys: Vec<Value> = jwks
-        .keys
-        .iter()
-        .map(|(kid, n)| json!({"kty": "RSA", "alg": "RS256", "use": "sig", "kid": kid, "n": n, "e": "AQAB"}))
-        .collect();
+    while jwks.block.load(Ordering::SeqCst) {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    if jwks.fail.load(Ordering::SeqCst) {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
     let mut headers = HeaderMap::new();
     if let Some(value) = jwks.cache_control {
         headers.insert(header::CACHE_CONTROL, value.parse().unwrap());
     }
-    (headers, axum::Json(json!({ "keys": keys })))
+    if let Some(raw) = jwks.raw.lock().unwrap().clone() {
+        return (headers, raw).into_response();
+    }
+    let keys: Vec<Value> = jwks
+        .keys
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(kid, n)| json!({"kty": "RSA", "alg": "RS256", "use": "sig", "kid": kid, "n": n, "e": "AQAB"}))
+        .collect();
+    (headers, axum::Json(json!({ "keys": keys }))).into_response()
 }
 
 async fn jwks_server(
     keys: Vec<(&'static str, &'static str)>,
     cache_control: Option<&'static str>,
 ) -> (String, Arc<Jwks>) {
-    let jwks = Arc::new(Jwks { fetches: AtomicUsize::new(0), keys, cache_control });
+    let jwks = Arc::new(Jwks {
+        fetches: AtomicUsize::new(0),
+        keys: Mutex::new(keys),
+        cache_control,
+        fail: AtomicBool::new(false),
+        block: AtomicBool::new(false),
+        raw: Mutex::new(None),
+    });
     let addr = serve(Router::new().route("/certs", get(jwks_handler)).with_state(jwks.clone())).await;
     (format!("http://{addr}/certs"), jwks)
 }
@@ -87,7 +112,10 @@ fn claims() -> Value {
 }
 
 fn sign(claims: &Value, kid: &str, key_pem: &str) -> String {
-    let header = json!({"alg": "RS256", "typ": "JWT", "kid": kid});
+    sign_with_header(claims, &json!({"alg": "RS256", "typ": "JWT", "kid": kid}), key_pem)
+}
+
+fn sign_with_header(claims: &Value, header: &Value, key_pem: &str) -> String {
     let signing_input =
         format!("{}.{}", URL_SAFE_NO_PAD.encode(header.to_string()), URL_SAFE_NO_PAD.encode(claims.to_string()));
     let body: String = key_pem.lines().filter(|line| !line.starts_with("-----")).collect();
@@ -280,12 +308,145 @@ async fn unknown_kids_refetch_at_most_once_a_minute() {
 
 #[tokio::test]
 async fn a_rotated_in_key_is_picked_up_by_the_refetch() {
-    let (url, jwks) = jwks_server(vec![("key-a", N_A.trim()), ("key-b", N_B.trim())], None).await;
+    let (url, jwks) = jwks_server(vec![("key-a", N_A.trim())], Some("max-age=3600")).await;
     let app = app(google(url));
     assert_eq!(status(&app, &sign(&claims(), "key-a", KEY_A)).await, StatusCode::OK);
-    // Both keys arrive in the first fetch, so key-b needs no second one.
+    jwks.keys.lock().unwrap().push(("key-b", N_B.trim()));
     assert_eq!(status(&app, &sign(&claims(), "key-b", KEY_B)).await, StatusCode::OK);
-    assert_eq!(jwks.fetches.load(Ordering::SeqCst), 1);
+    assert_eq!(jwks.fetches.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn keys_for_another_use_or_algorithm_are_ignored() {
+    let (url, jwks) = jwks_server(vec![], None).await;
+    let key = |kid: &str, extra: Value| {
+        let mut jwk = json!({"kty": "RSA", "kid": kid, "n": N_A.trim(), "e": "AQAB"});
+        jwk.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        jwk
+    };
+    let keys = json!({"keys": [
+        key("enc", json!({"use": "enc"})),
+        key("rs384", json!({"alg": "RS384"})),
+        key("sig", json!({"use": "sig", "alg": "RS256"})),
+        key("bare", json!({})),
+    ]});
+    *jwks.raw.lock().unwrap() = Some(keys.to_string());
+    let app = app(google(url));
+    assert_eq!(status(&app, &sign(&claims(), "enc", KEY_A)).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(status(&app, &sign(&claims(), "rs384", KEY_A)).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(status(&app, &sign(&claims(), "sig", KEY_A)).await, StatusCode::OK);
+    assert_eq!(status(&app, &sign(&claims(), "bare", KEY_A)).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn an_oversized_key_set_is_refused() {
+    let (url, jwks) = jwks_server(vec![("key-a", N_A.trim())], None).await;
+    *jwks.raw.lock().unwrap() = Some(format!(r#"{{"keys":[],"padding":"{}"}}"#, "x".repeat(100 * 1024)));
+    let app = app(google(url));
+    assert_eq!(status(&app, &sign(&claims(), "key-a", KEY_A)).await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_key_set_with_too_many_keys_is_refused() {
+    let (url, jwks) = jwks_server(vec![], None).await;
+    let keys: Vec<Value> =
+        (0..21).map(|i| json!({"kty": "RSA", "kid": format!("k{i}"), "n": N_A.trim(), "e": "AQAB"})).collect();
+    *jwks.raw.lock().unwrap() = Some(json!({ "keys": keys }).to_string());
+    let app = app(google(url));
+    assert_eq!(status(&app, &sign(&claims(), "k0", KEY_A)).await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn old_keys_ride_out_an_outage_for_the_grace_period_then_fail_closed() {
+    let (url, jwks) = jwks_server(vec![("key-a", N_A.trim())], Some("max-age=1")).await;
+    let app = Router::new()
+        .route("/work", get(|| async { "ok" }))
+        .layer(layer(google(url)).with_stale_grace(std::time::Duration::from_secs(3)));
+    let token = sign(&claims(), "key-a", KEY_A);
+    assert_eq!(status(&app, &token).await, StatusCode::OK);
+
+    jwks.fail.store(true, Ordering::SeqCst);
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    // Past the TTL, the refetch fails, and the old keys still serve.
+    assert_eq!(status(&app, &token).await, StatusCode::OK);
+    assert!(jwks.fetches.load(Ordering::SeqCst) >= 2);
+
+    tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+    assert_eq!(status(&app, &token).await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_known_kid_verifies_while_a_refetch_is_blocked() {
+    let (url, jwks) = jwks_server(vec![("key-a", N_A.trim())], Some("max-age=3600")).await;
+    let app = app(google(url));
+    assert_eq!(status(&app, &sign(&claims(), "key-a", KEY_A)).await, StatusCode::OK);
+
+    jwks.block.store(true, Ordering::SeqCst);
+    let slow = {
+        let app = app.clone();
+        let token = sign(&claims(), "unknown", KEY_B);
+        tokio::spawn(async move { status(&app, &token).await })
+    };
+    while jwks.fetches.load(Ordering::SeqCst) < 2 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let known =
+        tokio::time::timeout(std::time::Duration::from_secs(2), status(&app, &sign(&claims(), "key-a", KEY_A))).await;
+    assert_eq!(known.expect("a known kid must not wait for the refetch"), StatusCode::OK);
+    jwks.block.store(false, Ordering::SeqCst);
+    assert_eq!(slow.await.unwrap(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn malformed_claims_and_headers_are_refused() {
+    let (url, _) = jwks_server(vec![("key-a", N_A.trim())], None).await;
+    let app = app(google(url));
+
+    let mut future_iat = claims();
+    future_iat["iat"] = json!(now() + 3600);
+    assert_eq!(status(&app, &sign(&future_iat, "key-a", KEY_A)).await, StatusCode::UNAUTHORIZED);
+
+    let mut string_exp = claims();
+    string_exp["exp"] = json!((now() + 3600).to_string());
+    assert_eq!(status(&app, &sign(&string_exp, "key-a", KEY_A)).await, StatusCode::UNAUTHORIZED);
+
+    let mut array_aud = claims();
+    array_aud["aud"] = json!(["https://other.example", AUDIENCE]);
+    assert_eq!(status(&app, &sign(&array_aud, "key-a", KEY_A)).await, StatusCode::OK);
+    array_aud["aud"] = json!(["https://other.example"]);
+    assert_eq!(status(&app, &sign(&array_aud, "key-a", KEY_A)).await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_token_without_a_kid_or_with_crit_is_refused() {
+    let (url, _) = jwks_server(vec![("key-a", N_A.trim())], None).await;
+    let app = app(google(url));
+    for header in [
+        json!({"alg": "RS256", "typ": "JWT"}),
+        json!({"alg": "RS256", "typ": "JWT", "kid": "key-a", "crit": ["exp"]}),
+        json!({"alg": "RS256", "typ": "JWT", "kid": "key-a", "crit": null}),
+    ] {
+        assert_eq!(
+            status(&app, &sign_with_header(&claims(), &header, KEY_A)).await,
+            StatusCode::UNAUTHORIZED,
+            "{header}"
+        );
+    }
+    assert_eq!(
+        status(&app, &sign_with_header(&claims(), &json!({"alg": "RS256", "kid": "key-a"}), KEY_A)).await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn several_authorization_headers_are_refused() {
+    let app = app(Arc::new(Verifier::SharedSecret(SECRET.into())));
+    let request = Request::get("/work")
+        .header(header::AUTHORIZATION, format!("Bearer {SECRET}"))
+        .header(header::AUTHORIZATION, format!("Bearer {SECRET}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(app.clone().oneshot(request).await.unwrap().status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -401,4 +562,37 @@ async fn a_metadata_token_near_expiry_is_renewed() {
 async fn a_metadata_failure_is_an_error() {
     let source = TokenSource::metadata_at(AUDIENCE, "http://127.0.0.1:1");
     assert!(source.header().await.is_err());
+}
+
+#[test]
+fn from_env_refuses_a_secret_with_surrounding_whitespace() {
+    for secret in [format!("{SECRET}\n"), format!(" {SECRET}")] {
+        let error =
+            Verifier::from_vars("A", vars(&[("SVC_AUTH", "secret"), ("INTERNAL_SHARED_SECRET", &secret)])).unwrap_err();
+        assert_eq!(error.to_string(), "INTERNAL_SHARED_SECRET must not have surrounding whitespace");
+    }
+}
+
+#[tokio::test]
+async fn a_metadata_failure_is_not_cached() {
+    let metadata = Arc::new(Metadata { requests: AtomicUsize::new(0), lifetime_secs: 3600 });
+    let failing = Arc::new(AtomicBool::new(true));
+    let path = "/computeMetadata/v1/instance/service-accounts/default/identity";
+    let app = Router::new().route(
+        path,
+        get({
+            let (metadata, failing) = (metadata.clone(), failing.clone());
+            move |headers: HeaderMap, query: axum::extract::Query<HashMap<String, String>>| async move {
+                if failing.load(Ordering::SeqCst) {
+                    return (StatusCode::SERVICE_UNAVAILABLE, String::new()).into_response();
+                }
+                metadata_handler(State(metadata), headers, query).await.into_response()
+            }
+        }),
+    );
+    let addr = serve(app).await;
+    let source = TokenSource::metadata_at(AUDIENCE, format!("http://{addr}"));
+    assert!(source.header().await.is_err());
+    failing.store(false, Ordering::SeqCst);
+    assert!(source.header().await.unwrap().starts_with("Bearer ey"));
 }
