@@ -9,9 +9,7 @@ publish.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 base64.workspace = true
-# rust_crypto is the only backend besides aws-lc-rs, which the tree does not build. The rsa crate is used to verify
-# only, never to sign, so RUSTSEC-2023-0071 (a timing attack on private-key operations) does not apply; see deny.toml.
-jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+ring.workspace = true
 reqwest = { workspace = true, features = ["json", "query"] }
 rustls.workspace = true
 serde.workspace = true
@@ -23,7 +21,6 @@ tower.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto", "use_pem"] }
 axum.workspace = true
 tokio = { workspace = true, features = ["net"] }
 

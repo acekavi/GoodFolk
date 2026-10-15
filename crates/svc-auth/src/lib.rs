@@ -28,7 +28,6 @@ use axum::body::Body;
 use axum::http::{HeaderValue, Request, Response, StatusCode, header};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
@@ -241,7 +240,17 @@ async fn authenticate(verifier: &Verifier, jwks: Option<&JwksCache>, token: &str
 }
 
 #[derive(Deserialize)]
+struct TokenHeader {
+    alg: String,
+    kid: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct GoogleClaims {
+    iss: String,
+    aud: String,
+    exp: u64,
+    iat: Option<u64>,
     email: Option<String>,
     email_verified: Option<BoolOrString>,
 }
@@ -269,32 +278,42 @@ async fn verify_google(
     allowed_emails: &[String],
     token: &str,
 ) -> Result<(), &'static str> {
-    let header = jsonwebtoken::decode_header(token).map_err(|_| "unreadable token header")?;
+    // Exactly three base64url parts.
+    let mut parts = token.split('.');
+    let (Some(header_b64), Some(payload_b64), Some(signature_b64), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err("not a three-part token");
+    };
+    let decode = |part: &str| URL_SAFE_NO_PAD.decode(part).map_err(|_| "bad base64url");
+    let header: TokenHeader = serde_json::from_slice(&decode(header_b64)?).map_err(|_| "unreadable header")?;
     // RS256 only: never `none`, never a symmetric algorithm keyed by public material.
-    if header.alg != Algorithm::RS256 {
+    if header.alg != "RS256" {
         return Err("algorithm is not RS256");
     }
-    let kid = header.kid.ok_or("token has no kid")?;
-    let key = jwks.key(&kid).await.ok_or("no signing key for kid")?;
+    let key = jwks.key(header.kid.as_deref().ok_or("token has no kid")?).await.ok_or("no signing key for kid")?;
 
-    let mut validation = Validation::new(Algorithm::RS256);
-    validation.leeway = CLOCK_LEEWAY_SECS;
-    validation.validate_exp = true;
-    validation.set_audience(&[audience]);
-    validation.set_issuer(&GOOGLE_ISSUERS);
-    validation.set_required_spec_claims(&["exp", "aud", "iss"]);
-    let claims = jsonwebtoken::decode::<GoogleClaims>(token, &key, &validation).map_err(|e| {
-        use jsonwebtoken::errors::ErrorKind;
-        match e.kind() {
-            ErrorKind::ExpiredSignature => "token expired",
-            ErrorKind::InvalidAudience => "wrong audience",
-            ErrorKind::InvalidIssuer => "wrong issuer",
-            ErrorKind::InvalidSignature => "bad signature",
-            _ => "token rejected",
-        }
-    })?;
+    // The signature covers `header.payload` exactly as sent.
+    let signed = &token[..header_b64.len() + 1 + payload_b64.len()];
+    ring::signature::RsaPublicKeyComponents { n: &key.n, e: &key.e }
+        .verify(&ring::signature::RSA_PKCS1_2048_8192_SHA256, signed.as_bytes(), &decode(signature_b64)?)
+        .map_err(|_| "bad signature")?;
 
-    let claims = claims.claims;
+    // Claims are read only after the signature has verified.
+    let claims: GoogleClaims = serde_json::from_slice(&decode(payload_b64)?).map_err(|_| "unreadable claims")?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    if !GOOGLE_ISSUERS.contains(&claims.iss.as_str()) {
+        return Err("wrong issuer");
+    }
+    if claims.aud != audience {
+        return Err("wrong audience");
+    }
+    if claims.exp.saturating_add(CLOCK_LEEWAY_SECS) < now {
+        return Err("token expired");
+    }
+    if claims.iat.is_some_and(|iat| iat > now.saturating_add(CLOCK_LEEWAY_SECS)) {
+        return Err("token issued in the future");
+    }
     if !claims.email_verified.is_some_and(|verified| verified.is_true()) {
         return Err("email not verified");
     }
@@ -331,8 +350,15 @@ struct Jwk {
     e: Option<String>,
 }
 
+/// An RSA public key as the big-endian bytes of its modulus and exponent.
+#[derive(Clone)]
+struct RsaKey {
+    n: Vec<u8>,
+    e: Vec<u8>,
+}
+
 struct JwksState {
-    keys: HashMap<String, DecodingKey>,
+    keys: HashMap<String, RsaKey>,
     /// `None` until the first successful fetch.
     expires_at: Option<Instant>,
     last_failure: Option<Instant>,
@@ -363,7 +389,7 @@ impl JwksCache {
         }
     }
 
-    async fn key(&self, kid: &str) -> Option<DecodingKey> {
+    async fn key(&self, kid: &str) -> Option<RsaKey> {
         let mut state = self.state.lock().await;
         let now = Instant::now();
         let fresh = state.expires_at.is_some_and(|expires| now < expires);
@@ -396,7 +422,7 @@ impl JwksCache {
         state.keys.get(kid).cloned()
     }
 
-    async fn fetch(&self) -> anyhow::Result<(HashMap<String, DecodingKey>, Duration)> {
+    async fn fetch(&self) -> anyhow::Result<(HashMap<String, RsaKey>, Duration)> {
         let response = self.client.get(&self.url).send().await.map_err(|e| e.without_url())?;
         if !response.status().is_success() {
             bail!("the key endpoint answered {}", response.status());
@@ -413,7 +439,7 @@ impl JwksCache {
             .into_iter()
             .filter(|jwk| jwk.kty == "RSA")
             .filter_map(|jwk| {
-                let key = DecodingKey::from_rsa_components(jwk.n.as_deref()?, jwk.e.as_deref()?).ok()?;
+                let key = RsaKey { n: URL_SAFE_NO_PAD.decode(jwk.n?).ok()?, e: URL_SAFE_NO_PAD.decode(jwk.e?).ok()? };
                 Some((jwk.kid?, key))
             })
             .collect();

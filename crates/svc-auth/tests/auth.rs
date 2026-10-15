@@ -12,7 +12,8 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use jsonwebtoken::{Algorithm, EncodingKey, Header};
+use ring::rand::SystemRandom;
+use ring::signature::{RSA_PKCS1_SHA256, RsaKeyPair};
 use serde_json::{Value, json};
 use svc_auth::{TokenSource, Verifier, layer};
 use tower::ServiceExt;
@@ -86,9 +87,15 @@ fn claims() -> Value {
 }
 
 fn sign(claims: &Value, kid: &str, key_pem: &str) -> String {
-    let mut header = Header::new(Algorithm::RS256);
-    header.kid = Some(kid.into());
-    jsonwebtoken::encode(&header, claims, &EncodingKey::from_rsa_pem(key_pem.as_bytes()).unwrap()).unwrap()
+    let header = json!({"alg": "RS256", "typ": "JWT", "kid": kid});
+    let signing_input =
+        format!("{}.{}", URL_SAFE_NO_PAD.encode(header.to_string()), URL_SAFE_NO_PAD.encode(claims.to_string()));
+    let body: String = key_pem.lines().filter(|line| !line.starts_with("-----")).collect();
+    let der = base64::engine::general_purpose::STANDARD.decode(body).unwrap();
+    let key = RsaKeyPair::from_pkcs8(&der).unwrap();
+    let mut signature = vec![0; key.public().modulus_len()];
+    key.sign(&RSA_PKCS1_SHA256, &SystemRandom::new(), signing_input.as_bytes(), &mut signature).unwrap();
+    format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(signature))
 }
 
 async fn call(app: &Router, authorization: Option<&str>) -> (StatusCode, HeaderMap, Vec<u8>) {
@@ -200,10 +207,12 @@ async fn google_refuses_alg_none_and_hs256() {
     let none_header = URL_SAFE_NO_PAD.encode(r#"{"alg":"none","typ":"JWT","kid":"key-a"}"#);
     assert_eq!(status(&app, &format!("{none_header}.{payload}.")).await, StatusCode::UNAUTHORIZED);
 
-    // The classic downgrade: an HMAC keyed with the public modulus.
-    let mut header = Header::new(Algorithm::HS256);
-    header.kid = Some("key-a".into());
-    let hs256 = jsonwebtoken::encode(&header, &claims(), &EncodingKey::from_secret(N_A.trim().as_bytes())).unwrap();
+    // The classic downgrade: an HMAC-SHA256 keyed with the public modulus.
+    let hs_header = URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT","kid":"key-a"}"#);
+    let signing_input = format!("{hs_header}.{payload}");
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, N_A.trim().as_bytes());
+    let tag = ring::hmac::sign(&key, signing_input.as_bytes());
+    let hs256 = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(tag.as_ref()));
     assert_eq!(status(&app, &hs256).await, StatusCode::UNAUTHORIZED);
 }
 
