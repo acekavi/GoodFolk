@@ -57,6 +57,8 @@ fn each_role_has_exactly_its_permissions() {
         HousekeepingUpdate,
         HousekeepingSupervise,
         RoomIssuesReport,
+        MediaManage,
+        GuestDocumentsManage,
     ];
     let expected: [(Role, &[Permission]); 6] = [
         (Role::Owner, &all),
@@ -78,6 +80,8 @@ fn each_role_has_exactly_its_permissions() {
                 HousekeepingUpdate,
                 HousekeepingSupervise,
                 RoomIssuesReport,
+                MediaManage,
+                GuestDocumentsManage,
             ],
         ),
         (
@@ -93,6 +97,7 @@ fn each_role_has_exactly_its_permissions() {
                 FrontDeskCheckIn,
                 HousekeepingView,
                 RoomIssuesReport,
+                GuestDocumentsManage,
             ],
         ),
         (
@@ -171,4 +176,14 @@ fn the_front_desk_may_report_a_room_issue() {
         roles_allowed(Permission::RoomIssuesReport),
         [Role::Owner, Role::Manager, Role::FrontDesk, Role::Housekeeping, Role::HkSupervisor]
     );
+}
+
+#[test]
+fn only_owners_and_managers_manage_media() {
+    assert_eq!(roles_allowed(Permission::MediaManage), [Role::Owner, Role::Manager]);
+}
+
+#[test]
+fn the_front_desk_manages_guest_documents_and_housekeeping_does_not() {
+    assert_eq!(roles_allowed(Permission::GuestDocumentsManage), [Role::Owner, Role::Manager, Role::FrontDesk]);
 }

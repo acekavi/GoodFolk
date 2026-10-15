@@ -490,6 +490,7 @@ enum Seed {
     Reservations,
     AccountsAndOccupants,
     Housekeeping,
+    Media,
 }
 
 impl Seed {
@@ -499,6 +500,7 @@ impl Seed {
             Seed::Reservations => seed_reservations(pool, tenant).await,
             Seed::AccountsAndOccupants => seed_accounts_and_occupants(pool, tenant).await,
             Seed::Housekeeping => seed_housekeeping(pool, tenant).await,
+            Seed::Media => seed_media(pool, tenant).await,
         }
     }
 }
@@ -775,6 +777,73 @@ async fn room_issues_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOpt
         "insert into room_issue (id, tenant_id, property_id, room_id, severity, description, reported_by)
          select gen_random_uuid(), $1, property_id, room_id, 'low', 'Intruder', gen_random_uuid() from room_issue",
         Seed::Housekeeping,
+    )
+    .await;
+}
+
+/// On top of [`seed_housekeeping`], for `tenant`: one asset linked to the room type's gallery, the room's issue and a
+/// guest's document (6a).
+async fn seed_media(pool: &PgPool, tenant: TenantId) {
+    seed_housekeeping(pool, tenant).await;
+    let (asset, guest) = (Uuid::now_v7(), Uuid::now_v7());
+    let mut tx = begin(pool, Scope::tenant(tenant)).await.unwrap();
+    let statements = [
+        "insert into media_asset (id, tenant_id, property_id, purpose, visibility, filename, declared_bytes, sha256)
+         select $2, $1, id, 'gallery', 'public', 'room.jpg', 1000, sha256('x') from property",
+        "insert into room_type_media (tenant_id, room_type_id, asset_id, position) select $1, id, $2, 0 from room_type",
+        "insert into room_issue_media (tenant_id, issue_id, asset_id) select $1, id, $2 from room_issue",
+        "insert into guest (id, tenant_id, first_name, last_name, residency) values ($3, $1, 'Ada', 'Silva', 'resident')",
+        "insert into guest_document (id, tenant_id, guest_id, asset_id, kind) values (gen_random_uuid(), $1, $3, $2, 'nic')",
+    ];
+    for statement in statements {
+        sqlx::query(statement).bind(tenant.0).bind(asset).bind(guest).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn media_assets_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "media_asset",
+        "insert into media_asset (id, tenant_id, property_id, purpose, visibility, filename, declared_bytes, sha256)
+         select gen_random_uuid(), $1, property_id, 'gallery', 'public', 'x.jpg', 1, sha256('y') from media_asset",
+        Seed::Media,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn room_type_media_is_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "room_type_media",
+        "insert into room_type_media (tenant_id, room_type_id, asset_id, position)
+         select $1, room_type_id, asset_id, 1 from room_type_media",
+        Seed::Media,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn room_issue_media_is_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "room_issue_media",
+        "insert into room_issue_media (tenant_id, issue_id, asset_id) select $1, issue_id, asset_id from room_issue_media",
+        Seed::Media,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn guest_documents_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "guest_document",
+        "insert into guest_document (id, tenant_id, guest_id, asset_id, kind)
+         select gen_random_uuid(), $1, guest_id, asset_id, 'passport' from guest_document",
+        Seed::Media,
     )
     .await;
 }

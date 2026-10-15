@@ -38,6 +38,8 @@ Simple single-object reads that bootstrap the app (`GET /api/v1/me`) may be REST
   | `HousekeepingUpdate` (own assigned rooms, `dirty → cleaning → clean`) | ✓ | ✓ | | ✓ | | ✓ |
   | `HousekeepingSupervise` (any condition, bulk, assign, copy yesterday, resolve issues) | ✓ | ✓ | | | | ✓ |
   | `RoomIssuesReport` | ✓ | ✓ | ✓ | ✓ | | ✓ |
+  | `MediaManage` (upload, reorder, caption and remove gallery photos) | ✓ | ✓ | | | |  |
+  | `GuestDocumentsManage` (upload, view through an audited link, and delete guest ID documents) | ✓ | ✓ | ✓ | | |  |
 
   `hk_supervisor` also gets the first row's base reads (a role without them cannot open the app). It does not get `InventoryBlock`, so the board shows **Block room** only to those who hold it. An override of a dirty room at check-in needs `FrontDeskCheckIn` and `HousekeepingSupervise` together (owner and manager). The interim `core-api add-staff` command (README, "Adding staff") is how staff get a role until Phase 8's invitations, and is to be replaced then; it runs as the schema owner, takes the password from a file, never a flag, and is safe to repeat.
 - Data access: `db::begin(&state.pool, Scope::tenant(ctx.tenant))` and never anything else. RLS is the safety net, but queries still filter by `property_id` explicitly.

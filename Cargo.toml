@@ -14,6 +14,7 @@ events = { path = "crates/events" }
 housekeeping = { path = "modules/housekeeping" }
 identity = { path = "modules/identity" }
 imaging = { path = "crates/imaging" }
+media = { path = "modules/media" }
 media-types = { path = "crates/media-types" }
 property = { path = "modules/property" }
 proto = { path = "crates/proto" }

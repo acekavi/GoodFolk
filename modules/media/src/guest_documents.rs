@@ -1,0 +1,102 @@
+//! Guests' ID documents. Guests are tenant-wide, so a document is too: `property` names where the user is working,
+//! for the change event and the audit entry. Every signed link issued is audited.
+
+use crate::{AssetStatus, DocumentKind, LinkSize, MediaError, Visibility, audit, notify};
+use db::{TenantId, Tx, UserId};
+use media_types::{Format, RenditionOut};
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+/// One of a guest's documents, without anything that locates its files.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct GuestDocumentRow {
+    pub id: Uuid,
+    pub guest_id: Uuid,
+    pub asset_id: Uuid,
+    #[sqlx(try_from = "String")]
+    pub kind: DocumentKind,
+    #[sqlx(try_from = "String")]
+    pub status: AssetStatus,
+    pub mime: Option<String>,
+    pub uploaded_by: Option<Uuid>,
+    pub uploaded_at: OffsetDateTime,
+}
+
+/// The guest's documents, newest first.
+pub async fn guest_documents(tx: &mut Tx, guest: Uuid) -> Result<Vec<GuestDocumentRow>, MediaError> {
+    Ok(sqlx::query_as(
+        "select d.id, d.guest_id, d.asset_id, d.kind, a.status, a.mime, d.uploaded_by, d.uploaded_at
+         from guest_document d join media_asset a on a.id = d.asset_id
+         where d.guest_id = $1
+         order by d.uploaded_at desc, d.id desc",
+    )
+    .bind(guest)
+    .fetch_all(&mut **tx)
+    .await?)
+}
+
+/// Deletes the document (`NotFound`). Its files go when the sweep finds the asset unused.
+pub async fn delete_guest_document(
+    tx: &mut Tx,
+    tenant: TenantId,
+    user: UserId,
+    property: Uuid,
+    document: Uuid,
+) -> Result<(), MediaError> {
+    let deleted: Option<(Uuid, Uuid)> =
+        sqlx::query_as("delete from guest_document where id = $1 returning guest_id, asset_id")
+            .bind(document)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let (guest, asset) = deleted.ok_or(MediaError::NotFound("document"))?;
+    let data = serde_json::json!({ "by": "user", "guest_id": guest, "asset_id": asset, "property_id": property });
+    audit(tx, tenant, Some(user), "guest_document.deleted", "guest_document", document, data).await?;
+    notify(tx, tenant, property).await?;
+    Ok(())
+}
+
+/// What a guest-document link needs from its asset.
+#[derive(sqlx::FromRow)]
+struct LinkRow {
+    #[sqlx(try_from = "String")]
+    visibility: Visibility,
+    #[sqlx(try_from = "String")]
+    status: AssetStatus,
+    archive_key: Option<String>,
+    #[sqlx(json)]
+    renditions: Vec<RenditionOut>,
+}
+
+/// The bucket and key to sign for the document's `size`: the WebP rendition for `thumb` and `md`, the archive (or the
+/// PDF as uploaded) for `original`. Writes a `guest_document.viewed` audit entry for each call. An unknown document is
+/// `NotFound`, one not yet ready is `Conflict`, and a size the document has no file for (a PDF's preview) is `Invalid`.
+pub async fn guest_document_link_key(
+    tx: &mut Tx,
+    tenant: TenantId,
+    user: UserId,
+    property: Uuid,
+    document: Uuid,
+    size: LinkSize,
+) -> Result<(Visibility, String), MediaError> {
+    let row: Option<LinkRow> = sqlx::query_as(
+        "select a.visibility, a.status, a.archive_key, a.renditions
+         from guest_document d join media_asset a on a.id = d.asset_id where d.id = $1",
+    )
+    .bind(document)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let LinkRow { visibility, status, archive_key, renditions } = row.ok_or(MediaError::NotFound("document"))?;
+    if status != AssetStatus::Ready {
+        return Err(MediaError::Conflict("The document is not ready yet".into()));
+    }
+    let key = match size {
+        LinkSize::Original => archive_key,
+        LinkSize::Thumb | LinkSize::Md => {
+            renditions.into_iter().find(|r| r.size.as_str() == size.as_str() && r.format == Format::Webp).map(|r| r.key)
+        }
+    };
+    let key = key.ok_or_else(|| MediaError::Invalid(format!("This document has no {} file", size.as_str())))?;
+    let data = serde_json::json!({ "size": size.as_str(), "property_id": property });
+    audit(tx, tenant, Some(user), "guest_document.viewed", "guest_document", document, data).await?;
+    Ok((visibility, key))
+}
