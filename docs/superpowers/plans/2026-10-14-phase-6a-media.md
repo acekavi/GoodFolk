@@ -83,7 +83,7 @@ names. Video and audio are out of scope ([phase-6b-video-audio.md](../../specs/p
   - Images up to 100 megapixels (`MAX_PIXELS = 100_000_000`). At most 5 photos per issue.
   - Captions up to 200 characters. Multipart parts are 8 MiB.
   - Part URLs last 1 hour, issue-photo links 60 minutes, and guest-document links 5 minutes.
-  - Worker jobs: 60 s and 1 GiB each, at most 3 attempts (backoff 1 s, 4 s).
+  - Worker jobs: 60 s and a 3 GiB address-space cap each, at most 3 attempts (backoff 1 s, 4 s).
   - The quality gate is SSIMULACRA2 ≥ 80.
 - **Object keys** (deterministic, so reprocessing is idempotent):
   - upload: `t/{tenant}/a/{asset}/upload`;
@@ -535,7 +535,7 @@ pub enum MediaResult {
   1. Decode the envelope into a `ProcessJob`.
   2. Take a worker permit, get the upload bytes, and run the worker subprocess (`current_exe() worker`) with the job and
      bytes on stdin. Bound it with `RAYON_NUM_THREADS = max(1, cpus / MEDIA_WORKERS)`, a 60 s timeout (kill on
-     expiry) and a 1 GiB address-space limit, set by the worker itself at startup with the safe `rlimit` crate
+     expiry) and a 3 GiB address-space limit, set by the worker itself at startup with the safe `rlimit` crate
      (`pre_exec` would need `unsafe`).
   3. The worker writes length-prefixed artefacts to stdout.
   4. On success:
@@ -550,7 +550,7 @@ pub enum MediaResult {
   6. Return 200 only after the publish succeeds, else 503, so the bus redelivers.
 - **The worker.** `media-svc worker` sets its rlimit, reads the job, calls `imaging::process` and writes the result. A
   panic exits non-zero.
-- **Configuration.** `PORT` (default 8090), `MEDIA_WORKERS` (default `max(1, cpus/2)`), storage from env, the bus
+- **Configuration.** `PORT` (default 8090), `MEDIA_WORKERS` (default `max(1, cpus/8)`, each worker getting `cpus / MEDIA_WORKERS` threads), storage from env, the bus
   from env, and svc-auth from env.
 - **`Dockerfile.media-svc`** is a two-stage build on `rust:1.97-bookworm` (cmake, nasm and g++ present) into
   `gcr.io/distroless/cc-debian12:nonroot`. Ruling: glibc, not musl, because the vendored C++ codecs are reliable on

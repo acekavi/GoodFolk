@@ -72,8 +72,11 @@ This phase also brings in the infrastructure deferred from Phase 0, because `med
 - **PDF guest documents** get no thumbnail in 6a. The UI shows a document icon. Rendering a page needs a PDF engine,
   which comes with 6b.
 - **Isolation.** Each job runs in a worker subprocess of `media-svc`, so a crash in a native decoder cannot take the
-  service down. Each job has a 60 s time limit and a 1 GiB memory cap. At most `MEDIA_WORKERS` jobs run at once
-  (default: half the CPUs, at least 1).
+  service down.
+  - **Limits.** Each job has a 60 s time limit and a 3 GiB address-space cap. The cap is a backstop: the 100 MP
+    header check is the real defence, and a 12 MP job uses about 1.3 GiB of memory.
+  - **Concurrency.** At most `MEDIA_WORKERS` jobs run at once (default: one per 8 CPUs, at least 1). Each worker gets
+    an equal share of the CPUs as threads.
 - **Failures:**
   - A worker crash or timeout is retried in-process up to 3 attempts, with backoff of 1 s and then 4 s.
   - A file that cannot be decoded fails at once, without retries.
