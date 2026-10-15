@@ -57,7 +57,7 @@ async fn serve() -> anyhow::Result<()> {
 
     let tcp = tokio::net::TcpListener::bind(config.bind_addr).await?;
     tracing::info!(addr = %config.bind_addr, "listening");
-    let served = axum::serve(tcp, router(state)).with_graceful_shutdown(shutdown_signal()).await;
+    let served = axum::serve(core_api::without_nagle(tcp), router(state)).with_graceful_shutdown(shutdown_signal()).await;
     shutdown.cancel();
     if tokio::time::timeout(TASKS_GRACE, async { tokio::join!(relay, sweeps) }).await.is_err() {
         tracing::warn!("background tasks did not stop in time");
