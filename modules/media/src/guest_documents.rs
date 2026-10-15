@@ -55,6 +55,8 @@ pub async fn delete_guest_document(
     Ok(())
 }
 
+const PDF: &str = "application/pdf";
+
 /// What a guest-document link needs from its asset.
 #[derive(sqlx::FromRow)]
 struct LinkRow {
@@ -62,14 +64,16 @@ struct LinkRow {
     visibility: Visibility,
     #[sqlx(try_from = "String")]
     status: AssetStatus,
+    mime: Option<String>,
     archive_key: Option<String>,
     #[sqlx(json)]
     renditions: Vec<RenditionOut>,
 }
 
-/// The bucket and key to sign for the document's `size`: the WebP rendition for `thumb` and `md`, the archive (or the
-/// PDF as uploaded) for `original`. Writes a `guest_document.viewed` audit entry for each call. An unknown document is
-/// `NotFound`, one not yet ready is `Conflict`, and a size the document has no file for (a PDF's preview) is `Invalid`.
+/// The bucket and key to sign for the document's `size`: the WebP rendition for `thumb` and `md`, and for a PDF only,
+/// the PDF as uploaded for `original` (an image's archive is JPEG XL, which browsers cannot show). Writes a
+/// `guest_document.viewed` audit entry for each call. An unknown document is `NotFound`, one not yet ready is
+/// `Conflict`, and a size the document has no file for (a PDF's preview, an image's original) is `Invalid`.
 pub async fn guest_document_link_key(
     tx: &mut Tx,
     tenant: TenantId,
@@ -79,17 +83,21 @@ pub async fn guest_document_link_key(
     size: LinkSize,
 ) -> Result<(Visibility, String), MediaError> {
     let row: Option<LinkRow> = sqlx::query_as(
-        "select a.visibility, a.status, a.archive_key, a.renditions
+        "select a.visibility, a.status, a.mime, a.archive_key, a.renditions
          from guest_document d join media_asset a on a.id = d.asset_id where d.id = $1",
     )
     .bind(document)
     .fetch_optional(&mut **tx)
     .await?;
-    let LinkRow { visibility, status, archive_key, renditions } = row.ok_or(MediaError::NotFound("document"))?;
+    let LinkRow { visibility, status, mime, archive_key, renditions } = row.ok_or(MediaError::NotFound("document"))?;
     if status != AssetStatus::Ready {
         return Err(MediaError::Conflict("The document is not ready yet".into()));
     }
     let key = match size {
+        // An image's archive is JPEG XL, which browsers cannot show.
+        LinkSize::Original if mime.as_deref() != Some(PDF) => {
+            return Err(MediaError::Invalid("Images are viewed at the md size".into()));
+        }
         LinkSize::Original => archive_key,
         LinkSize::Thumb | LinkSize::Md => {
             renditions.into_iter().find(|r| r.size.as_str() == size.as_str() && r.format == Format::Webp).map(|r| r.key)

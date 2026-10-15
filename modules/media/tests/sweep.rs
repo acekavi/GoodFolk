@@ -1,7 +1,8 @@
 mod common;
 
-use common::{Hotel, asset_of, guest_target};
-use media::{Target, guest_documents, sweep};
+use common::{Hotel, asset_of, guest_target, verified};
+use db::{Scope, begin};
+use media::{Completed, Purpose, StaleUpload, Target, complete_upload, gallery, guest_documents, sweep};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use uuid::Uuid;
 
@@ -95,7 +96,7 @@ async fn sweep_deletes_expired_documents_and_orphans(_: PgPoolOptions, opts: PgC
     // An upload abandoned for a day goes, with its multipart upload to abort.
     let stale = hotel.start(Target::RoomType(hotel.room_type), 1000).await.unwrap().asset_id;
     let mut tx = hotel.tx().await;
-    media::set_s3_upload_id(&mut tx, stale, "s3-stale").await.unwrap();
+    media::set_s3_upload_id(&mut tx, hotel.property, stale, "s3-stale").await.unwrap();
     tx.commit().await.unwrap();
     hotel.exec("update media_asset set created_at = now() - interval '25 hours' where id = $1", stale).await;
     let fresh = hotel.start(Target::RoomType(hotel.room_type), 1000).await.unwrap().asset_id;
@@ -110,7 +111,7 @@ async fn sweep_deletes_expired_documents_and_orphans(_: PgPoolOptions, opts: PgC
     .unwrap();
 
     let mut report = sweep(&hotel.pool).await.unwrap();
-    report.orphans.sort_by_key(|(_, id, _)| *id);
+    report.orphans.sort_by_key(|(_, id, _, _)| *id);
 
     assert_eq!(report.expired_documents, 1);
     assert_eq!(hotel.documents_of(guest).await, 0);
@@ -122,9 +123,21 @@ async fn sweep_deletes_expired_documents_and_orphans(_: PgPoolOptions, opts: PgC
     };
     assert_eq!(
         report.orphans,
-        [(hotel.tenant, document_asset, keys(document_asset)), (hotel.tenant, unused, keys(unused))]
+        [
+            (hotel.tenant, document_asset, Purpose::GuestDocument, keys(document_asset)),
+            (hotel.tenant, unused, Purpose::Gallery, keys(unused))
+        ]
     );
-    assert_eq!(report.stale_uploads, [(hotel.tenant, stale, Some("s3-stale".to_owned()))]);
+    assert_eq!(
+        report.stale_uploads,
+        [StaleUpload {
+            tenant: hotel.tenant,
+            asset: stale,
+            s3_upload_id: Some("s3-stale".to_owned()),
+            upload_key: format!("{}/upload", prefix(stale)),
+        }]
+    );
+    assert_eq!(report.failures, 0);
     for (asset, exists) in
         [(document_asset, false), (unused, false), (stale, false), (recent, true), (linked, true), (fresh, true)]
     {
@@ -157,4 +170,53 @@ async fn sweep_fails_stuck_processing(_: PgPoolOptions, opts: PgConnectOptions) 
         rows,
         [(stuck, "failed".to_owned(), Some("Processing timed out".to_owned())), (busy, "processing".to_owned(), None)]
     );
+}
+
+/// A duplicate upload that links an orphan while the sweep is deleting it wins: the sweep re-checks the links after
+/// taking the row lock, so neither the asset nor the new link is deleted.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn sweep_never_deletes_an_asset_a_duplicate_just_linked(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = std::sync::Arc::new(Hotel::new(opts).await);
+    let orphan = asset_of(&hotel.upload(Target::RoomType(hotel.room_type), 1).await);
+    hotel.ready(orphan).await;
+    let mut tx = hotel.tx().await;
+    media::unlink_gallery(&mut tx, hotel.tenant, hotel.user, hotel.property, hotel.room_type, orphan).await.unwrap();
+    tx.commit().await.unwrap();
+    hotel.exec("update media_asset set created_at = now() - interval '2 days' where id = $1", orphan).await;
+
+    // The duplicate complete links the orphan and holds its row lock, uncommitted.
+    let upload = hotel.start(Target::RoomType(hotel.room_type), 1000).await.unwrap().asset_id;
+    let mut complete = begin(&hotel.pool, Scope::tenant(hotel.tenant)).await.unwrap();
+    let completed =
+        complete_upload(&mut complete, hotel.tenant, hotel.user, hotel.property, upload, verified(1)).await.unwrap();
+    assert!(matches!(completed, Completed::Duplicate { ref asset, .. } if asset.id == orphan));
+
+    let sweeping = {
+        let hotel = hotel.clone();
+        tokio::spawn(async move { sweep(&hotel.pool).await })
+    };
+    let mut waited = 0;
+    loop {
+        let blocked: i64 = sqlx::query_scalar(
+            "select count(*) from pg_locks l join pg_stat_activity s on s.pid = l.pid
+             where not l.granted and s.datname = current_database()",
+        )
+        .fetch_one(&hotel.owner)
+        .await
+        .unwrap();
+        if blocked > 0 {
+            break;
+        }
+        waited += 1;
+        assert!(waited < 500, "the sweep never waited on the complete");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    complete.commit().await.unwrap();
+
+    let report = sweeping.await.unwrap().unwrap();
+    assert!(report.orphans.is_empty(), "{:?}", report.orphans);
+    assert_eq!(report.failures, 0);
+    assert_eq!(hotel.status(orphan).await.as_deref(), Some("ready"));
+    let items = gallery(&mut hotel.tx().await, hotel.room_type).await.unwrap();
+    assert_eq!(items.iter().map(|i| i.asset_id).collect::<Vec<_>>(), [orphan]);
 }

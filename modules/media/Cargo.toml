@@ -15,6 +15,7 @@ sqlx.workspace = true
 storage.workspace = true
 thiserror.workspace = true
 time.workspace = true
+tracing.workspace = true
 utoipa.workspace = true
 uuid.workspace = true
 

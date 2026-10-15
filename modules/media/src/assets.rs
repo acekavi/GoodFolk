@@ -20,7 +20,10 @@ const MAX_ERROR: usize = 200;
 /// The outbox topic media-svc's `/work` endpoint receives.
 const PROCESS_TOPIC: &str = "media-process";
 
-/// The name of the unique index that stores each file once per tenant and purpose.
+/// The reason stored when media-svc's result cannot be trusted.
+const PROCESSING_FAILED: &str = "Processing failed";
+
+/// The name of the unique index that stores each file once per property and purpose.
 const DEDUP_INDEX: &str = "media_asset_dedup_idx";
 
 /// What `Finalize` found out about an uploaded file.
@@ -45,8 +48,8 @@ pub struct NewUpload {
 pub enum Completed {
     /// A new file: the asset is processing and the link is written.
     Processing(AssetRow),
-    /// The tenant already had this file for this purpose: the link points at that `asset`, and the upload's own row is
-    /// gone. The caller deletes the raw object at `upload_key`.
+    /// The property already had this file for this purpose: the link points at that `asset`, and the upload's own row
+    /// is gone. The caller deletes the raw object at `upload_key`.
     Duplicate { asset: AssetRow, upload_key: String },
 }
 
@@ -131,21 +134,24 @@ pub async fn start_upload(
     Ok(NewUpload { asset_id, purpose })
 }
 
-/// Records the storage multipart upload id of an upload still in progress (`NotFound` otherwise).
-pub async fn set_s3_upload_id(tx: &mut Tx, asset: Uuid, upload_id: &str) -> Result<(), MediaError> {
-    let updated = sqlx::query("update media_asset set s3_upload_id = $2 where id = $1 and status = 'uploading'")
-        .bind(asset)
-        .bind(upload_id)
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
+/// Records the storage multipart upload id of the property's upload still in progress (`NotFound` otherwise).
+pub async fn set_s3_upload_id(tx: &mut Tx, property: Uuid, asset: Uuid, upload_id: &str) -> Result<(), MediaError> {
+    let updated = sqlx::query(
+        "update media_asset set s3_upload_id = $3 where id = $1 and property_id = $2 and status = 'uploading'",
+    )
+    .bind(asset)
+    .bind(property)
+    .bind(upload_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
     if updated == 0 {
         return Err(MediaError::NotFound("upload"));
     }
     Ok(())
 }
 
-/// Completes the upload `asset` of the property once `Finalize` verified the file. If the tenant already has the same
+/// Completes the upload `asset` of the property once `Finalize` verified the file. If the property already has the same
 /// file (same BLAKE3) for this purpose, the target is linked to that asset (a `failed` one is queued for processing
 /// again) and this upload's row is deleted. Otherwise the asset becomes `processing`, the link is written and
 /// `media-process` is queued. Two uploads of the same file completing at once both succeed, as one asset and two links.
@@ -177,7 +183,7 @@ pub async fn complete_upload(
     // The unique index decides between two uploads of the same file: the loser's update waits for the winner to
     // commit, then fails, and is rolled back to the savepoint and retried as a duplicate of the winner.
     for _ in 0..3 {
-        if let Some(existing) = find_duplicate(tx, tenant, purpose, &verified.blake3, asset).await? {
+        if let Some(existing) = find_duplicate(tx, tenant, property, purpose, &verified.blake3, asset).await? {
             return link_duplicate(tx, tenant, user, property, asset, existing, target).await;
         }
         if let Some(row) = claim(tx, asset, &verified).await? {
@@ -207,40 +213,58 @@ pub async fn refuse_upload(tx: &mut Tx, property: Uuid, asset: Uuid) -> Result<(
 
 /// Applies media-svc's result. `Ready` stores the renditions and the archive and marks the asset ready; `Failed`
 /// marks a processing asset failed with the reason (at most 200 characters). Applying a result again, or one for an
-/// asset that is gone (or in another tenant), changes nothing.
+/// asset that is gone (or in another tenant), changes nothing. A `Ready` naming any object outside the asset's own
+/// `t/{tenant}/a/{asset}/` is logged and applied as a failure ("Processing failed"), so no link can ever be signed for
+/// another asset's file.
 pub async fn apply_result(tx: &mut Tx, result: &MediaResult) -> Result<(), MediaError> {
     let changed: Option<(Uuid, Uuid)> = match result {
-        MediaResult::Ready { asset_id, width, height, archive_key, renditions, .. } => {
-            sqlx::query_as(
-                "update media_asset set status = 'ready', error = null, width = $2, height = $3, archive_key = $4,
-                                        renditions = $5, ready_at = now()
-                 where id = $1 and status in ('processing', 'failed')
-                 returning tenant_id, property_id",
-            )
-            .bind(asset_id)
-            .bind(i32::try_from(*width).unwrap_or(i32::MAX))
-            .bind(i32::try_from(*height).unwrap_or(i32::MAX))
-            .bind(archive_key)
-            .bind(Json(renditions))
-            .fetch_optional(&mut **tx)
-            .await?
+        MediaResult::Ready { tenant_id, asset_id, width, height, archive_key, renditions } => {
+            let prefix = format!("t/{tenant_id}/a/{asset_id}/");
+            let owned = |key: &str| {
+                key.strip_prefix(&prefix)
+                    .is_some_and(|name| !name.is_empty() && !name.contains('/') && !name.starts_with('.'))
+            };
+            if owned(archive_key) && renditions.iter().all(|r| owned(&r.key)) {
+                sqlx::query_as(
+                    "update media_asset set status = 'ready', error = null, width = $2, height = $3, archive_key = $4,
+                                            renditions = $5, ready_at = now()
+                     where id = $1 and tenant_id = $6 and status in ('processing', 'failed')
+                     returning tenant_id, property_id",
+                )
+                .bind(asset_id)
+                .bind(i32::try_from(*width).unwrap_or(i32::MAX))
+                .bind(i32::try_from(*height).unwrap_or(i32::MAX))
+                .bind(archive_key)
+                .bind(Json(renditions))
+                .bind(tenant_id)
+                .fetch_optional(&mut **tx)
+                .await?
+            } else {
+                tracing::error!(tenant = %tenant_id, asset = %asset_id, "media result names another asset's objects");
+                mark_failed(tx, *asset_id, PROCESSING_FAILED).await?
+            }
         }
         MediaResult::Failed { asset_id, reason, .. } => {
             let reason: String = reason.chars().take(MAX_ERROR).collect();
-            sqlx::query_as(
-                "update media_asset set status = 'failed', error = $2 where id = $1 and status = 'processing'
-                 returning tenant_id, property_id",
-            )
-            .bind(asset_id)
-            .bind(reason)
-            .fetch_optional(&mut **tx)
-            .await?
+            mark_failed(tx, *asset_id, &reason).await?
         }
     };
     if let Some((tenant, property)) = changed {
         notify(tx, TenantId(tenant), property).await?;
     }
     Ok(())
+}
+
+/// Marks a processing asset failed with `reason`, returning its tenant and property if it changed.
+async fn mark_failed(tx: &mut Tx, asset: Uuid, reason: &str) -> Result<Option<(Uuid, Uuid)>, sqlx::Error> {
+    sqlx::query_as(
+        "update media_asset set status = 'failed', error = $2 where id = $1 and status = 'processing'
+         returning tenant_id, property_id",
+    )
+    .bind(asset)
+    .bind(reason)
+    .fetch_optional(&mut **tx)
+    .await
 }
 
 /// Checks that `target` belongs to the property (guests: to the tenant), and locks a room type or issue so that
@@ -259,7 +283,17 @@ async fn check_target(tx: &mut Tx, property: Uuid, target: Target) -> Result<(),
                 .bind(property),
             "issue",
         ),
-        Target::Guest { guest, .. } => (sqlx::query_scalar("select 1 from guest where id = $1").bind(guest), "guest"),
+        Target::Guest { guest, .. } => {
+            // Guests are tenant-wide, but the asset still belongs to the property.
+            let property: Option<i32> = sqlx::query_scalar("select 1 from property where id = $1")
+                .bind(property)
+                .fetch_optional(&mut **tx)
+                .await?;
+            if property.is_none() {
+                return Err(MediaError::NotFound("property"));
+            }
+            (sqlx::query_scalar("select 1 from guest where id = $1").bind(guest), "guest")
+        }
     };
     let found: Option<i32> = query.fetch_optional(&mut **tx).await?;
     found.map(|_| ()).ok_or(MediaError::NotFound(what))
@@ -278,18 +312,21 @@ async fn issue_photo_count(tx: &mut Tx, issue: Uuid) -> Result<i64, sqlx::Error>
     .await
 }
 
-/// Another asset of the tenant holding the same file for `purpose`.
+/// Another asset of the property holding the same file for `purpose`.
 async fn find_duplicate(
     tx: &mut Tx,
     tenant: TenantId,
+    property: Uuid,
     purpose: Purpose,
     blake3: &[u8; 32],
     asset: Uuid,
 ) -> Result<Option<Uuid>, sqlx::Error> {
     sqlx::query_scalar(
-        "select id from media_asset where tenant_id = $1 and purpose = $2 and blake3 = $3 and id <> $4 for update",
+        "select id from media_asset
+         where tenant_id = $1 and property_id = $2 and purpose = $3 and blake3 = $4 and id <> $5 for update",
     )
     .bind(tenant.0)
+    .bind(property)
     .bind(purpose.as_str())
     .bind(&blake3[..])
     .bind(asset)

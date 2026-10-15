@@ -15,7 +15,7 @@ pub use assets::{
 };
 pub use guest_documents::{GuestDocumentRow, delete_guest_document, guest_document_link_key, guest_documents};
 pub use links::{GalleryItem, gallery, issue_photos, reorder_gallery, set_caption, unlink_gallery, unlink_issue_photo};
-pub use sweep::{SweepReport, sweep};
+pub use sweep::{StaleUpload, SweepReport, sweep};
 
 use db::{Event, TenantId, Tx, UserId};
 use media_types::{Profile, RenditionOut};

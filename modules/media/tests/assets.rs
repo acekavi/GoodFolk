@@ -30,6 +30,9 @@ async fn start_upload_checks_target_property_and_limits(_: PgPoolOptions, opts: 
         let err = hotel.start(target, 1000).await.unwrap_err();
         assert!(matches!(err, MediaError::NotFound(w) if w == what), "{target:?}: {err:?}");
     }
+    // A guest is tenant-wide, but the asset still needs a property of the tenant.
+    let err = hotel.start_in(Uuid::now_v7(), guest_target(guest), 1000).await.unwrap_err();
+    assert!(matches!(err, MediaError::NotFound("property")), "{err:?}");
 
     let err = hotel.start(Target::RoomType(hotel.room_type), 25 * MIB + 1).await.unwrap_err();
     assert!(matches!(&err, MediaError::Invalid(m) if m == "Too large: the limit is 25 MB"), "{err:?}");
@@ -248,6 +251,65 @@ async fn other_tenant_same_file_gets_own_asset(_: PgPoolOptions, opts: PgConnect
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn other_property_same_file_gets_own_asset(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let other_property = hotel.add_property("OTH").await;
+    let other_room_type = hotel.add_room_type(other_property, "STD").await;
+
+    let here = hotel.upload(Target::RoomType(hotel.room_type), 1).await;
+    let upload = hotel.start_in(other_property, Target::RoomType(other_room_type), 1000).await.unwrap();
+    let there = hotel.complete_in(other_property, upload.asset_id, 1).await.unwrap();
+
+    assert!(matches!(here, Completed::Processing(_)));
+    assert!(matches!(there, Completed::Processing(_)), "files are matched only within a property");
+    assert_ne!(asset_of(&here), asset_of(&there));
+    assert_eq!(hotel.assets().await, 2);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_result_naming_another_assets_objects_fails_the_asset(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let asset = asset_of(&hotel.upload(Target::RoomType(hotel.room_type), 1).await);
+    let victim = Uuid::now_v7();
+    let tampered = |rewrite: &dyn Fn(&mut MediaResult)| {
+        let mut result = ready(hotel.tenant, asset);
+        rewrite(&mut result);
+        result
+    };
+    let bad = [
+        tampered(&|r| {
+            if let MediaResult::Ready { archive_key, .. } = r {
+                *archive_key = format!("t/{}/a/{victim}/archive.jxl", hotel.tenant.0);
+            }
+        }),
+        tampered(&|r| {
+            if let MediaResult::Ready { renditions, .. } = r {
+                renditions[1].key = format!("t/{}/a/{asset}/../{victim}/md.webp", hotel.tenant.0);
+            }
+        }),
+    ];
+    for result in &bad {
+        hotel.apply(result).await;
+        let row: (String, Option<String>, Option<String>) =
+            sqlx::query_as("select status, error, archive_key from media_asset where id = $1")
+                .bind(asset)
+                .fetch_one(&mut *hotel.tx().await)
+                .await
+                .unwrap();
+        assert_eq!(row, ("failed".to_owned(), Some("Processing failed".to_owned()), None));
+        let mut tx = hotel.tx().await;
+        sqlx::query("update media_asset set status = 'processing', error = null where id = $1")
+            .bind(asset)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+    hotel.ready(asset).await;
+    assert_eq!(hotel.status(asset).await.as_deref(), Some("ready"), "the asset's own keys are accepted");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn failed_duplicate_is_requeued(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;
     let issue = hotel.issue().await;
@@ -311,7 +373,7 @@ async fn refusing_deletes_only_an_upload_in_progress(_: PgPoolOptions, opts: PgC
     let hotel = Hotel::new(opts).await;
     let upload = hotel.start(Target::RoomType(hotel.room_type), 1000).await.unwrap();
     let mut tx = hotel.tx().await;
-    media::set_s3_upload_id(&mut tx, upload.asset_id, "s3-upload").await.unwrap();
+    media::set_s3_upload_id(&mut tx, hotel.property, upload.asset_id, "s3-upload").await.unwrap();
     media::refuse_upload(&mut tx, hotel.property, upload.asset_id).await.unwrap();
     tx.commit().await.unwrap();
     assert_eq!(hotel.assets().await, 0);
