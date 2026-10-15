@@ -38,6 +38,15 @@ jobs:
       # cjxl and djxl land in ~/.cache/goodfolk-libjxl/bin, where the imaging crate looks by default.
       - name: Install libjxl's command line tools
         run: sh deploy/dev/libjxl.sh install
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/goodfolk-rustfs/rustfs
+          key: rustfs-${{ hashFiles('deploy/dev/rustfs.sh') }}
+      # The storage tests need an S3 server on :9000.
+      - name: Start RustFS and create the development buckets
+        run: |
+          sh deploy/dev/rustfs.sh install && sh deploy/dev/rustfs.sh start
+          cargo run -p storage --example ensure-buckets
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace

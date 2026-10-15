@@ -15,9 +15,11 @@ identity = { path = "modules/identity" }
 imaging = { path = "crates/imaging" }
 media-types = { path = "crates/media-types" }
 property = { path = "modules/property" }
+proto = { path = "crates/proto" }
 rates = { path = "modules/rates" }
 reservations = { path = "modules/reservations" }
 rooms = { path = "modules/rooms" }
+storage = { path = "crates/storage" }
 
 anyhow = "1"
 argon2 = "0.6"
@@ -27,6 +29,7 @@ avif-decode = { version = "1.0.2", default-features = false }
 axum = { version = "0.8", features = ["macros"] }
 axum-extra = { version = "0.12", features = ["cookie"] }
 base64 = "0.23"
+bytes = "1"
 fast_image_resize = { version = "6", features = ["rayon"] }
 flate2 = "1"
 futures = "0.3"
@@ -34,14 +37,21 @@ garde = { version = "0.23", features = ["derive", "email"] }
 getrandom = "0.3"
 http-body-util = "0.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+jiff = "0.2"
 infer = "0.22"
 mimalloc = "0.1"
 moxcms = "0.8"
 proptest = "1"
+prost = "0.14"
+protox = "0.10"
 rayon = "1"
+# rustls without a bundled crypto provider: the tree already has ring (through sqlx), and rustls picks the only one built.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 ravif = { version = "0.13", default-features = false, features = ["asm", "threading"] }
 # Already in the tree through rustls; keep the same version so no second copy is built.
 ring = "0.17.14"
+rusty-s3 = { version = "0.10", default-features = false, features = ["rustcrypto", "full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
@@ -51,12 +61,17 @@ yuvxyb = "0.4"
 thiserror = "2"
 time = { version = "0.3", features = ["macros", "serde", "serde-well-known", "serde-human-readable"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tonic = { version = "0.14", default-features = false, features = ["codegen", "transport"] }
+tonic-health = "0.14"
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
 tokio-stream = { version = "0.1", features = ["sync"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["trace", "compression-br", "compression-zstd", "request-id", "util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 utoipa = { version = "6", features = ["uuid", "time"] }
+url = "2"
 uuid = { version = "1", features = ["v7", "serde"] }
 webp = { version = "0.3", default-features = false }
 
