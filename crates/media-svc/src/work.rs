@@ -9,6 +9,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use events::{Message, PushEnvelope};
+use futures::future;
 use imaging::SourceType;
 use media_types::{MediaResult, ProcessJob, Profile, RenditionOut};
 use storage::{Bucket, IMMUTABLE, StorageError, archive_key, rendition_key, upload_key};
@@ -126,29 +127,33 @@ async fn store(svc: &MediaSvc, job: &ProcessJob, output: Output) -> anyhow::Resu
         Profile::IssuePhoto | Profile::GuestDocument => (Bucket::Private, None),
     };
 
-    let mut renditions = Vec::with_capacity(output.renditions.len());
-    for piece in output.renditions {
-        let key = rendition_key(tenant, asset, piece.size.as_str(), piece.format.as_str());
-        let bytes = piece.bytes.len() as u64;
-        let content_type = match piece.format {
-            media_types::Format::Avif => "image/avif",
-            media_types::Format::Webp => "image/webp",
-        };
-        svc.storage.put(rendition_bucket, &key, piece.bytes, content_type, cache_control).await?;
-        renditions.push(RenditionOut {
+    let renditions: Vec<RenditionOut> = output
+        .renditions
+        .iter()
+        .map(|piece| RenditionOut {
             size: piece.size,
             format: piece.format,
             width: piece.width,
             height: piece.height,
-            bytes,
-            key,
-        });
-    }
+            bytes: piece.bytes.len() as u64,
+            key: rendition_key(tenant, asset, piece.size.as_str(), piece.format.as_str()),
+        })
+        .collect();
+    let rendition_puts = output.renditions.into_iter().zip(&renditions).map(|(piece, out)| {
+        let content_type = match piece.format {
+            media_types::Format::Avif => "image/avif",
+            media_types::Format::Webp => "image/webp",
+        };
+        svc.storage.put(rendition_bucket, &out.key, piece.bytes, content_type, cache_control)
+    });
 
     let archive = archive_key(tenant, asset, &output.archive_ext);
     let archive_len = output.archive.len() as u64;
     let content_type = if output.archive_ext == "pdf" { "application/pdf" } else { "image/jxl" };
-    svc.storage.put(Bucket::Private, &archive, output.archive, content_type, None).await?;
+    // Every object goes up at once: one after another, they would add up to a noticeable part of a photo's time
+    // to `ready`.
+    let archive_put = svc.storage.put(Bucket::Private, &archive, output.archive, content_type, None);
+    tokio::try_join!(future::try_join_all(rendition_puts), archive_put)?;
     let stored = svc.storage.head(Bucket::Private, &archive).await?;
     anyhow::ensure!(stored == Some(archive_len), "the archive reads back as {stored:?} bytes, not {archive_len}");
 
