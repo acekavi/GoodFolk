@@ -10,17 +10,27 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+/// Records what it is sent. A payload with `"block": true` waits for `release`; one with `"refuse": true` is refused.
 #[derive(Default)]
 struct MemoryBus {
     sent: Mutex<Vec<Message>>,
+    started: Mutex<Vec<Uuid>>,
+    release: tokio::sync::Notify,
     fail: bool,
 }
 
 #[async_trait]
 impl EventBus for MemoryBus {
     async fn publish(&self, msg: &Message) -> Result<(), BusError> {
+        self.started.lock().unwrap().push(msg.id);
         if self.fail {
             return Err(BusError::Retryable("down".to_owned()));
+        }
+        if msg.payload["refuse"] == true {
+            return Err(BusError::Permanent("nope".to_owned()));
+        }
+        if msg.payload["block"] == true {
+            self.release.notified().await;
         }
         self.sent.lock().unwrap().push(msg.clone());
         Ok(())
@@ -38,8 +48,12 @@ async fn wait_for<F: AsyncFn() -> bool>(what: &str, check: F) {
 }
 
 async fn enqueue_committed(pool: &PgPool, topic: &str) -> Uuid {
+    enqueue_payload(pool, topic, &json!({"asset": "a1"})).await
+}
+
+async fn enqueue_payload(pool: &PgPool, topic: &str, payload: &serde_json::Value) -> Uuid {
     let mut tx = begin(pool, Scope::default()).await.unwrap();
-    let id = enqueue(&mut tx, topic, &json!({"asset": "a1"})).await.unwrap();
+    let id = enqueue(&mut tx, topic, payload).await.unwrap();
     tx.commit().await.unwrap();
     id
 }
@@ -162,4 +176,92 @@ async fn receiver_dedupes_by_message_id(_: PgPoolOptions, opts: PgConnectOptions
     let mut tx = begin(&app, Scope::default()).await.unwrap();
     assert!(!first_seen(&mut tx, "m1").await.unwrap());
     assert!(first_seen(&mut tx, "m2").await.unwrap());
+}
+
+async fn count_sent(owner: &PgPool) -> i64 {
+    sqlx::query_scalar("select count(*) from outbox where sent_at is not null").fetch_one(owner).await.unwrap()
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_blocked_send_does_not_hold_up_the_others(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = app_pool(opts.clone(), 6).await;
+    let owner = PgPool::connect_with(opts).await.unwrap();
+    let blocked = enqueue_payload(&app, "media-process", &json!({"block": true})).await;
+    for _ in 0..15 {
+        enqueue_committed(&app, "media-process").await;
+    }
+
+    let bus = Arc::new(MemoryBus::default());
+    let shutdown = CancellationToken::new();
+    let relay = tokio::spawn(run_relay(app, bus.clone(), shutdown.clone()));
+    wait_for("the other fifteen to be sent", async || count_sent(&owner).await == 15).await;
+    let blocked_sent: bool = sqlx::query_scalar("select sent_at is not null from outbox where id = $1")
+        .bind(blocked)
+        .fetch_one(&owner)
+        .await
+        .unwrap();
+    assert!(!blocked_sent);
+
+    bus.release.notify_one();
+    wait_for("the blocked send to finish", async || count_sent(&owner).await == 16).await;
+    shutdown.cancel();
+    relay.await.unwrap();
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn shutdown_gives_sends_a_grace_then_returns(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = app_pool(opts, 4).await;
+    enqueue_payload(&app, "media-process", &json!({"block": true})).await;
+
+    let bus = Arc::new(MemoryBus::default());
+    let shutdown = CancellationToken::new();
+    let relay = tokio::spawn(run_relay(app, bus.clone(), shutdown.clone()));
+    wait_for("the send to start", async || !bus.started.lock().unwrap().is_empty()).await;
+
+    let cancelled = std::time::Instant::now();
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(8), relay).await.expect("the relay stops").unwrap();
+    let took = cancelled.elapsed();
+    assert!(took >= Duration::from_secs(4) && took < Duration::from_secs(7), "stopped after {took:?}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_refused_message_is_finished_with_its_error_kept(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = app_pool(opts.clone(), 4).await;
+    let owner = PgPool::connect_with(opts).await.unwrap();
+    let id = enqueue_payload(&app, "media-process", &json!({"refuse": true})).await;
+
+    let shutdown = CancellationToken::new();
+    let relay = tokio::spawn(run_relay(app, Arc::new(MemoryBus::default()), shutdown.clone()));
+    wait_for("the row to be finished", async || count_sent(&owner).await == 1).await;
+    shutdown.cancel();
+    relay.await.unwrap();
+
+    let error: Option<String> =
+        sqlx::query_scalar("select last_error from outbox where id = $1").bind(id).fetch_one(&owner).await.unwrap();
+    assert_eq!(error.as_deref(), Some("nope"));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn two_relays_never_send_a_row_twice(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = app_pool(opts.clone(), 8).await;
+    let owner = PgPool::connect_with(opts).await.unwrap();
+    for _ in 0..40 {
+        enqueue_committed(&app, "media-process").await;
+    }
+
+    let bus = Arc::new(MemoryBus::default());
+    let shutdown = CancellationToken::new();
+    let relays: Vec<_> = (0..2).map(|_| tokio::spawn(run_relay(app.clone(), bus.clone(), shutdown.clone()))).collect();
+    wait_for("all rows to be sent", async || count_sent(&owner).await == 40).await;
+    shutdown.cancel();
+    for relay in relays {
+        relay.await.unwrap();
+    }
+
+    let mut ids: Vec<Uuid> = bus.sent.lock().unwrap().iter().map(|m| m.id).collect();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), 40);
+    assert_eq!(bus.started.lock().unwrap().len(), 40);
 }

@@ -1,15 +1,19 @@
 use crate::bus::{BusError, EventBus, Message};
-use futures::future::join_all;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-/// Rows claimed, and so sends in flight, per batch.
-const BATCH: i32 = 8;
+/// Sends in flight at once.
+const IN_FLIGHT: usize = 8;
+/// On shutdown, how long sends already under way get to finish. Rows abandoned then come back after the lease.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 /// A relay that dies mid-send leaves its rows due again after this long. It exceeds the longest `/work` (3 x 60 s).
 const LEASE_SECONDS: i32 = 900;
+/// A send that has failed this many times is logged as an error, so a stuck topic gets noticed.
+const ALERT_AFTER_ATTEMPTS: i32 = 10;
 const IDLE_POLL: Duration = Duration::from_millis(500);
 
 /// 1 s for the first attempt, doubling each time, capped at 300 s. `attempts` counts claims, so it is 1 on the first.
@@ -23,34 +27,48 @@ struct Claimed {
     attempts: i32,
 }
 
-/// Drains the outbox until `shutdown` is cancelled, finishing the batch in flight first.
+/// Drains the outbox until `shutdown` is cancelled. Up to eight sends run at once and a slot is refilled as soon as
+/// it frees up, so one slow send never holds back the others. After cancellation nothing new is claimed and sends
+/// under way get [`SHUTDOWN_GRACE`] to finish.
 pub async fn run_relay(pool: PgPool, bus: Arc<dyn EventBus>, shutdown: CancellationToken) {
+    // Tasks, not futures polled from this loop: a send suspended mid-query would hold its connection while `claim`
+    // waited for one.
+    let mut in_flight = JoinSet::new();
     while !shutdown.is_cancelled() {
-        match claim(&pool).await {
-            Ok(rows) if rows.is_empty() => {
-                tokio::select! {
-                    () = shutdown.cancelled() => {}
-                    () = tokio::time::sleep(IDLE_POLL) => {}
+        let free = IN_FLIGHT - in_flight.len();
+        let mut wait = IDLE_POLL;
+        if free > 0 {
+            match claim(&pool, free).await {
+                Ok(rows) => {
+                    for row in rows {
+                        in_flight.spawn(deliver(pool.clone(), bus.clone(), row));
+                    }
                 }
-            }
-            Ok(rows) => {
-                join_all(rows.into_iter().map(|row| deliver(&pool, bus.as_ref(), row))).await;
-            }
-            Err(error) => {
-                tracing::error!(%error, "outbox claim failed");
-                tokio::select! {
-                    () = shutdown.cancelled() => {}
-                    () = tokio::time::sleep(Duration::from_secs(1)) => {}
+                Err(error) => {
+                    tracing::error!(%error, "outbox claim failed");
+                    wait = Duration::from_secs(1);
                 }
             }
         }
+        tokio::select! {
+            () = shutdown.cancelled() => {}
+            Some(_) = in_flight.join_next(), if !in_flight.is_empty() => {}
+            () = tokio::time::sleep(wait) => {}
+        }
+    }
+    let drained = tokio::time::timeout(SHUTDOWN_GRACE, async { while in_flight.join_next().await.is_some() {} }).await;
+    if drained.is_err() {
+        tracing::warn!(
+            abandoned = in_flight.len(),
+            "relay stopped with sends still running; their rows return after the lease"
+        );
     }
 }
 
-async fn claim(pool: &PgPool) -> Result<Vec<Claimed>, sqlx::Error> {
+async fn claim(pool: &PgPool, limit: usize) -> Result<Vec<Claimed>, sqlx::Error> {
     let rows: Vec<(Uuid, String, serde_json::Value, i32)> =
         sqlx::query_as("select id, topic, payload, attempts from app.outbox_claim($1, $2)")
-            .bind(BATCH)
+            .bind(i32::try_from(limit).unwrap_or(i32::MAX))
             .bind(LEASE_SECONDS)
             .fetch_all(pool)
             .await?;
@@ -60,24 +78,27 @@ async fn claim(pool: &PgPool) -> Result<Vec<Claimed>, sqlx::Error> {
         .collect())
 }
 
-async fn deliver(pool: &PgPool, bus: &dyn EventBus, row: Claimed) {
+async fn deliver(pool: PgPool, bus: Arc<dyn EventBus>, row: Claimed) {
     let Claimed { message, attempts } = row;
     let (id, topic) = (message.id, message.topic.as_str());
     let outcome = match bus.publish(&message).await {
-        Ok(()) => sqlx::query("select app.outbox_sent($1)").bind(id).execute(pool).await.map(drop),
+        Ok(()) => sqlx::query("select app.outbox_sent($1)").bind(id).execute(&pool).await.map(drop),
         Err(BusError::Permanent(error)) => {
             tracing::error!(%id, topic, %error, "outbox message refused for good; dropping it");
-            // `outbox_sent` clears `last_error`, so the error is recorded after it. The row stays sent.
-            mark_refused(pool, id, &error).await
+            sqlx::query("select app.outbox_refused($1, $2)").bind(id).bind(error).execute(&pool).await.map(drop)
         }
         Err(error) => {
-            let delay = backoff(attempts);
-            tracing::warn!(%id, topic, attempts, %error, "outbox send failed; will retry");
+            if attempts >= ALERT_AFTER_ATTEMPTS {
+                tracing::error!(%id, topic, attempts, %error, "outbox send keeps failing");
+            } else {
+                tracing::warn!(%id, topic, attempts, %error, "outbox send failed; will retry");
+            }
+            let delay = i32::try_from(backoff(attempts).as_secs()).unwrap_or(300);
             sqlx::query("select app.outbox_retry($1, $2, $3)")
                 .bind(id)
                 .bind(error.to_string())
-                .bind(i32::try_from(delay.as_secs()).unwrap_or(300))
-                .execute(pool)
+                .bind(delay)
+                .execute(&pool)
                 .await
                 .map(drop)
         }
@@ -86,10 +107,4 @@ async fn deliver(pool: &PgPool, bus: &dyn EventBus, row: Claimed) {
         // The lease expires and the row is delivered again; receivers dedupe.
         tracing::error!(%id, topic, %error, "recording the outbox outcome failed");
     }
-}
-
-async fn mark_refused(pool: &PgPool, id: Uuid, error: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("select app.outbox_sent($1)").bind(id).execute(pool).await?;
-    sqlx::query("select app.outbox_retry($1, $2, 0)").bind(id).bind(error).execute(pool).await?;
-    Ok(())
 }

@@ -59,6 +59,8 @@ async fn push_bus_classifies_statuses() {
     for (status, permanent) in [
         (StatusCode::BAD_REQUEST, true),
         (StatusCode::NOT_FOUND, true),
+        (StatusCode::UNAUTHORIZED, false),
+        (StatusCode::FORBIDDEN, false),
         (StatusCode::REQUEST_TIMEOUT, false),
         (StatusCode::TOO_MANY_REQUESTS, false),
         (StatusCode::INTERNAL_SERVER_ERROR, false),

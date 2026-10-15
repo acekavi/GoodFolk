@@ -55,6 +55,7 @@ fn transport_error(error: reqwest::Error) -> BusError {
 }
 
 /// Delivers straight to the receiver's endpoint in Pub/Sub's push format. For local development and tests only.
+/// The envelope's `subscription` is a synthetic `push/{topic}`; receivers must not parse it.
 pub struct PushBus {
     endpoints: HashMap<String, Url>,
     http: reqwest::Client,
@@ -102,7 +103,8 @@ impl EventBus for PushBus {
         let status = request.send().await.map_err(transport_error)?.status();
         if status.is_success() {
             Ok(())
-        } else if status.is_client_error() && status.as_u16() != 408 && status.as_u16() != 429 {
+        } else if status.is_client_error() && !matches!(status.as_u16(), 401 | 403 | 408 | 429) {
+            // 401 and 403 are retried: a misconfigured or rotated service credential must not lose messages.
             Err(BusError::Permanent(format!("{} answered {status}", msg.topic)))
         } else {
             Err(BusError::Retryable(format!("{} answered {status}", msg.topic)))
@@ -219,16 +221,17 @@ impl EventBus for PubSubBus {
     }
 }
 
-/// `EVENT_BUS=push` (refused when `APP_ENV=production`) or `EVENT_BUS=pubsub`, which needs `PUBSUB_PROJECT` and uses
+/// `EVENT_BUS=push` (refused when `APP_ENV=production`, and needs `auth`) or `EVENT_BUS=pubsub`, which ignores `auth`, needs `PUBSUB_PROJECT` and uses
 /// `PUBSUB_EMULATOR_HOST` when set.
-pub fn bus_from_env() -> anyhow::Result<Arc<dyn EventBus>> {
+pub fn bus_from_env(auth: Option<HeaderProvider>) -> anyhow::Result<Arc<dyn EventBus>> {
     let kind = std::env::var("EVENT_BUS").context("EVENT_BUS is required (push or pubsub)")?;
     match kind.as_str() {
         "push" => {
             if std::env::var("APP_ENV").is_ok_and(|env| env == "production") {
                 bail!("EVENT_BUS=push is not allowed when APP_ENV=production");
             }
-            Ok(Arc::new(PushBus::from_env(None)?))
+            let Some(auth) = auth else { bail!("EVENT_BUS=push needs service auth") };
+            Ok(Arc::new(PushBus::from_env(Some(auth))?))
         }
         "pubsub" => {
             let project = std::env::var("PUBSUB_PROJECT").context("PUBSUB_PROJECT is required")?;
