@@ -105,5 +105,12 @@ describe('can', () => {
 			expect(can(grant(role), 'roomIssuesReport', 'p1')).toBe(true);
 		}
 		expect(can(grant('accountant'), 'roomIssuesReport', 'p1')).toBe(false);
+
+		for (const role of ['owner', 'manager'] as const) {
+			expect(can(grant(role), 'mediaManage', 'p1')).toBe(true);
+		}
+		for (const role of ['front_desk', 'housekeeping', 'hk_supervisor', 'accountant'] as const) {
+			expect(can(grant(role), 'mediaManage', 'p1')).toBe(false);
+		}
 	});
 });

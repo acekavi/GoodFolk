@@ -24,6 +24,10 @@ export type IdDocType =
   | 'OTHER'
   | 'PASSPORT';
 
+export type ImageFormat =
+  | 'AVIF'
+  | 'WEBP';
+
 /** How urgent a room issue is. */
 export type IssueSeverity =
   | 'HIGH'
@@ -40,6 +44,13 @@ export type MealPlan =
   | 'FB'
   | 'HB'
   | 'RO';
+
+/** Where an uploaded file is: uploading, processing, then ready or failed. */
+export type MediaStatus =
+  | 'FAILED'
+  | 'PROCESSING'
+  | 'READY'
+  | 'UPLOADING';
 
 /** Why a stay has no room. */
 export type NeedsRoomReason =
@@ -69,6 +80,14 @@ export type PriceChangeMode =
   | 'AMOUNT'
   | 'PERCENT'
   | 'SET';
+
+/** A delivered image's size: `THUMB` is a 320 px square, the others are long edges of 640 to 2400 px. */
+export type RenditionSize =
+  | 'LG'
+  | 'MD'
+  | 'SM'
+  | 'THUMB'
+  | 'XL';
 
 /**
  * Which reservation rooms to list. Left out, a field does not filter; an empty `statuses` or `sources`
@@ -194,6 +213,13 @@ export type InventoryQueryVariables = Exact<{
 
 
 export type InventoryQuery = { inventory: Array<{ date: string, roomTypeId: string, physical: number, sold: number, outOfOrder: number, available: number, sellable: number }>, blocks: Array<{ id: string, roomId: string, from: string, to: string, kind: BlockKind, reasonId: string, note: string, version: number }> };
+
+export type RoomTypeGalleriesQueryVariables = Exact<{
+  propertyId: string;
+}>;
+
+
+export type RoomTypeGalleriesQuery = { roomTypes: Array<{ id: string, media: Array<{ assetId: string, status: MediaStatus, caption: string | null, width: number | null, height: number | null, renditions: Array<{ size: RenditionSize, format: ImageFormat, width: number, height: number, url: string }> }> }> };
 
 export type PropertiesQueryVariables = Exact<{ [key: string]: never; }>;
 
@@ -449,6 +475,27 @@ export const InventoryDocument = new TypedDocumentString(`
   }
 }
     `, {"hash":"sha256:17b30b76d3db9cfcb676c32ecfbe9846f2b10eee551be01de39ff387d20b4230"}) as unknown as TypedDocumentString<InventoryQuery, InventoryQueryVariables>;
+export const RoomTypeGalleriesDocument = new TypedDocumentString(`
+    query RoomTypeGalleries($propertyId: UUID!) {
+  roomTypes(propertyId: $propertyId) {
+    id
+    media {
+      assetId
+      status
+      caption
+      width
+      height
+      renditions {
+        size
+        format
+        width
+        height
+        url
+      }
+    }
+  }
+}
+    `, {"hash":"sha256:5e5fea486b90dc5c6bd5917b53e135fe4760016b98394aaeed1ee2e855c19994"}) as unknown as TypedDocumentString<RoomTypeGalleriesQuery, RoomTypeGalleriesQueryVariables>;
 export const PropertiesDocument = new TypedDocumentString(`
     query Properties {
   properties {
