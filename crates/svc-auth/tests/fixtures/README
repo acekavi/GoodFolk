@@ -1,0 +1,2 @@
+Test-only RSA keys for svc-auth's tests. They sign nothing real and must never be used anywhere else.
+The .n files hold the matching public modulus (base64url); the exponent is 65537 (AQAB).

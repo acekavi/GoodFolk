@@ -5,6 +5,9 @@ all-features = true
 # Fail on any RustSec advisory (vulnerability, unmaintained, unsound, yanked).
 version = 2
 yanked = "deny"
+# svc-auth verifies RS256 signatures with the rsa crate and never signs with it. The advisory is a timing attack on
+# private-key operations and has no patched release.
+ignore = ["RUSTSEC-2023-0071"]
 
 [licenses]
 version = 2
