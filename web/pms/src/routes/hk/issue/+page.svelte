@@ -5,6 +5,7 @@
 	added. They need a connection: a report saved on the device carries its text only.
 -->
 <script lang="ts">
+	import { beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { ApiError, errorMessage } from '$lib/api/problem';
@@ -82,6 +83,22 @@
 		queryFn: ({ signal }) => fetchIssuePhotos(propertyId, signal),
 		enabled: !!propertyId && reported.length > 0 && sync.online
 	}));
+
+	/** Uploads still on their way, by issue; leaving the page would drop them. */
+	const uploading = $state<Record<string, number>>({});
+	const inFlight = $derived(Object.values(uploading).reduce((sum, count) => sum + count, 0));
+	const LEAVE_WARNING = 'Photos are still uploading. Leave and drop them?';
+
+	// Leaving within the app asks first; closing or reloading the tab gets the browser's own prompt.
+	beforeNavigate((navigation) => {
+		if (inFlight > 0 && navigation.type !== 'leave' && !confirm(LEAVE_WARNING)) navigation.cancel();
+	});
+	$effect(() => {
+		if (inFlight === 0) return;
+		const guard = (event: BeforeUnloadEvent) => event.preventDefault();
+		window.addEventListener('beforeunload', guard);
+		return () => window.removeEventListener('beforeunload', guard);
+	});
 
 	function choose(files: File[]) {
 		chosen = [...chosen, ...files].slice(0, MAX_ISSUE_PHOTOS);
@@ -212,6 +229,7 @@
 				online={sync.online}
 				camera
 				initial={issue.files}
+				onuploading={(count) => (uploading[issue.id] = count)}
 			/>
 		</section>
 	{/each}

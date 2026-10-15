@@ -1,6 +1,6 @@
 {
   "sha256:0991236e571c94b801691aefc5b9a85c0c1372010a662f1ee98f155b11a7e2d8": "query Accounts($includeInactive: Boolean = false, $propertyId: UUID!, $search: String) { accounts( propertyId: $propertyId search: $search includeInactive: $includeInactive ) { active contact { address contactName email phone } creditLimit currency id kind name version } }",
-  "sha256:80e8d9230ed8fb8b6b29a6ea78da47df5ef244ea91a2c1340ee288d1889d45cd": "query GuestDocuments($guestId: UUID!, $propertyId: UUID!) { guestDocuments(propertyId: $propertyId, guestId: $guestId) { id kind mime status uploadedAt uploadedBy } }",
+  "sha256:2d1c5d5d5c5fadf5222abbbae3c6e843eb0aa5e587f291da49f4be6922fdd472": "query GuestDocuments($guestId: UUID!, $propertyId: UUID!) { guestDocuments(propertyId: $propertyId, guestId: $guestId) { id kind mime status uploadedAt uploadedByName } }",
   "sha256:e25aabd727d0b329661f3d73dbcda4a8211c9786700938b2730d837fedc83137": "query HousekeepingBoard($propertyId: UUID!) { housekeepingBoard(propertyId: $propertyId) { assignee { displayName userId } blockKind condition conditionVersion floor number occupancy roomId roomTypeId sectionId } }",
   "sha256:543a1e3deb517d6d94cb8c461265a37d9e224306e59939fd482655a78f9cd2ca": "query MyRooms($propertyId: UUID!) { myRooms(propertyId: $propertyId) { blockKind condition conditionVersion number occupancy openIssues roomId roomTypeId } }",
   "sha256:5460be0b73894b27eea037633d372893dee4f9660ccda24a73cb9587f79a4e84": "query Housekeepers($propertyId: UUID!) { housekeepers(propertyId: $propertyId) { displayName userId } }",

@@ -16,7 +16,7 @@ import * as types from './graphql';
  */
 type Documents = {
     "\n\tquery Accounts($propertyId: UUID!, $search: String, $includeInactive: Boolean = false) {\n\t\taccounts(propertyId: $propertyId, search: $search, includeInactive: $includeInactive) {\n\t\t\tid\n\t\t\tkind\n\t\t\tname\n\t\t\tcontact {\n\t\t\t\temail\n\t\t\t\tphone\n\t\t\t\taddress\n\t\t\t\tcontactName\n\t\t\t}\n\t\t\tcreditLimit\n\t\t\tcurrency\n\t\t\tactive\n\t\t\tversion\n\t\t}\n\t}\n": typeof types.AccountsDocument,
-    "\n\tquery GuestDocuments($propertyId: UUID!, $guestId: UUID!) {\n\t\tguestDocuments(propertyId: $propertyId, guestId: $guestId) {\n\t\t\tid\n\t\t\tkind\n\t\t\tstatus\n\t\t\tmime\n\t\t\tuploadedAt\n\t\t\tuploadedBy\n\t\t}\n\t}\n": typeof types.GuestDocumentsDocument,
+    "\n\tquery GuestDocuments($propertyId: UUID!, $guestId: UUID!) {\n\t\tguestDocuments(propertyId: $propertyId, guestId: $guestId) {\n\t\t\tid\n\t\t\tkind\n\t\t\tstatus\n\t\t\tmime\n\t\t\tuploadedAt\n\t\t\tuploadedByName\n\t\t}\n\t}\n": typeof types.GuestDocumentsDocument,
     "\n\tquery HousekeepingBoard($propertyId: UUID!) {\n\t\thousekeepingBoard(propertyId: $propertyId) {\n\t\t\troomId\n\t\t\tnumber\n\t\t\tfloor\n\t\t\tsectionId\n\t\t\troomTypeId\n\t\t\tcondition\n\t\t\tconditionVersion\n\t\t\toccupancy\n\t\t\tassignee {\n\t\t\t\tuserId\n\t\t\t\tdisplayName\n\t\t\t}\n\t\t\tblockKind\n\t\t}\n\t}\n": typeof types.HousekeepingBoardDocument,
     "\n\tquery MyRooms($propertyId: UUID!) {\n\t\tmyRooms(propertyId: $propertyId) {\n\t\t\troomId\n\t\t\tnumber\n\t\t\troomTypeId\n\t\t\tcondition\n\t\t\tconditionVersion\n\t\t\toccupancy\n\t\t\topenIssues\n\t\t\tblockKind\n\t\t}\n\t}\n": typeof types.MyRoomsDocument,
     "\n\tquery Housekeepers($propertyId: UUID!) {\n\t\thousekeepers(propertyId: $propertyId) {\n\t\t\tuserId\n\t\t\tdisplayName\n\t\t}\n\t}\n": typeof types.HousekeepersDocument,
@@ -41,7 +41,7 @@ type Documents = {
 };
 const documents: Documents = {
     "\n\tquery Accounts($propertyId: UUID!, $search: String, $includeInactive: Boolean = false) {\n\t\taccounts(propertyId: $propertyId, search: $search, includeInactive: $includeInactive) {\n\t\t\tid\n\t\t\tkind\n\t\t\tname\n\t\t\tcontact {\n\t\t\t\temail\n\t\t\t\tphone\n\t\t\t\taddress\n\t\t\t\tcontactName\n\t\t\t}\n\t\t\tcreditLimit\n\t\t\tcurrency\n\t\t\tactive\n\t\t\tversion\n\t\t}\n\t}\n": types.AccountsDocument,
-    "\n\tquery GuestDocuments($propertyId: UUID!, $guestId: UUID!) {\n\t\tguestDocuments(propertyId: $propertyId, guestId: $guestId) {\n\t\t\tid\n\t\t\tkind\n\t\t\tstatus\n\t\t\tmime\n\t\t\tuploadedAt\n\t\t\tuploadedBy\n\t\t}\n\t}\n": types.GuestDocumentsDocument,
+    "\n\tquery GuestDocuments($propertyId: UUID!, $guestId: UUID!) {\n\t\tguestDocuments(propertyId: $propertyId, guestId: $guestId) {\n\t\t\tid\n\t\t\tkind\n\t\t\tstatus\n\t\t\tmime\n\t\t\tuploadedAt\n\t\t\tuploadedByName\n\t\t}\n\t}\n": types.GuestDocumentsDocument,
     "\n\tquery HousekeepingBoard($propertyId: UUID!) {\n\t\thousekeepingBoard(propertyId: $propertyId) {\n\t\t\troomId\n\t\t\tnumber\n\t\t\tfloor\n\t\t\tsectionId\n\t\t\troomTypeId\n\t\t\tcondition\n\t\t\tconditionVersion\n\t\t\toccupancy\n\t\t\tassignee {\n\t\t\t\tuserId\n\t\t\t\tdisplayName\n\t\t\t}\n\t\t\tblockKind\n\t\t}\n\t}\n": types.HousekeepingBoardDocument,
     "\n\tquery MyRooms($propertyId: UUID!) {\n\t\tmyRooms(propertyId: $propertyId) {\n\t\t\troomId\n\t\t\tnumber\n\t\t\troomTypeId\n\t\t\tcondition\n\t\t\tconditionVersion\n\t\t\toccupancy\n\t\t\topenIssues\n\t\t\tblockKind\n\t\t}\n\t}\n": types.MyRoomsDocument,
     "\n\tquery Housekeepers($propertyId: UUID!) {\n\t\thousekeepers(propertyId: $propertyId) {\n\t\t\tuserId\n\t\t\tdisplayName\n\t\t}\n\t}\n": types.HousekeepersDocument,
@@ -72,7 +72,7 @@ export function graphql(source: "\n\tquery Accounts($propertyId: UUID!, $search:
 /**
  * The graphql function is used to parse GraphQL queries into a document that can be used by GraphQL clients.
  */
-export function graphql(source: "\n\tquery GuestDocuments($propertyId: UUID!, $guestId: UUID!) {\n\t\tguestDocuments(propertyId: $propertyId, guestId: $guestId) {\n\t\t\tid\n\t\t\tkind\n\t\t\tstatus\n\t\t\tmime\n\t\t\tuploadedAt\n\t\t\tuploadedBy\n\t\t}\n\t}\n"): typeof import('./graphql').GuestDocumentsDocument;
+export function graphql(source: "\n\tquery GuestDocuments($propertyId: UUID!, $guestId: UUID!) {\n\t\tguestDocuments(propertyId: $propertyId, guestId: $guestId) {\n\t\t\tid\n\t\t\tkind\n\t\t\tstatus\n\t\t\tmime\n\t\t\tuploadedAt\n\t\t\tuploadedByName\n\t\t}\n\t}\n"): typeof import('./graphql').GuestDocumentsDocument;
 /**
  * The graphql function is used to parse GraphQL queries into a document that can be used by GraphQL clients.
  */

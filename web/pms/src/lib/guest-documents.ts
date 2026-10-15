@@ -14,7 +14,7 @@ export const GuestDocumentsDocument = graphql(`
 			status
 			mime
 			uploadedAt
-			uploadedBy
+			uploadedByName
 		}
 	}
 `);
@@ -67,10 +67,34 @@ export function viewSize(mime: string | null | undefined): LinkSize {
 	return mime === PDF ? 'original' : 'md';
 }
 
-/** Who uploaded a document, as far as the list can tell: `uploadedBy` is only a user's id. */
-export function uploaderLabel(uploadedBy: string | null | undefined, me: string): string {
-	if (!uploadedBy) return 'A deleted user';
-	return uploadedBy === me ? 'You' : 'Another user';
+/** Who uploaded a document: their name, which is gone with their account. */
+export function uploaderLabel(name: string | null | undefined): string {
+	return name ?? 'A deleted user';
+}
+
+/** A person on a reservation whose ID documents can be kept. */
+export interface DocumentHolder {
+	id: string;
+	firstName: string;
+	lastName: string;
+}
+
+/**
+ * Everyone shown on a reservation, once each: the booker, then each room's primary guest and occupants,
+ * in the order the modal shows them.
+ */
+export function reservationGuests(reservation: {
+	booker: DocumentHolder;
+	rooms: readonly { primaryGuest?: DocumentHolder | null; occupants: readonly DocumentHolder[] }[];
+}): DocumentHolder[] {
+	const all = [
+		reservation.booker,
+		...reservation.rooms.flatMap((room) => [
+			...(room.primaryGuest ? [room.primaryGuest] : []),
+			...room.occupants
+		])
+	];
+	return all.filter((guest, index) => all.findIndex((other) => other.id === guest.id) === index);
 }
 
 /**

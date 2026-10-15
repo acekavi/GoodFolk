@@ -3,13 +3,14 @@
 	tape chart over the chart (shallow routing); each decides what closing means and passes it as `onclose`,
 	called when the dialog closes (Escape, the Close button or a click on the backdrop). Every room's own
 	actions (assign, cancel, modify, check in/out, occupants) live in `RoomCard`; this component keeps the
-	reservation-wide facts, the booker (with their ID documents, for `GuestDocumentsManage` only), the billed
-	account and the history.
+	reservation-wide facts, the booker, every guest's ID documents (for `GuestDocumentsManage` only), the
+	billed account and the history.
 -->
 <script lang="ts">
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { onMount } from 'svelte';
 	import { accountKindLabel, accountsKey, fetchAccounts } from '$lib/accounts';
+	import { reservationGuests } from '$lib/guest-documents';
 	import { ApiError, errorMessage } from '$lib/api/problem';
 	import { ifMatch, rest, unwrap } from '$lib/api/rest';
 	import GuestDocuments from '$lib/components/GuestDocuments.svelte';
@@ -202,11 +203,13 @@
 				<dd>{idDocText(data.booker)}</dd>
 			</dl>
 			{#if manageDocuments}
-				<GuestDocuments
-					{propertyId}
-					guestId={data.booker.id}
-					guestName="{data.booker.firstName} {data.booker.lastName}"
-				/>
+				{#each reservationGuests(data) as guest (guest.id)}
+					<GuestDocuments
+						{propertyId}
+						guestId={guest.id}
+						guestName="{guest.firstName} {guest.lastName}"
+					/>
+				{/each}
 			{/if}
 
 			{#each data.rooms as room (room.id)}

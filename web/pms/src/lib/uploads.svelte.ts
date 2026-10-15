@@ -77,6 +77,12 @@ export class Uploads {
 		});
 	}
 
+	/** Uploads still on their way to storage: leaving the screen would drop them. */
+	get inFlight(): number {
+		return this.items.filter((upload) => upload.state === 'waiting' || upload.state === 'sending')
+			.length;
+	}
+
 	/** Uploads not failed and not yet in the list: those that will take a place in it. */
 	get active(): number {
 		return this.items.filter((upload) => upload.state !== 'failed').length;

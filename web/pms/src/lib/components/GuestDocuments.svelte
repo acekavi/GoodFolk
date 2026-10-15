@@ -1,6 +1,7 @@
 <!--
 	A guest's ID documents at the property: kind, date and uploader, with upload (a kind, then the
-	file), view and delete. Rendered only for `GuestDocumentsManage`. A view fetches a fresh 5-minute
+	file), view and delete. Rendered only for `GuestDocumentsManage`. Collapsed at first: the list is
+	read only once it is opened, so a reservation with many guests does not query them all. A view fetches a fresh 5-minute
 	link each time (each is audited) and never keeps it: an image opens at its `md` size in a dialog, a
 	PDF in a new tab, or, if the browser blocks the tab, as a link in the dialog. The list shows no
 	thumbnails, since each would cost an audited link.
@@ -21,7 +22,6 @@
 		type GuestDocument
 	} from '$lib/guest-documents';
 	import { Pending } from '$lib/pending.svelte';
-	import { fetchMe } from '$lib/session';
 	import type { DocumentKind } from '$lib/upload';
 	import { percent, PROCESSING_FAILED, Uploads } from '$lib/uploads.svelte';
 	import MediaUploader from './MediaUploader.svelte';
@@ -37,10 +37,11 @@
 
 	const client = useQueryClient();
 	const pending = new Pending();
-	const me = createQuery(() => ({ queryKey: ['me'], queryFn: fetchMe }));
+	let expanded = $state(false);
 	const documents = createQuery(() => ({
 		queryKey: guestDocumentsKey(propertyId, guestId),
-		queryFn: ({ signal }) => fetchGuestDocuments(propertyId, guestId, signal)
+		queryFn: ({ signal }) => fetchGuestDocuments(propertyId, guestId, signal),
+		enabled: expanded
 	}));
 
 	// The list cannot tell which row an upload made, but its row exists once the upload completed, so
@@ -114,131 +115,130 @@
 	</svg>
 {/snippet}
 
-<section class="documents" aria-label="ID documents of {guestName}">
-	<h4>ID documents</h4>
-	{#if problem}<p class="error" role="alert">{problem}</p>{/if}
+<details class="documents" bind:open={expanded}>
+	<summary>ID documents · {guestName}</summary>
+	<section aria-label="ID documents of {guestName}">
+		{#if problem}<p class="error" role="alert">{problem}</p>{/if}
 
-	{#if documents.isError && !documents.data}
-		<p class="error" role="alert">{errorMessage(documents.error)}</p>
-		<button type="button" onclick={() => documents.refetch()}>Retry</button>
-	{:else if !documents.data}
-		<p>Loading…</p>
-	{:else}
-		{#if documents.data.length === 0 && uploads.items.length === 0}
-			<p class="hint">No ID documents on file.</p>
-		{/if}
-		<ul class="rows" aria-label="ID documents">
-			{#each documents.data as document (document.id)}
-				<li>
-					{@render icon()}
-					<span class="what">
-						<strong>{documentKindLabel(document.kind)}</strong>
-						<span class="hint">
-							{day(document.uploadedAt)} · {uploaderLabel(
-								document.uploadedBy,
-								me.data?.user_id ?? ''
-							)}
+		{#if documents.isError && !documents.data}
+			<p class="error" role="alert">{errorMessage(documents.error)}</p>
+			<button type="button" onclick={() => documents.refetch()}>Retry</button>
+		{:else if !documents.data}
+			<p>Loading…</p>
+		{:else}
+			{#if documents.data.length === 0 && uploads.items.length === 0}
+				<p class="hint">No ID documents on file.</p>
+			{/if}
+			<ul class="rows" aria-label="ID documents">
+				{#each documents.data as document (document.id)}
+					<li>
+						{@render icon()}
+						<span class="what">
+							<strong>{documentKindLabel(document.kind)}</strong>
+							<span class="hint">
+								{day(document.uploadedAt)} · {uploaderLabel(document.uploadedByName)}
+							</span>
 						</span>
-					</span>
-					{#if deleting === document.id}
-						<span class="actions">
-							<span>Delete this document?</span>
-							<button
-								type="button"
-								disabled={pending.has(document.id)}
-								onclick={() => remove(document.id)}>Delete document</button
-							>
-							<button type="button" class="secondary" onclick={() => (deleting = null)}
-								>Keep it</button
-							>
-						</span>
-					{:else}
-						<span class="actions">
-							{#if document.status === 'READY'}
+						{#if deleting === document.id}
+							<span class="actions">
+								<span>Delete this document?</span>
+								<button
+									type="button"
+									disabled={pending.has(document.id)}
+									onclick={() => remove(document.id)}>Delete document</button
+								>
+								<button type="button" class="secondary" onclick={() => (deleting = null)}
+									>Keep it</button
+								>
+							</span>
+						{:else}
+							<span class="actions">
+								{#if document.status === 'READY'}
+									<button
+										type="button"
+										class="secondary"
+										aria-label="View {documentKindLabel(document.kind)} from {day(
+											document.uploadedAt
+										)}"
+										disabled={pending.has(document.id)}
+										onclick={() => view(document)}>View</button
+									>
+								{:else if document.status === 'FAILED'}
+									<span class="error">{PROCESSING_FAILED}</span>
+								{:else}
+									<span class="hint">Processing…</span>
+								{/if}
 								<button
 									type="button"
 									class="secondary"
-									aria-label="View {documentKindLabel(document.kind)} from {day(
+									aria-label="Delete {documentKindLabel(document.kind)} from {day(
 										document.uploadedAt
 									)}"
 									disabled={pending.has(document.id)}
-									onclick={() => view(document)}>View</button
+									onclick={() => (deleting = document.id)}>Delete</button
 								>
-							{:else if document.status === 'FAILED'}
-								<span class="error">{PROCESSING_FAILED}</span>
-							{:else}
-								<span class="hint">Processing…</span>
-							{/if}
-							<button
-								type="button"
-								class="secondary"
-								aria-label="Delete {documentKindLabel(document.kind)} from {day(
-									document.uploadedAt
-								)}"
-								disabled={pending.has(document.id)}
-								onclick={() => (deleting = document.id)}>Delete</button
-							>
-						</span>
-					{/if}
-				</li>
-			{/each}
-			{#each uploads.items as upload (upload.id)}
-				<li aria-label="Upload of {upload.name}">
-					{@render icon()}
-					<span class="what">
-						<strong>{documentKindLabel(upload.target.kind ?? 'other')}</strong>
-						<span class="hint name">{upload.name}</span>
-					</span>
-					<span class="actions">
-						{#if upload.state === 'failed'}
-							<span class="error" role="alert">{upload.error}</span>
-							<button type="button" class="secondary" onclick={() => uploads.dismiss(upload)}
-								>Dismiss</button
-							>
-						{:else}
-							{#if upload.state === 'processing'}
-								<span class="hint">Processing…</span>
-							{:else if upload.state === 'waiting' || !upload.progress || upload.progress.phase === 'hashing'}
-								<span class="hint">Waiting…</span>
-							{:else}
-								<progress max="100" value={percent(upload.progress)}></progress>
-								<span class="hint">
-									{upload.progress.phase === 'completing'
-										? 'Finishing…'
-										: `${percent(upload.progress)}%`}
-								</span>
-							{/if}
-							{#if uploads.cancellable(upload)}
-								<button type="button" class="secondary" onclick={() => uploads.cancel(upload)}
-									>Cancel</button
-								>
-							{/if}
+							</span>
 						{/if}
-					</span>
-				</li>
-			{/each}
-		</ul>
+					</li>
+				{/each}
+				{#each uploads.items as upload (upload.id)}
+					<li aria-label="Upload of {upload.name}">
+						{@render icon()}
+						<span class="what">
+							<strong>{documentKindLabel(upload.target.kind ?? 'other')}</strong>
+							<span class="hint name">{upload.name}</span>
+						</span>
+						<span class="actions">
+							{#if upload.state === 'failed'}
+								<span class="error" role="alert">{upload.error}</span>
+								<button type="button" class="secondary" onclick={() => uploads.dismiss(upload)}
+									>Dismiss</button
+								>
+							{:else}
+								{#if upload.state === 'processing'}
+									<span class="hint">Processing…</span>
+								{:else if upload.state === 'waiting' || !upload.progress || upload.progress.phase === 'hashing'}
+									<span class="hint">Waiting…</span>
+								{:else}
+									<progress max="100" value={percent(upload.progress)}></progress>
+									<span class="hint">
+										{upload.progress.phase === 'completing'
+											? 'Finishing…'
+											: `${percent(upload.progress)}%`}
+									</span>
+								{/if}
+								{#if uploads.cancellable(upload)}
+									<button type="button" class="secondary" onclick={() => uploads.cancel(upload)}
+										>Cancel</button
+									>
+								{/if}
+							{/if}
+						</span>
+					</li>
+				{/each}
+			</ul>
 
-		<div class="add">
-			<label>
-				Kind
-				<select bind:value={kind}>
-					<option value="" disabled>Choose a kind</option>
-					{#each DOCUMENT_KINDS as value (value)}
-						<option {value}>{documentKindLabel(value)}</option>
-					{/each}
-				</select>
-			</label>
-			<MediaUploader
-				purpose="guest_document"
-				label="Add document"
-				disabled={!kind}
-				onfiles={addFiles}
-			/>
-		</div>
-		<p class="hint">Images or PDF, up to 15 MB. Choose the kind first.</p>
-	{/if}
-</section>
+			<div class="add">
+				<label>
+					Kind
+					<select bind:value={kind}>
+						<option value="" disabled>Choose a kind</option>
+						{#each DOCUMENT_KINDS as value (value)}
+							<option {value}>{documentKindLabel(value)}</option>
+						{/each}
+					</select>
+				</label>
+				<MediaUploader
+					purpose="guest_document"
+					label="Add document"
+					disabled={!kind}
+					onfiles={addFiles}
+				/>
+			</div>
+			<p class="hint">Images or PDF, up to 15 MB. Choose the kind first.</p>
+		{/if}
+	</section>
+</details>
 
 <!-- Clicking the backdrop closes the document; from the keyboard, Escape does. -->
 <dialog
@@ -269,10 +269,15 @@
 
 <style>
 	.documents {
-		margin: var(--space) 0;
+		margin: 0.5rem 0;
 	}
-	h4 {
-		margin: 0 0 0.5rem;
+	summary {
+		cursor: pointer;
+		font-weight: 600;
+		padding: 0.25rem 0;
+	}
+	section {
+		padding: 0.5rem 0 0 0.5rem;
 	}
 	.rows {
 		list-style: none;

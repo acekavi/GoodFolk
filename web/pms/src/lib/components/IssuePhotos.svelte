@@ -32,6 +32,8 @@
 		camera?: boolean;
 		/** Files chosen before the issue existed, uploaded as soon as this mounts. */
 		initial?: File[];
+		/** Told how many uploads are still on their way, which leaving would drop, whenever it changes. */
+		onuploading?: (count: number) => void;
 	}
 
 	let {
@@ -41,7 +43,8 @@
 		mayAttach,
 		online = true,
 		camera = false,
-		initial = []
+		initial = [],
+		onuploading
 	}: Props = $props();
 
 	const client = useQueryClient();
@@ -51,6 +54,7 @@
 	);
 	onDestroy(() => uploads.destroy());
 	$effect(() => uploads.settle(photos.map((photo) => photo.assetId)));
+	$effect(() => onuploading?.(uploads.inFlight));
 
 	const control = $derived(photoControl(online, photos.length + uploads.active));
 	let error = $state('');

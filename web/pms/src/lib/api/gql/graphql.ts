@@ -188,7 +188,7 @@ export type GuestDocumentsQueryVariables = Exact<{
 }>;
 
 
-export type GuestDocumentsQuery = { guestDocuments: Array<{ id: string, kind: DocumentKind, status: MediaStatus, mime: string | null, uploadedAt: string, uploadedBy: string | null }> };
+export type GuestDocumentsQuery = { guestDocuments: Array<{ id: string, kind: DocumentKind, status: MediaStatus, mime: string | null, uploadedAt: string, uploadedByName: string | null }> };
 
 export type HousekeepingBoardQueryVariables = Exact<{
   propertyId: string;
@@ -427,10 +427,10 @@ export const GuestDocumentsDocument = new TypedDocumentString(`
     status
     mime
     uploadedAt
-    uploadedBy
+    uploadedByName
   }
 }
-    `, {"hash":"sha256:80e8d9230ed8fb8b6b29a6ea78da47df5ef244ea91a2c1340ee288d1889d45cd"}) as unknown as TypedDocumentString<GuestDocumentsQuery, GuestDocumentsQueryVariables>;
+    `, {"hash":"sha256:2d1c5d5d5c5fadf5222abbbae3c6e843eb0aa5e587f291da49f4be6922fdd472"}) as unknown as TypedDocumentString<GuestDocumentsQuery, GuestDocumentsQueryVariables>;
 export const HousekeepingBoardDocument = new TypedDocumentString(`
     query HousekeepingBoard($propertyId: UUID!) {
   housekeepingBoard(propertyId: $propertyId) {

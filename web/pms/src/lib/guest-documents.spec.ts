@@ -5,6 +5,7 @@ import {
 	documentKindLabel,
 	DOCUMENT_KINDS,
 	guestDocumentsKey,
+	reservationGuests,
 	uploaderLabel,
 	viewSize
 } from './guest-documents';
@@ -31,10 +32,26 @@ describe('documentKindLabel', () => {
 });
 
 describe('uploaderLabel', () => {
-	it('says You for the viewer’s own uploads', () => {
-		expect(uploaderLabel('u1', 'u1')).toBe('You');
-		expect(uploaderLabel('u2', 'u1')).toBe('Another user');
-		expect(uploaderLabel(null, 'u1')).toBe('A deleted user');
+	it('names the uploader, or says their account is gone', () => {
+		expect(uploaderLabel('Nimal Perera')).toBe('Nimal Perera');
+		expect(uploaderLabel(null)).toBe('A deleted user');
+	});
+});
+
+describe('reservationGuests', () => {
+	const guest = (id: string) => ({ id, firstName: id.toUpperCase(), lastName: 'Silva' });
+
+	it('lists the booker, then each room’s primary guest and occupants, each once', () => {
+		const guests = reservationGuests({
+			booker: guest('a'),
+			rooms: [
+				{ primaryGuest: guest('a'), occupants: [guest('a'), guest('b')] },
+				{ primaryGuest: guest('c'), occupants: [guest('b')] },
+				{ primaryGuest: null, occupants: [] }
+			]
+		});
+
+		expect(guests.map((g) => g.id)).toEqual(['a', 'b', 'c']);
 	});
 });
 

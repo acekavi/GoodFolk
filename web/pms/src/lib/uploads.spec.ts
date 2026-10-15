@@ -43,6 +43,7 @@ describe('Uploads', () => {
 
 		uploads.add([photo()], target);
 		expect(uploads.items[0].state).toBe('sending');
+		expect(uploads.inFlight).toBe(1);
 		expect(run.options()).toMatchObject(target);
 		expect(uploads.cancellable(uploads.items[0])).toBe(true);
 
@@ -51,6 +52,7 @@ describe('Uploads', () => {
 		expect(uploads.items[0]).toMatchObject({ state: 'processing', assetId: 'a1' });
 		expect(onsent).toHaveBeenCalledWith(uploads.items[0]);
 		expect(uploads.active).toBe(1);
+		expect(uploads.inFlight).toBe(0);
 	});
 
 	it('refuses a file the purpose does not take, or the caller refuses, without sending it', () => {
