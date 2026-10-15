@@ -1,5 +1,7 @@
 #![allow(dead_code)] // each test binary uses a different subset
 
+pub mod media;
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};

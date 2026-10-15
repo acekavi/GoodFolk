@@ -8,123 +8,24 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use common::{TestApp, TestResponse, uuid};
+use common::media::{Hotel, SECRET, fixture, http, post, services, stack, start_body, storage, upload};
+use common::{TestApp, uuid};
 use core_api::events::spawn_listener;
-use core_api::state::MediaServices;
 use core_api::{AppState, router};
-use events::{BusError, HeaderProvider, PushBus, PushEnvelope, PushMessage};
+use events::{PushEnvelope, PushMessage};
 use http_body_util::BodyExt;
-use media_svc::MediaSvc;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::Connection as _;
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use std::collections::{BTreeMap, HashMap};
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::collections::BTreeMap;
 use std::time::Duration;
-use storage::{Bucket, Storage, StorageConfig, upload_key};
-use svc_auth::{TokenSource, Verifier};
+use storage::{Bucket, Storage, upload_key};
 use tokio::net::TcpListener;
-use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 use uuid::Uuid;
-
-const SECRET: &str = "core-api-media-test-secret-0123456789abcdef";
-const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../imaging/tests/fixtures");
-
-fn fixture(name: &str) -> Vec<u8> {
-    std::fs::read(format!("{FIXTURES}/{name}")).unwrap()
-}
-
-fn http() -> reqwest::Client {
-    storage::install_tls_provider();
-    reqwest::Client::new()
-}
-
-async fn storage() -> Arc<Storage> {
-    let storage = Storage::new(StorageConfig::dev().unwrap()).unwrap();
-    storage.ensure_dev_buckets().await.expect("start RustFS: deploy/dev/rustfs.sh start");
-    Arc::new(storage)
-}
-
-/// media-svc's binary, which runs the worker subprocesses, from this test's target directory. Cargo builds it for
-/// media-svc's own tests, so `cargo test --workspace` has it; `cargo test -p core-api` alone needs
-/// `cargo build -p media-svc` first.
-fn media_svc_exe() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let exe = exe.parent().and_then(|deps| deps.parent()).unwrap().join("media-svc");
-    assert!(exe.exists(), "build media-svc first (cargo test --workspace does): cargo build -p media-svc");
-    exe
-}
-
-fn secret_header() -> HeaderProvider {
-    Arc::new(|| Box::pin(async { Ok::<_, BusError>(format!("Bearer {SECRET}")) }))
-}
-
-/// core-api's media services, reaching media-svc at `media_svc`, with the test secret both ways.
-fn services(storage: Arc<Storage>, media_svc: SocketAddr) -> MediaServices {
-    MediaServices::new(
-        storage,
-        &format!("http://{media_svc}"),
-        Arc::new(TokenSource::SharedSecret(SECRET.to_owned())),
-        Arc::new(Verifier::SharedSecret(SECRET.to_owned())),
-    )
-    .unwrap()
-}
-
-/// core-api served on a random port with an in-process media-svc on another, each pushing to the other: the relay
-/// sends `media-process` to media-svc's `/work`, which publishes `media-results` to core-api's `/internal/events`.
-struct Stack {
-    app: TestApp,
-    shutdown: CancellationToken,
-}
-
-impl Drop for Stack {
-    fn drop(&mut self) {
-        self.shutdown.cancel();
-    }
-}
-
-async fn stack(opts: PgConnectOptions) -> Stack {
-    let storage = storage().await;
-    let core_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let core = core_listener.local_addr().unwrap();
-
-    let results = format!("http://{core}/internal/events").parse().unwrap();
-    let svc = MediaSvc {
-        storage: storage.clone(),
-        bus: Arc::new(
-            PushBus::new(HashMap::from([("media-results".to_owned(), results)]), Some(secret_header())).unwrap(),
-        ),
-        workers: Arc::new(Semaphore::new(2)),
-        worker_exe: media_svc_exe(),
-    };
-    let media_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let media_svc = media_listener.local_addr().unwrap();
-    let media_router = media_svc::router(svc, Arc::new(Verifier::SharedSecret(SECRET.to_owned())));
-    tokio::spawn(async move { axum::serve(media_listener, media_router).await.unwrap() });
-
-    let pool = db::testing::app_pool(opts, 10).await;
-    let state = AppState::with_media(pool.clone(), false, db::testing::guest_id_keys(), services(storage, media_svc));
-    let core_router = router(state.clone());
-    tokio::spawn(async move { axum::serve(core_listener, core_router).await.unwrap() });
-
-    let shutdown = CancellationToken::new();
-    let work = format!("http://{media_svc}/work").parse().unwrap();
-    let bus = PushBus::new(HashMap::from([("media-process".to_owned(), work)]), Some(secret_header())).unwrap();
-    tokio::spawn(events::run_relay(pool.clone(), Arc::new(bus), shutdown.clone()));
-    Stack { app: TestApp { router: router(state.clone()), state, pool }, shutdown }
-}
-
-async fn post(app: &TestApp, cookie: &str, path: &str, body: Value) -> TestResponse {
-    let key = Uuid::now_v7().to_string();
-    app.send_with(Method::POST, path, Some(cookie), Some(body), &[("x-goodfolk-csrf", "1"), ("idempotency-key", &key)])
-        .await
-}
 
 async fn graphql(app: &TestApp, cookie: &str, query: &str, variables: Value) -> Value {
     let response =
@@ -144,67 +45,6 @@ const ISSUE_PHOTOS: &str = "query ($p: UUID!) {
 const GUEST_DOCUMENTS: &str = "query ($p: UUID!, $g: UUID!) {
     guestDocuments(propertyId: $p, guestId: $g) { id kind status mime uploadedAt uploadedBy }
 }";
-
-/// A tenant's property with a room type, a room, an issue in it and a guest, set up by its owner.
-struct Hotel {
-    owner: String,
-    tenant: Uuid,
-    id: Uuid,
-    path: String,
-    room_type: Uuid,
-    issue: Uuid,
-    guest: Uuid,
-}
-
-impl Hotel {
-    async fn new(app: &TestApp, email: &str, code: &str) -> Self {
-        let owner = app.signup_owner(email, code).await;
-        let tenant = uuid(&app.send(Method::GET, "/api/v1/me", Some(&owner), None).await.body["current_tenant"]);
-        let property = json!({"code": code, "name": code, "timezone": "Asia/Colombo", "base_currency": "LKR"});
-        let id = uuid(&post(app, &owner, "/api/v1/properties", property).await.body["id"]);
-        let path = format!("/api/v1/properties/{id}");
-        let deluxe = json!({"code": "DLX", "name": "Deluxe", "base_occupancy": 2, "max_adults": 2,
-                            "max_children": 1, "max_occupancy": 3});
-        let room_type = uuid(&post(app, &owner, &format!("{path}/room-types"), deluxe).await.body["id"]);
-        let range = json!({"room_type_id": room_type, "first": 101, "last": 101});
-        let room = uuid(&post(app, &owner, &format!("{path}/rooms/bulk"), range).await.body[0]["id"]);
-        let issue = json!({"room_id": room, "severity": "low", "description": "Cracked tile"});
-        let issue = uuid(&post(app, &owner, &format!("{path}/room-issues"), issue).await.body["id"]);
-        let guest = json!({"first_name": "Ada", "last_name": "Perera", "residency": "non_resident"});
-        let guest = uuid(&post(app, &owner, &format!("{path}/guests"), guest).await.body["id"]);
-        Self { owner, tenant, id, path, room_type, issue, guest }
-    }
-}
-
-/// Uploads `body` as the browser does: start, PUT every part to its URL, complete. Returns the completion.
-async fn upload(app: &TestApp, cookie: &str, path: &str, start: Value, body: &[u8]) -> TestResponse {
-    let started = post(app, cookie, &format!("{path}/media/uploads"), start).await;
-    assert_eq!(started.status, StatusCode::CREATED, "{:?}", started.body);
-    let part_size = started.body["part_size"].as_u64().unwrap() as usize;
-    let mut parts = Vec::new();
-    for (part, chunk) in started.body["parts"].as_array().unwrap().iter().zip(body.chunks(part_size)) {
-        let response = http().put(part["url"].as_str().unwrap()).body(chunk.to_vec()).send().await.unwrap();
-        assert!(response.status().is_success(), "{}", response.status());
-        let etag = response.headers()["etag"].to_str().unwrap().to_owned();
-        parts.push(json!({"number": part["number"], "etag": etag}));
-    }
-    let upload = started.body["upload_id"].as_str().unwrap();
-    post(app, cookie, &format!("{path}/media/uploads/{upload}/complete"), json!({"parts": parts})).await
-}
-
-fn start_body(purpose: &str, target: Uuid, body: &[u8]) -> Value {
-    json!({
-        "purpose": purpose,
-        "target_id": target,
-        "filename": "photo.jpg",
-        "bytes": body.len(),
-        "sha256": hex(&Sha256::digest(body)),
-    })
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
 
 /// Reads the event stream until an invalidation naming `key` arrives, for up to `within`.
 async fn expect_invalidation(stream: &mut Body, key: &str, within: Duration) {
