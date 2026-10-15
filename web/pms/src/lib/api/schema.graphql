@@ -561,8 +561,8 @@ type Query {
 	"""
 	housekeepers(propertyId: UUID!): [HousekeeperNode!]!
 	"""
-	The guest's ID documents, newest first. Guests are tenant-wide; `propertyId` is where the user is working,
-	and they need `GuestDocumentsManage` there. Links to the files come only from the audited REST call.
+	The guest's ID documents uploaded at the property, newest first, at most 50. Needs `GuestDocumentsManage` at
+	the property. Links to the files come only from the audited REST call.
 	"""
 	guestDocuments(propertyId: UUID!, guestId: UUID!): [GuestDocumentNode!]!
 }

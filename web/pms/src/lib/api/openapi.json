@@ -682,7 +682,7 @@
         "tags": [
           "crate::routes::media"
         ],
-        "summary": "Deletes a guest document (audited). Its files go when the daily sweep finds them unused.",
+        "summary": "Deletes a guest document uploaded at the property (audited; 404 for another property's). Its files go when the daily sweep finds them unused.",
         "operationId": "delete_guest_document",
         "parameters": [
           {
@@ -716,7 +716,7 @@
         "tags": [
           "crate::routes::media"
         ],
-        "summary": "A link to one file of a guest document that works for 5 minutes: `thumb` or `md` (WebP) for an image, `original`\nfor a PDF (422 otherwise). Each link issued is audited as `guest_document.viewed`. A document still processing\nis 409.",
+        "summary": "A link to one file of a guest document uploaded at the property (404 for another property's) that works for\n5 minutes: `thumb` or `md` (WebP) for an image, `original` for a PDF (422 otherwise). Each link issued is audited\nas `guest_document.viewed`. A document still processing is 409.",
         "operationId": "guest_document_link",
         "parameters": [
           {
@@ -2409,7 +2409,7 @@
         "tags": [
           "crate::routes::media"
         ],
-        "summary": "Removes a photo from a room issue; needs `RoomIssuesReport`, as attaching one does. Its files go when the daily\nsweep finds them unused.",
+        "summary": "Removes a photo from a room issue: the user who added it may (with `RoomIssuesReport`), as may anyone with\n`HousekeepingSupervise`; anyone else gets 403. Its files go when the daily sweep finds them unused.",
         "operationId": "remove_room_issue_media",
         "parameters": [
           {

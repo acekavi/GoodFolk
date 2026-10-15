@@ -44,6 +44,7 @@ pub(crate) fn media_error(err: MediaError) -> ApiError {
         MediaError::NotFound(_) => ApiError::not_found(err.to_string()),
         MediaError::Conflict(message) => ApiError::conflict(message),
         MediaError::Invalid(message) => ApiError::unprocessable(message),
+        MediaError::Forbidden(message) => ApiError::forbidden(message),
         MediaError::Database(db_err) => db_err.into(),
     }
 }
@@ -484,8 +485,8 @@ pub async fn remove_gallery_photo(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Removes a photo from a room issue; needs `RoomIssuesReport`, as attaching one does. Its files go when the daily
-/// sweep finds them unused.
+/// Removes a photo from a room issue: the user who added it may (with `RoomIssuesReport`), as may anyone with
+/// `HousekeepingSupervise`; anyone else gets 403. Its files go when the daily sweep finds them unused.
 #[utoipa::path(delete, operation_id = "remove_room_issue_media", path = "/api/v1/properties/{property}/room-issues/{issue}/media/{asset}",
     params(("property" = Uuid, Path), ("issue" = Uuid, Path), ("asset" = Uuid, Path)),
     responses((status = 204), (status = 403), (status = 404)))]
@@ -494,16 +495,21 @@ pub async fn remove_issue_photo(
     ctx: TenantContext,
     ApiPath((property, issue, asset)): ApiPath<(Uuid, Uuid, Uuid)>,
 ) -> Result<StatusCode, ApiError> {
-    ctx.require(Permission::RoomIssuesReport, Some(property))?;
+    let supervisor = ctx.require(Permission::HousekeepingSupervise, Some(property)).is_ok();
+    if !supervisor {
+        ctx.require(Permission::RoomIssuesReport, Some(property))?;
+    }
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
-    media::unlink_issue_photo(&mut tx, ctx.tenant, ctx.user, property, issue, asset).await.map_err(media_error)?;
+    media::unlink_issue_photo(&mut tx, ctx.tenant, ctx.user, supervisor, property, issue, asset)
+        .await
+        .map_err(media_error)?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// A link to one file of a guest document that works for 5 minutes: `thumb` or `md` (WebP) for an image, `original`
-/// for a PDF (422 otherwise). Each link issued is audited as `guest_document.viewed`. A document still processing
-/// is 409.
+/// A link to one file of a guest document uploaded at the property (404 for another property's) that works for
+/// 5 minutes: `thumb` or `md` (WebP) for an image, `original` for a PDF (422 otherwise). Each link issued is audited
+/// as `guest_document.viewed`. A document still processing is 409.
 #[utoipa::path(get, operation_id = "guest_document_link", path = "/api/v1/properties/{property}/guest-documents/{document}/link",
     params(("property" = Uuid, Path), ("document" = Uuid, Path), ("size" = LinkSize, Query)),
     responses((status = 200, body = SignedLink), (status = 403), (status = 404), (status = 409), (status = 422)))]
@@ -529,7 +535,7 @@ pub async fn guest_document_link(
     Ok(Json(SignedLink { url, expires_at }))
 }
 
-/// Deletes a guest document (audited). Its files go when the daily sweep finds them unused.
+/// Deletes a guest document uploaded at the property (audited; 404 for another property's). Its files go when the daily sweep finds them unused.
 #[utoipa::path(delete, operation_id = "delete_guest_document", path = "/api/v1/properties/{property}/guest-documents/{document}",
     params(("property" = Uuid, Path), ("document" = Uuid, Path)),
     responses((status = 204), (status = 403), (status = 404)))]

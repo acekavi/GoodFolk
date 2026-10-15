@@ -124,28 +124,39 @@ pub async fn unlink_gallery(
     Ok(())
 }
 
-/// Removes a photo from the property's issue (`NotFound` if it is not there).
+/// Removes a photo from the property's issue (`NotFound` if it is not there). Only the user who uploaded it, or a
+/// `supervisor`, may (`Forbidden`).
+#[allow(clippy::too_many_arguments)]
 pub async fn unlink_issue_photo(
     tx: &mut Tx,
     tenant: TenantId,
     user: UserId,
+    supervisor: bool,
     property: Uuid,
     issue: Uuid,
     asset: Uuid,
 ) -> Result<(), MediaError> {
-    let deleted = sqlx::query(
-        "delete from room_issue_media m using room_issue i
-         where m.issue_id = $1 and m.asset_id = $2 and i.id = m.issue_id and i.property_id = $3",
+    let uploader: Option<Option<Uuid>> = sqlx::query_scalar(
+        "select a.created_by from room_issue_media m
+         join room_issue i on i.id = m.issue_id
+         join media_asset a on a.id = m.asset_id
+         where m.issue_id = $1 and m.asset_id = $2 and i.property_id = $3
+         for update of m",
     )
     .bind(issue)
     .bind(asset)
     .bind(property)
-    .execute(&mut **tx)
-    .await?
-    .rows_affected();
-    if deleted == 0 {
-        return Err(MediaError::NotFound("photo"));
+    .fetch_optional(&mut **tx)
+    .await?;
+    let uploader = uploader.ok_or(MediaError::NotFound("photo"))?;
+    if !supervisor && uploader != Some(user.0) {
+        return Err(MediaError::Forbidden("Only the person who added this photo or a supervisor can remove it".into()));
     }
+    sqlx::query("delete from room_issue_media where issue_id = $1 and asset_id = $2")
+        .bind(issue)
+        .bind(asset)
+        .execute(&mut **tx)
+        .await?;
     let data = serde_json::json!({ "issue_id": issue });
     audit(tx, tenant, Some(user), "media.removed", "media_asset", asset, data).await?;
     notify(tx, tenant, property).await?;

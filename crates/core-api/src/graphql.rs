@@ -1889,8 +1889,8 @@ impl Query {
         Ok(housekeepers.into_iter().map(HousekeeperNode::from).collect())
     }
 
-    /// The guest's ID documents, newest first. Guests are tenant-wide; `propertyId` is where the user is working,
-    /// and they need `GuestDocumentsManage` there. Links to the files come only from the audited REST call.
+    /// The guest's ID documents uploaded at the property, newest first, at most 50. Needs `GuestDocumentsManage` at
+    /// the property. Links to the files come only from the audited REST call.
     async fn guest_documents(
         &self,
         ctx: &Context<'_>,
@@ -1898,7 +1898,7 @@ impl Query {
         guest_id: Uuid,
     ) -> async_graphql::Result<Vec<GuestDocumentNode>> {
         let mut tx = scoped(ctx, Permission::GuestDocumentsManage, property_id).await?;
-        let documents = media::guest_documents(&mut tx, guest_id).await.map_err(media_error)?;
+        let documents = media::guest_documents(&mut tx, property_id, guest_id).await.map_err(media_error)?;
         tx.commit().await.map_err(internal)?;
         Ok(documents.into_iter().map(GuestDocumentNode::from).collect())
     }

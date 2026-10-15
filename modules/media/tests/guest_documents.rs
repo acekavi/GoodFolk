@@ -23,7 +23,7 @@ async fn guest_document_link_audits_each_call(_: PgPoolOptions, opts: PgConnectO
     let hotel = Hotel::new(opts).await;
     let guest = hotel.guest().await;
     let asset = asset_of(&hotel.upload(guest_target(guest), 1).await);
-    let document = guest_documents(&mut hotel.tx().await, guest).await.unwrap()[0].id;
+    let document = guest_documents(&mut hotel.tx().await, hotel.property, guest).await.unwrap()[0].id;
 
     let err = hotel.link(document, LinkSize::Md).await.unwrap_err();
     assert!(matches!(err, MediaError::Conflict(_)), "not ready yet: {err:?}");
@@ -56,7 +56,7 @@ async fn deleting_a_document_is_audited(_: PgPoolOptions, opts: PgConnectOptions
     let hotel = Hotel::new(opts).await;
     let guest = hotel.guest().await;
     hotel.upload(guest_target(guest), 1).await;
-    let document = guest_documents(&mut hotel.tx().await, guest).await.unwrap()[0].id;
+    let document = guest_documents(&mut hotel.tx().await, hotel.property, guest).await.unwrap()[0].id;
 
     let mut tx = hotel.tx().await;
     delete_guest_document(&mut tx, hotel.tenant, hotel.user, hotel.property, document).await.unwrap();
@@ -64,7 +64,7 @@ async fn deleting_a_document_is_audited(_: PgPoolOptions, opts: PgConnectOptions
     assert!(matches!(err, MediaError::NotFound("document")), "{err:?}");
     tx.commit().await.unwrap();
 
-    assert!(guest_documents(&mut hotel.tx().await, guest).await.unwrap().is_empty());
+    assert!(guest_documents(&mut hotel.tx().await, hotel.property, guest).await.unwrap().is_empty());
     let by: String = sqlx::query_scalar("select data->>'by' from audit_log where action = 'guest_document.deleted'")
         .fetch_one(&mut *hotel.tx().await)
         .await
@@ -92,7 +92,7 @@ async fn a_pdf_is_linked_as_uploaded_and_has_no_preview(_: PgPoolOptions, opts: 
             renditions: vec![],
         })
         .await;
-    let document = guest_documents(&mut hotel.tx().await, guest).await.unwrap()[0].id;
+    let document = guest_documents(&mut hotel.tx().await, hotel.property, guest).await.unwrap()[0].id;
 
     assert_eq!(hotel.link(document, LinkSize::Original).await.unwrap(), (Visibility::Private, archive_key));
     assert!(matches!(hotel.link(document, LinkSize::Thumb).await, Err(MediaError::Invalid(_))));

@@ -1,5 +1,6 @@
 //! Work `serve` runs beside the requests: the daily media sweep. (The outbox relay is `events::run_relay`.)
 
+use anyhow::Context;
 use media::{Purpose, SweepReport};
 use sqlx::postgres::PgConnectOptions;
 use sqlx::{Connection, PgConnection, PgPool};
@@ -12,12 +13,18 @@ use tokio_util::sync::CancellationToken;
 const SWEEP_TICK: Duration = Duration::from_secs(60 * 60);
 /// How long after a sweep the next one is due.
 const SWEEP_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+/// How long connecting for the sweep's lock may take.
+const LOCK_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Sweeps media now and then every 24 hours until `shutdown` is cancelled, checking hourly. Only one instance sweeps
 /// at a time: a sweep runs under the session advisory lock `hashtext('media_sweep')`, taken on a connection of its
 /// own to `lock` (a direct connection: a transaction-mode pooler cannot hold a session lock). An instance that finds
-/// the lock taken counts that sweep as run, since another instance is running it. A sweep under way finishes before
-/// the loop stops, so no object is left behind by a row it deleted.
+/// the lock taken counts that sweep as run, since another instance is running it; a sweep that fails is tried again
+/// at the next tick.
+///
+/// Cancelling `shutdown` stops the loop between sweeps. A sweep under way finishes its database work, but stops
+/// removing objects at once, logging how many keys it left: their rows are gone, so they stay in storage as
+/// unreferenced objects. `serve` also gives the task only a short grace before it exits.
 pub async fn run_sweeps(pool: PgPool, lock: PgConnectOptions, storage: Arc<Storage>, shutdown: CancellationToken) {
     let mut tick = tokio::time::interval(SWEEP_TICK);
     let mut last_run: Option<Instant> = None;
@@ -29,26 +36,30 @@ pub async fn run_sweeps(pool: PgPool, lock: PgConnectOptions, storage: Arc<Stora
         if last_run.is_some_and(|at| at.elapsed() < SWEEP_EVERY) {
             continue;
         }
-        match sweep_once(&pool, &lock, &storage).await {
+        match sweep_once(&pool, &lock, &storage, &shutdown).await {
             Ok(Some(_)) => last_run = Some(Instant::now()),
             Ok(None) => {
                 tracing::info!("media sweep skipped: another instance holds the lock");
                 last_run = Some(Instant::now());
             }
             // Tried again at the next tick.
-            Err(error) => tracing::error!(%error, "media sweep could not run"),
+            Err(error) => tracing::error!(error = format!("{error:#}"), "media sweep failed"),
         }
     }
 }
 
-/// Runs one sweep under the advisory lock, then removes the objects it reports from storage. `None` when another
-/// session holds the lock.
+/// Runs one sweep under the advisory lock, then removes the objects it reports from storage, stopping early once
+/// `shutdown` is cancelled. `None` when another session holds the lock; an error when the sweep could not run.
 pub async fn sweep_once(
     pool: &PgPool,
     lock: &PgConnectOptions,
     storage: &Storage,
-) -> Result<Option<SweepReport>, sqlx::Error> {
-    let mut conn = PgConnection::connect_with(lock).await?;
+    shutdown: &CancellationToken,
+) -> anyhow::Result<Option<SweepReport>> {
+    let mut conn = tokio::time::timeout(LOCK_CONNECT_TIMEOUT, PgConnection::connect_with(lock))
+        .await
+        .context("connecting for the sweep lock timed out")?
+        .context("connecting for the sweep lock")?;
     let locked: bool =
         sqlx::query_scalar("select pg_try_advisory_lock(hashtext('media_sweep'))").fetch_one(&mut conn).await?;
     if !locked {
@@ -61,14 +72,8 @@ pub async fn sweep_once(
         tracing::warn!(%error, "media sweep: unlocking failed");
     }
     let _ = conn.close().await;
-    let report = match swept {
-        Ok(report) => report,
-        Err(error) => {
-            tracing::error!(%error, "media sweep failed");
-            return Ok(Some(SweepReport { failures: 1, ..SweepReport::default() }));
-        }
-    };
-    let object_failures = remove_objects(storage, &report).await;
+    let report = swept.context("sweeping media")?;
+    let object_failures = remove_objects(storage, &report, shutdown).await;
     tracing::info!(
         expired_documents = report.expired_documents,
         orphans = report.orphans.len(),
@@ -93,17 +98,27 @@ fn orphan_bucket(purpose: Purpose, key: &str) -> Bucket {
 
 /// Removes the swept assets' objects and abandoned uploads from storage, returning how many removals failed. A
 /// missing object or upload counts as removed. Failures are logged; their rows are gone, so nothing retries them.
-async fn remove_objects(storage: &Storage, report: &SweepReport) -> u32 {
+/// Once `shutdown` is cancelled it stops, logging how many keys it left.
+async fn remove_objects(storage: &Storage, report: &SweepReport, shutdown: &CancellationToken) -> u32 {
+    let total = report.orphans.iter().map(|(.., keys)| keys.len()).sum::<usize>() + report.stale_uploads.len();
+    let mut done = 0;
     let mut failures = 0;
     for (tenant, asset, purpose, keys) in &report.orphans {
         for key in keys {
+            if shutdown.is_cancelled() {
+                return left_behind(total - done, failures);
+            }
             if let Err(error) = storage.delete(orphan_bucket(*purpose, key), key).await {
                 tracing::error!(%error, tenant = %tenant.0, %asset, "media sweep: deleting an object failed");
                 failures += 1;
             }
+            done += 1;
         }
     }
     for stale in &report.stale_uploads {
+        if shutdown.is_cancelled() {
+            return left_behind(total - done, failures);
+        }
         if let Some(upload_id) = &stale.s3_upload_id {
             match storage.abort_multipart(Bucket::Private, &stale.upload_key, upload_id).await {
                 Err(StorageError::Status { status, .. }) if status.as_u16() == 404 => {}
@@ -120,7 +135,14 @@ async fn remove_objects(storage: &Storage, report: &SweepReport) -> u32 {
                 "media sweep: deleting an upload failed");
             failures += 1;
         }
+        done += 1;
     }
+    failures
+}
+
+/// Logs the keys a shutdown left in storage, unreferenced, and returns the failures so far.
+fn left_behind(keys: usize, failures: u32) -> u32 {
+    tracing::warn!(keys, "media sweep: shutting down; these objects stay in storage unreferenced");
     failures
 }
 

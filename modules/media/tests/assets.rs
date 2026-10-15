@@ -157,7 +157,7 @@ async fn complete_writes_link_and_enqueues(_: PgPoolOptions, opts: PgConnectOpti
     // A guest document gets its document row.
     let guest = hotel.guest().await;
     let completed = hotel.upload(guest_target(guest), 3).await;
-    let documents = guest_documents(&mut hotel.tx().await, guest).await.unwrap();
+    let documents = guest_documents(&mut hotel.tx().await, hotel.property, guest).await.unwrap();
     assert_eq!(documents.iter().map(|d| d.asset_id).collect::<Vec<_>>(), [asset_of(&completed)]);
     assert_eq!(hotel.audited("guest_document.uploaded").await, 1);
 }

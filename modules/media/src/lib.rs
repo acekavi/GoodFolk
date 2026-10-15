@@ -14,7 +14,9 @@ pub use assets::{
     Completed, NewUpload, PendingUpload, Verified, apply_result, complete_upload, pending_upload, refuse_upload,
     set_s3_upload_id, start_upload,
 };
-pub use guest_documents::{GuestDocumentRow, delete_guest_document, guest_document_link_key, guest_documents};
+pub use guest_documents::{
+    GuestDocumentRow, MAX_LISTED_DOCUMENTS, delete_guest_document, guest_document_link_key, guest_documents,
+};
 pub use links::{
     GalleryItem, galleries, gallery, issue_photos, reorder_gallery, set_caption, unlink_gallery, unlink_issue_photo,
 };
@@ -117,6 +119,9 @@ pub enum MediaError {
     /// The request breaks a rule, such as a file over the size limit.
     #[error("{0}")]
     Invalid(String),
+    /// The user may not do this to this resource, such as removing another user's issue photo.
+    #[error("{0}")]
+    Forbidden(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }

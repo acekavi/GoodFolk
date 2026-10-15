@@ -1,6 +1,7 @@
 mod common;
 
 use common::{Hotel, asset_of};
+use db::UserId;
 use media::{
     MediaError, Target, gallery, issue_photos, reorder_gallery, set_caption, unlink_gallery, unlink_issue_photo,
 };
@@ -80,7 +81,12 @@ async fn captions_and_unlinking(_: PgPoolOptions, opts: PgConnectOptions) {
     let issue = hotel.issue().await;
     let issue_photo = asset_of(&hotel.upload(Target::RoomIssue(issue), 2).await);
     let mut tx = hotel.tx().await;
-    unlink_issue_photo(&mut tx, hotel.tenant, hotel.user, hotel.property, issue, issue_photo).await.unwrap();
+    let someone_else = UserId(Uuid::now_v7());
+    let err = unlink_issue_photo(&mut tx, hotel.tenant, someone_else, false, hotel.property, issue, issue_photo)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, MediaError::Forbidden(_)), "only the uploader or a supervisor: {err:?}");
+    unlink_issue_photo(&mut tx, hotel.tenant, hotel.user, false, hotel.property, issue, issue_photo).await.unwrap();
     tx.commit().await.unwrap();
     assert!(issue_photos(&mut hotel.tx().await, &[issue]).await.unwrap().is_empty());
     assert_eq!(hotel.audited("media.removed").await, 2);

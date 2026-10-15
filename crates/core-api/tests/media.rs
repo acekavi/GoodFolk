@@ -242,6 +242,9 @@ async fn upload_flow_gallery_reaches_ready(_: PgPoolOptions, opts: PgConnectOpti
     assert_eq!(completed.body["status"], "processing");
     assert_eq!(completed.body["mime"], "image/jpeg");
     let asset = completed.body["asset_id"].clone();
+    // Completing invalidates the property's media once; the next invalidation can only be the result's.
+    let key = format!("media:{}", hotel.id);
+    expect_invalidation(&mut stream, &key, Duration::from_secs(5)).await;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     let media = loop {
@@ -265,7 +268,7 @@ async fn upload_flow_gallery_reaches_ready(_: PgPoolOptions, opts: PgConnectOpti
         assert_eq!(response.status(), 200, "{url}");
         assert_eq!(response.headers()["cache-control"], storage::IMMUTABLE);
     }
-    expect_invalidation(&mut stream, &format!("media:{}", hotel.id), Duration::from_secs(5)).await;
+    expect_invalidation(&mut stream, &key, Duration::from_secs(5)).await;
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -548,18 +551,103 @@ async fn issue_photo_url_is_signed_and_private(_: PgPoolOptions, opts: PgConnect
     let key = storage::rendition_key(hotel.tenant, asset, "thumb", "webp");
     let anonymous = http().get(storage.public_url(&key)).send().await.unwrap();
     assert!(!anonymous.status().is_success(), "an issue photo is never public");
+}
 
-    let removed = app
-        .send(
-            Method::DELETE,
-            &format!("{}/room-issues/{}/media/{asset}", hotel.path, hotel.issue),
-            Some(&housekeeper),
-            None,
-        )
-        .await;
-    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
-    let body = graphql(&app, &housekeeper, ISSUE_PHOTOS, json!({"p": hotel.id})).await;
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn only_the_uploader_or_a_supervisor_removes_an_issue_photo(_: PgPoolOptions, opts: PgConnectOptions) {
+    let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
+    let app = TestApp::new(opts).await;
+    let storage = storage().await;
+    let hotel = Hotel::new(&app, "owner@example.com", "GAL").await;
+    let uploader = app.staff(&superuser, &hotel.owner, "hk@example.com", "housekeeping").await;
+    let colleague = app.staff(&superuser, &hotel.owner, "hk2@example.com", "housekeeping").await;
+    let supervisor = app.staff(&superuser, &hotel.owner, "sup@example.com", "hk_supervisor").await;
+    let uploader_id = uuid(&app.send(Method::GET, "/api/v1/me", Some(&uploader), None).await.body["user_id"]);
+    let link =
+        format!("insert into room_issue_media (tenant_id, issue_id, asset_id) values ($1, '{}', $2)", hotel.issue);
+    let mut photos = Vec::new();
+    for _ in 0..2 {
+        let asset = ready_asset(&superuser, &storage, &hotel, "issue_photo", "image/jpeg", &[], "jxl", &link).await;
+        sqlx::query("update media_asset set created_by = $2 where id = $1")
+            .bind(asset)
+            .bind(uploader_id)
+            .execute(&superuser)
+            .await
+            .unwrap();
+        photos.push(asset);
+    }
+    let remove = |asset: Uuid| format!("{}/room-issues/{}/media/{asset}", hotel.path, hotel.issue);
+
+    let by_colleague = app.send(Method::DELETE, &remove(photos[0]), Some(&colleague), None).await;
+    let by_uploader = app.send(Method::DELETE, &remove(photos[0]), Some(&uploader), None).await;
+    let by_supervisor = app.send(Method::DELETE, &remove(photos[1]), Some(&supervisor), None).await;
+
+    assert_eq!(by_colleague.status, StatusCode::FORBIDDEN, "{:?}", by_colleague.body);
+    assert_eq!(by_uploader.status, StatusCode::NO_CONTENT, "{:?}", by_uploader.body);
+    assert_eq!(by_supervisor.status, StatusCode::NO_CONTENT, "{:?}", by_supervisor.body);
+    let body = graphql(&app, &supervisor, ISSUE_PHOTOS, json!({"p": hotel.id})).await;
     assert_eq!(body["data"]["roomIssues"][0]["photos"], json!([]));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn guest_documents_stay_with_the_property_they_were_uploaded_at(_: PgPoolOptions, opts: PgConnectOptions) {
+    let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
+    let app = TestApp::new(opts).await;
+    let storage = storage().await;
+    let hotel = Hotel::new(&app, "owner@example.com", "GAL").await;
+    let other = json!({"code": "KAN", "name": "Kandy", "timezone": "Asia/Colombo", "base_currency": "LKR"});
+    let other = uuid(&post(&app, &hotel.owner, "/api/v1/properties", other).await.body["id"]);
+    let other_path = format!("/api/v1/properties/{other}");
+    // A front desk clerk of the first property only.
+    let desk = app.staff(&superuser, &hotel.owner, "desk@example.com", "front_desk").await;
+    sqlx::query(
+        "update role_grant set property_id = $1
+         where tenant_id = $3 and user_id = (select id from app_user where email = $2)",
+    )
+    .bind(hotel.id)
+    .bind("desk@example.com")
+    .bind(hotel.tenant)
+    .execute(&superuser)
+    .await
+    .unwrap();
+    let here = guest_document(&superuser, &storage, &hotel).await;
+    let there = guest_document(&superuser, &storage, &hotel).await;
+    sqlx::query(
+        "update media_asset set property_id = $2 where id = (select asset_id from guest_document where id = $1)",
+    )
+    .bind(there)
+    .bind(other)
+    .execute(&superuser)
+    .await
+    .unwrap();
+    let link = |path: &str, document: Uuid| format!("{path}/guest-documents/{document}/link?size=original");
+    let delete = |path: &str, document: Uuid| format!("{path}/guest-documents/{document}");
+    let listed = |body: &Value| -> Vec<Value> {
+        body["data"]["guestDocuments"].as_array().unwrap().iter().map(|d| d["id"].clone()).collect()
+    };
+
+    // The clerk: the other property's document is not found here, and the other property is not theirs.
+    for (path, status) in [(hotel.path.as_str(), StatusCode::NOT_FOUND), (other_path.as_str(), StatusCode::FORBIDDEN)] {
+        let linked = app.send(Method::GET, &link(path, there), Some(&desk), None).await;
+        let deleted = app.send(Method::DELETE, &delete(path, there), Some(&desk), None).await;
+        assert_eq!((linked.status, deleted.status), (status, status), "{path}: {:?} {:?}", linked.body, deleted.body);
+    }
+    let here_list = graphql(&app, &desk, GUEST_DOCUMENTS, json!({"p": hotel.id, "g": hotel.guest})).await;
+    assert_eq!(listed(&here_list), [json!(here)]);
+    let there_list = graphql(&app, &desk, GUEST_DOCUMENTS, json!({"p": other, "g": hotel.guest})).await;
+    assert_eq!(there_list["errors"][0]["message"], "you do not have permission for this property");
+
+    // The owner sees each document only through its own property.
+    let owner = &hotel.owner;
+    assert_eq!(app.send(Method::GET, &link(&hotel.path, there), Some(owner), None).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(app.send(Method::GET, &link(&other_path, here), Some(owner), None).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(app.send(Method::GET, &link(&other_path, there), Some(owner), None).await.status, StatusCode::OK);
+    let there_list = graphql(&app, owner, GUEST_DOCUMENTS, json!({"p": other, "g": hotel.guest})).await;
+    assert_eq!(listed(&there_list), [json!(there)]);
+    let deleted = app.send(Method::DELETE, &delete(&hotel.path, there), Some(owner), None).await;
+    assert_eq!(deleted.status, StatusCode::NOT_FOUND);
+    let deleted = app.send(Method::DELETE, &delete(&other_path, there), Some(owner), None).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -811,10 +899,13 @@ async fn the_sweep_removes_an_orphans_objects_from_their_buckets(_: PgPoolOption
     // Another session holding the lock means another instance is sweeping.
     let mut holder = sqlx::PgConnection::connect_with(&opts).await.unwrap();
     sqlx::query("select pg_advisory_lock(hashtext('media_sweep'))").execute(&mut holder).await.unwrap();
-    assert!(core_api::tasks::sweep_once(&app.pool, &opts, &storage).await.unwrap().is_none());
+    assert!(
+        core_api::tasks::sweep_once(&app.pool, &opts, &storage, &CancellationToken::new()).await.unwrap().is_none()
+    );
     sqlx::query("select pg_advisory_unlock(hashtext('media_sweep'))").execute(&mut holder).await.unwrap();
 
-    let report = core_api::tasks::sweep_once(&app.pool, &opts, &storage).await.unwrap().unwrap();
+    let report =
+        core_api::tasks::sweep_once(&app.pool, &opts, &storage, &CancellationToken::new()).await.unwrap().unwrap();
 
     assert_eq!(report.orphans.len(), 1);
     assert_eq!(storage.head(Bucket::Public, &rendition).await.unwrap(), None);

@@ -1,5 +1,5 @@
-//! Guests' ID documents. Guests are tenant-wide, so a document is too: `property` names where the user is working,
-//! for the change event and the audit entry. Every signed link issued is audited.
+//! Guests' ID documents. Guests are tenant-wide, but a document belongs to the property it was uploaded at: it is
+//! listed, linked and deleted only through that property. Every signed link issued is audited.
 
 use crate::{AssetStatus, DocumentKind, LinkSize, MediaError, Visibility, audit, notify};
 use db::{TenantId, Tx, UserId};
@@ -22,20 +22,27 @@ pub struct GuestDocumentRow {
     pub uploaded_at: OffsetDateTime,
 }
 
-/// The guest's documents, newest first.
-pub async fn guest_documents(tx: &mut Tx, guest: Uuid) -> Result<Vec<GuestDocumentRow>, MediaError> {
+/// The most documents [`guest_documents`] returns.
+pub const MAX_LISTED_DOCUMENTS: i64 = 50;
+
+/// The guest's documents uploaded at the property, newest first, at most [`MAX_LISTED_DOCUMENTS`].
+pub async fn guest_documents(tx: &mut Tx, property: Uuid, guest: Uuid) -> Result<Vec<GuestDocumentRow>, MediaError> {
     Ok(sqlx::query_as(
         "select d.id, d.guest_id, d.asset_id, d.kind, a.status, a.mime, d.uploaded_by, d.uploaded_at
          from guest_document d join media_asset a on a.id = d.asset_id
-         where d.guest_id = $1
-         order by d.uploaded_at desc, d.id desc",
+         where d.guest_id = $1 and a.property_id = $2
+         order by d.uploaded_at desc, d.id desc
+         limit $3",
     )
     .bind(guest)
+    .bind(property)
+    .bind(MAX_LISTED_DOCUMENTS)
     .fetch_all(&mut **tx)
     .await?)
 }
 
-/// Deletes the document (`NotFound`). Its files go when the sweep finds the asset unused.
+/// Deletes the document uploaded at the property (`NotFound` otherwise). Its files go when the sweep finds the asset
+/// unused.
 pub async fn delete_guest_document(
     tx: &mut Tx,
     tenant: TenantId,
@@ -43,11 +50,15 @@ pub async fn delete_guest_document(
     property: Uuid,
     document: Uuid,
 ) -> Result<(), MediaError> {
-    let deleted: Option<(Uuid, Uuid)> =
-        sqlx::query_as("delete from guest_document where id = $1 returning guest_id, asset_id")
-            .bind(document)
-            .fetch_optional(&mut **tx)
-            .await?;
+    let deleted: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "delete from guest_document d using media_asset a
+             where d.id = $1 and a.id = d.asset_id and a.property_id = $2
+             returning d.guest_id, d.asset_id",
+    )
+    .bind(document)
+    .bind(property)
+    .fetch_optional(&mut **tx)
+    .await?;
     let (guest, asset) = deleted.ok_or(MediaError::NotFound("document"))?;
     let data = serde_json::json!({ "by": "user", "guest_id": guest, "asset_id": asset, "property_id": property });
     audit(tx, tenant, Some(user), "guest_document.deleted", "guest_document", document, data).await?;
@@ -72,7 +83,8 @@ struct LinkRow {
 
 /// The bucket and key to sign for the document's `size`: the WebP rendition for `thumb` and `md`, and for a PDF only,
 /// the PDF as uploaded for `original` (an image's archive is JPEG XL, which browsers cannot show). Writes a
-/// `guest_document.viewed` audit entry for each call. An unknown document is `NotFound`, one not yet ready is
+/// `guest_document.viewed` audit entry for each call. An unknown document, or one uploaded at another property, is
+/// `NotFound`, one not yet ready is
 /// `Conflict`, and a size the document has no file for (a PDF's preview, an image's original) is `Invalid`.
 pub async fn guest_document_link_key(
     tx: &mut Tx,
@@ -84,9 +96,10 @@ pub async fn guest_document_link_key(
 ) -> Result<(Visibility, String), MediaError> {
     let row: Option<LinkRow> = sqlx::query_as(
         "select a.visibility, a.status, a.mime, a.archive_key, a.renditions
-         from guest_document d join media_asset a on a.id = d.asset_id where d.id = $1",
+         from guest_document d join media_asset a on a.id = d.asset_id where d.id = $1 and a.property_id = $2",
     )
     .bind(document)
+    .bind(property)
     .fetch_optional(&mut **tx)
     .await?;
     let LinkRow { visibility, status, mime, archive_key, renditions } = row.ok_or(MediaError::NotFound("document"))?;

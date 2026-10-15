@@ -37,7 +37,7 @@ impl Hotel {
     }
 
     async fn documents_of(&self, guest: Uuid) -> usize {
-        guest_documents(&mut self.tx().await, guest).await.unwrap().len()
+        guest_documents(&mut self.tx().await, self.property, guest).await.unwrap().len()
     }
 }
 
