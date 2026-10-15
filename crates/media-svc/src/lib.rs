@@ -17,6 +17,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::{get, post};
+use axum::serve::{Listener, ListenerExt};
 use events::EventBus;
 use proto::media::media_server::MediaServer;
 use proto::tonic_health;
@@ -58,6 +59,19 @@ pub fn router(svc: MediaSvc, verifier: Arc<Verifier>) -> axum::Router {
         .into_axum_router()
         .route("/work", post(work::work).with_state(work::WorkState { svc, rayon_threads }).layer(auth))
         .route("/healthz", get(|| async { "ok" }))
+}
+
+/// `tcp` with Nagle's algorithm turned off on every connection it accepts; serve the [`router`] on this. A gRPC
+/// answer goes out in several HTTP/2 frames (headers, data, trailers), and with Nagle on the last of them waits for
+/// the caller's delayed ACK, adding about 40 ms to every call.
+pub fn without_nagle(
+    tcp: tokio::net::TcpListener,
+) -> impl Listener<Io = tokio::net::TcpStream, Addr = std::net::SocketAddr> {
+    tcp.tap_io(|stream| {
+        if let Err(error) = stream.set_nodelay(true) {
+            tracing::warn!(%error, "could not turn Nagle's algorithm off on a connection");
+        }
+    })
 }
 
 /// Service auth answers a refused call with HTTP 401, which a gRPC client cannot read; it gets `UNAUTHENTICATED`.

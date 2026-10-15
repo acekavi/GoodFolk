@@ -43,7 +43,7 @@ async fn serve() -> anyhow::Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     let tcp = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, workers = config.workers, threads = config.worker_threads, "listening");
-    axum::serve(tcp, router(svc, verifier)).with_graceful_shutdown(shutdown_signal()).await?;
+    axum::serve(media_svc::without_nagle(tcp), router(svc, verifier)).with_graceful_shutdown(shutdown_signal()).await?;
     Ok(())
 }
 
