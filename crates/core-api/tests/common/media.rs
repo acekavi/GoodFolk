@@ -9,6 +9,7 @@ use core_api::state::MediaServices;
 use core_api::{AppState, router};
 use events::{BusError, HeaderProvider, PushBus};
 use media_svc::MediaSvc;
+use media_svc::config::Config;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
@@ -92,7 +93,8 @@ pub async fn stack(opts: PgConnectOptions) -> Stack {
         bus: Arc::new(
             PushBus::new(HashMap::from([("media-results".to_owned(), results)]), Some(secret_header())).unwrap(),
         ),
-        workers: Arc::new(Semaphore::new(2)),
+        // As many workers as media-svc runs by default (`MEDIA_WORKERS`), each with its share of the CPUs.
+        workers: Arc::new(Semaphore::new(Config::from_env().unwrap().workers)),
         worker_exe: media_svc_exe(),
     };
     let media_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -103,7 +105,7 @@ pub async fn stack(opts: PgConnectOptions) -> Stack {
     let pool = db::testing::app_pool(opts.clone(), 10).await;
     let state = AppState::with_media(pool.clone(), false, db::testing::guest_id_keys(), services(storage, media_svc));
     let core_router = router(state.clone());
-    tokio::spawn(async move { axum::serve(core_listener, core_router).await.unwrap() });
+    tokio::spawn(async move { axum::serve(core_api::without_nagle(core_listener), core_router).await.unwrap() });
 
     // As in core-api's `serve`: the listener feeds the event streams and wakes the relay.
     let outbox_wake = Arc::new(Notify::new());

@@ -1093,6 +1093,7 @@ async fn media_upload_init_p95_under_50ms(_: PgPoolOptions, opts: PgConnectOptio
     let uploads = format!("{}/media/uploads", hotel.path);
 
     let mut samples: Vec<Duration> = Vec::with_capacity(SAMPLES);
+    let mut started_uploads = Vec::with_capacity(SAMPLES + UPLOAD_WARMUP);
     for round in 0..SAMPLES + UPLOAD_WARMUP {
         // A new file each round (and `post` a new idempotency key), so nothing is answered from an earlier start.
         let filename = format!("photo-{round}.jpg");
@@ -1102,10 +1103,16 @@ async fn media_upload_init_p95_under_50ms(_: PgPoolOptions, opts: PgConnectOptio
         let response = post(app, &hotel.owner, &uploads, start).await;
         let elapsed = started.elapsed();
         assert_eq!(response.body["parts"].as_array().map(Vec::len), Some(1), "{:?}", response.body);
+        started_uploads.push(uuid(&response.body["upload_id"]));
         // The first ones warm the connection pools, the gRPC channel and Postgres' caches.
         if round >= UPLOAD_WARMUP {
             samples.push(elapsed);
         }
+    }
+    // Cancelling aborts each multipart upload in storage and removes its row.
+    for upload in started_uploads {
+        let cancelled = app.send(Method::DELETE, &format!("{uploads}/{upload}"), Some(&hotel.owner), None).await;
+        assert_eq!(cancelled.status, StatusCode::NO_CONTENT, "{:?}", cancelled.body);
     }
 
     samples.sort();
