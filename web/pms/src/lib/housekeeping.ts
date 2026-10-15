@@ -1,7 +1,9 @@
 import { graphql } from './api/gql';
 import type { HousekeepingBoardQuery, MyRoomsQuery, RoomIssuesQuery } from './api/gql/graphql';
 import { query } from './api/graphql';
+import { ApiError, errorMessage } from './api/problem';
 import { idempotencyKey, ifMatch, rest, unwrap } from './api/rest';
+import { mediaKey, type MediaItem } from './media';
 
 export const HousekeepingBoardDocument = graphql(`
 	query HousekeepingBoard($propertyId: UUID!) {
@@ -57,6 +59,29 @@ export const RoomIssuesDocument = graphql(`
 			status
 			reportedAt
 			version
+		}
+	}
+`);
+
+export const IssuePhotosDocument = graphql(`
+	query IssuePhotos($propertyId: UUID!) {
+		roomIssues(propertyId: $propertyId, status: OPEN) {
+			id
+			photos {
+				assetId
+				status
+				error
+				caption
+				width
+				height
+				renditions {
+					size
+					format
+					width
+					height
+					url
+				}
+			}
 		}
 	}
 `);
@@ -349,6 +374,60 @@ export async function resolveIssue(propertyId: string, issueId: string, version:
 		await rest.PATCH('/api/v1/properties/{property}/room-issues/{issue}', {
 			params: { path: { property: propertyId, issue: issueId }, header: ifMatch(version) },
 			body: { status: 'resolved' }
+		})
+	);
+}
+
+/**
+ * The open issues' photos. Every photo change comes as `media:<property>`, so they are cached under
+ * that key, apart from the issues themselves (`issues:<property>`).
+ */
+export function issuePhotosKey(propertyId: string) {
+	return [...mediaKey(propertyId), 'issue-photos'] as const;
+}
+
+/** Each open issue's photos, oldest first, by issue id; their links work for 60 minutes from the read. */
+export async function fetchIssuePhotos(
+	propertyId: string,
+	signal?: AbortSignal
+): Promise<Record<string, MediaItem[]>> {
+	const { roomIssues } = await query(IssuePhotosDocument, { propertyId }, signal);
+	return Object.fromEntries(roomIssues.map((issue) => [issue.id, issue.photos]));
+}
+
+/** The most photos an issue can have, as on the server. */
+export const MAX_ISSUE_PHOTOS = 5;
+/** The server's words for a sixth photo. */
+export const TOO_MANY_PHOTOS = 'An issue can have at most 5 photos';
+export const PHOTOS_NEED_CONNECTION = 'Photos need a connection';
+
+/**
+ * Whether photos can be added to an issue that has `taken` of its places filled (its photos and the
+ * uploads still on their way), and if not, why.
+ */
+export function photoControl(online: boolean, taken: number): { disabled: boolean; note: string } {
+	if (!online) return { disabled: true, note: PHOTOS_NEED_CONNECTION };
+	if (taken >= MAX_ISSUE_PHOTOS) return { disabled: true, note: TOO_MANY_PHOTOS };
+	return { disabled: false, note: '' };
+}
+
+/** Why the `index`th of the files chosen at once cannot go on an issue with `taken` places filled. */
+export function overPhotoLimit(taken: number, index: number): string | null {
+	return taken + index >= MAX_ISSUE_PHOTOS ? TOO_MANY_PHOTOS : null;
+}
+
+/** What a failed photo removal says; a `403` is someone else's photo. */
+export function removePhotoMessage(error: unknown): string {
+	return error instanceof ApiError && error.status === 403
+		? 'Only the person who added this photo or a supervisor can remove it'
+		: errorMessage(error);
+}
+
+/** Takes a photo off an issue: its uploader or a supervisor only; the server answers 403 to anyone else. */
+export async function removeIssuePhoto(propertyId: string, issueId: string, assetId: string) {
+	unwrap(
+		await rest.DELETE('/api/v1/properties/{property}/room-issues/{issue}/media/{asset}', {
+			params: { path: { property: propertyId, issue: issueId, asset: assetId } }
 		})
 	);
 }

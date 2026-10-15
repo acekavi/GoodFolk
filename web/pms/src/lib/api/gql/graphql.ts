@@ -18,6 +18,12 @@ export type ChangeMode =
   | 'AMOUNT'
   | 'PERCENT';
 
+export type DocumentKind =
+  | 'DRIVING_LICENCE'
+  | 'NIC'
+  | 'OTHER'
+  | 'PASSPORT';
+
 export type IdDocType =
   | 'DRIVING_LICENCE'
   | 'NIC'
@@ -176,6 +182,14 @@ export type AccountsQueryVariables = Exact<{
 
 export type AccountsQuery = { accounts: Array<{ id: string, kind: AccountKind, name: string, creditLimit: number | null, currency: string, active: boolean, version: number, contact: { email: string | null, phone: string | null, address: string | null, contactName: string | null } }> };
 
+export type GuestDocumentsQueryVariables = Exact<{
+  propertyId: string;
+  guestId: string;
+}>;
+
+
+export type GuestDocumentsQuery = { guestDocuments: Array<{ id: string, kind: DocumentKind, status: MediaStatus, mime: string | null, uploadedAt: string, uploadedBy: string | null }> };
+
 export type HousekeepingBoardQueryVariables = Exact<{
   propertyId: string;
 }>;
@@ -204,6 +218,13 @@ export type RoomIssuesQueryVariables = Exact<{
 
 
 export type RoomIssuesQuery = { roomIssues: Array<{ id: string, roomId: string, severity: IssueSeverity, description: string, status: IssueStatus, reportedAt: string, version: number }> };
+
+export type IssuePhotosQueryVariables = Exact<{
+  propertyId: string;
+}>;
+
+
+export type IssuePhotosQuery = { roomIssues: Array<{ id: string, photos: Array<{ assetId: string, status: MediaStatus, error: string | null, caption: string | null, width: number | null, height: number | null, renditions: Array<{ size: RenditionSize, format: ImageFormat, width: number, height: number, url: string }> }> }> };
 
 export type InventoryQueryVariables = Exact<{
   propertyId: string;
@@ -398,6 +419,18 @@ export const AccountsDocument = new TypedDocumentString(`
   }
 }
     `, {"hash":"sha256:0991236e571c94b801691aefc5b9a85c0c1372010a662f1ee98f155b11a7e2d8"}) as unknown as TypedDocumentString<AccountsQuery, AccountsQueryVariables>;
+export const GuestDocumentsDocument = new TypedDocumentString(`
+    query GuestDocuments($propertyId: UUID!, $guestId: UUID!) {
+  guestDocuments(propertyId: $propertyId, guestId: $guestId) {
+    id
+    kind
+    status
+    mime
+    uploadedAt
+    uploadedBy
+  }
+}
+    `, {"hash":"sha256:80e8d9230ed8fb8b6b29a6ea78da47df5ef244ea91a2c1340ee288d1889d45cd"}) as unknown as TypedDocumentString<GuestDocumentsQuery, GuestDocumentsQueryVariables>;
 export const HousekeepingBoardDocument = new TypedDocumentString(`
     query HousekeepingBoard($propertyId: UUID!) {
   housekeepingBoard(propertyId: $propertyId) {
@@ -452,6 +485,28 @@ export const RoomIssuesDocument = new TypedDocumentString(`
   }
 }
     `, {"hash":"sha256:66aaed05b34bb02e4970e9f39bf3aaa4f6a751717e94c00aa0803441d2bd9e38"}) as unknown as TypedDocumentString<RoomIssuesQuery, RoomIssuesQueryVariables>;
+export const IssuePhotosDocument = new TypedDocumentString(`
+    query IssuePhotos($propertyId: UUID!) {
+  roomIssues(propertyId: $propertyId, status: OPEN) {
+    id
+    photos {
+      assetId
+      status
+      error
+      caption
+      width
+      height
+      renditions {
+        size
+        format
+        width
+        height
+        url
+      }
+    }
+  }
+}
+    `, {"hash":"sha256:df3e223fe0c919c779edc719cc5f4b76dac1d1d3054930598de10ca5099b1fa3"}) as unknown as TypedDocumentString<IssuePhotosQuery, IssuePhotosQueryVariables>;
 export const InventoryDocument = new TypedDocumentString(`
     query Inventory($propertyId: UUID!, $from: Date!, $to: Date!) {
   inventory(propertyId: $propertyId, from: $from, to: $to) {

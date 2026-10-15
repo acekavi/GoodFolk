@@ -6,7 +6,8 @@
 	of the tile comes from the board (`hk:`), so either event refreshes what it feeds. Tiles have a fixed size and
 	only the rows in view (plus overscan) are in the DOM; the grid holds the full height, and one tile at a time
 	takes Tab (a roving tab stop) and the arrow, Home, End and Page keys. For everyone else the same markup is a
-	read-only table whose scroller takes Tab itself, so the keyboard can scroll it.
+	read-only table whose scroller takes Tab itself, so the keyboard can scroll it. Each open issue shows its
+	photos, from their own list under `media:`; whoever may report issues can attach more.
 -->
 <script module lang="ts">
 	// Tile geometry, in rems so that it follows the user's text size: a tile is `TILE` high and at least
@@ -36,6 +37,7 @@
 	import { formKeys } from '$lib/api/rest';
 	import { revealRow, visibleRows } from '$lib/grid';
 	import BlockDialog from '$lib/components/BlockDialog.svelte';
+	import IssuePhotos from '$lib/components/IssuePhotos.svelte';
 	import {
 		assignRooms,
 		conditionLabel,
@@ -43,6 +45,7 @@
 		copyYesterday,
 		fetchBoard,
 		fetchHousekeepers,
+		fetchIssuePhotos,
 		fetchOpenIssues,
 		filterRooms,
 		filtersFromSearchParams,
@@ -50,6 +53,7 @@
 		hkKey,
 		initials,
 		issueCounts,
+		issuePhotosKey,
 		issuesKey,
 		MAX_BULK_ROOMS,
 		MAX_ISSUE_DESCRIPTION,
@@ -103,6 +107,12 @@
 	const issues = createQuery(() => ({
 		queryKey: issuesKey(propertyId),
 		queryFn: ({ signal }) => fetchOpenIssues(propertyId, signal),
+		enabled: allowed
+	}));
+	// Under `media:`, which every photo change names; the issues themselves come from `issues:`.
+	const issuePhotos = createQuery(() => ({
+		queryKey: issuePhotosKey(propertyId),
+		queryFn: ({ signal }) => fetchIssuePhotos(propertyId, signal),
 		enabled: allowed
 	}));
 	// Under the `hk:` key too, so it is refetched with the board; the list only changes with roles.
@@ -631,6 +641,12 @@
 									>
 								{/if}
 							{/if}
+							<IssuePhotos
+								{propertyId}
+								issueId={issue.id}
+								photos={issuePhotos.data?.[issue.id] ?? []}
+								mayAttach={mayReport}
+							/>
 						</li>
 					{/each}
 				</ul>

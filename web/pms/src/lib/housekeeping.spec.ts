@@ -1,4 +1,7 @@
+import { QueryClient } from '@tanstack/svelte-query';
 import { describe, expect, it } from 'vitest';
+import { ApiError, NETWORK_ERROR } from './api/problem';
+import { applyEvent } from './events';
 import {
 	conditionLabel,
 	filterRooms,
@@ -8,12 +11,16 @@ import {
 	initials,
 	issueCounts,
 	isConditionRefusal,
+	issuePhotosKey,
 	issuesKey,
 	moveTile,
 	nextConditions,
 	NO_FILTERS,
 	occupancyLabel,
+	overPhotoLimit,
+	photoControl,
 	rangeBetween,
+	removePhotoMessage,
 	stepLabel,
 	type BoardRoom,
 	type RoomIssue
@@ -182,5 +189,53 @@ describe('stepLabel', () => {
 		expect(stepLabel('CLEAN')).toBe('Done');
 		expect(stepLabel('INSPECTED')).toBe('Set inspected');
 		expect(stepLabel('DIRTY')).toBe('Set dirty');
+	});
+});
+
+describe('photoControl', () => {
+	it('needs a connection and a free place among five', () => {
+		expect(photoControl(true, 0)).toEqual({ disabled: false, note: '' });
+		expect(photoControl(true, 4)).toEqual({ disabled: false, note: '' });
+		expect(photoControl(true, 5)).toEqual({
+			disabled: true,
+			note: 'An issue can have at most 5 photos'
+		});
+		expect(photoControl(false, 0)).toEqual({ disabled: true, note: 'Photos need a connection' });
+	});
+});
+
+describe('overPhotoLimit', () => {
+	it('refuses the files chosen at once beyond the fifth place', () => {
+		const reasons = [0, 1, 2].map((index) => overPhotoLimit(3, index));
+		expect(reasons).toEqual([null, null, 'An issue can have at most 5 photos']);
+	});
+});
+
+describe('removePhotoMessage', () => {
+	const refusal = (status: number, detail?: string) =>
+		new ApiError({ type: 'about:blank', title: 'Refused', status, detail });
+
+	it('explains a 403 as someone else’s photo', () => {
+		expect(removePhotoMessage(refusal(403, 'Forbidden'))).toBe(
+			'Only the person who added this photo or a supervisor can remove it'
+		);
+	});
+
+	it('passes other problems on', () => {
+		expect(removePhotoMessage(refusal(404, 'photo not found'))).toBe('photo not found');
+		expect(removePhotoMessage(new TypeError('Failed to fetch'))).toBe(NETWORK_ERROR);
+	});
+});
+
+describe('issuePhotosKey', () => {
+	it('is refetched by the server’s media:<property> event, not by issues:', () => {
+		const client = new QueryClient();
+		client.setQueryData(issuePhotosKey('p1'), {});
+
+		applyEvent(client, 'invalidate', '["issues:p1"]');
+		expect(client.getQueryState(issuePhotosKey('p1'))?.isInvalidated).toBe(false);
+
+		applyEvent(client, 'invalidate', '["media:p1"]');
+		expect(client.getQueryState(issuePhotosKey('p1'))?.isInvalidated).toBe(true);
 	});
 });

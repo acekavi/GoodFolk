@@ -1,7 +1,16 @@
 import { QueryClient } from '@tanstack/svelte-query';
 import { describe, expect, it } from 'vitest';
 import { applyEvent } from './events';
-import { DISPLAY_SIZES, dropIndex, mediaKey, renditionsOf, srcset, type Rendition } from './media';
+import {
+	DISPLAY_SIZES,
+	dropIndex,
+	LARGE_SIZES,
+	largestOf,
+	mediaKey,
+	renditionsOf,
+	srcset,
+	type Rendition
+} from './media';
 
 const rendition = (
 	size: Rendition['size'],
@@ -43,6 +52,24 @@ describe('srcset', () => {
 
 	it('is empty without renditions, as while processing', () => {
 		expect(srcset(renditionsOf([], 'WEBP', DISPLAY_SIZES))).toBe('');
+	});
+});
+
+describe('largestOf', () => {
+	it('picks LG when the photo has it', () => {
+		const withLarge = [...renditions, rendition('LG', 'WEBP', 1600, 1067)];
+		expect(largestOf(withLarge, 'WEBP', LARGE_SIZES).map((r) => r.size)).toEqual(['LG']);
+	});
+
+	it('falls back to the largest size a smaller photo has, never past LG', () => {
+		expect(largestOf(renditions, 'WEBP', LARGE_SIZES).map((r) => r.size)).toEqual(['MD']);
+		expect(largestOf(renditions, 'AVIF', LARGE_SIZES).map((r) => r.size)).toEqual(['SM']);
+	});
+
+	it('shows the square thumbnail of a photo too small for anything else', () => {
+		const tiny = [rendition('THUMB', 'WEBP', 300, 300)];
+		expect(largestOf(tiny, 'WEBP', LARGE_SIZES).map((r) => r.size)).toEqual(['THUMB']);
+		expect(largestOf([], 'WEBP', LARGE_SIZES)).toEqual([]);
 	});
 });
 

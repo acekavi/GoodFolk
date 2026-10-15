@@ -61,6 +61,21 @@ export function renditionsOf(
 		.sort((a, b) => a.width - b.width);
 }
 
+/**
+ * The sizes the large view picks from: `LG`, else the largest below it, since a photo is never
+ * upscaled and a small one has no `LG`; the square thumbnail only when it has nothing else.
+ */
+export const LARGE_SIZES: readonly RenditionSize[] = ['THUMB', 'SM', 'MD', 'LG'];
+
+/** The widest rendition of one format among `sizes`, as a one-item list, or none. */
+export function largestOf(
+	renditions: readonly Rendition[],
+	format: ImageFormat,
+	sizes: readonly RenditionSize[]
+): Rendition[] {
+	return renditionsOf(renditions, format, sizes).slice(-1);
+}
+
 /** A `srcset` of the given renditions: each URL with its width descriptor. */
 export function srcset(renditions: readonly Rendition[]): string {
 	return renditions.map((r) => `${r.url} ${r.width}w`).join(', ');

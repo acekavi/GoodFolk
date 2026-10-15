@@ -218,7 +218,8 @@ test('a front desk user sees the board and can report, but has no supervisor act
 	await form.getByRole('button', { name: 'Report issue' }).click();
 	const issue = desk.getByRole('list', { name: 'Open issues' }).getByRole('listitem');
 	await expect(issue).toContainText('No hot water');
-	await expect(issue.getByRole('button')).toHaveCount(0);
+	// Reporting includes attaching photos; resolving and blocking are the supervisor's.
+	await expect(issue.getByRole('button')).toHaveText(['Add photos']);
 	// The owner's board shows it without a reload: the `issues:` event refreshes the badge.
 	await expect(tile(page, '101')).toHaveAttribute('aria-label', /1 open issue$/);
 

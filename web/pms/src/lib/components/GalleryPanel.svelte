@@ -12,13 +12,7 @@
 	import { rest, unwrap } from '$lib/api/rest';
 	import { dropIndex, mediaKey, type Box, type MediaItem } from '$lib/media';
 	import { moveItem } from '$lib/rooms';
-	import {
-		refusal,
-		uploadErrorMessage,
-		uploadFile,
-		uploadQueue,
-		type UploadProgress
-	} from '$lib/upload';
+	import { percent, PROCESSING_FAILED, Uploads } from '$lib/uploads.svelte';
 	import MediaUploader from './MediaUploader.svelte';
 	import Picture from './Picture.svelte';
 
@@ -33,46 +27,16 @@
 
 	const client = useQueryClient();
 	const CAPTION_MAX = 200;
-	const PROCESSING_FAILED = 'Processing failed';
-	/** Files uploaded at once; each sends up to three parts in parallel. */
-	const PARALLEL_FILES = 3;
 	/** A pointer-down becomes a drag once it has moved this far (px); less is a click. */
 	const DRAG_THRESHOLD = 6;
 
-	interface Upload {
-		id: string;
-		name: string;
-		file: File;
-		controller: AbortController;
-		state: 'waiting' | 'sending' | 'processing' | 'failed';
-		progress: UploadProgress | null;
-		error: string;
-		/** Set once completed; the tile goes when the gallery shows this asset. */
-		assetId: string | null;
-	}
-
-	let uploads = $state<Upload[]>([]);
-	const queue = uploadQueue(PARALLEL_FILES, send);
-	/** Set when the panel goes away; from then on nothing may touch its state. */
-	let destroyed = false;
-
-	// Leaving the page stops its uploads: those waiting never start, and those sending are aborted,
-	// which deletes them on the server. One already completing is left to finish.
-	onDestroy(() => {
-		destroyed = true;
-		queue.stop();
-		for (const upload of uploads) {
-			upload.controller.abort(new DOMException('The page was left', 'AbortError'));
-		}
-	});
-
-	// A finished upload's tile goes once the gallery shows its photo, for good: a later removal of the
-	// photo must not bring the tile back.
-	$effect(() => {
-		const shown = new Set(media.map((item) => item.assetId));
-		const arrived = (u: Upload) => u.assetId !== null && shown.has(u.assetId);
-		if (uploads.some(arrived)) uploads = uploads.filter((u) => !arrived(u));
-	});
+	const uploads = new Uploads(
+		() => void client.invalidateQueries({ queryKey: mediaKey(propertyId) })
+	);
+	// Leaving the page stops its uploads.
+	onDestroy(() => uploads.destroy());
+	// A finished upload's tile goes once the gallery shows its photo.
+	$effect(() => uploads.settle(media.map((item) => item.assetId)));
 
 	let error = $state('');
 	let busy = $state(false);
@@ -80,70 +44,7 @@
 	let removing = $state<string | null>(null);
 
 	function addFiles(files: File[]) {
-		for (const file of files) {
-			const reason = refusal(file, 'gallery');
-			uploads.push({
-				id: crypto.randomUUID(),
-				name: file.name,
-				file,
-				controller: new AbortController(),
-				state: reason ? 'failed' : 'waiting',
-				progress: null,
-				error: reason ?? '',
-				assetId: null
-			});
-			// The pushed object is the reactive proxy; updates must go through it.
-			if (!reason) queue.add(uploads[uploads.length - 1]);
-		}
-	}
-
-	async function send(upload: Upload) {
-		if (upload.controller.signal.aborted) return;
-		upload.state = 'sending';
-		let asset;
-		try {
-			asset = await uploadFile(upload.file, {
-				propertyId,
-				purpose: 'gallery',
-				targetId: roomType.id,
-				signal: upload.controller.signal,
-				onProgress: (progress) => {
-					if (!destroyed) upload.progress = progress;
-				}
-			});
-		} catch (err) {
-			if (destroyed) return;
-			if (upload.controller.signal.aborted) return dismiss(upload);
-			upload.state = 'failed';
-			upload.error = uploadErrorMessage(err);
-			return;
-		}
-		// The refetch shows the photo even if the panel has gone, for the next visit.
-		void client.invalidateQueries({ queryKey: mediaKey(propertyId) });
-		if (destroyed) return;
-		if (asset.status === 'failed') {
-			upload.state = 'failed';
-			upload.error = asset.error ?? PROCESSING_FAILED;
-		} else {
-			upload.state = 'processing';
-			upload.assetId = asset.asset_id;
-		}
-	}
-
-	function cancel(upload: Upload) {
-		upload.controller.abort(new DOMException('Upload cancelled', 'AbortError'));
-		// A waiting upload has no request to end, so its tile goes now.
-		if (upload.state === 'waiting') dismiss(upload);
-	}
-
-	function dismiss(upload: Upload) {
-		uploads = uploads.filter((u) => u.id !== upload.id);
-	}
-
-	function percent(progress: UploadProgress | null): number {
-		return progress && progress.total > 0
-			? Math.round((progress.loaded / progress.total) * 100)
-			: 0;
+		uploads.add(files, { propertyId, purpose: 'gallery', targetId: roomType.id });
 	}
 
 	/** Runs a command, shows its problem if it fails, and refetches the galleries either way. */
@@ -272,7 +173,7 @@
 	<h3>{roomType.code} · {roomType.name}</h3>
 	{#if error}<p class="error" role="alert">{error}</p>{/if}
 
-	{#if media.length === 0 && uploads.length === 0}
+	{#if media.length === 0 && uploads.items.length === 0}
 		<p class="hint">No photos yet.</p>
 	{/if}
 
@@ -381,7 +282,7 @@
 			</li>
 		{/each}
 
-		{#each uploads as upload (upload.id)}
+		{#each uploads.items as upload (upload.id)}
 			<li class="tile upload" aria-label="Upload of {upload.name}">
 				<div class="frame">
 					{#if upload.state === 'failed'}
@@ -401,10 +302,14 @@
 				</div>
 				<p class="caption" title={upload.name}>{upload.name}</p>
 				<div class="actions">
-					{#if upload.state === 'waiting' || (upload.state === 'sending' && upload.progress?.phase !== 'completing')}
-						<button type="button" class="secondary" onclick={() => cancel(upload)}>Cancel</button>
+					{#if uploads.cancellable(upload)}
+						<button type="button" class="secondary" onclick={() => uploads.cancel(upload)}
+							>Cancel</button
+						>
 					{:else if upload.state === 'failed'}
-						<button type="button" class="secondary" onclick={() => dismiss(upload)}>Dismiss</button>
+						<button type="button" class="secondary" onclick={() => uploads.dismiss(upload)}
+							>Dismiss</button
+						>
 					{/if}
 				</div>
 			</li>

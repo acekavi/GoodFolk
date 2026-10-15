@@ -10,10 +10,12 @@
 		/** What the picker's button says, such as "Add photos". */
 		label: string;
 		disabled?: boolean;
+		/** Opens a phone's camera, as `capture` does on a file input. */
+		capture?: 'environment' | 'user';
 		onfiles: (files: File[]) => void;
 	}
 
-	let { purpose, label, disabled = false, onfiles }: Props = $props();
+	let { purpose, label, disabled = false, capture, onfiles }: Props = $props();
 
 	let input = $state<HTMLInputElement>();
 	let over = $state(false);
@@ -56,6 +58,7 @@
 		type="file"
 		multiple
 		{accept}
+		{capture}
 		{disabled}
 		tabindex="-1"
 		aria-hidden="true"
