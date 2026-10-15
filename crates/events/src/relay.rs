@@ -52,7 +52,11 @@ pub async fn run_relay(pool: PgPool, bus: Arc<dyn EventBus>, shutdown: Cancellat
         }
         tokio::select! {
             () = shutdown.cancelled() => {}
-            Some(_) = in_flight.join_next(), if !in_flight.is_empty() => {}
+            Some(joined) = in_flight.join_next(), if !in_flight.is_empty() => {
+                if let Err(error) = joined {
+                    tracing::error!(%error, "an outbox send panicked; its row returns after the lease");
+                }
+            }
             () = tokio::time::sleep(wait) => {}
         }
     }
