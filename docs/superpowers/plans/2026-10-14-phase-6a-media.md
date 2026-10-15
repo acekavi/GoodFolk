@@ -137,7 +137,7 @@ crates/svc-auth/     tower layer: Google ID token | shared secret              (
 crates/imaging/      decode, orient, colour, resize, encode, archive, quality  (Tasks 1-2)
 crates/media-svc/    gRPC server, /work, worker subprocess                     (Task 6)
 modules/media/       assets, links, dedup, signed links, sweep                 (Task 7)
-migrations/0014_outbox.sql, 0015_media.sql                                     (Tasks 4, 7)
+migrations/0014_outbox.sql, 0015_definer_search_path.sql, 0016_media.sql       (Tasks 4, 7)
 modules/identity/src/rbac.rs                         2 permissions             (Task 7)
 crates/core-api/src/{config,state,main,graphql}.rs, routes/{media,internal}.rs (Task 8)
 crates/core-api/tests/{media,perf}.rs                                          (Tasks 8, 9)
@@ -575,7 +575,7 @@ pub enum MediaResult {
 ### Task 7: The media module: assets, links, dedup, retention
 
 **Files:**
-- Create `migrations/0015_media.sql` and `modules/media/{Cargo.toml,src/{lib,assets,links,guest_documents,sweep}.rs}`.
+- Create `migrations/0016_media.sql` and `modules/media/{Cargo.toml,src/{lib,assets,links,guest_documents,sweep}.rs}`.
 - Modify `modules/identity/src/rbac.rs` and `crates/db/tests/isolation.rs`.
 - Test: `modules/media/tests/{assets,links,guest_documents,sweep}.rs`, `modules/identity/tests/rbac.rs`.
 
@@ -687,9 +687,12 @@ pub async fn issue_photos(tx, issue_ids: &[Uuid]) -> Result<HashMap<Uuid, Vec<As
 pub async fn guest_documents(tx, guest: Uuid) -> Result<Vec<GuestDocumentRow>, MediaError>;
 pub struct SweepReport { pub expired_documents: u32, pub orphans: Vec<(TenantId, Uuid, Vec<String> /* keys */)>, pub stale_uploads: Vec<(TenantId, Uuid, Option<String>)>, pub stuck: u32 }
 pub async fn sweep(pool: &PgPool) -> Result<SweepReport, MediaError>; // DB side only; caller deletes objects
+// The sweep also purges outbox rows sent more than 7 days ago and processed_event rows older than 30 days, through a
+// security definer `app.purge_events()` with `set search_path = pg_catalog, public, pg_temp` (every definer function
+// in this repo uses that search_path; a schema test checks it).
 ```
 
-Add `pending_target jsonb` to `media_asset` in 0015; it is cleared once the link is written. `MediaError` follows
+Add `pending_target jsonb` to `media_asset` in 0016; it is cleared once the link is written. `MediaError` follows
 `HousekeepingError`'s shape.
 
 - [ ] Tests:

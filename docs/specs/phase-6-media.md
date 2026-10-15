@@ -158,7 +158,7 @@ This phase also brings in the infrastructure deferred from Phase 0, because `med
 
 ## Data
 
-Migrations 0014 (outbox) and 0015 (media):
+Migrations 0014 (outbox), 0015 (definer functions ignore temp schemas) and 0016 (media):
 - `outbox` (`id` uuid v7, `topic`, `payload` jsonb, `created_at`, `attempts`, `next_attempt_at`, `sent_at`, `last_error`)
   with a partial index on unsent rows by `next_attempt_at`.
 - `processed_event` (`message_id` primary key, `processed_at`).
@@ -220,7 +220,8 @@ over):
   last 365 days or later;
 - deletes assets that no link references and that are older than 24 hours, with their objects;
 - aborts uploads still `uploading` after 24 hours;
-- marks assets `processing` for over 1 hour as `failed`.
+- marks assets `processing` for over 1 hour as `failed`;
+- purges outbox rows sent more than 7 days ago and `processed_event` rows older than 30 days.
 
 ## UI
 
