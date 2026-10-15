@@ -4,12 +4,14 @@
 
 use super::{TestApp, TestResponse, uuid};
 use axum::http::{Method, StatusCode};
+use core_api::events::spawn_listener;
 use core_api::state::MediaServices;
 use core_api::{AppState, router};
 use events::{BusError, HeaderProvider, PushBus};
 use media_svc::MediaSvc;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -18,7 +20,7 @@ use std::sync::Arc;
 use storage::{Storage, StorageConfig};
 use svc_auth::{TokenSource, Verifier};
 use tokio::net::TcpListener;
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -67,6 +69,7 @@ pub fn services(storage: Arc<Storage>, media_svc: SocketAddr) -> MediaServices {
 
 /// core-api served on a random port with an in-process media-svc on another, each pushing to the other: the relay
 /// sends `media-process` to media-svc's `/work`, which publishes `media-results` to core-api's `/internal/events`.
+/// core-api's event listener runs too, so event streams hear changes and an enqueue wakes the relay.
 pub struct Stack {
     pub app: TestApp,
     shutdown: CancellationToken,
@@ -97,15 +100,19 @@ pub async fn stack(opts: PgConnectOptions) -> Stack {
     let media_router = media_svc::router(svc, Arc::new(Verifier::SharedSecret(SECRET.to_owned())));
     tokio::spawn(async move { axum::serve(media_svc::without_nagle(media_listener), media_router).await.unwrap() });
 
-    let pool = db::testing::app_pool(opts, 10).await;
+    let pool = db::testing::app_pool(opts.clone(), 10).await;
     let state = AppState::with_media(pool.clone(), false, db::testing::guest_id_keys(), services(storage, media_svc));
     let core_router = router(state.clone());
     tokio::spawn(async move { axum::serve(core_listener, core_router).await.unwrap() });
 
+    // As in core-api's `serve`: the listener feeds the event streams and wakes the relay.
+    let outbox_wake = Arc::new(Notify::new());
+    let listen_pool = PgPool::connect_with(opts).await.unwrap();
+    spawn_listener(listen_pool, state.events.clone(), outbox_wake.clone()).await.unwrap();
     let shutdown = CancellationToken::new();
     let work = format!("http://{media_svc}/work").parse().unwrap();
     let bus = PushBus::new(HashMap::from([("media-process".to_owned(), work)]), Some(secret_header())).unwrap();
-    tokio::spawn(events::run_relay(pool.clone(), Arc::new(bus), shutdown.clone()));
+    tokio::spawn(events::run_relay(pool.clone(), Arc::new(bus), outbox_wake, shutdown.clone()));
     Stack { app: TestApp { router: router(state.clone()), state, pool }, shutdown }
 }
 

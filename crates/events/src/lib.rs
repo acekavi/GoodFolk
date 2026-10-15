@@ -9,6 +9,6 @@ mod push;
 mod relay;
 
 pub use bus::{BusError, EventBus, HeaderProvider, Message, PubSubBus, PushBus, bus_from_env, install_tls_provider};
-pub use outbox::{enqueue, first_seen};
+pub use outbox::{OUTBOX_CHANNEL, enqueue, first_seen};
 pub use push::{PushEnvelope, PushMessage};
 pub use relay::{backoff, run_relay};

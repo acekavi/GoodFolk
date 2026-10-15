@@ -10,7 +10,6 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use common::media::{Hotel, SECRET, fixture, http, post, services, stack, start_body, storage, upload};
 use common::{TestApp, uuid};
-use core_api::events::spawn_listener;
 use core_api::{AppState, router};
 use events::{PushEnvelope, PushMessage};
 use http_body_util::BodyExt;
@@ -64,9 +63,8 @@ async fn expect_invalidation(stream: &mut Body, key: &str, within: Duration) {
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn upload_flow_gallery_reaches_ready(_: PgPoolOptions, opts: PgConnectOptions) {
-    let stack = stack(opts.clone()).await;
+    let stack = stack(opts).await;
     let app = &stack.app;
-    spawn_listener(PgPool::connect_with(opts).await.unwrap(), app.state.events.clone()).await.unwrap();
     let hotel = Hotel::new(app, "owner@example.com", "GAL").await;
     let request = Request::get(format!("/api/v1/events?property={}", hotel.id))
         .header(header::COOKIE, &hotel.owner)

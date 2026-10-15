@@ -1,12 +1,13 @@
 use async_trait::async_trait;
 use db::testing::app_pool;
 use db::{Scope, begin};
-use events::{BusError, EventBus, Message, backoff, enqueue, first_seen, run_relay};
+use events::{BusError, EventBus, Message, OUTBOX_CHANNEL, backoff, enqueue, first_seen, run_relay};
 use serde_json::json;
 use sqlx::PgPool;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -68,7 +69,7 @@ async fn enqueued_in_rolled_back_tx_is_never_sent(_: PgPoolOptions, opts: PgConn
 
     let bus = Arc::new(MemoryBus::default());
     let shutdown = CancellationToken::new();
-    let relay = tokio::spawn(run_relay(app, bus.clone(), shutdown.clone()));
+    let relay = tokio::spawn(run_relay(app, bus.clone(), Arc::default(), shutdown.clone()));
     tokio::time::sleep(Duration::from_millis(1200)).await;
     shutdown.cancel();
     relay.await.unwrap();
@@ -86,7 +87,7 @@ async fn relay_delivers_and_marks_sent(_: PgPoolOptions, opts: PgConnectOptions)
 
     let bus = Arc::new(MemoryBus::default());
     let shutdown = CancellationToken::new();
-    let relay = tokio::spawn(run_relay(app, bus.clone(), shutdown.clone()));
+    let relay = tokio::spawn(run_relay(app, bus.clone(), Arc::default(), shutdown.clone()));
     wait_for("the row to be sent", async || {
         sqlx::query_scalar::<_, bool>("select sent_at is not null from outbox where id = $1")
             .bind(id)
@@ -113,7 +114,7 @@ async fn failed_send_backs_off(_: PgPoolOptions, opts: PgConnectOptions) {
 
     for (attempt, expected_delay) in [(1, 1.0), (2, 2.0)] {
         let shutdown = CancellationToken::new();
-        let relay = tokio::spawn(run_relay(app.clone(), bus.clone(), shutdown.clone()));
+        let relay = tokio::spawn(run_relay(app.clone(), bus.clone(), Arc::default(), shutdown.clone()));
         wait_for("a failed send", async || {
             sqlx::query_scalar::<_, bool>("select attempts = $2 and last_error is not null from outbox where id = $1")
                 .bind(id)
@@ -193,7 +194,7 @@ async fn a_blocked_send_does_not_hold_up_the_others(_: PgPoolOptions, opts: PgCo
 
     let bus = Arc::new(MemoryBus::default());
     let shutdown = CancellationToken::new();
-    let relay = tokio::spawn(run_relay(app, bus.clone(), shutdown.clone()));
+    let relay = tokio::spawn(run_relay(app, bus.clone(), Arc::default(), shutdown.clone()));
     wait_for("the other fifteen to be sent", async || count_sent(&owner).await == 15).await;
     let blocked_sent: bool = sqlx::query_scalar("select sent_at is not null from outbox where id = $1")
         .bind(blocked)
@@ -215,7 +216,7 @@ async fn shutdown_gives_sends_a_grace_then_returns(_: PgPoolOptions, opts: PgCon
 
     let bus = Arc::new(MemoryBus::default());
     let shutdown = CancellationToken::new();
-    let relay = tokio::spawn(run_relay(app, bus.clone(), shutdown.clone()));
+    let relay = tokio::spawn(run_relay(app, bus.clone(), Arc::default(), shutdown.clone()));
     wait_for("the send to start", async || !bus.started.lock().unwrap().is_empty()).await;
 
     let cancelled = std::time::Instant::now();
@@ -232,7 +233,7 @@ async fn a_refused_message_is_finished_with_its_error_kept(_: PgPoolOptions, opt
     let id = enqueue_payload(&app, "media-process", &json!({"refuse": true})).await;
 
     let shutdown = CancellationToken::new();
-    let relay = tokio::spawn(run_relay(app, Arc::new(MemoryBus::default()), shutdown.clone()));
+    let relay = tokio::spawn(run_relay(app, Arc::new(MemoryBus::default()), Arc::default(), shutdown.clone()));
     wait_for("the row to be finished", async || count_sent(&owner).await == 1).await;
     shutdown.cancel();
     relay.await.unwrap();
@@ -252,7 +253,8 @@ async fn two_relays_never_send_a_row_twice(_: PgPoolOptions, opts: PgConnectOpti
 
     let bus = Arc::new(MemoryBus::default());
     let shutdown = CancellationToken::new();
-    let relays: Vec<_> = (0..2).map(|_| tokio::spawn(run_relay(app.clone(), bus.clone(), shutdown.clone()))).collect();
+    let relays: Vec<_> =
+        (0..2).map(|_| tokio::spawn(run_relay(app.clone(), bus.clone(), Arc::default(), shutdown.clone()))).collect();
     wait_for("all rows to be sent", async || count_sent(&owner).await == 40).await;
     shutdown.cancel();
     for relay in relays {
@@ -264,4 +266,85 @@ async fn two_relays_never_send_a_row_twice(_: PgPoolOptions, opts: PgConnectOpti
     ids.dedup();
     assert_eq!(ids.len(), 40);
     assert_eq!(bus.started.lock().unwrap().len(), 40);
+}
+
+async fn is_sent(owner: &PgPool, id: Uuid) -> bool {
+    sqlx::query_scalar("select sent_at is not null from outbox where id = $1").bind(id).fetch_one(owner).await.unwrap()
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_committed_enqueue_wakes_an_idle_relay(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = app_pool(opts.clone(), 4).await;
+    let owner = PgPool::connect_with(opts).await.unwrap();
+    let bus = Arc::new(MemoryBus::default());
+    let wake = Arc::new(Notify::new());
+    let shutdown = CancellationToken::new();
+    let relay = tokio::spawn(run_relay(app.clone(), bus.clone(), wake.clone(), shutdown.clone()));
+    // Let it find the outbox empty and go idle.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Unwoken, an idle relay leaves a new row alone: it does not poll every few hundred milliseconds.
+    let unheard = enqueue_committed(&app, "media-process").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!is_sent(&owner, unheard).await, "an idle relay polled");
+
+    // What a LISTEN connection does with the commit's notification.
+    let mut listener = PgListener::connect_with(&owner).await.unwrap();
+    listener.listen(OUTBOX_CHANNEL).await.unwrap();
+    let forward = {
+        let wake = wake.clone();
+        tokio::spawn(async move {
+            while listener.recv().await.is_ok() {
+                wake.notify_one();
+            }
+        })
+    };
+    let heard = enqueue_committed(&app, "media-process").await;
+    // Measured from the commit to the send starting, which is all the wake-up decides.
+    let committed = Instant::now();
+    while !bus.started.lock().unwrap().contains(&heard) {
+        assert!(committed.elapsed() < Duration::from_millis(100), "the woken relay had not sent the row within 100 ms");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    // The wake-up sends everything due, the row enqueued unheard too.
+    wait_for("both rows to be marked sent", async || is_sent(&owner, heard).await && is_sent(&owner, unheard).await)
+        .await;
+    forward.abort();
+    shutdown.cancel();
+    relay.await.unwrap();
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_rolled_back_enqueue_notifies_no_one(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = app_pool(opts.clone(), 2).await;
+    let owner = PgPool::connect_with(opts).await.unwrap();
+    let mut listener = PgListener::connect_with(&owner).await.unwrap();
+    listener.listen(OUTBOX_CHANNEL).await.unwrap();
+
+    let mut tx = begin(&app, Scope::default()).await.unwrap();
+    enqueue(&mut tx, "media-process", &json!({"asset": "a1"})).await.unwrap();
+    tx.rollback().await.unwrap();
+    assert!(tokio::time::timeout(Duration::from_millis(300), listener.recv()).await.is_err());
+
+    enqueue_committed(&app, "media-process").await;
+    let notification = tokio::time::timeout(Duration::from_secs(2), listener.recv()).await.unwrap().unwrap();
+    assert_eq!(notification.channel(), OUTBOX_CHANNEL);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_failed_send_is_retried_when_due_without_a_wake(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = app_pool(opts.clone(), 4).await;
+    let owner = PgPool::connect_with(opts).await.unwrap();
+    let id = enqueue_committed(&app, "media-process").await;
+    let bus = Arc::new(MemoryBus { fail: true, ..MemoryBus::default() });
+    let shutdown = CancellationToken::new();
+    let relay = tokio::spawn(run_relay(app, bus.clone(), Arc::default(), shutdown.clone()));
+
+    // The first attempt fails and backs off 1 s; the relay claims it again then, well before its idle poll.
+    wait_for("the second attempt", async || bus.started.lock().unwrap().len() >= 2).await;
+    shutdown.cancel();
+    relay.await.unwrap();
+    let attempts: i32 =
+        sqlx::query_scalar("select attempts from outbox where id = $1").bind(id).fetch_one(&owner).await.unwrap();
+    assert!(attempts >= 2);
 }

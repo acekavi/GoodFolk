@@ -798,7 +798,9 @@ async fn the_board_reads_occupancy_and_blocks(_: PgPoolOptions, opts: PgConnectO
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn commands_tell_the_board_and_the_issues_list(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
-    spawn_listener(PgPool::connect_with(opts.clone()).await.unwrap(), app.state.events.clone()).await.unwrap();
+    spawn_listener(PgPool::connect_with(opts.clone()).await.unwrap(), app.state.events.clone(), Default::default())
+        .await
+        .unwrap();
     let hotel = Hotel::new(&app, opts).await;
     let mut events = app.state.events.subscribe();
 
@@ -820,7 +822,9 @@ async fn commands_tell_the_board_and_the_issues_list(_: PgPoolOptions, opts: PgC
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn a_booking_tells_the_board(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
-    spawn_listener(PgPool::connect_with(opts.clone()).await.unwrap(), app.state.events.clone()).await.unwrap();
+    spawn_listener(PgPool::connect_with(opts.clone()).await.unwrap(), app.state.events.clone(), Default::default())
+        .await
+        .unwrap();
     let hotel = Hotel::new(&app, opts).await;
     let key = || Uuid::now_v7().to_string();
     let day = |offset: i64| (hotel.business_date + Days::days(offset)).to_string();

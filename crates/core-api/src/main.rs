@@ -6,6 +6,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::sync::Arc;
 use std::time::Duration;
 use storage::Storage;
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
@@ -49,15 +50,18 @@ async fn serve() -> anyhow::Result<()> {
         .max_lifetime(None)
         .idle_timeout(None)
         .connect_lazy(&config.database_listen_url)?;
-    events::spawn_listener(listen_pool, state.events.clone()).await?;
+    // The listener wakes the relay when an outbox row commits.
+    let outbox_wake = Arc::new(Notify::new());
+    events::spawn_listener(listen_pool, state.events.clone(), outbox_wake.clone()).await?;
 
     let shutdown = CancellationToken::new();
-    let relay = tokio::spawn(::events::run_relay(pool.clone(), bus, shutdown.clone()));
+    let relay = tokio::spawn(::events::run_relay(pool.clone(), bus, outbox_wake, shutdown.clone()));
     let sweeps = tokio::spawn(tasks::run_sweeps(pool, sweep_lock, storage, shutdown.clone()));
 
     let tcp = tokio::net::TcpListener::bind(config.bind_addr).await?;
     tracing::info!(addr = %config.bind_addr, "listening");
-    let served = axum::serve(core_api::without_nagle(tcp), router(state)).with_graceful_shutdown(shutdown_signal()).await;
+    let served =
+        axum::serve(core_api::without_nagle(tcp), router(state)).with_graceful_shutdown(shutdown_signal()).await;
     shutdown.cancel();
     if tokio::time::timeout(TASKS_GRACE, async { tokio::join!(relay, sweeps) }).await.is_err() {
         tracing::warn!("background tasks did not stop in time");

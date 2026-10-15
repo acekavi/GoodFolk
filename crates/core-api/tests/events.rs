@@ -9,7 +9,9 @@ use http_body_util::BodyExt;
 use serde_json::json;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{AssertSqlSafe, Connection, PgConnection, PgPool};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Notify;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -57,7 +59,9 @@ impl Admin {
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn creating_a_property_pushes_an_invalidation_to_the_tenants_stream(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
-    spawn_listener(PgPool::connect_with(opts).await.unwrap(), app.state.events.clone()).await.unwrap();
+    spawn_listener(PgPool::connect_with(opts).await.unwrap(), app.state.events.clone(), Default::default())
+        .await
+        .unwrap();
     let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
 
     let request = Request::builder().uri("/api/v1/events").header(header::COOKIE, &owner).body(Body::empty()).unwrap();
@@ -90,7 +94,9 @@ async fn creating_an_account_pushes_an_invalidation_keyed_by_the_property_it_was
     opts: PgConnectOptions,
 ) {
     let app = TestApp::new(opts.clone()).await;
-    spawn_listener(PgPool::connect_with(opts).await.unwrap(), app.state.events.clone()).await.unwrap();
+    spawn_listener(PgPool::connect_with(opts).await.unwrap(), app.state.events.clone(), Default::default())
+        .await
+        .unwrap();
     let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
     let property = app
         .send_with(
@@ -137,12 +143,34 @@ async fn losing_the_listener_connection_tells_every_stream_to_resync(_: PgPoolOp
     let app = TestApp::new(opts.clone()).await;
     let mut admin = Admin::connect(&opts).await;
     let mut events = app.state.events.subscribe();
-    spawn_listener(PgPool::connect_with(opts).await.unwrap(), app.state.events.clone()).await.unwrap();
+    let outbox_wake = Arc::new(Notify::new());
+    spawn_listener(PgPool::connect_with(opts).await.unwrap(), app.state.events.clone(), outbox_wake.clone())
+        .await
+        .unwrap();
 
     admin.terminate_listener().await;
 
     let received = tokio::time::timeout(Duration::from_secs(5), events.recv()).await.unwrap().unwrap();
     assert_eq!(received, LiveEvent::Resync);
+    // Outbox notifications may have been missed too, so the relay looks for rows.
+    tokio::time::timeout(Duration::from_secs(1), outbox_wake.notified()).await.expect("the relay is woken");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_committed_outbox_row_wakes_the_relay(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let outbox_wake = Arc::new(Notify::new());
+    spawn_listener(PgPool::connect_with(opts).await.unwrap(), app.state.events.clone(), outbox_wake.clone())
+        .await
+        .unwrap();
+
+    let mut tx = db::begin(&app.pool, Scope::default()).await.unwrap();
+    events::enqueue(&mut tx, "media-process", &json!({"asset": "a1"})).await.unwrap();
+    let before_commit = tokio::time::timeout(Duration::from_millis(200), outbox_wake.notified()).await;
+    assert!(before_commit.is_err(), "woken before the row committed");
+    tx.commit().await.unwrap();
+
+    tokio::time::timeout(Duration::from_millis(100), outbox_wake.notified()).await.expect("the relay is woken");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -160,7 +188,9 @@ async fn a_resync_reaches_the_stream_as_a_resync_event(_: PgPoolOptions, opts: P
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn another_tenants_stream_stays_silent(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
-    spawn_listener(PgPool::connect_with(opts).await.unwrap(), app.state.events.clone()).await.unwrap();
+    spawn_listener(PgPool::connect_with(opts).await.unwrap(), app.state.events.clone(), Default::default())
+        .await
+        .unwrap();
     let alice = app.signup_owner("alice@example.com", "Alice Hotels").await;
     let bob = app.signup_owner("bob@example.com", "Bob Hotels").await;
     let mut alices_stream = open_stream(&app, &alice).await;
@@ -188,7 +218,9 @@ async fn a_delayed_reconnect_resyncs_again_once_events_flow(_: PgPoolOptions, op
     let app = TestApp::new(opts.clone()).await;
     let mut admin = Admin::connect(&opts).await;
     let mut events = app.state.events.subscribe();
-    spawn_listener(PgPool::connect_with(opts).await.unwrap(), app.state.events.clone()).await.unwrap();
+    spawn_listener(PgPool::connect_with(opts).await.unwrap(), app.state.events.clone(), Default::default())
+        .await
+        .unwrap();
 
     admin.allow_connections(false).await;
     admin.terminate_listener().await;
