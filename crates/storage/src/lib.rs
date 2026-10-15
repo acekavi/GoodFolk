@@ -77,6 +77,12 @@ impl StorageConfig {
         Self::from_lookup(|name| std::env::var(name).ok(), Some(()))
     }
 
+    /// As [`from_env`](Self::from_env) in production and [`dev`](Self::dev) otherwise, reading variables through
+    /// `get`.
+    pub fn from_vars(get: impl Fn(&str) -> Option<String>, production: bool) -> anyhow::Result<Self> {
+        Self::from_lookup(get, (!production).then_some(()))
+    }
+
     fn from_lookup(get: impl Fn(&str) -> Option<String>, dev: Option<()>) -> anyhow::Result<Self> {
         let var = |name: &str, fallback: &str| match (get(name), dev) {
             (Some(value), _) => Ok(value),

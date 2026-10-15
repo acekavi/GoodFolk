@@ -15,6 +15,8 @@ use db::{Scope, Tx};
 use identity::Permission;
 use sqlx::PgPool;
 use std::collections::HashMap;
+use std::sync::Arc;
+use storage::{Bucket, Storage};
 use time::{Date, Duration, OffsetDateTime};
 use uuid::Uuid;
 
@@ -46,7 +48,7 @@ pub async fn handler(
     if let Some(name) = body.operation_name {
         request = request.operation_name(name);
     }
-    Ok(state.schema.execute(request.data(state.pool.clone()).data(ctx)).await.into())
+    Ok(state.schema.execute(request.data(state.pool.clone()).data(state.storage.clone()).data(ctx)).await.into())
 }
 
 /// The request to run. A `documentId` runs the stored document, already parsed; a raw `query` runs only outside
@@ -114,6 +116,8 @@ pub struct RoomTypeNode {
     pub sort_order: i32,
     pub active: bool,
     pub version: i32,
+    /// The gallery, in order, with permanent public URLs.
+    pub media: Vec<MediaNode>,
 }
 
 impl From<rooms::RoomType> for RoomTypeNode {
@@ -132,6 +136,7 @@ impl From<rooms::RoomType> for RoomTypeNode {
             sort_order: t.sort_order,
             active: t.active,
             version: t.version,
+            media: Vec::new(),
         }
     }
 }
@@ -278,6 +283,120 @@ mirror_enum!(ViolationKindNode as "ViolationKind" from rates::ViolationKind {
     ClosedToArrival,
     ClosedToDeparture,
 });
+
+mirror_enum!(
+    /// Where an uploaded file is: uploading, processing, then ready or failed.
+    MediaStatusNode as "MediaStatus" from media::AssetStatus { Uploading, Processing, Ready, Failed }
+);
+mirror_enum!(
+    /// A delivered image's size: `THUMB` is a 320 px square, the others are long edges of 640 to 2400 px.
+    RenditionSizeNode as "RenditionSize" from media_types::Size { Thumb, Sm, Md, Lg, Xl }
+);
+mirror_enum!(ImageFormatNode as "ImageFormat" from media_types::Format { Avif, Webp });
+mirror_enum!(DocumentKindNode as "DocumentKind" from media::DocumentKind { Passport, Nic, DrivingLicence, Other });
+
+/// One delivered image of a photo.
+#[derive(SimpleObject)]
+pub struct RenditionNode {
+    pub size: RenditionSizeNode,
+    pub format: ImageFormatNode,
+    pub width: i32,
+    pub height: i32,
+    pub url: String,
+}
+
+/// A photo. Its renditions exist once it is ready.
+#[derive(SimpleObject)]
+pub struct MediaNode {
+    pub asset_id: Uuid,
+    pub status: MediaStatusNode,
+    /// A gallery photo's caption, if it has one.
+    pub caption: Option<String>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub renditions: Vec<RenditionNode>,
+}
+
+/// How long an issue photo's URLs work.
+const ISSUE_PHOTO_LINK_TTL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+fn rendition_node(rendition: media_types::RenditionOut, url: String) -> RenditionNode {
+    RenditionNode {
+        size: rendition.size.into(),
+        format: rendition.format.into(),
+        width: i32::try_from(rendition.width).unwrap_or(i32::MAX),
+        height: i32::try_from(rendition.height).unwrap_or(i32::MAX),
+        url,
+    }
+}
+
+/// A gallery photo, with public URLs: only gallery renditions are ever written to the public bucket.
+fn gallery_node(storage: &Storage, item: media::GalleryItem) -> MediaNode {
+    MediaNode {
+        asset_id: item.asset_id,
+        status: item.status.into(),
+        caption: Some(item.caption).filter(|caption| !caption.is_empty()),
+        width: item.width,
+        height: item.height,
+        renditions: item
+            .renditions
+            .into_iter()
+            .map(|r| {
+                let url = storage.public_url(&r.key).into();
+                rendition_node(r, url)
+            })
+            .collect(),
+    }
+}
+
+/// An issue photo, with URLs signed now for [`ISSUE_PHOTO_LINK_TTL`].
+fn issue_photo_node(storage: &Storage, asset: media::AssetRow) -> MediaNode {
+    let url = |key: &str| match asset.visibility {
+        media::Visibility::Private => storage.presign_get(Bucket::Private, key, ISSUE_PHOTO_LINK_TTL).into(),
+        media::Visibility::Public => storage.public_url(key).into(),
+    };
+    let renditions = asset.renditions.iter().map(|r| rendition_node(r.clone(), url(&r.key))).collect();
+    MediaNode {
+        asset_id: asset.id,
+        status: asset.status.into(),
+        caption: None,
+        width: asset.width,
+        height: asset.height,
+        renditions,
+    }
+}
+
+/// A guest's ID document. It carries no URL: each link comes from the audited REST call.
+#[derive(SimpleObject)]
+pub struct GuestDocumentNode {
+    pub id: Uuid,
+    pub kind: DocumentKindNode,
+    pub status: MediaStatusNode,
+    pub mime: Option<String>,
+    pub uploaded_at: OffsetDateTime,
+    pub uploaded_by: Option<Uuid>,
+}
+
+impl From<media::GuestDocumentRow> for GuestDocumentNode {
+    fn from(document: media::GuestDocumentRow) -> Self {
+        Self {
+            id: document.id,
+            kind: document.kind.into(),
+            status: document.status.into(),
+            mime: document.mime,
+            uploaded_at: document.uploaded_at,
+            uploaded_by: document.uploaded_by,
+        }
+    }
+}
+
+/// A media rule the query broke, as a GraphQL error; database errors stay hidden.
+fn media_error(err: media::MediaError) -> async_graphql::Error {
+    match err {
+        media::MediaError::Database(db_err) => internal(db_err),
+        other => async_graphql::Error::new(other.to_string()),
+    }
+}
 
 /// A rate plan. Amounts are minor units in its currency.
 #[derive(SimpleObject)]
@@ -1027,6 +1146,8 @@ pub struct RoomIssueNode {
     pub resolved_at: Option<OffsetDateTime>,
     /// Send as `If-Match: "<version>"` when resolving.
     pub version: i32,
+    /// Oldest first, with URLs that work for 60 minutes from the read.
+    pub photos: Vec<MediaNode>,
 }
 
 impl From<housekeeping::Issue> for RoomIssueNode {
@@ -1042,6 +1163,7 @@ impl From<housekeeping::Issue> for RoomIssueNode {
             resolved_by: issue.resolved_by,
             resolved_at: issue.resolved_at,
             version: issue.version,
+            photos: Vec::new(),
         }
     }
 }
@@ -1149,8 +1271,18 @@ impl Query {
     async fn room_types(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<RoomTypeNode>> {
         let mut tx = scoped(ctx, Permission::RoomsView, property_id).await?;
         let types = rooms::list_room_types(&mut tx, property_id).await.map_err(internal)?;
+        let mut nodes: Vec<RoomTypeNode> = types.into_iter().map(RoomTypeNode::from).collect();
+        if selected(ctx, "media")? {
+            let ids: Vec<Uuid> = nodes.iter().map(|node| node.id).collect();
+            let mut galleries = media::galleries(&mut tx, &ids).await.map_err(media_error)?;
+            let storage = ctx.data::<Arc<Storage>>()?;
+            for node in &mut nodes {
+                let gallery = galleries.remove(&node.id).unwrap_or_default();
+                node.media = gallery.into_iter().map(|item| gallery_node(storage, item)).collect();
+            }
+        }
         tx.commit().await.map_err(internal)?;
-        Ok(types.into_iter().map(RoomTypeNode::from).collect())
+        Ok(nodes)
     }
 
     /// The property's rooms, active or not, in display order; only one type's if `roomTypeId` is given.
@@ -1734,8 +1866,19 @@ impl Query {
     ) -> async_graphql::Result<Vec<RoomIssueNode>> {
         let mut tx = scoped(ctx, Permission::HousekeepingView, property_id).await?;
         let issues = housekeeping::list_issues(&mut tx, property_id, status.map(Into::into)).await.map_err(internal)?;
+        let mut nodes: Vec<RoomIssueNode> = issues.into_iter().map(RoomIssueNode::from).collect();
+        if selected(ctx, "photos")? {
+            // One query for every issue's photos.
+            let ids: Vec<Uuid> = nodes.iter().map(|node| node.id).collect();
+            let mut photos = media::issue_photos(&mut tx, &ids).await.map_err(media_error)?;
+            let storage = ctx.data::<Arc<Storage>>()?;
+            for node in &mut nodes {
+                let assets = photos.remove(&node.id).unwrap_or_default();
+                node.photos = assets.into_iter().map(|asset| issue_photo_node(storage, asset)).collect();
+            }
+        }
         tx.commit().await.map_err(internal)?;
-        Ok(issues.into_iter().map(RoomIssueNode::from).collect())
+        Ok(nodes)
     }
 
     /// Users who hold a housekeeping role at the property and can be assigned rooms, by name.
@@ -1744,6 +1887,20 @@ impl Query {
         let housekeepers = housekeeping::housekeepers(&mut tx, property_id).await.map_err(internal)?;
         tx.commit().await.map_err(internal)?;
         Ok(housekeepers.into_iter().map(HousekeeperNode::from).collect())
+    }
+
+    /// The guest's ID documents, newest first. Guests are tenant-wide; `propertyId` is where the user is working,
+    /// and they need `GuestDocumentsManage` there. Links to the files come only from the audited REST call.
+    async fn guest_documents(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        guest_id: Uuid,
+    ) -> async_graphql::Result<Vec<GuestDocumentNode>> {
+        let mut tx = scoped(ctx, Permission::GuestDocumentsManage, property_id).await?;
+        let documents = media::guest_documents(&mut tx, guest_id).await.map_err(media_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(documents.into_iter().map(GuestDocumentNode::from).collect())
     }
 }
 

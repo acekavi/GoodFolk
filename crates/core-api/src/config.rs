@@ -3,12 +3,15 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use db::crypto::{CryptoError, GuestIdKey, GuestIdKeys};
 use std::net::SocketAddr;
+use storage::StorageConfig;
+use svc_auth::{TokenSource, Verifier};
 
 /// The development key from this repo's README quickstart. Never a real key, so `GUEST_ID_KEY` must not be it in
 /// production.
 const README_DEV_KEY_B64: &str = "HU5/qSn58655epIBi671lsojvXir+VQZ0MzXdTrKk6o=";
 
-#[derive(Debug, Clone)]
+/// The event bus (`EVENT_BUS` and its variables) is read when the relay starts, by `events::bus_from_env`.
+#[derive(Debug)]
 pub struct Config {
     /// Pooled connection string (Neon pooler in production), as the `goodfolk_api` role.
     pub database_url: String,
@@ -20,6 +23,14 @@ pub struct Config {
     /// Seals guest ID numbers with the current key; opens one sealed under it or a retired key. `Debug` shows
     /// only the key ids.
     pub guest_id_keys: GuestIdKeys,
+    /// Object storage (`S3_*`, `MEDIA_PUBLIC_BASE_URL`); outside production each falls back to the local RustFS.
+    pub storage: StorageConfig,
+    /// media-svc's gRPC address (`MEDIA_SVC_URL`).
+    pub media_svc_url: String,
+    /// Authenticates this service's calls to media-svc: gRPC and `media-process` pushes (`MEDIA_SVC_AUDIENCE`).
+    pub media_svc_auth: TokenSource,
+    /// Recognises service calls to `/internal/events` (`CORE_API_AUDIENCE`, `ALLOWED_SERVICE_EMAILS`).
+    pub internal_auth: Verifier,
 }
 
 impl Config {
@@ -59,6 +70,18 @@ impl Config {
         };
         let guest_id_keys = GuestIdKeys::new(guest_id_key, retired_keys)
             .map_err(|err| anyhow!("GUEST_ID_KEY_ID and GUEST_ID_RETIRED_KEYS must have unique key ids: {err}"))?;
+        let storage = StorageConfig::from_vars(&var, production)?;
+        let media_svc_url = match var("MEDIA_SVC_URL") {
+            Some(url) => url,
+            None if production => bail!("MEDIA_SVC_URL (media-svc's gRPC address) is required in production"),
+            None => crate::state::LOCAL_MEDIA_SVC_URL.to_owned(),
+        };
+        if media_svc_url.parse::<axum::http::Uri>().is_err() {
+            bail!("MEDIA_SVC_URL is not a URL");
+        }
+        // SVC_AUTH, INTERNAL_SHARED_SECRET and ALLOWED_SERVICE_EMAILS are shared by both directions.
+        let media_svc_auth = TokenSource::from_vars("MEDIA_SVC_AUDIENCE", &var)?;
+        let internal_auth = Verifier::from_vars("CORE_API_AUDIENCE", &var)?;
         Ok(Self {
             database_url,
             database_listen_url,
@@ -66,6 +89,10 @@ impl Config {
             bind_addr: SocketAddr::from(([0, 0, 0, 0], port)),
             production,
             guest_id_keys,
+            storage,
+            media_svc_url,
+            media_svc_auth,
+            internal_auth,
         })
     }
 }
@@ -111,8 +138,31 @@ mod tests {
     /// must accept the key.
     const PROD_KEY_B64: &str = "WI9ukdjyQSiWGcJTgPo2oaOVbn3MS+30xkZDxYtY2rk=";
 
+    /// What the media engine needs outside production: the local service-auth secret.
+    const DEV_MEDIA: &[(&str, &str)] =
+        &[("SVC_AUTH", "secret"), ("INTERNAL_SHARED_SECRET", "a-local-secret-of-at-least-32-bytes")];
+
+    /// What the media engine needs in production: storage, media-svc and Google service auth.
+    const PROD_MEDIA: &[(&str, &str)] = &[
+        ("S3_ENDPOINT", "https://account.r2.cloudflarestorage.com"),
+        ("S3_REGION", "auto"),
+        ("S3_ACCESS_KEY", "access"),
+        ("S3_SECRET_KEY", "secret"),
+        ("S3_PUBLIC_BUCKET", "goodfolk-public"),
+        ("S3_PRIVATE_BUCKET", "goodfolk-private"),
+        ("MEDIA_PUBLIC_BASE_URL", "https://media.example.com/"),
+        ("MEDIA_SVC_URL", "https://media-svc.example.run.app"),
+        ("SVC_AUTH", "google"),
+        ("MEDIA_SVC_AUDIENCE", "https://media-svc.example.run.app"),
+        ("CORE_API_AUDIENCE", "https://core-api.example.run.app"),
+        ("ALLOWED_SERVICE_EMAILS", "media-svc@example.iam.gserviceaccount.com"),
+    ];
+
+    /// `pairs`, then the media variables of the environment `pairs` names (production or not).
     fn vars(pairs: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
-        let pairs = pairs.to_vec();
+        let production = pairs.contains(&("APP_ENV", "production"));
+        let mut pairs = pairs.to_vec();
+        pairs.extend_from_slice(if production { PROD_MEDIA } else { DEV_MEDIA });
         move |name| pairs.iter().find(|(key, _)| *key == name).map(|(_, value)| (*value).to_owned())
     }
 
@@ -382,5 +432,90 @@ mod tests {
         .unwrap_err();
 
         assert!(format!("{err:#}").contains("unique key ids"), "{err:#}");
+    }
+
+    /// The variables of a valid production configuration.
+    fn production_pairs() -> Vec<(&'static str, &'static str)> {
+        let mut pairs = vec![
+            ("DATABASE_URL", "postgres://pooler/db"),
+            ("DATABASE_LISTEN_URL", "postgres://direct/db"),
+            ("GUEST_ID_KEY", PROD_KEY_B64),
+            ("APP_ENV", "production"),
+        ];
+        pairs.extend_from_slice(PROD_MEDIA);
+        pairs
+    }
+
+    #[test]
+    fn production_requires_every_media_variable_and_names_the_missing_one() {
+        let all = production_pairs();
+        assert!(Config::from_vars(|name| lookup(&all, name)).is_ok());
+        for (missing, _) in PROD_MEDIA {
+            let pairs: Vec<_> = all.iter().copied().filter(|(name, _)| name != missing).collect();
+
+            let err = Config::from_vars(|name| lookup(&pairs, name)).unwrap_err();
+
+            assert!(format!("{err:#}").contains(missing), "{missing}: {err:#}");
+        }
+    }
+
+    #[test]
+    fn production_refuses_the_shared_secret() {
+        let mut pairs = production_pairs();
+        pairs.retain(|(name, _)| *name != "SVC_AUTH");
+        pairs.extend([("SVC_AUTH", "secret"), ("INTERNAL_SHARED_SECRET", "a-local-secret-of-at-least-32-bytes")]);
+
+        let err = Config::from_vars(|name| lookup(&pairs, name)).unwrap_err();
+
+        assert!(format!("{err:#}").contains("SVC_AUTH"), "{err:#}");
+    }
+
+    #[test]
+    fn development_defaults_storage_and_media_svc_to_the_local_services() {
+        let config =
+            Config::from_vars(vars(&[("DATABASE_URL", "postgres://localhost/db"), ("GUEST_ID_KEY", GUEST_ID_KEY_B64)]))
+                .unwrap();
+
+        assert_eq!(config.media_svc_url, "http://localhost:8090");
+        assert_eq!(config.storage.endpoint.as_str(), "http://localhost:9000/");
+        assert_eq!(config.storage.private_bucket, "goodfolk-private");
+    }
+
+    #[test]
+    fn development_still_requires_service_auth() {
+        let err = Config::from_vars(|name| {
+            lookup(&[("DATABASE_URL", "postgres://localhost/db"), ("GUEST_ID_KEY", GUEST_ID_KEY_B64)], name)
+        })
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("SVC_AUTH"), "{err:#}");
+    }
+
+    #[test]
+    fn a_media_svc_url_that_is_not_a_url_is_named_but_not_shown() {
+        let err = Config::from_vars(vars(&[
+            ("DATABASE_URL", "postgres://localhost/db"),
+            ("GUEST_ID_KEY", GUEST_ID_KEY_B64),
+            ("MEDIA_SVC_URL", "not a url"),
+        ]))
+        .unwrap_err();
+        let shown = format!("{err:#}");
+
+        assert!(shown.contains("MEDIA_SVC_URL") && !shown.contains("not a url"), "{shown}");
+    }
+
+    #[test]
+    fn debug_does_not_show_the_storage_or_service_secrets() {
+        let config =
+            Config::from_vars(vars(&[("DATABASE_URL", "postgres://localhost/db"), ("GUEST_ID_KEY", GUEST_ID_KEY_B64)]))
+                .unwrap();
+        let shown = format!("{config:?}");
+
+        assert!(!shown.contains("goodfolk_dev_secret"), "{shown}");
+        assert!(!shown.contains("a-local-secret-of-at-least-32-bytes"), "{shown}");
+    }
+
+    fn lookup(pairs: &[(&str, &str)], name: &str) -> Option<String> {
+        pairs.iter().find(|(key, _)| *key == name).map(|(_, value)| (*value).to_owned())
     }
 }

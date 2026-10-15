@@ -3,6 +3,8 @@ pub(crate) mod auth;
 pub(crate) mod blocks;
 mod health;
 pub(crate) mod housekeeping;
+mod internal;
+pub(crate) mod media;
 pub(crate) mod properties;
 pub(crate) mod rates;
 pub(crate) mod reservations;
@@ -28,6 +30,10 @@ pub use blocks::{CreateBlockReasonRequest, CreateBlockRequest, ShortenBlockReque
 pub use housekeeping::{
     AssignmentRequest, CopiedAssignments, ReportIssueRequest, SetAssignmentsRequest, SetConditionRequest,
     SetConditionsRequest, UpdateIssueRequest,
+};
+pub use media::{
+    CaptionRequest, CompleteUploadRequest, MediaAsset, ReorderMediaRequest, SignedLink, StartUploadRequest,
+    StartedUpload, UploadPart, UploadedPart,
 };
 pub use properties::{CreatePropertyRequest, UpdatePropertyRequest};
 pub use rates::{
@@ -68,6 +74,8 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/rooms/conditions"), post(housekeeping::set_conditions))
         .route(&format!("{PROPERTY}/hk-assignments/copy-yesterday"), post(housekeeping::copy_yesterday))
         .route(&format!("{PROPERTY}/room-issues"), post(housekeeping::report_issue))
+        .route(&format!("{PROPERTY}/media/uploads"), post(media::start_upload))
+        .route(&format!("{PROPERTY}/media/uploads/{{upload}}/complete"), post(media::complete_upload))
         .route_layer(from_fn_with_state(state.clone(), idempotency::idempotent));
 
     let requests = Router::new()
@@ -107,6 +115,15 @@ pub fn router(state: AppState) -> Router {
             &format!("{PROPERTY}/reservation-rooms/{{room}}/guests/{{guest}}"),
             delete(reservations::remove_occupant),
         )
+        .route(&format!("{PROPERTY}/media/uploads/{{upload}}"), delete(media::cancel_upload))
+        .route(&format!("{PROPERTY}/room-types/{{room_type}}/media/order"), put(media::reorder_gallery))
+        .route(
+            &format!("{PROPERTY}/room-types/{{room_type}}/media/{{asset}}"),
+            patch(media::caption_gallery_photo).delete(media::remove_gallery_photo),
+        )
+        .route(&format!("{PROPERTY}/room-issues/{{issue}}/media/{{asset}}"), delete(media::remove_issue_photo))
+        .route(&format!("{PROPERTY}/guest-documents/{{document}}/link"), get(media::guest_document_link))
+        .route(&format!("{PROPERTY}/guest-documents/{{document}}"), delete(media::delete_guest_document))
         .route("/graphql", post(graphql::handler))
         .merge(commands)
         .layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)));
@@ -114,10 +131,17 @@ pub fn router(state: AppState) -> Router {
     // Long-lived, so kept outside the request timeout.
     let streams = Router::new().route("/api/v1/events", get(events::stream));
 
+    // Called by other services, which authenticate as services: no session, CSRF header or request timeout (the
+    // caller has its own, and a timed-out result is delivered again).
+    let internal = Router::new()
+        .route("/internal/events", post(internal::events))
+        .route_layer(svc_auth::layer(state.internal_auth.clone()));
+
     Router::new()
         .merge(requests)
         .merge(streams)
         .layer(from_fn(csrf::require_csrf_header))
+        .merge(internal)
         .route("/healthz", get(health::live))
         .route("/readyz", get(health::ready))
         // Set last, so they cover every route above.

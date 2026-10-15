@@ -85,6 +85,11 @@ impl ApiError {
         Self::new(StatusCode::TOO_MANY_REQUESTS, "Too many requests", Some(detail.into()))
     }
 
+    /// A service this one depends on failed or could not be reached.
+    pub fn bad_gateway(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_GATEWAY, "Bad gateway", Some(detail.into()))
+    }
+
     pub fn gateway_timeout() -> Self {
         Self::new(StatusCode::GATEWAY_TIMEOUT, "Request timed out", None)
     }

@@ -14,6 +14,7 @@ pub mod persisted;
 pub mod routes;
 pub mod staff;
 pub mod state;
+pub mod tasks;
 
 pub use routes::router;
 pub use state::AppState;

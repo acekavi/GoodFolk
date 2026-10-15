@@ -15,6 +15,7 @@ housekeeping = { path = "modules/housekeeping" }
 identity = { path = "modules/identity" }
 imaging = { path = "crates/imaging" }
 media = { path = "modules/media" }
+media-svc = { path = "crates/media-svc" }
 media-types = { path = "crates/media-types" }
 property = { path = "modules/property" }
 proto = { path = "crates/proto" }
@@ -94,4 +95,9 @@ opt-level = 3
 
 # Dependencies are optimised in dev builds so the imaging tests (AVIF encoding, SSIMULACRA2) do not take minutes.
 [profile.dev.package."*"]
+opt-level = 2
+
+# The same for the imaging crate itself: unoptimised, one gallery photo outlasts the worker's 60 s limit, so a debug
+# media-svc could not process the uploads core-api's integration tests make.
+[profile.dev.package.imaging]
 opt-level = 2

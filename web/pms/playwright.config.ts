@@ -41,6 +41,11 @@ export default defineConfig({
 				PORT: String(API_PORT),
 				DATABASE_URL: database,
 				GUEST_ID_KEY: 'HU5/qSn58655epIBi671lsojvXir+VQZ0MzXdTrKk6o=',
+				// Local service auth and bus for the media engine; a test-only secret.
+				SVC_AUTH: 'secret',
+				INTERNAL_SHARED_SECRET: 'e2e-internal-shared-secret-0123456789abcdef',
+				EVENT_BUS: 'push',
+				PUSH_ENDPOINT_MEDIA_PROCESS: 'http://localhost:8090/work',
 				RUST_LOG: 'warn'
 			},
 			reuseExistingServer: !process.env.CI,

@@ -134,6 +134,50 @@ pub async fn start_upload(
     Ok(NewUpload { asset_id, purpose })
 }
 
+/// What `Finalize` checks an upload in progress against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingUpload {
+    pub purpose: Purpose,
+    /// The storage multipart upload, once started.
+    pub s3_upload_id: Option<String>,
+    pub declared_bytes: u64,
+    pub sha256: [u8; 32],
+}
+
+/// The property's upload `asset`, which must still be uploading: unknown, or of another property, is `NotFound`;
+/// already completed is `Conflict`.
+pub async fn pending_upload(tx: &mut Tx, property: Uuid, asset: Uuid) -> Result<PendingUpload, MediaError> {
+    let row: Option<PendingRow> = sqlx::query_as(
+        "select purpose, status, s3_upload_id, declared_bytes, sha256 from media_asset
+         where id = $1 and property_id = $2",
+    )
+    .bind(asset)
+    .bind(property)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let row = row.ok_or(MediaError::NotFound("upload"))?;
+    if row.status != AssetStatus::Uploading {
+        return Err(MediaError::Conflict("The upload is already complete".into()));
+    }
+    Ok(PendingUpload {
+        purpose: row.purpose,
+        s3_upload_id: row.s3_upload_id,
+        declared_bytes: u64::try_from(row.declared_bytes).expect("the schema keeps declared_bytes positive"),
+        sha256: row.sha256.try_into().expect("the schema keeps sha256 at 32 bytes"),
+    })
+}
+
+#[derive(sqlx::FromRow)]
+struct PendingRow {
+    #[sqlx(try_from = "String")]
+    purpose: Purpose,
+    #[sqlx(try_from = "String")]
+    status: AssetStatus,
+    s3_upload_id: Option<String>,
+    declared_bytes: i64,
+    sha256: Vec<u8>,
+}
+
 /// Records the storage multipart upload id of the property's upload still in progress (`NotFound` otherwise).
 pub async fn set_s3_upload_id(tx: &mut Tx, property: Uuid, asset: Uuid, upload_id: &str) -> Result<(), MediaError> {
     let updated = sqlx::query(

@@ -154,15 +154,32 @@ pub async fn unlink_issue_photo(
 
 /// The room type's gallery, in order.
 pub async fn gallery(tx: &mut Tx, room_type: Uuid) -> Result<Vec<GalleryItem>, MediaError> {
-    Ok(sqlx::query_as(
-        "select a.id as asset_id, m.position, m.caption, a.status, a.width, a.height, a.renditions
+    Ok(galleries(tx, &[room_type]).await?.remove(&room_type).unwrap_or_default())
+}
+
+#[derive(sqlx::FromRow)]
+struct GalleryRow {
+    room_type_id: Uuid,
+    #[sqlx(flatten)]
+    item: GalleryItem,
+}
+
+/// The galleries of each of `room_types` that has any photos, in order.
+pub async fn galleries(tx: &mut Tx, room_types: &[Uuid]) -> Result<HashMap<Uuid, Vec<GalleryItem>>, MediaError> {
+    let rows: Vec<GalleryRow> = sqlx::query_as(
+        "select m.room_type_id, a.id as asset_id, m.position, m.caption, a.status, a.width, a.height, a.renditions
          from room_type_media m join media_asset a on a.id = m.asset_id
-         where m.room_type_id = $1
-         order by m.position, a.id",
+         where m.room_type_id = any($1)
+         order by m.room_type_id, m.position, a.id",
     )
-    .bind(room_type)
+    .bind(room_types)
     .fetch_all(&mut **tx)
-    .await?)
+    .await?;
+    let mut galleries: HashMap<Uuid, Vec<GalleryItem>> = HashMap::new();
+    for row in rows {
+        galleries.entry(row.room_type_id).or_default().push(row.item);
+    }
+    Ok(galleries)
 }
 
 #[derive(sqlx::FromRow)]

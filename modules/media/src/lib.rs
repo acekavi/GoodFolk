@@ -11,10 +11,13 @@ mod links;
 mod sweep;
 
 pub use assets::{
-    Completed, NewUpload, Verified, apply_result, complete_upload, refuse_upload, set_s3_upload_id, start_upload,
+    Completed, NewUpload, PendingUpload, Verified, apply_result, complete_upload, pending_upload, refuse_upload,
+    set_s3_upload_id, start_upload,
 };
 pub use guest_documents::{GuestDocumentRow, delete_guest_document, guest_document_link_key, guest_documents};
-pub use links::{GalleryItem, gallery, issue_photos, reorder_gallery, set_caption, unlink_gallery, unlink_issue_photo};
+pub use links::{
+    GalleryItem, galleries, gallery, issue_photos, reorder_gallery, set_caption, unlink_gallery, unlink_issue_photo,
+};
 pub use sweep::{StaleUpload, SweepReport, sweep};
 
 use db::{Event, TenantId, Tx, UserId};

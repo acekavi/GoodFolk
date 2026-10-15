@@ -677,6 +677,92 @@
         }
       }
     },
+    "/api/v1/properties/{property}/guest-documents/{document}": {
+      "delete": {
+        "tags": [
+          "crate::routes::media"
+        ],
+        "summary": "Deletes a guest document (audited). Its files go when the daily sweep finds them unused.",
+        "operationId": "delete_guest_document",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "document",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {},
+          "404": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/guest-documents/{document}/link": {
+      "get": {
+        "tags": [
+          "crate::routes::media"
+        ],
+        "summary": "A link to one file of a guest document that works for 5 minutes: `thumb` or `md` (WebP) for an image, `original`\nfor a PDF (422 otherwise). Each link issued is audited as `guest_document.viewed`. A document still processing\nis 409.",
+        "operationId": "guest_document_link",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "document",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/LinkSize"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignedLink"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/guests": {
       "post": {
         "tags": [
@@ -1012,6 +1098,159 @@
           "412": {},
           "422": {},
           "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/media/uploads": {
+      "post": {
+        "tags": [
+          "crate::routes::media"
+        ],
+        "summary": "Starts an upload: records the asset and has media-svc open a multipart upload, whose part URLs work for an hour.\nNeeds `MediaManage` for a gallery photo, `RoomIssuesReport` for an issue photo and `GuestDocumentsManage` for a\nguest document. An issue holds at most 5 photos, counting uploads in progress (409). When media-svc cannot be\nreached in 2 s the answer is 502 and nothing is recorded. A retried request with the same `Idempotency-Key` is\nanswered without starting another upload.",
+        "operationId": "start_media_upload",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartUploadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartedUpload"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {},
+          "502": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/media/uploads/{upload}": {
+      "delete": {
+        "tags": [
+          "crate::routes::media"
+        ],
+        "summary": "Cancels an upload that has not completed: storage discards its parts and the upload is gone. One already\ncompleted is 409.",
+        "operationId": "cancel_media_upload",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "upload",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {},
+          "404": {},
+          "409": {},
+          "502": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/media/uploads/{upload}/complete": {
+      "post": {
+        "tags": [
+          "crate::routes::media"
+        ],
+        "summary": "Completes an upload once every part is in storage: media-svc checks the file against its declared size and\nSHA-256 and sniffs its type, refusing a file that does not match or is not accepted for the purpose (422 with\nthe reason; the upload is gone). A file the property already holds for the same purpose links to that asset,\nwhich is returned instead. A retried request with the same `Idempotency-Key` returns the same answer.",
+        "operationId": "complete_media_upload",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "upload",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompleteUploadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaAsset"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {},
+          "502": {}
         }
       }
     },
@@ -2165,6 +2404,49 @@
         }
       }
     },
+    "/api/v1/properties/{property}/room-issues/{issue}/media/{asset}": {
+      "delete": {
+        "tags": [
+          "crate::routes::media"
+        ],
+        "summary": "Removes a photo from a room issue; needs `RoomIssuesReport`, as attaching one does. Its files go when the daily\nsweep finds them unused.",
+        "operationId": "remove_room_issue_media",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "issue",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "asset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {},
+          "404": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/room-types": {
       "post": {
         "tags": [
@@ -2328,6 +2610,146 @@
           "412": {},
           "422": {},
           "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/room-types/{room_type}/media/order": {
+      "put": {
+        "tags": [
+          "crate::routes::media"
+        ],
+        "summary": "Puts the room type's photos in a new order; `asset_ids` must name each of them exactly once (422).",
+        "operationId": "reorder_room_type_media",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderMediaRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/room-types/{room_type}/media/{asset}": {
+      "delete": {
+        "tags": [
+          "crate::routes::media"
+        ],
+        "summary": "Removes a photo from the room type's gallery. Its files go when the daily sweep finds them unused.",
+        "operationId": "remove_room_type_media",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "asset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {},
+          "404": {}
+        }
+      },
+      "patch": {
+        "tags": [
+          "crate::routes::media"
+        ],
+        "summary": "Sets the caption of a photo in the room type's gallery.",
+        "operationId": "caption_room_type_media",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "asset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "403": {},
+          "404": {},
+          "422": {}
         }
       }
     },
@@ -3008,6 +3430,16 @@
           }
         }
       },
+      "AssetStatus": {
+        "type": "string",
+        "description": "Where an asset is in its life: uploading, then processing, then ready or failed.",
+        "enum": [
+          "uploading",
+          "processing",
+          "ready",
+          "failed"
+        ]
+      },
       "AssignRoomRequest": {
         "type": "object",
         "required": [
@@ -3364,6 +3796,18 @@
           }
         }
       },
+      "CaptionRequest": {
+        "type": "object",
+        "required": [
+          "caption"
+        ],
+        "properties": {
+          "caption": {
+            "type": "string",
+            "description": "At most 200 characters once trimmed; empty removes the caption."
+          }
+        }
+      },
       "ChangeMode": {
         "type": "string",
         "description": "How a price is changed: by basis points (`percent`, 1500 = +15 %) or by minor units (`amount`).",
@@ -3460,6 +3904,21 @@
           "version": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "CompleteUploadRequest": {
+        "type": "object",
+        "required": [
+          "parts"
+        ],
+        "properties": {
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UploadedPart"
+            },
+            "description": "Every part, numbered from 1."
           }
         }
       },
@@ -4092,6 +4551,16 @@
           }
         }
       },
+      "DocumentKind": {
+        "type": "string",
+        "description": "The kind of ID document a guest document is.",
+        "enum": [
+          "passport",
+          "nic",
+          "driving_licence",
+          "other"
+        ]
+      },
       "Grant": {
         "type": "object",
         "description": "A role held tenant-wide (`property_id: None`) or for one property.",
@@ -4275,6 +4744,15 @@
           "resolved"
         ]
       },
+      "LinkSize": {
+        "type": "string",
+        "description": "The file a guest-document link points at: a rendition, or the archived original.",
+        "enum": [
+          "thumb",
+          "md",
+          "original"
+        ]
+      },
       "LoginRequest": {
         "type": "object",
         "required": [
@@ -4349,6 +4827,66 @@
           },
           "version": {
             "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "MediaAsset": {
+        "type": "object",
+        "description": "An uploaded file. Its delivered images, once ready, are read through GraphQL; a guest document's only through\nits signed link.",
+        "required": [
+          "asset_id",
+          "purpose",
+          "status",
+          "filename"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why processing failed, for a `failed` asset."
+          },
+          "filename": {
+            "type": "string"
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "mime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/Purpose"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AssetStatus",
+            "description": "`processing` until media-svc reports back; an existing copy of the same file may already be `ready`."
+          },
+          "width": {
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int32"
           }
         }
@@ -4656,6 +5194,15 @@
           }
         }
       },
+      "Purpose": {
+        "type": "string",
+        "description": "What an asset is for. It decides the visibility, the size limit and the renditions.",
+        "enum": [
+          "gallery",
+          "issue_photo",
+          "guest_document"
+        ]
+      },
       "RatePlan": {
         "type": "object",
         "required": [
@@ -4809,6 +5356,22 @@
           "version": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "ReorderMediaRequest": {
+        "type": "object",
+        "required": [
+          "asset_ids"
+        ],
+        "properties": {
+          "asset_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Every photo of the room type, each once, in the new order."
           }
         }
       },
@@ -5311,6 +5874,23 @@
           }
         }
       },
+      "SignedLink": {
+        "type": "object",
+        "description": "A short-lived link to one file of a guest document.",
+        "required": [
+          "url",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
       "SignupRequest": {
         "type": "object",
         "required": [
@@ -5344,6 +5924,83 @@
           "phone",
           "email"
         ]
+      },
+      "StartUploadRequest": {
+        "type": "object",
+        "required": [
+          "purpose",
+          "target_id",
+          "filename",
+          "bytes",
+          "sha256"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The file's size: at most 25 MiB for photos and 15 MiB for guest documents.",
+            "minimum": 0
+          },
+          "filename": {
+            "type": "string",
+            "description": "1 to 255 characters. Only shown; the file's type is decided from its bytes."
+          },
+          "kind": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DocumentKind",
+                "description": "The kind of ID document; required for `guest_document`, and only for it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/Purpose"
+          },
+          "sha256": {
+            "type": "string",
+            "description": "The file's SHA-256, as 64 hexadecimal digits."
+          },
+          "target_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The room type (`gallery`), room issue (`issue_photo`) or guest (`guest_document`)."
+          }
+        }
+      },
+      "StartedUpload": {
+        "type": "object",
+        "required": [
+          "upload_id",
+          "part_size",
+          "parts",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the part URLs stop working."
+          },
+          "part_size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Every part is this many bytes except the last.",
+            "minimum": 0
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UploadPart"
+            }
+          },
+          "upload_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
       },
       "SwitchTenantRequest": {
         "type": "object",
@@ -5942,6 +6599,42 @@
           "version": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "UploadPart": {
+        "type": "object",
+        "description": "Where the browser PUTs one part of the file.",
+        "required": [
+          "number",
+          "url"
+        ],
+        "properties": {
+          "number": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "UploadedPart": {
+        "type": "object",
+        "description": "A part the browser uploaded, with the `ETag` storage answered.",
+        "required": [
+          "number",
+          "etag"
+        ],
+        "properties": {
+          "etag": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           }
         }
       }
