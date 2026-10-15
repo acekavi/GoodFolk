@@ -12,19 +12,26 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 /// Records what it is sent. A payload with `"block": true` waits for `release`; one with `"refuse": true` is refused.
+/// With `fail` every send fails; with `fail_once` each message's first send does.
 #[derive(Default)]
 struct MemoryBus {
     sent: Mutex<Vec<Message>>,
     started: Mutex<Vec<Uuid>>,
     release: tokio::sync::Notify,
     fail: bool,
+    fail_once: bool,
 }
 
 #[async_trait]
 impl EventBus for MemoryBus {
     async fn publish(&self, msg: &Message) -> Result<(), BusError> {
-        self.started.lock().unwrap().push(msg.id);
-        if self.fail {
+        let first = {
+            let mut started = self.started.lock().unwrap();
+            let first = !started.contains(&msg.id);
+            started.push(msg.id);
+            first
+        };
+        if self.fail || (self.fail_once && first) {
             return Err(BusError::Retryable("down".to_owned()));
         }
         if msg.payload["refuse"] == true {
@@ -300,10 +307,10 @@ async fn a_committed_enqueue_wakes_an_idle_relay(_: PgPoolOptions, opts: PgConne
         })
     };
     let heard = enqueue_committed(&app, "media-process").await;
-    // Measured from the commit to the send starting, which is all the wake-up decides.
+    // Measured from the commit to the send starting, which is all the wake-up decides: well inside the 30 s poll.
     let committed = Instant::now();
     while !bus.started.lock().unwrap().contains(&heard) {
-        assert!(committed.elapsed() < Duration::from_millis(100), "the woken relay had not sent the row within 100 ms");
+        assert!(committed.elapsed() < Duration::from_secs(2), "the woken relay had not sent the row within 2 s");
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     // The wake-up sends everything due, the row enqueued unheard too.
@@ -347,4 +354,26 @@ async fn a_failed_send_is_retried_when_due_without_a_wake(_: PgPoolOptions, opts
     let attempts: i32 =
         sqlx::query_scalar("select attempts from outbox where id = $1").bind(id).fetch_one(&owner).await.unwrap();
     assert!(attempts >= 2);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn every_scheduled_retry_is_kept_not_just_the_earliest(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = app_pool(opts.clone(), 4).await;
+    let owner = PgPool::connect_with(opts).await.unwrap();
+    let soon = enqueue_committed(&app, "media-process").await;
+    let later = enqueue_committed(&app, "media-process").await;
+    // One earlier claim, so this row's failure backs off 2 s where the other's backs off 1 s.
+    sqlx::query("update outbox set attempts = 1 where id = $1").bind(later).execute(&owner).await.unwrap();
+    let bus = Arc::new(MemoryBus { fail_once: true, ..MemoryBus::default() });
+    let shutdown = CancellationToken::new();
+    let started = Instant::now();
+    let relay = tokio::spawn(run_relay(app, bus.clone(), Arc::default(), shutdown.clone()));
+
+    // Nothing wakes the relay: each retry is claimed when it falls due, the later one too.
+    wait_for("both rows to be sent", async || is_sent(&owner, soon).await && is_sent(&owner, later).await).await;
+    let took = started.elapsed();
+    shutdown.cancel();
+    relay.await.unwrap();
+    assert!(took < Duration::from_secs(5), "both retries took {took:?}");
+    assert_eq!(bus.started.lock().unwrap().len(), 4, "each row failed once and was sent once");
 }

@@ -29,10 +29,12 @@ mod common;
 use axum::http::{Method, StatusCode};
 use common::media::{self, Hotel};
 use common::{TestApp, TestResponse, uuid};
+use futures::FutureExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
 use time::format_description::well_known::Iso8601;
 use uuid::Uuid;
@@ -1092,28 +1094,35 @@ async fn media_upload_init_p95_under_50ms(_: PgPoolOptions, opts: PgConnectOptio
     let hotel = Hotel::new(app, "owner@example.com", "GAL").await;
     let uploads = format!("{}/media/uploads", hotel.path);
 
-    let mut samples: Vec<Duration> = Vec::with_capacity(SAMPLES);
     let mut started_uploads = Vec::with_capacity(SAMPLES + UPLOAD_WARMUP);
-    for round in 0..SAMPLES + UPLOAD_WARMUP {
-        // A new file each round (and `post` a new idempotency key), so nothing is answered from an earlier start.
-        let filename = format!("photo-{round}.jpg");
-        let start = json!({"purpose": "gallery", "target_id": hotel.room_type, "filename": filename,
-                           "bytes": 4_571_573, "sha256": media::hex(&Sha256::digest(filename.as_bytes()))});
-        let started = Instant::now();
-        let response = post(app, &hotel.owner, &uploads, start).await;
-        let elapsed = started.elapsed();
-        assert_eq!(response.body["parts"].as_array().map(Vec::len), Some(1), "{:?}", response.body);
-        started_uploads.push(uuid(&response.body["upload_id"]));
-        // The first ones warm the connection pools, the gRPC channel and Postgres' caches.
-        if round >= UPLOAD_WARMUP {
-            samples.push(elapsed);
+    // Run as a unit so the uploads are cancelled below even when an assertion in it fails.
+    let timed = AssertUnwindSafe(async {
+        let mut samples: Vec<Duration> = Vec::with_capacity(SAMPLES);
+        for round in 0..SAMPLES + UPLOAD_WARMUP {
+            // A new file each round (and `post` a new idempotency key), so nothing is answered from an earlier start.
+            let filename = format!("photo-{round}.jpg");
+            let start = json!({"purpose": "gallery", "target_id": hotel.room_type, "filename": filename,
+                               "bytes": 4_571_573, "sha256": media::hex(&Sha256::digest(filename.as_bytes()))});
+            let started = Instant::now();
+            let response = post(app, &hotel.owner, &uploads, start).await;
+            let elapsed = started.elapsed();
+            started_uploads.push(uuid(&response.body["upload_id"]));
+            assert_eq!(response.body["parts"].as_array().map(Vec::len), Some(1), "{:?}", response.body);
+            // The first ones warm the connection pools, the gRPC channel and Postgres' caches.
+            if round >= UPLOAD_WARMUP {
+                samples.push(elapsed);
+            }
         }
-    }
+        samples
+    })
+    .catch_unwind()
+    .await;
     // Cancelling aborts each multipart upload in storage and removes its row.
     for upload in started_uploads {
         let cancelled = app.send(Method::DELETE, &format!("{uploads}/{upload}"), Some(&hotel.owner), None).await;
         assert_eq!(cancelled.status, StatusCode::NO_CONTENT, "{:?}", cancelled.body);
     }
+    let mut samples = timed.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
 
     samples.sort();
     let p50 = samples[SAMPLES / 2];

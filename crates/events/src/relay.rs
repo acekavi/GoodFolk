@@ -1,5 +1,6 @@
 use crate::bus::{BusError, EventBus, Message};
 use sqlx::PgPool;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -19,6 +20,8 @@ const ALERT_AFTER_ATTEMPTS: i32 = 10;
 /// How long an idle relay waits before claiming again when nothing wakes it: the safety net for a missed
 /// notification. Rarely enough that an idle database can suspend.
 const IDLE_POLL: Duration = Duration::from_secs(30);
+/// Retry times a relay remembers at most; past this the furthest are forgotten, and the idle poll finds those rows.
+const MAX_RETRY_TIMES: usize = 1000;
 
 /// 1 s for the first attempt, doubling each time, capped at 300 s. `attempts` counts claims, so it is 1 on the first.
 pub fn backoff(attempts: i32) -> Duration {
@@ -42,14 +45,16 @@ pub async fn run_relay(pool: PgPool, bus: Arc<dyn EventBus>, wake: Arc<Notify>, 
     // Tasks, not futures polled from this loop: a send suspended mid-query would hold its connection while `claim`
     // waited for one.
     let mut in_flight = JoinSet::new();
-    // The earliest retry this relay scheduled that has not been claimed yet.
-    let mut next_retry: Option<Instant> = None;
+    // When the rows this relay put back for a retry fall due, for those not yet claimed again.
+    let mut retries: BTreeSet<Instant> = BTreeSet::new();
     while !shutdown.is_cancelled() {
         let free = IN_FLIGHT - in_flight.len();
         let mut wait = IDLE_POLL;
         if free > 0 {
-            if next_retry.is_some_and(|due| due <= Instant::now()) {
-                next_retry = None;
+            // This claim takes every row due now.
+            let now = Instant::now();
+            while retries.first().is_some_and(|due| *due <= now) {
+                retries.pop_first();
             }
             match claim(&pool, free).await {
                 Ok(rows) => {
@@ -63,14 +68,19 @@ pub async fn run_relay(pool: PgPool, bus: Arc<dyn EventBus>, wake: Arc<Notify>, 
                 }
             }
         }
-        if let Some(due) = next_retry {
+        if let Some(due) = retries.first() {
             wait = wait.min(due.saturating_duration_since(Instant::now()));
         }
         tokio::select! {
             () = shutdown.cancelled() => {}
             () = wake.notified() => {}
             Some(joined) = in_flight.join_next(), if !in_flight.is_empty() => match joined {
-                Ok(Some(retry_at)) => next_retry = Some(next_retry.map_or(retry_at, |due| due.min(retry_at))),
+                Ok(Some(retry_at)) => {
+                    retries.insert(retry_at);
+                    if retries.len() > MAX_RETRY_TIMES {
+                        retries.pop_last();
+                    }
+                }
                 Ok(None) => {}
                 Err(error) => tracing::error!(%error, "an outbox send panicked; its row returns after the lease"),
             },

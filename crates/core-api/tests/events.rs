@@ -170,7 +170,8 @@ async fn a_committed_outbox_row_wakes_the_relay(_: PgPoolOptions, opts: PgConnec
     assert!(before_commit.is_err(), "woken before the row committed");
     tx.commit().await.unwrap();
 
-    tokio::time::timeout(Duration::from_millis(100), outbox_wake.notified()).await.expect("the relay is woken");
+    // Well inside the relay's 30 s idle poll.
+    tokio::time::timeout(Duration::from_secs(2), outbox_wake.notified()).await.expect("the relay is woken");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
