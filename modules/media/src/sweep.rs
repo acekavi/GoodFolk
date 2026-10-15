@@ -147,30 +147,46 @@ async fn sweep_one(
     Ok(())
 }
 
+/// The ids of the reservation rooms of guest `d.guest_id`, cancelled and no-show ones aside: rooms they are the primary
+/// guest of, rooms of reservations they booked, and rooms they occupy.
+const GUEST_STAYS: &str = "select rr.id from reservation_room rr
+     where rr.status not in ('cancelled', 'no_show') and rr.id in (
+       select id from reservation_room where primary_guest_id = d.guest_id
+       union
+       select x.id from reservation r join reservation_room x on x.reservation_id = r.id
+       where r.booker_guest_id = d.guest_id
+       union
+       select reservation_room_id from reservation_guest where guest_id = d.guest_id)";
+
 /// Deletes the guest document if its retention has run out, audited as `guest_document.deleted` by retention, and
-/// returns its asset.
+/// returns its asset. A document kept for its guest's stays waits until the earliest moment it could expire (the
+/// latest departure plus 365 days, at the start of that day in UTC, and not before tomorrow) before the sweep lists it
+/// again, so kept documents never crowd out expired ones.
 async fn expire_document(tx: &mut Tx, tenant: TenantId, document: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
-    // A guest's stays: rooms they are the primary guest of, rooms of reservations they booked, and rooms they occupy.
-    let deleted: Option<(Uuid, Uuid, Uuid)> = sqlx::query_as(
+    let deleted: Option<(Uuid, Uuid, Uuid)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "delete from guest_document d using media_asset a
          where d.id = $1 and a.id = d.asset_id and d.uploaded_at < now() - interval '1 year'
            and not exists (
-             select 1 from reservation_room rr join property p on p.id = rr.property_id
-             where rr.status not in ('cancelled', 'no_show')
-               and upper(rr.stay) >= p.business_date - 365
-               and rr.id in (
-                 select id from reservation_room where primary_guest_id = d.guest_id
-                 union
-                 select x.id from reservation r join reservation_room x on x.reservation_id = r.id
-                 where r.booker_guest_id = d.guest_id
-                 union
-                 select reservation_room_id from reservation_guest where guest_id = d.guest_id))
-         returning d.guest_id, d.asset_id, a.property_id",
-    )
+             select 1 from reservation_room s join property p on p.id = s.property_id
+             where s.id in ({GUEST_STAYS}) and upper(s.stay) >= p.business_date - 365)
+         returning d.guest_id, d.asset_id, a.property_id"
+    )))
     .bind(document)
     .fetch_optional(&mut **tx)
     .await?;
-    let Some((guest, asset, property)) = deleted else { return Ok(None) };
+    let Some((guest, asset, property)) = deleted else {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "update guest_document d set recheck_after = greatest(
+               ((select max(upper(s.stay)) from reservation_room s where s.id in ({GUEST_STAYS})) + 365)::timestamp
+                 at time zone 'UTC',
+               now() + interval '1 day')
+             where d.id = $1 and d.uploaded_at < now() - interval '1 year'"
+        )))
+        .bind(document)
+        .execute(&mut **tx)
+        .await?;
+        return Ok(None);
+    };
     let data = serde_json::json!({ "by": "retention", "guest_id": guest, "asset_id": asset });
     audit(tx, tenant, None, "guest_document.deleted", "guest_document", document, data).await?;
     notify(tx, tenant, property).await?;

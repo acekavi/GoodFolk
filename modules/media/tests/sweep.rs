@@ -220,3 +220,35 @@ async fn sweep_never_deletes_an_asset_a_duplicate_just_linked(_: PgPoolOptions, 
     let items = gallery(&mut hotel.tx().await, hotel.room_type).await.unwrap();
     assert_eq!(items.iter().map(|i| i.asset_id).collect::<Vec<_>>(), [orphan]);
 }
+
+/// A kept document waits for its next possible expiry, so kept documents never crowd expired ones out of the sweep's
+/// candidate limit.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn kept_documents_wait_for_their_next_possible_expiry(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let (future, _) = hotel.old_document(1, 900).await;
+    hotel.stay(future, "booker", 30, 32, "confirmed").await;
+    let (recent, _) = hotel.old_document(2, 900).await;
+    hotel.stay(recent, "occupant", -103, -100, "checked_out").await;
+    let (expired, _) = hotel.old_document(3, 900).await;
+
+    let report = sweep(&hotel.pool).await.unwrap();
+
+    assert_eq!(report.expired_documents, 1);
+    assert_eq!(hotel.documents_of(expired).await, 0);
+    let recheck = async |guest: Uuid| -> String {
+        sqlx::query_scalar("select (recheck_after at time zone 'UTC')::text from guest_document where guest_id = $1")
+            .bind(guest)
+            .fetch_one(&mut *hotel.tx().await)
+            .await
+            .unwrap()
+    };
+    let midnight = |days: i64| format!("{} 00:00:00", hotel.business_date + time::Duration::days(days));
+    assert_eq!(recheck(future).await, midnight(32 + 365), "the future stay's departure plus 365 days");
+    assert_eq!(recheck(recent).await, midnight(-100 + 365));
+
+    let due: Vec<(Uuid, String, Uuid)> =
+        sqlx::query_as("select tenant_id, kind, id from app.media_sweep_due()").fetch_all(&hotel.pool).await.unwrap();
+    assert!(due.iter().all(|(_, kind, _)| kind != "expired_document"), "kept documents are not listed: {due:?}");
+    assert_eq!(sweep(&hotel.pool).await.unwrap(), media::SweepReport::default());
+}
