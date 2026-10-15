@@ -64,20 +64,28 @@ fn fit_long_edge(width: u32, height: u32, edge: u32) -> (u32, u32) {
 }
 
 /// Every rendition size the profile asks for that the source reaches, largest first, each resized from
-/// the one before it. The thumb is last: a centred square from the smallest level that still has the
-/// pixels for it, or from the source itself.
+/// the one before it. The profile's smallest size other than the thumb is always made, at the source's
+/// own size when the source is smaller, so every image keeps one uncropped rendition; nothing is ever
+/// scaled up. The thumb is last: a centred square from the smallest level that still has the pixels for
+/// it, or from the source itself.
 fn ladder(src: &RgbaImage, profile: Profile) -> Result<Vec<(Size, RgbaImage)>, ImagingError> {
     let (width, height) = src.dimensions();
+    let long = width.max(height);
     let opaque = src.pixels().all(|p| p.0[3] == u8::MAX);
-    let mut sizes: Vec<Size> =
-        profile.sizes().iter().copied().filter(|s| *s != Size::Thumb && s.long_edge() <= width.max(height)).collect();
+    let uncropped = profile.sizes().iter().copied().filter(|s| *s != Size::Thumb);
+    let smallest = uncropped.clone().min_by_key(|s| s.long_edge());
+    let mut sizes: Vec<Size> = uncropped.filter(|s| s.long_edge() <= long || Some(*s) == smallest).collect();
     sizes.sort_by_key(|s| std::cmp::Reverse(s.long_edge()));
 
     let mut levels: Vec<(Size, RgbaImage)> = Vec::new();
     for size in sizes {
-        let (w, h) = fit_long_edge(width, height, size.long_edge());
-        let from = levels.last().map_or(src, |(_, img)| img);
-        let level = resize(from, w, h, false, opaque)?;
+        let level = if size.long_edge() >= long {
+            src.clone()
+        } else {
+            let (w, h) = fit_long_edge(width, height, size.long_edge());
+            let from = levels.last().map_or(src, |(_, img)| img);
+            resize(from, w, h, false, opaque)?
+        };
         levels.push((size, level));
     }
 

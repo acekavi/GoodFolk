@@ -41,9 +41,57 @@ fn sizes_never_upscale() {
 
 #[test]
 fn the_thumb_of_a_small_image_is_its_short_edge_square() {
-    // p3.jpg is 64 x 64; alpha.png is 256 x 256: neither is scaled up to 320.
+    // p3.jpg is 64 x 64: the thumb is not scaled up to 320, nor is sm to 640; sm keeps the source size.
     let done = process(&fixture("p3.jpg"), SourceType::Jpeg, Profile::Gallery).unwrap();
-    assert_eq!(sizes_of(&done), [(Size::Thumb, Format::Avif, 64, 64), (Size::Thumb, Format::Webp, 64, 64)]);
+    assert_eq!(
+        sizes_of(&done),
+        [
+            (Size::Thumb, Format::Avif, 64, 64),
+            (Size::Thumb, Format::Webp, 64, 64),
+            (Size::Sm, Format::Avif, 64, 64),
+            (Size::Sm, Format::Webp, 64, 64),
+        ]
+    );
+}
+
+/// A `width` x `height` PNG of soft gradients.
+fn gradient_png(width: u32, height: u32) -> Vec<u8> {
+    let img = RgbImage::from_fn(width, height, |x, y| {
+        Rgb([(x * 255 / width) as u8, (y * 255 / height) as u8, ((x + y) * 127 / (width + height)) as u8])
+    });
+    let mut png = Vec::new();
+    img.write_to(&mut Cursor::new(&mut png), ImageFormat::Png).unwrap();
+    png
+}
+
+#[test]
+fn every_profile_keeps_its_smallest_uncropped_size_at_the_source_size_when_smaller() {
+    // Gallery and issue photos: a 500 x 375 source gets sm at 500 x 375, and nothing larger.
+    for profile in [Profile::Gallery, Profile::IssuePhoto] {
+        let done = process(&gradient_png(500, 375), SourceType::Png, profile).unwrap();
+        assert_eq!(
+            sizes_of(&done),
+            [
+                (Size::Thumb, Format::Avif, 320, 320),
+                (Size::Thumb, Format::Webp, 320, 320),
+                (Size::Sm, Format::Avif, 500, 375),
+                (Size::Sm, Format::Webp, 500, 375),
+            ],
+            "{profile:?}"
+        );
+    }
+    // A guest document's only uncropped size is md: an 800 x 600 source gets md at 800 x 600.
+    let done = process(&gradient_png(800, 600), SourceType::Png, Profile::GuestDocument).unwrap();
+    assert_eq!(
+        sizes_of(&done),
+        [
+            (Size::Thumb, Format::Avif, 320, 320),
+            (Size::Thumb, Format::Webp, 320, 320),
+            (Size::Md, Format::Avif, 800, 600),
+            (Size::Md, Format::Webp, 800, 600),
+        ]
+    );
+    assert!(done.renditions.iter().all(|r| r.score >= QUALITY_TARGET), "every rendition passes the gate");
 }
 
 #[test]

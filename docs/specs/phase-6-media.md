@@ -58,7 +58,8 @@ This phase also brings in the infrastructure deferred from Phase 0, because `med
   - **Pixels.** Decoded once, turned upright from the EXIF orientation, converted to sRGB from any embedded ICC
     profile, and stripped of all metadata (location included). Delivered files are re-encoded from pixels, so no
     metadata survives.
-  - **Sizes** (longest edge, never upscaled; a size the original cannot reach is skipped):
+  - **Sizes** (longest edge, never upscaled; a size the original cannot reach is skipped, except the profile's
+    smallest size after `thumb`, which is always made, at the original's own size when the original is smaller):
 
     | Size | Long edge |
     |---|---|
