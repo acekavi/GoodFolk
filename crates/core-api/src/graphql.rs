@@ -312,6 +312,8 @@ pub struct MediaNode {
     pub status: MediaStatusNode,
     /// A gallery photo's caption, if it has one.
     pub caption: Option<String>,
+    /// Why processing failed, for a `FAILED` photo.
+    pub error: Option<String>,
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub renditions: Vec<RenditionNode>,
@@ -336,6 +338,7 @@ fn gallery_node(storage: &Storage, item: media::GalleryItem) -> MediaNode {
         asset_id: item.asset_id,
         status: item.status.into(),
         caption: Some(item.caption).filter(|caption| !caption.is_empty()),
+        error: item.error,
         width: item.width,
         height: item.height,
         renditions: item
@@ -360,6 +363,7 @@ fn issue_photo_node(storage: &Storage, asset: media::AssetRow) -> MediaNode {
         asset_id: asset.id,
         status: asset.status.into(),
         caption: None,
+        error: asset.error,
         width: asset.width,
         height: asset.height,
         renditions,

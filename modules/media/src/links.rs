@@ -18,6 +18,8 @@ pub struct GalleryItem {
     pub caption: String,
     #[sqlx(try_from = "String")]
     pub status: AssetStatus,
+    /// Why processing failed, for a `failed` asset.
+    pub error: Option<String>,
     pub width: Option<i32>,
     pub height: Option<i32>,
     #[sqlx(json)]
@@ -178,7 +180,7 @@ struct GalleryRow {
 /// The galleries of each of `room_types` that has any photos, in order.
 pub async fn galleries(tx: &mut Tx, room_types: &[Uuid]) -> Result<HashMap<Uuid, Vec<GalleryItem>>, MediaError> {
     let rows: Vec<GalleryRow> = sqlx::query_as(
-        "select m.room_type_id, a.id as asset_id, m.position, m.caption, a.status, a.width, a.height, a.renditions
+        "select m.room_type_id, a.id as asset_id, m.position, m.caption, a.status, a.error, a.width, a.height, a.renditions
          from room_type_media m join media_asset a on a.id = m.asset_id
          where m.room_type_id = any($1)
          order by m.room_type_id, m.position, a.id",

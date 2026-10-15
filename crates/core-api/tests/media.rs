@@ -35,7 +35,7 @@ async fn graphql(app: &TestApp, cookie: &str, query: &str, variables: Value) -> 
 
 const GALLERY: &str = "query ($p: UUID!) {
     roomTypes(propertyId: $p) {
-        id media { assetId status caption width height renditions { size format width height url } }
+        id media { assetId status error caption width height renditions { size format width height url } }
     }
 }";
 const ISSUE_PHOTOS: &str = "query ($p: UUID!) {
@@ -543,6 +543,40 @@ async fn gallery_order_caption_and_removal(_: PgPoolOptions, opts: PgConnectOpti
     assert_eq!(removed.status, StatusCode::NO_CONTENT);
     let body = graphql(&app, &desk, GALLERY, json!({"p": hotel.id})).await;
     assert_eq!(body["data"]["roomTypes"][0]["media"].as_array().unwrap().len(), 1);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_failed_gallery_photo_shows_why(_: PgPoolOptions, opts: PgConnectOptions) {
+    let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
+    let app = TestApp::new(opts).await;
+    let hotel = Hotel::new(&app, "owner@example.com", "GAL").await;
+    let asset = Uuid::now_v7();
+    sqlx::query(
+        "insert into media_asset (id, tenant_id, property_id, purpose, visibility, status, error, filename,
+                                  declared_bytes, sha256)
+         values ($1, $2, $3, 'gallery', 'public', 'failed', 'This file could not be read', 'x.jpg', 10, $4)",
+    )
+    .bind(asset)
+    .bind(hotel.tenant)
+    .bind(hotel.id)
+    .bind(&[7u8; 32][..])
+    .execute(&superuser)
+    .await
+    .unwrap();
+    sqlx::query("insert into room_type_media (tenant_id, room_type_id, asset_id, position) values ($1, $2, $3, 0)")
+        .bind(hotel.tenant)
+        .bind(hotel.room_type)
+        .bind(asset)
+        .execute(&superuser)
+        .await
+        .unwrap();
+
+    let body = graphql(&app, &hotel.owner, GALLERY, json!({"p": hotel.id})).await;
+    let photo = &body["data"]["roomTypes"][0]["media"][0];
+    assert_eq!(
+        (photo["status"].clone(), photo["error"].clone()),
+        (json!("FAILED"), json!("This file could not be read"))
+    );
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

@@ -316,6 +316,10 @@ type MediaNode {
 	A gallery photo's caption, if it has one.
 	"""
 	caption: String
+	"""
+	Why processing failed, for a `FAILED` photo.
+	"""
+	error: String
 	width: Int
 	height: Int
 	renditions: [RenditionNode!]!
