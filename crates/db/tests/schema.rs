@@ -41,3 +41,34 @@ async fn the_app_role_cannot_bypass_row_level_security(pool: PgPool) {
     assert!(!bypass);
     assert_eq!(owns, 0);
 }
+
+/// The outbox tables are reachable only through their security definer functions (`migrations/0014_outbox.sql`).
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_outbox_is_reachable_only_through_its_functions(pool: PgPool) {
+    for table in ["outbox", "processed_event"] {
+        for privilege in ["SELECT", "INSERT", "UPDATE", "DELETE"] {
+            let has: bool = sqlx::query_scalar("select has_table_privilege('goodfolk_app', $1, $2)")
+                .bind(table)
+                .bind(privilege)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert!(!has, "goodfolk_app has {privilege} on {table}");
+        }
+    }
+    for function in [
+        "app.outbox_enqueue(uuid, text, jsonb)",
+        "app.outbox_claim(int, int)",
+        "app.outbox_sent(uuid)",
+        "app.outbox_retry(uuid, text, int)",
+        "app.event_first_seen(text)",
+    ] {
+        let can: bool =
+            sqlx::query_scalar("select has_function_privilege('goodfolk_app', $1::regprocedure, 'execute')")
+                .bind(function)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(can, "goodfolk_app cannot execute {function}");
+    }
+}

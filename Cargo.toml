@@ -10,6 +10,7 @@ publish = false
 [workspace.dependencies]
 db = { path = "crates/db" }
 domain = { path = "crates/domain" }
+events = { path = "crates/events" }
 housekeeping = { path = "modules/housekeeping" }
 identity = { path = "modules/identity" }
 imaging = { path = "crates/imaging" }
@@ -22,6 +23,7 @@ rooms = { path = "modules/rooms" }
 storage = { path = "crates/storage" }
 
 anyhow = "1"
+async-trait = "0.1"
 argon2 = "0.6"
 async-graphql = { version = "7.2", default-features = false, features = ["uuid", "time"] }
 async-graphql-axum = "7.2"
@@ -65,6 +67,7 @@ tonic = { version = "0.14", default-features = false, features = ["codegen", "tr
 tonic-health = "0.14"
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
+tokio-util = "0.7"
 tokio-stream = { version = "0.1", features = ["sync"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["trace", "compression-br", "compression-zstd", "request-id", "util"] }
