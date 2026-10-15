@@ -86,6 +86,13 @@ impl Media for MediaSvc {
         let tenant = uuid(&request.tenant_id, "tenant_id")?;
         let asset = uuid(&request.asset_id, "asset_id")?;
         let profile = profile(request.purpose())?;
+        let max_bytes = limits(profile).max_bytes;
+        if request.sha256.len() != 32 {
+            return Err(Status::invalid_argument("sha256 must be 32 bytes"));
+        }
+        if request.parts.len() as u64 > max_bytes.div_ceil(PART_SIZE) {
+            return Err(Status::invalid_argument("too many parts for this purpose"));
+        }
         let parts = request
             .parts
             .iter()
@@ -119,16 +126,16 @@ impl Media for MediaSvc {
             }
         }
 
-        let verdict = match self.storage.get(Bucket::Private, &key).await {
-            Ok(body) => {
-                let declared_sha256 = request.sha256.clone();
-                let declared_bytes = request.declared_bytes;
-                tokio::task::spawn_blocking(move || verify(&body, declared_bytes, &declared_sha256, profile))
-                    .await
-                    .map_err(|_| Status::internal("verification failed"))?
-            }
-            Err(StorageError::TooLarge { .. }) => Err(TOO_LARGE),
-            Err(error) => return Err(storage_status(error)),
+        // The size is checked before anything is read, so an oversized object is never downloaded.
+        let stored = self.storage.head(Bucket::Private, &key).await.map_err(storage_status)?;
+        let Some(stored) = stored else {
+            tracing::error!("a completed upload has no object");
+            return Err(Status::unavailable("storage is unavailable"));
+        };
+        let verdict = if stored != request.declared_bytes || stored > max_bytes {
+            Err(TOO_LARGE)
+        } else {
+            self.read_and_verify(&key, &request, profile).await?
         };
 
         let result = match verdict {
@@ -142,6 +149,28 @@ impl Media for MediaSvc {
             }
         };
         Ok(Response::new(FinalizeResponse { result: Some(result) }))
+    }
+}
+
+impl MediaSvc {
+    async fn read_and_verify(
+        &self,
+        key: &str,
+        request: &FinalizeRequest,
+        profile: Profile,
+    ) -> Result<Result<Verified, &'static str>, Status> {
+        Ok(match self.storage.get(Bucket::Private, key).await {
+            Ok(body) => {
+                let declared_sha256 = request.sha256.clone();
+                let declared_bytes = request.declared_bytes;
+                tokio::task::spawn_blocking(move || verify(&body, declared_bytes, &declared_sha256, profile))
+                    .await
+                    .map_err(|_| Status::internal("verification failed"))?
+            }
+            // The object changed size since `head`.
+            Err(StorageError::TooLarge { .. }) => Err(TOO_LARGE),
+            Err(error) => return Err(storage_status(error)),
+        })
     }
 }
 

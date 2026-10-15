@@ -60,7 +60,9 @@ fn default_threads(workers: usize) -> usize {
 }
 
 /// Threads per worker for a service running `workers` at once: `MEDIA_WORKER_THREADS` when it is a positive
-/// number (`serve` refuses to start on any other value), else the CPUs shared between the workers.
+/// number, else the CPUs shared between the workers. [`crate::router`] calls this, since its signature carries no
+/// config; it must agree with [`Config::worker_threads`], so both read the variable through the same parser and
+/// fall back the same way, and `serve` refuses to start on a value this would ignore.
 pub fn worker_threads(workers: usize) -> usize {
     positive(&|name| std::env::var(name).ok(), "MEDIA_WORKER_THREADS")
         .ok()

@@ -171,3 +171,59 @@ async fn health_reports_serving() {
     let response = http().get(format!("http://{}/healthz", server.addr)).send().await.unwrap();
     assert_eq!(response.status(), 200);
 }
+
+#[tokio::test]
+async fn finalize_refuses_more_bytes_than_declared() {
+    let server = start().await;
+    let mut client = client(&server).await;
+    let (tenant, asset) = (Uuid::now_v7(), Uuid::now_v7());
+    let declared = fixture("small.jpg");
+    let created = client
+        .create_upload(create(tenant, asset, Purpose::Gallery, declared.len() as u64))
+        .await
+        .unwrap()
+        .into_inner();
+    // The browser sends more than it declared; the size is checked with `head` before anything is read.
+    let mut sent = declared.clone();
+    sent.extend_from_slice(&[0; 4096]);
+    let response = http().put(&created.parts[0].url).body(sent).send().await.unwrap();
+    let etag = response.headers()["etag"].to_str().unwrap().to_owned();
+    let finalized = client
+        .finalize(FinalizeRequest {
+            tenant_id: tenant.to_string(),
+            asset_id: asset.to_string(),
+            purpose: Purpose::Gallery.into(),
+            s3_upload_id: created.s3_upload_id,
+            parts: vec![CompletedPart { number: 1, etag }],
+            declared_bytes: declared.len() as u64,
+            sha256: sha(&declared),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    match finalized.result.unwrap() {
+        Outcome::Refused(refused) => assert_eq!(refused.reason, "The file is larger than declared"),
+        Outcome::Verified(verified) => panic!("verified {verified:?}"),
+    }
+    assert_eq!(server.storage.head(Bucket::Private, &upload_key(tenant, asset)).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn finalize_rejects_a_malformed_request_before_completing() {
+    let server = start().await;
+    let mut client = client(&server).await;
+    let request = |sha256: Vec<u8>, parts: u32| FinalizeRequest {
+        tenant_id: Uuid::now_v7().to_string(),
+        asset_id: Uuid::now_v7().to_string(),
+        purpose: Purpose::Gallery.into(),
+        s3_upload_id: "never-started".to_owned(),
+        parts: (1..=parts).map(|number| CompletedPart { number, etag: "\"e\"".to_owned() }).collect(),
+        declared_bytes: 10,
+        sha256,
+    };
+    let short_hash = client.finalize(request(vec![0; 31], 1)).await.unwrap_err();
+    assert_eq!(short_hash.code(), Code::InvalidArgument);
+    // A gallery file is at most 25 MiB: four 8 MiB parts.
+    let too_many_parts = client.finalize(request(vec![0; 32], 5)).await.unwrap_err();
+    assert_eq!(too_many_parts.code(), Code::InvalidArgument);
+}

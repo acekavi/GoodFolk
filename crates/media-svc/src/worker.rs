@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use imaging::{ImagingError, SourceType};
 use media_types::{Format, ProcessJob, Size};
+use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, waitid};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -99,8 +100,42 @@ pub enum WorkerError {
 // The parent side
 // ---------------------------------------------------------------------------------------------------------------
 
-/// Runs one attempt of `job` on `bytes` in `<exe> worker`, with `rayon_threads` threads, killing the worker's whole
-/// process group if it runs past `timeout`.
+/// Kills a worker's process group when dropped, so no worker or tool it started outlives an attempt, even one whose
+/// future is dropped (a `/work` request cancelled mid-job).
+struct GroupKill(Option<Pid>);
+
+impl GroupKill {
+    fn kill(&self) {
+        if let Some(group) = self.0 {
+            let _ = rustix::process::kill_process_group(group, Signal::KILL);
+        }
+    }
+
+    /// Called once the worker is reaped: its pid may then be reused, so the group must not be signalled again.
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for GroupKill {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+/// Waits until the worker has exited without reaping it, so its pid keeps naming the group until it is killed.
+async fn exited(pid: Option<Pid>) {
+    let Some(pid) = pid else { return };
+    let _ = tokio::task::spawn_blocking(move || {
+        while let Err(rustix::io::Errno::INTR) = waitid(WaitId::Pid(pid), WaitIdOptions::EXITED | WaitIdOptions::NOWAIT)
+        {
+        }
+    })
+    .await;
+}
+
+/// Runs one attempt of `job` on `bytes` in `<exe> worker`, with `rayon_threads` threads. When the worker exits, runs
+/// past `timeout` or the attempt is dropped, its whole process group is killed before the worker is reaped.
 pub async fn run(
     exe: &Path,
     job: &ProcessJob,
@@ -117,7 +152,8 @@ pub async fn run(
         .process_group(0)
         .kill_on_drop(true)
         .spawn()?;
-    let group = child.id().and_then(|id| i32::try_from(id).ok()).and_then(rustix::process::Pid::from_raw);
+    let pid = child.id().and_then(|id| i32::try_from(id).ok()).and_then(Pid::from_raw);
+    let mut group = GroupKill(pid);
     let mut stdin = child.stdin.take().expect("stdin is piped");
     let mut stdout = child.stdout.take().expect("stdout is piped");
     let mut line = serde_json::to_vec(job).expect("a job serialises");
@@ -134,30 +170,31 @@ pub async fn run(
             let mut out = Vec::new();
             (&mut stdout).take(MAX_OUTPUT + 1).read_to_end(&mut out).await.map(|_| out)
         };
-        let ((), out, status) = tokio::join!(feed, collect, child.wait());
-        (out, status)
+        // A worker cannot exit before its output is in the pipe, so killing what is left of the group then loses
+        // nothing, and a tool a crashed worker left behind cannot hold the pipe open.
+        let killed = async {
+            exited(pid).await;
+            group.kill();
+        };
+        let ((), out, ()) = tokio::join!(feed, collect, killed);
+        out
     };
-    let outcome = match tokio::time::timeout(timeout, attempt).await {
-        Err(_) => Err(WorkerError::TimedOut),
-        Ok((out, status)) => {
-            let status = status?;
-            if status.success() {
-                parse(&out?)
-            } else if status.code() == Some(i32::from(EXIT_OUT_OF_ADDRESS_SPACE)) {
-                Ok(Outcome::OutOfAddressSpace)
-            } else {
-                Err(WorkerError::Exited(status))
-            }
-        }
-    };
-    if outcome.is_err() {
-        // The tools a dead or stuck worker started share its group; none may outlive the attempt.
-        if let Some(group) = group {
-            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
-        }
-        let _ = child.wait().await;
+    let finished = tokio::time::timeout(timeout, attempt).await;
+    group.kill();
+    let status = child.wait().await;
+    group.disarm();
+
+    let out = finished.map_err(|_| WorkerError::TimedOut)?;
+    let status = status?;
+    if status.success() {
+        let out = out?;
+        // Splitting up to 256 MiB of output is copying; keep it off the async workers.
+        tokio::task::spawn_blocking(move || parse(&out)).await.map_err(|e| WorkerError::Io(io::Error::other(e)))?
+    } else if status.code() == Some(i32::from(EXIT_OUT_OF_ADDRESS_SPACE)) {
+        Ok(Outcome::OutOfAddressSpace)
+    } else {
+        Err(WorkerError::Exited(status))
     }
-    outcome
 }
 
 fn parse(out: &[u8]) -> Result<Outcome, WorkerError> {
@@ -179,6 +216,9 @@ fn parse(out: &[u8]) -> Result<Outcome, WorkerError> {
     };
     let outcome = match header {
         Header::Unreadable { detail } => Outcome::Unreadable(detail),
+        Header::Done { archive_ext, .. } if !matches!(archive_ext.as_str(), "jxl" | "pdf") => {
+            return Err(WorkerError::Malformed("unknown archive type"));
+        }
         Header::Done { width, height, archive_ext, archive_len, renditions } => {
             let archive = take(archive_len)?;
             let renditions = renditions
@@ -403,6 +443,13 @@ mod tests {
         assert!(matches!(parse(&frame(&done(3, 2), b"abcdef")), Err(WorkerError::Malformed(_))));
         assert!(matches!(parse(b""), Err(WorkerError::Malformed(_))));
         assert!(matches!(parse(&[0, 0, 0, 9, b'{']), Err(WorkerError::Malformed(_))));
+    }
+
+    #[test]
+    fn an_unknown_archive_type_is_malformed() {
+        let Header::Done { width, height, archive_len, renditions, .. } = done(3, 2) else { unreachable!() };
+        let header = Header::Done { width, height, archive_ext: "../x".into(), archive_len, renditions };
+        assert!(matches!(parse(&frame(&header, b"abcde")), Err(WorkerError::Malformed(_))));
     }
 
     #[test]

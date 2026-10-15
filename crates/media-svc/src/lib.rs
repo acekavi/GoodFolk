@@ -42,7 +42,7 @@ pub struct MediaSvc {
 /// gRPC (tonic) + health + HTTP (/work behind svc-auth, /healthz) on one port (tonic's axum router).
 ///
 /// Each worker's threads come from `MEDIA_WORKER_THREADS`, or else from the permits `svc.workers` holds now, so build
-/// the router before any are taken.
+/// the router before any are taken. This matches what [`config::Config`] reports (see [`config::worker_threads`]).
 pub fn router(svc: MediaSvc, verifier: Arc<Verifier>) -> axum::Router {
     let auth = svc_auth::layer(verifier);
     let rayon_threads = config::worker_threads(svc.workers.available_permits());

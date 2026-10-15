@@ -55,7 +55,9 @@ async fn handle(state: &WorkState, job: &ProcessJob) -> anyhow::Result<()> {
         let bytes = match svc.storage.get(Bucket::Private, &upload).await {
             Ok(bytes) => bytes,
             Err(StorageError::Status { status, .. }) if status == 404 => {
-                // The upload is deleted only after a result was published, so this is a repeat delivery.
+                // The upload is deleted only after a result was published, so this is a repeat delivery. Should the
+                // upload be missing for any other reason, the asset stays `processing` until the sweep fails it
+                // after an hour; that sweep is the backstop.
                 tracing::info!(asset = %job.asset_id, "no upload to process; the result was already published");
                 return Ok(());
             }
