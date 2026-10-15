@@ -14,7 +14,9 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 const LEASE_SECONDS: i32 = 900;
 /// A send that has failed this many times is logged as an error, so a stuck topic gets noticed.
 const ALERT_AFTER_ATTEMPTS: i32 = 10;
-const IDLE_POLL: Duration = Duration::from_millis(500);
+/// How long an idle relay waits before claiming again. A new row waits half of this on average before it is sent,
+/// which counts against latency gates such as a photo's 5 s to `ready`; one cheap claim this often costs little.
+const IDLE_POLL: Duration = Duration::from_millis(100);
 
 /// 1 s for the first attempt, doubling each time, capped at 300 s. `attempts` counts claims, so it is 1 on the first.
 pub fn backoff(attempts: i32) -> Duration {
