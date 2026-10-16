@@ -86,6 +86,10 @@ pub enum TaxError {
     UnknownBase(String),
     #[error("rule base refers back to the rule itself: {0}")]
     Cycle(String),
+    #[error("rule code is used twice with overlapping effective dates: {0}")]
+    DuplicateCode(String),
+    #[error("rule rate is above 10000 basis points: {0}")]
+    RateTooHigh(String),
     #[error("amount does not fit in 64 bits")]
     Overflow,
 }
@@ -122,16 +126,51 @@ fn round_amount(base: i64, rate_bp: u32) -> Result<i64, TaxError> {
     i64::try_from(if product < 0 { -signed } else { signed }).map_err(|_| TaxError::Overflow)
 }
 
+/// Checks a rule set as a whole, whatever line it is later applied to: every base is `net` or the code of a rule
+/// with a lower `sequence` in the set, no code is used twice over overlapping effective dates, and no rate is above
+/// 100% (10 000 bp).
+///
+/// # Errors
+/// `Cycle` for a rule naming itself, `UnknownBase` for any other bad base, `DuplicateCode`, `RateTooHigh`.
+pub fn validate(rules: &[Rule]) -> Result<(), TaxError> {
+    for (i, rule) in rules.iter().enumerate() {
+        if rule.rate_bp > 10_000 {
+            return Err(TaxError::RateTooHigh(rule.code.clone()));
+        }
+        for part in &rule.base {
+            if part == "net" {
+                continue;
+            }
+            if *part == rule.code {
+                return Err(TaxError::Cycle(part.clone()));
+            }
+            if !rules.iter().any(|r| r.code == *part && r.sequence < rule.sequence) {
+                return Err(TaxError::UnknownBase(part.clone()));
+            }
+        }
+        for other in &rules[i + 1..] {
+            let overlap = other.code == rule.code
+                && other.effective_to.is_none_or(|to| rule.effective_from < to)
+                && rule.effective_to.is_none_or(|to| other.effective_from < to);
+            if overlap {
+                return Err(TaxError::DuplicateCode(rule.code.clone()));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Applicable rules (category match, condition, effective on `ctx.date`) in `sequence` order; each component's base
 /// is the sum of the named parts; `amount = round_half_up(base × rate_bp / 10_000)`.
 ///
-/// A base may name `net` and rules with a lower `sequence`. A named rule that does not apply to this line (for
-/// example the service charge on a room) counts as zero.
+/// The rule set is [`validate`]d first, so a bad set fails on every line. A base may name `net` and rules with a
+/// lower `sequence`; a named rule that does not apply to this line (for example the service charge on a room)
+/// counts as zero.
 ///
 /// # Errors
-/// `UnknownBase` for a base naming anything else, `Cycle` for a rule naming itself, `Overflow` when a figure
-/// leaves the `i64` range.
+/// Anything [`validate`] returns, and `Overflow` when a figure leaves the `i64` range.
 pub fn calculate(net: i64, rules: &[Rule], ctx: &Context) -> Result<Breakdown, TaxError> {
+    validate(rules)?;
     let mut ordered: Vec<&Rule> = rules.iter().filter(|r| applies(r, ctx)).collect();
     ordered.sort_by_key(|r| r.sequence);
 
@@ -143,14 +182,8 @@ pub fn calculate(net: i64, rules: &[Rule], ctx: &Context) -> Result<Breakdown, T
         for part in &rule.base {
             if part == "net" {
                 base += i128::from(net);
-            } else if *part == rule.code {
-                return Err(TaxError::Cycle(part.clone()));
             } else if let Some(amount) = amounts.get(part.as_str()) {
                 base += i128::from(*amount);
-            } else if rules.iter().any(|r| r.code == *part && r.sequence < rule.sequence) {
-                // Defined earlier but not applicable to this line.
-            } else {
-                return Err(TaxError::UnknownBase(part.clone()));
             }
         }
         let base = i64::try_from(base).map_err(|_| TaxError::Overflow)?;
@@ -199,7 +232,7 @@ pub fn back_calculate(gross: i64, rules: &[Rule], ctx: &Context) -> Result<Break
     calculate(0, rules, ctx)?;
     let (mut low, mut high) = (0_i64, gross);
     while low < high {
-        let mid = low + (high - low + 1) / 2;
+        let mid = low + (high - low) / 2 + (high - low) % 2;
         match calculate(mid, rules, ctx) {
             Ok(b) if b.total <= gross => low = mid,
             Ok(_) | Err(TaxError::Overflow) => high = mid - 1,

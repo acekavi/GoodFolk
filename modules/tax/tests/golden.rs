@@ -1,5 +1,7 @@
 use proptest::prelude::*;
-use tax::{Breakdown, Condition, Context, Presentation, Rule, TaxError, back_calculate, calculate, sri_lanka_preset};
+use tax::{
+    Breakdown, Condition, Context, Presentation, Rule, TaxError, back_calculate, calculate, sri_lanka_preset, validate,
+};
 use time::macros::date;
 
 fn ctx(category: &str, vat: bool) -> Context {
@@ -131,6 +133,49 @@ fn bad_bases_are_rejected() {
 }
 
 #[test]
+fn a_same_sequence_base_is_unknown_in_both_orders() {
+    let mut a = sri_lanka_preset(false)[1].clone();
+    a.code = "A".into();
+    let mut b = a.clone();
+    b.code = "B".into();
+    a.base = vec!["net".into(), "B".into()];
+    for rules in [vec![a.clone(), b.clone()], vec![b, a]] {
+        assert_eq!(calculate(100, &rules, &ctx("room", true)).unwrap_err(), TaxError::UnknownBase("B".into()));
+        assert_eq!(validate(&rules).unwrap_err(), TaxError::UnknownBase("B".into()));
+    }
+}
+
+#[test]
+fn validate_rejects_duplicates_and_high_rates() {
+    assert_eq!(validate(&sri_lanka_preset(false)), Ok(()));
+    let mut rules = sri_lanka_preset(false);
+    rules.push(rules[1].clone());
+    assert_eq!(validate(&rules).unwrap_err(), TaxError::DuplicateCode("TDL".into()));
+    rules[1].effective_to = Some(date!(2026 - 06 - 01));
+    rules[4].effective_from = date!(2026 - 06 - 01);
+    assert_eq!(validate(&rules), Ok(()));
+    let mut rules = sri_lanka_preset(false);
+    rules[0].rate_bp = 10_001;
+    assert_eq!(validate(&rules).unwrap_err(), TaxError::RateTooHigh("SC".into()));
+    assert_eq!(calculate(1, &rules, &ctx("room", true)).unwrap_err(), TaxError::RateTooHigh("SC".into()));
+}
+
+#[test]
+fn extreme_grosses_never_panic_or_hang() {
+    for rules in [sri_lanka_preset(false), Vec::new()] {
+        for gross in [i64::MAX, i64::MAX - 1, i64::MIN + 1] {
+            for pos in ["room", "pos:BAR"] {
+                let r = back_calculate(gross, &rules, &ctx(pos, true));
+                assert!(r.is_ok() || r == Err(TaxError::Overflow), "{gross} {r:?}");
+                if let Ok(b) = r {
+                    assert_eq!(b.total, gross);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn conditions_and_category_patterns() {
     let mut rule = sri_lanka_preset(false)[1].clone();
     rule.condition = Condition::Residency { resident: false };
@@ -167,7 +212,20 @@ proptest! {
         let b = back_calculate(gross, &rules, &c).unwrap();
         prop_assert_eq!(b.total, gross);
         prop_assert_eq!(b.net + on_bill_sum(&b), b.total);
+        let sign_ok = if gross >= 0 { b.net >= 0 } else { b.net <= 0 };
+        prop_assert!(sign_ok);
+        let mirrored = back_calculate(-gross, &rules, &c).unwrap();
+        prop_assert_eq!(mirrored.net, -b.net);
         let forward = calculate(b.net, &rules, &c).unwrap();
-        prop_assert_eq!(forward.net + on_bill_sum(&forward), forward.total);
+        prop_assert!((forward.total - gross).abs() <= 3);
+    }
+
+    #[test]
+    fn any_gross_is_ok_or_overflow(gross in any::<i64>(), pos in any::<bool>()) {
+        let c = ctx(if pos { "pos:REST" } else { "room" }, true);
+        let r = back_calculate(gross, &sri_lanka_preset(false), &c);
+        prop_assert!(matches!(&r, Ok(b) if b.total == gross) || r == Err(TaxError::Overflow));
+        let n = calculate(gross, &sri_lanka_preset(false), &c);
+        prop_assert!(n.is_ok() || n == Err(TaxError::Overflow));
     }
 }
