@@ -79,6 +79,9 @@ pub struct NewCharge {
     pub posting_key: Option<String>,
     /// `unit_net` already includes the taxes; the net is back-calculated so net plus taxes equal the price exactly.
     pub inclusive: bool,
+    /// Posted without taxes. Only for internal transfers and adjustments of amounts already taxed where they were
+    /// first charged, such as a charge to account; never for a new supply.
+    pub untaxed: bool,
 }
 
 /// Refuses a malformed charge before anything is locked, and returns its trimmed description.
@@ -128,7 +131,7 @@ pub async fn post_charge(
         (FolioKind::Guest, Some(stay)) => stay_residency(tx, stay).await?,
         _ => None,
     };
-    post_locked(tx, tenant, user, &locked, charge, description, resident).await
+    post_locked(tx, tenant, user, &locked, charge, description, resident, None).await
 }
 
 /// The line posted under `key` on any of `property`'s folios, if there is one.
@@ -154,7 +157,9 @@ pub(crate) async fn stay_residency(tx: &mut Tx, reservation_room: Uuid) -> Resul
     Ok(residency.flatten().map(|residency| residency == "resident"))
 }
 
-/// Posts `charge` on the locked `folio`, whose posting key (if any) the caller has already looked up.
+/// Posts `charge` on the locked `folio`, whose posting key (if any) the caller has already looked up, with
+/// `transfer_id` linking it to the payment it moved.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn post_locked(
     tx: &mut Tx,
     tenant: TenantId,
@@ -163,6 +168,7 @@ pub(crate) async fn post_locked(
     charge: NewCharge,
     description: String,
     resident: Option<bool>,
+    transfer_id: Option<Uuid>,
 ) -> Result<LineRow, FolioError> {
     check_open(folio)?;
     let (base_currency, accepted, vat_registered): (String, Vec<String>, bool) = sqlx::query_as(
@@ -176,21 +182,25 @@ pub(crate) async fn post_locked(
         return Err(FolioError::Invalid(format!("{} is not a currency this property accepts", charge.currency)));
     }
 
-    let rules = crate::load_rules(tx, folio.property_id).await?;
-    let context = tax::Context {
-        date: charge.business_date,
-        category: charge.category.clone(),
-        vat_registered,
-        resident,
-        currency: charge.currency.clone(),
-    };
     let amount = i64::from(charge.quantity)
         .checked_mul(charge.unit_net)
         .ok_or_else(|| FolioError::Invalid("the amount is too large".into()))?;
-    let breakdown = if charge.inclusive {
-        tax::back_calculate(amount, &rules, &context)?
+    let breakdown = if charge.untaxed {
+        tax::Breakdown { net: amount, components: Vec::new(), total: amount }
     } else {
-        tax::calculate(amount, &rules, &context)?
+        let rules = crate::load_rules(tx, folio.property_id).await?;
+        let context = tax::Context {
+            date: charge.business_date,
+            category: charge.category.clone(),
+            vat_registered,
+            resident,
+            currency: charge.currency.clone(),
+        };
+        if charge.inclusive {
+            tax::back_calculate(amount, &rules, &context)?
+        } else {
+            tax::calculate(amount, &rules, &context)?
+        }
     };
 
     let rate = fx::rate_for(tx, folio.property_id, &charge.currency, charge.business_date).await?.ok_or_else(|| {
@@ -202,8 +212,9 @@ pub(crate) async fn post_locked(
     let mut savepoint = tx.begin().await?;
     let inserted: Result<LineRow, sqlx::Error> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "insert into folio_line (id, tenant_id, folio_id, source, category, description, quantity, net, total,
-                                 currency, base_total, rate, rate_date, business_date, posting_key, posted_by)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                                 currency, base_total, rate, rate_date, business_date, posting_key, posted_by,
+                                 transfer_id)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
          returning {LINE_COLUMNS}"
     )))
     .bind(Uuid::now_v7())
@@ -222,6 +233,7 @@ pub(crate) async fn post_locked(
     .bind(charge.business_date)
     .bind(&charge.posting_key)
     .bind(user.map(|user| user.0))
+    .bind(transfer_id)
     .fetch_one(&mut *savepoint)
     .await;
     // A key another transaction posted since the lookup: its line is the answer, as for any replay.

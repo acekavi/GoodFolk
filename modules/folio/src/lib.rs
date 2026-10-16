@@ -14,11 +14,16 @@
 //! A system posting for a stay (room, meal plan, laundry, POS) goes through [`post_for_stay`], never
 //! [`post_charge`]: only `post_for_stay` applies the reservation's routing.
 //!
+//! A payment is positive and a refund negative, each with its base amount at the business date's rate. A charge to
+//! account (a payment here, an untaxed `adjustment` on the account's folio) and a deposit moved to the first stay (a
+//! `transfer` payment on each folio) are pairs sharing a `transfer_id`.
+//!
 //! A line on the folio of an account the reservation is no longer billed to can't be transferred back to the stay;
 //! reverse it and post a manual charge instead.
 
 mod folios;
 mod lines;
+mod payments;
 mod routing;
 mod rules;
 
@@ -27,6 +32,7 @@ pub use folios::{
     ensure_account_folio, ensure_deposit_folio, ensure_guest_folio, folios_for,
 };
 pub use lines::{LineRow, NewCharge, post_charge, reverse, transfer};
+pub use payments::{Method, move_deposit, post_cancellation_fee, refund, take_payment};
 pub use routing::{DEFAULT_ROUTING, follow_account_change, post_for_stay, set_routing};
 pub use rules::load_rules;
 

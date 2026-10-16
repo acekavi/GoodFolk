@@ -138,5 +138,5 @@ pub async fn post_for_stay(
     {
         return Ok(line);
     }
-    post_locked(tx, tenant, user, &target, charge, description, resident).await
+    post_locked(tx, tenant, user, &target, charge, description, resident, None).await
 }

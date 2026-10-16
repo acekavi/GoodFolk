@@ -63,8 +63,11 @@ pub struct CheckedOut {
 /// override.
 ///
 /// Lock order: this row, then the assigned room, then its condition (shared) -- see "Room assignment lock
-/// order" in `docs/design/api-conventions.md`. No inventory lock: check-in changes no counter, the stay was
-/// already sold at booking.
+/// order" in `docs/design/api-conventions.md` -- then the reservation's deposit folio and this stay's guest folio.
+/// No inventory lock: check-in changes no counter, the stay was already sold at booking.
+///
+/// The reservation's first check-in moves its deposit folio's balance to this stay's guest folio
+/// ([`folio::move_deposit`]); that needs a rate for each currency moved on the business date (`Conflict`).
 ///
 /// Sets `checked_in_at` to now and `checked_in_business_date` to the business date, remembers the room's
 /// condition in `condition_before_check_in` for [`undo_check_in`], bumps both versions, audits
@@ -150,6 +153,8 @@ pub async fn check_in(
     .bind(condition.as_str())
     .fetch_one(&mut **tx)
     .await?;
+    // After this row and the room, before the reservation: the folios sit between them in the lock order.
+    folio::move_deposit(tx, tenant, Some(actor), property, row.reservation_id, id).await?;
     sqlx::query("update reservation set version = version + 1 where id = $1")
         .bind(row.reservation_id)
         .execute(&mut **tx)

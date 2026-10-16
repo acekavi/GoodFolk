@@ -989,3 +989,59 @@ async fn find_drift_stays_empty_through_random_stays_and_business_date_moves(_: 
         }
     }
 }
+
+/// `(currency, amount)` of each balance of `folio`, and how many payments it holds.
+async fn balances(hotel: &Hotel, folio: Uuid) -> (Vec<(String, i64)>, usize) {
+    let query = folio::FolioQuery::Folio { property: hotel.property, folio };
+    let view = folio::folios_for(&mut hotel.tx().await, query).await.unwrap().pop().expect("the folio");
+    (view.balances.into_iter().map(|balance| (balance.currency, balance.amount)).collect(), view.payments.len())
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_first_check_in_of_a_reservation_takes_its_deposit_and_the_second_does_not(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let (hotel, plans) = Hotel::for_booking(opts, 2).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let room = || hotel.room(hotel.deluxe.id, &plans.bar, 0, 2);
+    let booked = hotel.try_book(&booker, vec![room(), room()]).await.unwrap();
+    let (first, second) = (&booked.rooms[0], &booked.rooms[1]);
+    let mut tx = hotel.tx().await;
+    let deposit = folio::ensure_deposit_folio(&mut tx, hotel.tenant, hotel.property, booked.id).await.unwrap();
+    let guests = [
+        folio::ensure_guest_folio(&mut tx, hotel.tenant, hotel.property, first.id).await.unwrap(),
+        folio::ensure_guest_folio(&mut tx, hotel.tenant, hotel.property, second.id).await.unwrap(),
+    ];
+    tx.commit().await.unwrap();
+    let hotel = &hotel;
+    let pay = move |amount: i64| async move {
+        let mut tx = hotel.tx().await;
+        folio::take_payment(
+            &mut tx,
+            hotel.tenant,
+            Some(hotel.user),
+            hotel.property,
+            deposit,
+            folio::Method::Cash,
+            amount,
+            "USD",
+            None,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    };
+    pay(5_000).await;
+
+    hotel.try_check_in(first.id, first.version).await.unwrap();
+
+    assert_eq!(balances(hotel, deposit).await, (vec![("USD".into(), 0)], 2));
+    assert_eq!(balances(hotel, guests[0]).await, (vec![("USD".into(), -5_000)], 1));
+
+    pay(2_000).await;
+    hotel.try_check_in(second.id, second.version).await.unwrap();
+
+    assert_eq!(balances(hotel, guests[1]).await, (vec![], 0), "only the first check-in takes the deposit");
+    assert_eq!(balances(hotel, deposit).await, (vec![("USD".into(), -2_000)], 3));
+}

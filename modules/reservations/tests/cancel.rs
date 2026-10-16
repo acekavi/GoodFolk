@@ -293,3 +293,33 @@ async fn sold_always_matches_the_rooms_booked_through_random_bookings_and_cancel
         }
     }
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn cancelling_the_last_stay_posts_the_reservation_s_penalty_to_its_deposit_folio(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let (hotel, plans) = Hotel::for_booking(opts, 2).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    // Arriving tomorrow, within BAR's "1 night from 2 days out" rule: 10000 USD each.
+    let room = || hotel.room(hotel.deluxe.id, &plans.bar, 1, 3);
+    let booked = hotel.try_book(&booker, vec![room(), room()]).await.unwrap();
+    let mut tx = hotel.tx().await;
+    let deposit = folio::ensure_deposit_folio(&mut tx, hotel.tenant, hotel.property, booked.id).await.unwrap();
+    tx.commit().await.unwrap();
+    let lines = || async {
+        let query = folio::FolioQuery::Folio { property: hotel.property, folio: deposit };
+        folio::folios_for(&mut hotel.tx().await, query).await.unwrap().pop().expect("the deposit folio").lines
+    };
+
+    assert_eq!(hotel.try_cancel(booked.rooms[0].id, 1).await.unwrap().penalty, 10_000);
+    assert!(lines().await.is_empty(), "the reservation still has a stay");
+    assert_eq!(hotel.try_cancel(booked.rooms[1].id, 1).await.unwrap().penalty, 10_000);
+
+    let lines = lines().await;
+    let [fee] = &lines[..] else { panic!("one line: {lines:?}") };
+    assert_eq!((fee.line.source, fee.line.category.as_str()), (folio::Source::CancellationFee, "fee"));
+    assert_eq!((fee.line.net, fee.line.currency.as_str()), (20_000, "USD"));
+    assert_eq!(fee.line.posting_key, Some(format!("cancellation:{}", booked.id)));
+    assert!(!fee.taxes.is_empty(), "a penalty is taxed");
+}
