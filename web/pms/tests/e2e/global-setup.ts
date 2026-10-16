@@ -61,4 +61,11 @@ export default async function globalSetup() {
 			`RustFS has no ${missing.join(' or ')} bucket; run \`cargo run -p storage --example ensure-buckets\``
 		);
 	}
+	// Anything but 200 (a 403 from wrong credentials or clock skew) would hide a missing bucket, so it stops here too.
+	const refused = BUCKETS.filter((_, i) => statuses[i] !== 200);
+	if (refused.length > 0) {
+		throw new Error(
+			`RustFS refused to show ${refused.join(' and ')} (${statuses.join(', ')}); check the dev credentials goodfolk / goodfolk_dev_secret`
+		);
+	}
 }

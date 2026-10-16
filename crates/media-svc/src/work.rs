@@ -151,8 +151,11 @@ async fn store(svc: &MediaSvc, job: &ProcessJob, output: Output) -> anyhow::Resu
     let archive_len = output.archive.len() as u64;
     let content_type = match output.archive_ext.as_str() {
         "pdf" => "application/pdf",
-        // A JPEG cjxl could not transcode, kept as uploaded.
-        "jpg" => "image/jpeg",
+        // A JPEG cjxl could not transcode, kept as uploaded. Logged, so a broken cjxl that refuses every JPEG shows.
+        "jpg" => {
+            tracing::warn!(%asset, "cjxl refused to transcode this JPEG; archived as uploaded");
+            "image/jpeg"
+        }
         _ => "image/jxl",
     };
     // Every object goes up at once: one after another, they would add up to a noticeable part of a photo's time
