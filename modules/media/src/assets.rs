@@ -1,5 +1,5 @@
 //! An upload's life: started (`uploading`), completed after media-svc verified the file (`processing`, or linked to
-//! the tenant's existing copy of the same file), then `ready` or `failed` when media-svc reports back.
+//! the property's existing copy of the same file), then `ready` or `failed` when media-svc reports back.
 
 use crate::{
     ASSET_COLUMNS, AssetRow, AssetStatus, DocumentKind, MAX_ISSUE_PHOTOS, MediaError, Purpose, Target, audit, notify,
@@ -412,7 +412,7 @@ fn is_dedup_violation(err: &sqlx::Error) -> bool {
     err.as_database_error().and_then(|db_err| db_err.constraint()).is_some_and(|name| name == DEDUP_INDEX)
 }
 
-/// Links `target` to the tenant's `existing` copy of the file, queues it again if it failed, and deletes the upload
+/// Links `target` to the property's `existing` copy of the file, queues it again if it failed, and deletes the upload
 /// `own`.
 async fn link_duplicate(
     tx: &mut Tx,

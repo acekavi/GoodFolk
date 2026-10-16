@@ -519,7 +519,7 @@ sequenceDiagram
 | **Photos** | JPEG sources → **JPEG XL lossless JPEG transcode** (about 20% smaller, bit-exact reversible to the original JPEG). PNG and WebP → lossless JPEG XL of the decoded pixels | **AVIF** (primary) + **WebP** fallback at `thumb` (320 square crop), `sm` 640, `md` 1024, `lg` 1600 and `xl` 2400 (long edge, never upscaled) | AVIF gives the best delivered size with universal-enough support. JXL is ideal for lossless archiving but is still behind a flag in Chrome, so it is not served to browsers. Delivered files are re-encoded from upright, sRGB pixels with no metadata, so no GPS survives |
 | **Video** (6b) | Original kept as uploaded | **AV1 (SVT-AV1, 10-bit, preset ~5–6, CRF ~28–30)** in **CMAF / HLS**, plus **H.264** fallback rendition; audio **Opus** (AV1) / AAC (H.264) | AV1 is about 30–50% smaller than H.264 at the same quality, with hardware decode now common. CMAF uses one set of segments for HLS and DASH |
 | **Audio** (6b) | Lossless sources → **FLAC**; lossy sources kept as-is | **Opus** 96–128 kbps | Opus is the most efficient general-purpose codec |
-| **Documents** | PDFs stored as uploaded (see below); other files **zstd**-compressed | Images get `thumb` and `md`. **A PDF gets no thumbnail in 6a** (the UI shows an icon) | Compressing already-compressed PDFs gains little |
+| **Documents** | Images archived as JPEG XL like photos; PDFs stored as uploaded (see below) | Images get `thumb` and `md`. **A PDF gets no thumbnail in 6a** (the UI shows an icon) | Compressing already-compressed PDFs gains little |
 
 Deviations from the first design, all decided during 6a:
 - **HEIC is refused**, not archived: no HEVC decoder can be vendored under the licence policy, and phones normally hand a browser a JPEG.

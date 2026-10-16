@@ -18,11 +18,11 @@ use uuid::Uuid;
 
 /// Size of every multipart part but the last.
 pub const PART_SIZE: u64 = 8 * 1024 * 1024;
-/// Cache-Control for objects whose key never changes content.
 /// The largest object [`Storage::get`] will buffer.
 pub const MAX_OBJECT_BYTES: u64 = 32 * 1024 * 1024;
 /// S3 allows at most this many parts in one multipart upload, numbered from 1.
 const MAX_PARTS: usize = 10_000;
+/// Cache-Control for objects whose key never changes content.
 pub const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
 /// How long a signed request made by this client stays valid.
@@ -396,7 +396,7 @@ pub fn archive_key(tenant: Uuid, asset: Uuid, ext: &str) -> String {
     format!("t/{tenant}/a/{asset}/archive.{ext}")
 }
 
-/// A delivered rendition, in the public bucket.
+/// A delivered rendition: in the public bucket for a gallery photo, in the private bucket otherwise.
 pub fn rendition_key(tenant: Uuid, asset: Uuid, size: &str, format: &str) -> String {
     format!("t/{tenant}/a/{asset}/{size}.{format}")
 }

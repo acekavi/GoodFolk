@@ -165,7 +165,9 @@ This phase also brings in the infrastructure deferred from Phase 0, because `med
 
 ## Data
 
-Migrations 0014 (outbox), 0015 (definer functions ignore temp schemas) and 0016 (media):
+Migrations 0014 (outbox), 0015 (definer functions ignore temp schemas), 0016 (media), 0017 (media hardening: dedup
+within a property, tenant-checked link keys, a capped sweep), 0018 (guest-document retention recheck) and 0019 (the
+outbox notifies the relay):
 - `outbox` (`id` uuid v7, `topic`, `payload` jsonb, `created_at`, `attempts`, `next_attempt_at`, `sent_at`, `last_error`)
   with a partial index on unsent rows by `next_attempt_at`.
 - `processed_event` (`message_id` primary key, `processed_at`).
@@ -176,14 +178,17 @@ Migrations 0014 (outbox), 0015 (definer functions ignore temp schemas) and 0016 
   - `id`, `tenant_id`, `property_id`, `purpose`, `visibility` (`public` | `private`);
   - `status` (`uploading`, `processing`, `ready`, `failed`), `error`;
   - `filename`, `declared_bytes`, `sha256`, `blake3`, `mime`, `bytes`, `width`, `height`;
-  - `upload_key`, `s3_upload_id`, `archive_key`, `renditions` (jsonb: `[{size, format, width, height, bytes, key}]`);
-  - `created_by`, `created_at`, `ready_at`.
+  - `s3_upload_id`, `archive_key`, `renditions` (jsonb: `[{size, format, width, height, bytes, key}]`); the upload's
+    key is not stored, since it is derived (`t/{tenant}/a/{asset}/upload`);
+  - `pending_target` (jsonb: the link to write once the file completes, cleared when it is written);
+  - `created_by`, `created_at`, `processing_at` (when it last entered `processing`, for the stuck sweep), `ready_at`.
 
   It is unique on `(tenant_id, property_id, purpose, blake3)` where `blake3` is not null (migration 0017).
 - `room_type_media` (`room_type_id`, `asset_id`, `position`, `caption`), keyed on `(room_type_id, asset_id)`.
 - `room_issue_media` (`issue_id`, `asset_id`), keyed the same way.
 - `guest_document` (`id`, `guest_id`, `asset_id`, `kind` (`passport`, `nic`, `driving_licence`, `other`),
-  `uploaded_by`, `uploaded_at`).
+  `uploaded_by`, `uploaded_at`, `recheck_after`). `recheck_after` (migration 0018) is when a document retention kept
+  is next a candidate; null means a year after upload.
 - Every media table has forced RLS, the `tenant_isolation` policy, and isolation tests.
 
 ## Permissions
@@ -216,7 +221,7 @@ GraphQL:
 - `guestDocuments(guestId)`: `{id, kind, status, mime, uploadedAt, uploadedBy}`. It carries no URLs; links come from
   the audited REST call.
 
-Audit: `media.uploaded`, `media.removed`, `guest_document.uploaded`, `guest_document.viewed` (one per link issued),
+Audit: `media.uploaded`, `media.removed`, `media.reordered`, `media.captioned`, `guest_document.uploaded`, `guest_document.viewed` (one per link issued),
 `guest_document.deleted` (by a person or by retention).
 
 ## Retention and sweep
