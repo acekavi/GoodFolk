@@ -12,6 +12,7 @@ db = { path = "crates/db" }
 domain = { path = "crates/domain" }
 events = { path = "crates/events" }
 folio = { path = "modules/folio" }
+fx = { path = "modules/fx" }
 housekeeping = { path = "modules/housekeeping" }
 identity = { path = "modules/identity" }
 imaging = { path = "crates/imaging" }
@@ -52,6 +53,7 @@ proptest = "1"
 prost = "0.14"
 protox = "0.10"
 rayon = "1"
+rust_decimal = { version = "1", default-features = false, features = ["std"] }
 # rustls without a bundled crypto provider: the tree already has ring (through sqlx), and rustls picks the only one built.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }

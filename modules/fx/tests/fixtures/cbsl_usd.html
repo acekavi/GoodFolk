@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Bootstrap Example</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.1.1/jquery.min.js"></script>
+  <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js"></script>
+  <script type="text/javascript" src="javascript/zebra_datepicker.js"></script>
+  <script type="text/javascript" src="./javascript/iframeResizer.contentWindow.min.js"></script>
+  <link rel="stylesheet" href="css/default.css" type="text/css">
+  <style>
+  	.btn-link{
+	  border:none;
+	  outline:none;
+	  background:none;
+	  cursor:pointer;
+	  color:#0FA7F8;
+	  padding:0;
+	  text-decoration:underline;
+	  font-family:inherit;
+	  font-size:inherit;
+	  text-decoration: none;
+	}
+  </style>
+</head>
+<body>
+<form name="form" action="" method="post">
+<input id="startDate" name="startDate" type="hidden">
+<input id="endDate" name="endDate" type="hidden">
+<div class="container">
+
+<div class="row">
+
+<b>Terms and Conditions</b>
+<p>All exchange rates in this website are indicative rates only, obtained
+ from averages of transaction prices and price quotes from financial 
+institutions. </p>
+</div><p></p><!-- KOHANA LOOKUP CONTENT --><span class="export">
+View or save this data in:	
+  <!--button class="btn-link" type="submit" value="xml" name="btnXML">XML</button>,--> 
+ 	<button class="btn-link" type="submit" value="csv" name="btnCSV">CSV</button>
+	</span>
+
+<h2>View data for the past: </h2><ul class="quick_dates">
+<li><button class="btn-link" type="submit" value="Submit" name="submit_button" onclick="setDateValues_1week();">1 Week</button></li>
+<li><button class="btn-link" type="submit" value="Submit" name="submit_button" onclick="setDateValues_2week();">2 Week</button></li>
+<li><button class="btn-link" type="submit" value="Submit" name="submit_button" onclick="setDateValues_1month();">1 Month</button></li>
+<li><button class="btn-link" type="submit" value="Submit" name="submit_button" onclick="setDateValues_3months();">3 Months</button></li>
+<li><button class="btn-link" type="submit" value="Submit" name="submit_button" onclick="setDateValues_6months();">6 Months</button></li>
+<li><button class="btn-link" type="submit" value="Submit" name="submit_button" onclick="setDateValues_1year();">1 Year</button></li>
+</ul><p></p>
+
+<h2 id="LOOKUPS_IEXE0101"> Australian Dollar </h2><div class="table-responsive"></div><div class="table-responsive"><table class="table table-bordered table-striped table-hover rates sortable series"><thead><tr class="odd">	<th class="header headerSortDown">Date</th>	<th class="header">Buy Rate (LKR)</th>	<th class="header">Sell Rate (LKR) </th></tr></thead><tbody><tr class="odd"><td> 2026-10-16 </td><td> 224.2311 </td><td> 234.6933 </td></tr><tr class="odd"><td> 2026-10-15 </td><td> 225.2564 </td><td> 235.7254 </td></tr><tr class="odd"><td> 2026-10-14 </td><td> 226.3213 </td><td> 236.8437 </td></tr><tr class="odd"><td> 2026-10-13 </td><td> 224.9726 </td><td> 235.5474 </td></tr><tr class="odd"><td> 2026-10-12 </td><td> 225.8009 </td><td> 236.4133 </td></tr><tr class="odd"><td> 2026-10-09 </td><td> 225.5286 </td><td> 236.1209 </td></tr></tbody></table><h2 id="LOOKUPS_IEXE0101"> Canadian Dollar </h2><div class="table-responsive"></div><div class="table-responsive"><table class="table table-bordered table-striped table-hover rates sortable series"><thead><tr class="odd">	<th class="header headerSortDown">Date</th>	<th class="header">Buy Rate (LKR)</th>	<th class="header">Sell Rate (LKR) </th></tr></thead><tbody><tr class="odd"><td> 2026-10-16 </td><td> 228.9733 </td><td> 237.6061 </td></tr><tr class="odd"><td> 2026-10-15 </td><td> 228.7581 </td><td> 237.3852 </td></tr><tr class="odd"><td> 2026-10-14 </td><td> 228.6604 </td><td> 237.2863 </td></tr><tr class="odd"><td> 2026-10-13 </td><td> 227.5922 </td><td> 236.1898 </td></tr><tr class="odd"><td> 2026-10-12 </td><td> 227.7527 </td><td> 236.3590 </td></tr><tr class="odd"><td> 2026-10-09 </td><td> 228.4464 </td><td> 237.0749 </td></tr></tbody></table><h2 id="LOOKUPS_IEXE0101"> Swiss Franc </h2><div class="table-responsive"></div><div class="table-responsive"><table class="table table-bordered table-striped table-hover rates sortable series"><thead><tr class="odd">	<th class="header headerSortDown">Date</th>	<th class="header">Buy Rate (LKR)</th>	<th class="header">Sell Rate (LKR) </th></tr></thead><tbody><tr class="odd"><td> 2026-10-16 </td><td> 391.7547 </td><td> 408.6363 </td></tr><tr class="odd"><td> 2026-10-15 </td><td> 391.2963 </td><td> 408.1641 </td></tr><tr class="odd"><td> 2026-10-14 </td><td> 389.4561 </td><td> 406.2200 </td></tr><tr class="odd"><td> 2026-10-13 </td><td> 388.9190 </td><td> 405.6776 </td></tr><tr class="odd"><td> 2026-10-12 </td><td> 390.4282 </td><td> 407.2472 </td></tr><tr class="odd"><td> 2026-10-09 </td><td> 390.3156 </td><td> 406.9560 </td></tr></tbody></table><h2 id="LOOKUPS_IEXE0101"> Renminbi </h2><div class="table-responsive"></div><div class="table-responsive"><table class="table table-bordered table-striped table-hover rates sortable series"><thead><tr class="odd">	<th class="header headerSortDown">Date</th>	<th class="header">Buy Rate (LKR)</th>	<th class="header">Sell Rate (LKR) </th></tr></thead><tbody><tr class="odd"><td> 2026-10-16 </td><td> 48.2504 </td><td> 50.7875 </td></tr><tr class="odd"><td> 2026-10-15 </td><td> 48.2541 </td><td> 50.7904 </td></tr><tr class="odd"><td> 2026-10-14 </td><td> 48.2206 </td><td> 50.7566 </td></tr><tr class="odd"><td> 2026-10-13 </td><td> 48.1824 </td><td> 50.7172 </td></tr><tr class="odd"><td> 2026-10-12 </td><td> 48.2056 </td><td> 50.7413 </td></tr><tr class="odd"><td> 2026-10-09 </td><td> 48.1655 </td><td> 50.7011 </td></tr></tbody></table><h2 id="LOOKUPS_IEXE0101"> Euro </h2><div class="table-responsive"></div><div class="table-responsive"><table class="table table-bordered table-striped table-hover rates sortable series"><thead><tr class="odd">	<th class="header headerSortDown">Date</th>	<th class="header">Buy Rate (LKR)</th>	<th class="header">Sell Rate (LKR) </th></tr></thead><tbody><tr class="odd"><td> 2026-10-16 </td><td> 365.0057 </td><td> 377.9703 </td></tr><tr class="odd"><td> 2026-10-15 </td><td> 365.3707 </td><td> 378.3561 </td></tr><tr class="odd"><td> 2026-10-14 </td><td> 364.5722 </td><td> 377.5218 </td></tr><tr class="odd"><td> 2026-10-13 </td><td> 363.3886 </td><td> 376.3195 </td></tr><tr class="odd"><td> 2026-10-12 </td><td> 364.5690 </td><td> 377.5427 </td></tr><tr class="odd"><td> 2026-10-09 </td><td> 365.0300 </td><td> 378.0370 </td></tr></tbody></table><h2 id="LOOKUPS_IEXE0101"> British Pound </h2><div class="table-responsive"></div><div class="table-responsive"><table class="table table-bordered table-striped table-hover rates sortable series"><thead><tr class="odd">	<th class="header headerSortDown">Date</th>	<th class="header">Buy Rate (LKR)</th>	<th class="header">Sell Rate (LKR) </th></tr></thead><tbody><tr class="odd"><td> 2026-10-16 </td><td> 432.5996 </td><td> 447.0403 </td></tr><tr class="odd"><td> 2026-10-15 </td><td> 431.7202 </td><td> 446.1479 </td></tr><tr class="odd"><td> 2026-10-14 </td><td> 432.0976 </td><td> 446.5367 </td></tr><tr class="odd"><td> 2026-10-13 </td><td> 430.3622 </td><td> 444.7625 </td></tr><tr class="odd"><td> 2026-10-12 </td><td> 431.1908 </td><td> 445.6130 </td></tr><tr class="odd"><td> 2026-10-09 </td><td> 430.9928 </td><td> 445.4237 </td></tr></tbody></table><h2 id="LOOKUPS_IEXE0101"> Yen </h2><div class="table-responsive"></div><div class="table-responsive"><table class="table table-bordered table-striped table-hover rates sortable series"><thead><tr class="odd">	<th class="header headerSortDown">Date</th>	<th class="header">Buy Rate (LKR)</th>	<th class="header">Sell Rate (LKR) </th></tr></thead><tbody><tr class="odd"><td> 2026-10-16 </td><td> 2.0608 </td><td> 2.1344 </td></tr><tr class="odd"><td> 2026-10-15 </td><td> 2.0648 </td><td> 2.1391 </td></tr><tr class="odd"><td> 2026-10-14 </td><td> 2.0562 </td><td> 2.1298 </td></tr><tr class="odd"><td> 2026-10-13 </td><td> 2.0558 </td><td> 2.1298 </td></tr><tr class="odd"><td> 2026-10-12 </td><td> 2.0570 </td><td> 2.1305 </td></tr><tr class="odd"><td> 2026-10-09 </td><td> 2.0585 </td><td> 2.1330 </td></tr></tbody></table><h2 id="LOOKUPS_IEXE0101"> Singapore Dollar </h2><div class="table-responsive"></div><div class="table-responsive"><table class="table table-bordered table-striped table-hover rates sortable series"><thead><tr class="odd">	<th class="header headerSortDown">Date</th>	<th class="header">Buy Rate (LKR)</th>	<th class="header">Sell Rate (LKR) </th></tr></thead><tbody><tr class="odd"><td> 2026-10-16 </td><td> 252.9725 </td><td> 263.4370 </td></tr><tr class="odd"><td> 2026-10-15 </td><td> 253.1996 </td><td> 263.5491 </td></tr><tr class="odd"><td> 2026-10-14 </td><td> 253.2954 </td><td> 263.7622 </td></tr><tr class="odd"><td> 2026-10-13 </td><td> 253.2552 </td><td> 263.6269 </td></tr><tr class="odd"><td> 2026-10-12 </td><td> 253.4479 </td><td> 263.8257 </td></tr><tr class="odd"><td> 2026-10-09 </td><td> 253.3976 </td><td> 263.8044 </td></tr></tbody></table><h2 id="LOOKUPS_IEXE0101"> United States Dollar </h2><div class="table-responsive"></div><div class="table-responsive"><table class="table table-bordered table-striped table-hover rates sortable series"><thead><tr class="odd">	<th class="header headerSortDown">Date</th>	<th class="header">Buy Rate (LKR)</th>	<th class="header">Sell Rate (LKR) </th></tr></thead><tbody><tr class="odd"><td> 2026-10-16 </td><td> 326.6747 </td><td> 335.6485 </td></tr><tr class="odd"><td> 2026-10-15 </td><td> 326.7378 </td><td> 335.7328 </td></tr><tr class="odd"><td> 2026-10-14 </td><td> 326.5486 </td><td> 335.5194 </td></tr><tr class="odd"><td> 2026-10-13 </td><td> 326.4539 </td><td> 335.5122 </td></tr><tr class="odd"><td> 2026-10-12 </td><td> 326.4751 </td><td> 335.4587 </td></tr><tr class="odd"><td> 2026-10-09 </td><td> 326.4384 </td><td> 335.4464 </td></tr></tbody></table></div><!-- END KOHANA LOOKUP CONTENT --></div></div>
+        </div>
+    </div>
+</div>
+
+</div> <!-- Closes Main Container div -->
+
+<script>
+	$(document).ready(function() {
+
+    // assuming the controls you want to attach the plugin to
+    // have the "datepicker" class set
+    $('input.datepicker').Zebra_DatePicker();
+
+});
+
+function formatDate(date) {
+    var d = new Date(date),
+        month = '' + (d.getMonth() + 1),
+        day = '' + d.getDate(),
+        year = d.getFullYear();
+
+    if (month.length < 2) month = '0' + month;
+    if (day.length < 2) day = '0' + day;
+
+    return [year, month, day].join('-');
+}
+
+function setDateValues_1week()
+{
+	var now = new Date();
+	document.getElementById("startDate").value = formatDate(now.setDate(now.getDate() - 6));
+    document.getElementById("endDate").value = formatDate(new Date());
+    //alert(document.getElementById("startDate").value);
+}
+
+function setDateValues_2week()
+{
+	var now = new Date();
+	document.getElementById("startDate").value = formatDate(now.setDate(now.getDate() - 13));
+    document.getElementById("endDate").value = formatDate(new Date());
+    //alert(document.getElementById("startDate").value);
+}
+
+function setDateValues_1month()
+{
+	var now = new Date();
+	document.getElementById("startDate").value = formatDate(now.setDate(now.getDate() - 29));
+    document.getElementById("endDate").value = formatDate(new Date());
+    //alert(document.getElementById("startDate").value);
+}
+
+function setDateValues_3months()
+{
+	var now = new Date();
+	document.getElementById("startDate").value = formatDate(now.setDate(now.getDate() - 89));
+    document.getElementById("endDate").value = formatDate(new Date());
+    //alert(document.getElementById("startDate").value);
+}
+
+function setDateValues_6months()
+{
+	var now = new Date();
+	document.getElementById("startDate").value = formatDate(now.setDate(now.getDate() - 179));
+    document.getElementById("endDate").value = formatDate(new Date());
+    //alert(document.getElementById("startDate").value);
+}
+
+function setDateValues_1year()
+{
+	var now = new Date();
+	document.getElementById("startDate").value = formatDate(now.setDate(now.getDate() - 364));
+    document.getElementById("endDate").value = formatDate(new Date());
+    //alert(document.getElementById("startDate").value);
+}
+</script>
+</form>
+</body>
+</html>
