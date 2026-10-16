@@ -289,7 +289,7 @@ pub async fn folios_for(tx: &mut Tx, query: FolioQuery) -> Result<Vec<FolioView>
     .fetch_all(&mut **tx)
     .await?;
     let payments: Vec<PaymentRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select {PAYMENT_COLUMNS} from payment where folio_id = any($1) order by taken_at, id"
+        "select {PAYMENT_COLUMNS} from payment where folio_id = any($1) order by id"
     )))
     .bind(&ids)
     .fetch_all(&mut **tx)

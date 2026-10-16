@@ -439,7 +439,7 @@ pub async fn folios_for(tx, query: FolioQuery) -> Result<Vec<FolioView>, FolioEr
 ```rust
 pub enum Method { Cash, CardTerminal { approval: String, last4: String, brand: String }, BankTransfer { reference: String }, Account }
 pub async fn take_payment(tx, tenant, user, folio: Uuid, method: Method, amount: i64, currency: &str, evidence: Option<&str>) -> Result<PaymentRow, FolioError>;
-pub async fn refund(tx, tenant, user, payment: Uuid, amount: i64, reason: &str) -> Result<PaymentRow, FolioError>;
+pub async fn refund(tx, tenant, user, property: Uuid, payment: Uuid, amount: i64, reason: &str, from_folio: Option<Uuid>) -> Result<PaymentRow, FolioError>; // from_folio: the payment's own by default, else a folio of its reservation holding the credit
 pub async fn move_deposit(tx, tenant, user, reservation: Uuid, to_reservation_room: Uuid) -> Result<(), FolioError>; // no-op on zero balance
 pub async fn post_cancellation_fee(tx, tenant, user, property: Uuid, reservation_room: Uuid, amount: i64, currency: &str, inclusive: bool) -> Result<(), FolioError>; // posting key cancellation:<reservation_room>
 ```

@@ -19,6 +19,12 @@
 //! account (a payment here, an untaxed `adjustment` on the account's folio) and a deposit moved to the first stay (a
 //! `transfer` payment on each folio) are pairs sharing a `transfer_id`.
 //!
+//! A refund comes from a folio its caller names (the payment's own by default, or another folio of the same
+//! reservation), which must hold the credit: where a deposit's money sits is never inferred. Undoing a check-in
+//! moves back to the deposit folio what the stay still holds of the deposit. If another stay of the reservation is
+//! already checked in by then, the deposit is stranded on the deposit folio: it stays refundable there, and staff can
+//! move it on.
+//!
 //! A line on the folio of an account the reservation is no longer billed to can't be transferred back to the stay;
 //! reverse it and post a manual charge instead.
 

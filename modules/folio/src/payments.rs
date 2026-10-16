@@ -346,17 +346,19 @@ pub async fn take_payment(
     Ok(payment)
 }
 
-/// Refunds `amount` (more than 0) of `payment` in the property, for `reason` (1 to 500 characters, no card number):
-/// a negative payment in the same currency and method with `refund_of` set, at the original's rate. Its base amount
-/// is the original's in proportion (half-up), and the refund that empties the payment takes exactly the base left, so
-/// a payment and its refunds always net to zero in the base currency too. No rate is looked up.
+/// Refunds `amount` (more than 0) of `payment` in the property, for `reason` (1 to 500 characters, no card number),
+/// from `from_folio` (the payment's own folio when `None`): a negative payment on that folio in the same currency and
+/// method with `refund_of` set, at the original's rate. Its base amount is the original's in proportion (half-up),
+/// and the refund that empties the payment takes exactly the base left, so a payment and its refunds always net to
+/// zero in the base currency too. No rate is looked up.
 ///
-/// `NotFound` unless the payment is on a folio of the property. A deposit whose credit in that currency has moved to
-/// a stay (see [`move_deposit`]) is refunded from that stay's folio, which must hold at least `amount` of credit in
-/// the currency (`Invalid`). The folios are locked first, in ascending id order, so concurrent refunds of one payment
-/// run one at a time, and together they never exceed it (`Invalid`). A refund, a charge to account ("Move the account
-/// charge back to the stay instead") and a transfer between folios are never refunded (`Invalid`). The folio refunded
-/// from must be open (`Conflict`). The caller checks `FolioAdjust`. Audited as `folio.refunded`; queues `folio:<id>`.
+/// `NotFound` unless the payment is on a folio of the property. A named `from_folio` other than the payment's own
+/// must be its reservation's deposit folio or one of its stays' guest folios (`Invalid`): a deposit that moved to a
+/// stay is refunded from that stay's folio. Both folios are locked first, in ascending id order, so concurrent refunds
+/// run one at a time. `from_folio` must be open (`Conflict`); the payment's refunds together never exceed it, and
+/// `from_folio` must hold at least `amount` of credit in the currency (each `Invalid`). A refund, a charge to account
+/// ("Move the account charge back to the stay instead") and a transfer between folios are never refunded
+/// (`Invalid`). The caller checks `FolioAdjust`. Audited as `folio.refunded`; queues `folio:<id>`.
 #[allow(clippy::too_many_arguments)]
 pub async fn refund(
     tx: &mut Tx,
@@ -366,6 +368,7 @@ pub async fn refund(
     payment: Uuid,
     amount: i64,
     reason_text: &str,
+    from_folio: Option<Uuid>,
 ) -> Result<PaymentRow, FolioError> {
     if amount <= 0 {
         return Err(FolioError::Invalid("a refund is more than 0".into()));
@@ -391,14 +394,15 @@ pub async fn refund(
         "transfer" => return Err(FolioError::Invalid("a transfer between folios can't be refunded".into())),
         _ => {}
     }
-
-    let target = moved_to(tx, paid_on, &original.currency).await?.unwrap_or(paid_on);
-    let locked = lock_folios(tx, property, &[paid_on, target]).await?;
-    if moved_to(tx, paid_on, &original.currency).await?.unwrap_or(paid_on) != target {
-        return Err(FolioError::Conflict("the deposit moved meanwhile; try again".into()));
+    let target = from_folio.unwrap_or(paid_on);
+    if target != paid_on && !same_reservation(tx, property, paid_on, target).await? {
+        return Err(FolioError::Invalid(
+            "refund from the payment's reservation: its deposit folio or one of its stays' folios".into(),
+        ));
     }
-    check_open(locked.iter().find(|folio| folio.id == target).ok_or(FolioError::NotFound("folio"))?)?;
 
+    let locked = lock_folios(tx, property, &[paid_on, target]).await?;
+    check_open(locked.iter().find(|folio| folio.id == target).ok_or(FolioError::NotFound("folio"))?)?;
     let (refunded, refunded_base): (i64, i64) = sqlx::query_as(
         "select coalesce(-sum(amount), 0)::bigint, coalesce(-sum(base_amount), 0)::bigint
          from payment where refund_of = $1",
@@ -410,14 +414,12 @@ pub async fn refund(
     if amount > left {
         return Err(FolioError::Invalid(format!("at most {left} of the payment is left to refund")));
     }
-    if target != paid_on {
-        let credit = -folio_balance(tx, target, &original.currency).await?;
-        if amount > credit {
-            return Err(FolioError::Invalid(format!(
-                "the stay's folio holds only {credit} {} of the deposit to refund",
-                original.currency
-            )));
-        }
+    let credit = (-folio_balance(tx, target, &original.currency).await?).max(0);
+    if amount > credit {
+        return Err(FolioError::Invalid(format!(
+            "That folio holds only {credit} {}; refund from the folio that has the money",
+            original.currency
+        )));
     }
     let base = if amount == left {
         original.base_amount - refunded_base
@@ -460,6 +462,22 @@ pub async fn refund(
     Ok(refund)
 }
 
+/// Whether the folios `a` and `b` of the property are both a reservation's deposit folio or one of its stays' guest
+/// folios, of the same reservation.
+async fn same_reservation(tx: &mut Tx, property: Uuid, a: Uuid, b: Uuid) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "select count(*) = 2 and count(distinct reservation) = 1 and bool_and(reservation is not null)
+         from (select coalesce(f.reservation_id, rr.reservation_id) as reservation
+               from folio f left join reservation_room rr on rr.id = f.reservation_room_id
+               where f.id in ($1, $2) and f.property_id = $3 and f.kind in ('guest', 'deposit')) as folios",
+    )
+    .bind(a)
+    .bind(b)
+    .bind(property)
+    .fetch_one(&mut **tx)
+    .await
+}
+
 /// `base × amount / whole`, rounded half away from zero, in exact decimal arithmetic.
 fn proportional_base(base: i64, amount: i64, whole: i64) -> Result<i64, FolioError> {
     Decimal::from(base)
@@ -467,24 +485,6 @@ fn proportional_base(base: i64, amount: i64, whole: i64) -> Result<i64, FolioErr
         .and_then(|product| product.checked_div(Decimal::from(whole)))
         .and_then(|value| value.round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero).to_i64())
         .ok_or_else(|| FolioError::Invalid("the amount is too large".into()))
-}
-
-/// The stay's guest folio that a deposit folio's credit in `currency` last moved to, if it is there now: the latest
-/// `transfer` on the deposit folio in that currency moved it out (it names `to_folio`) rather than back. `None` for
-/// any other folio.
-async fn moved_to(tx: &mut Tx, folio: Uuid, currency: &str) -> Result<Option<Uuid>, sqlx::Error> {
-    let latest: Option<Option<Uuid>> = sqlx::query_scalar(
-        "select (p.details ->> 'to_folio')::uuid
-         from payment p join folio f on f.id = p.folio_id
-         where p.folio_id = $1 and f.kind = 'deposit' and p.method = 'transfer' and p.currency = $2
-         order by p.taken_at desc, p.id desc
-         limit 1",
-    )
-    .bind(folio)
-    .bind(currency)
-    .fetch_optional(&mut **tx)
-    .await?;
-    Ok(latest.flatten())
 }
 
 /// Charges less payments on `folio` in `currency`.
@@ -624,9 +624,11 @@ pub async fn move_deposit(
     Ok(())
 }
 
-/// Moves back to the deposit folio whatever [`move_deposit`] moved to the stay `reservation_room`'s guest folio and is
-/// still there, per currency: the net of the `transfer` payments between the two folios, mirrored as new `transfer`
-/// pairs with the same base amounts. A no-op when nothing moved. Called when a check-in is undone.
+/// Moves back to the deposit folio what [`move_deposit`] moved to the stay `reservation_room`'s guest folio and is
+/// still there, per currency: the net of the `transfer` payments between the two folios, but no more than the stay's
+/// credit in that currency (it may have been spent or refunded), as new `transfer` pairs. The base goes back in
+/// proportion (half-up), or exactly when the whole amount does. A no-op when nothing is left to move back. Called
+/// when a check-in is undone.
 ///
 /// Locks both folios (in ascending id order) and nothing else. `NotFound` unless the stay is in the property;
 /// `Conflict` for an invoiced folio or no rate on the business date. Audited as `folio.deposit_move_undone`; queues
@@ -675,11 +677,21 @@ pub async fn undo_deposit_move(
     }
 
     let mut returned = Vec::new();
-    for (currency, amount, base) in moved {
+    for (currency, moved_in, moved_base) in moved {
+        // Only what is still there goes back: the stay may have spent or refunded some of it.
+        let credit = -folio_balance(tx, guest, &currency).await?;
+        let amount = moved_in.min(credit);
+        if amount <= 0 {
+            continue;
+        }
+        let base = if amount == moved_in { moved_base } else { proportional_base(moved_base, amount, moved_in)? };
         let conversion = conversion(tx, property, &currency, true).await?;
         let transfer_id =
             transfer_pair(tx, tenant, user, guest, deposit, &currency, -amount, -base, &conversion).await?;
         returned.push(serde_json::json!({ "currency": currency, "amount": amount, "transfer_id": transfer_id }));
+    }
+    if returned.is_empty() {
+        return Ok(());
     }
     let data = serde_json::json!({ "reservation_room": reservation_room, "from_folio": guest, "returned": returned });
     audit(tx, tenant, user, "folio.deposit_move_undone", "folio", deposit, data).await?;

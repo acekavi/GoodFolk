@@ -60,13 +60,24 @@ impl Hotel {
         Ok(payment)
     }
 
-    /// `refund` in `property`, in its own transaction, committed if it succeeds.
-    async fn refund_in(&self, property: Uuid, payment: Uuid, amount: i64) -> Result<PaymentRow, FolioError> {
+    /// `refund` in `property` from `from_folio`, in its own transaction, committed if it succeeds.
+    async fn refund_from(
+        &self,
+        property: Uuid,
+        payment: Uuid,
+        amount: i64,
+        from_folio: Option<Uuid>,
+    ) -> Result<PaymentRow, FolioError> {
         let mut tx = self.tx().await;
         let refund =
-            folio::refund(&mut tx, self.tenant, Some(self.user), property, payment, amount, "Overpaid").await?;
+            folio::refund(&mut tx, self.tenant, Some(self.user), property, payment, amount, "Overpaid", from_folio)
+                .await?;
         tx.commit().await.unwrap();
         Ok(refund)
+    }
+
+    async fn refund_in(&self, property: Uuid, payment: Uuid, amount: i64) -> Result<PaymentRow, FolioError> {
+        self.refund_from(property, payment, amount, None).await
     }
 
     async fn refund(&self, payment: Uuid, amount: i64) -> Result<PaymentRow, FolioError> {
@@ -220,7 +231,7 @@ async fn a_card_number_is_never_recorded(_: PgPoolOptions, opts: PgConnectOption
     assert!(refund.is_ok());
     let mut tx = hotel.tx().await;
     let message = invalid(
-        folio::refund(&mut tx, hotel.tenant, None, hotel.property, paid.id, 1, "card 4111 1111 1111 1111").await,
+        folio::refund(&mut tx, hotel.tenant, None, hotel.property, paid.id, 1, "card 4111 1111 1111 1111", None).await,
     );
     assert!(message.contains("card number"), "{message}");
 }
@@ -272,13 +283,13 @@ async fn concurrent_refunds_of_one_payment_run_one_at_a_time(_: PgPoolOptions, o
     let paid = hotel.pay(folio, Method::Cash, 10_000, "LKR", None).await.unwrap();
 
     let mut first = hotel.tx().await;
-    folio::refund(&mut first, hotel.tenant, Some(hotel.user), hotel.property, paid.id, 6_000, "Overpaid")
+    folio::refund(&mut first, hotel.tenant, Some(hotel.user), hotel.property, paid.id, 6_000, "Overpaid", None)
         .await
         .unwrap();
     let (pool, tenant, user, property) = (hotel.pool.clone(), hotel.tenant, hotel.user, hotel.property);
     let second = tokio::spawn(async move {
         let mut tx = db::begin(&pool, db::Scope::tenant(tenant)).await.unwrap();
-        let refund = folio::refund(&mut tx, tenant, Some(user), property, paid.id, 6_000, "Overpaid").await;
+        let refund = folio::refund(&mut tx, tenant, Some(user), property, paid.id, 6_000, "Overpaid", None).await;
         if refund.is_ok() {
             tx.commit().await.unwrap();
         }
@@ -499,15 +510,17 @@ async fn a_refund_after_the_rate_changes_still_nets_the_payment_to_zero_in_lkr(
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
-async fn a_moved_deposit_is_refunded_from_the_stay_up_to_the_credit_it_holds(_: PgPoolOptions, opts: PgConnectOptions) {
+async fn a_moved_deposit_is_refunded_from_the_stay_that_holds_it(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;
-    let booking = hotel.book(None).await;
+    let booking = hotel.book_in(hotel.property, 2, None, None).await;
     let (deposit, guest) = (booking.deposit, booking.guests[0]);
     let paid = hotel.pay(deposit, Method::Cash, 10_000, "LKR", None).await.unwrap();
     hotel.mark_checked_in(booking.rooms[0]).await;
     hotel.move_deposit_in(hotel.property, booking.id, booking.rooms[0]).await.unwrap();
 
-    let refund = hotel.refund(paid.id, 4_000).await.unwrap();
+    let message = invalid(hotel.refund(paid.id, 4_000).await);
+    assert_eq!(message, "That folio holds only 0 LKR; refund from the folio that has the money");
+    let refund = hotel.refund_from(hotel.property, paid.id, 4_000, Some(guest)).await.unwrap();
 
     assert_eq!((refund.folio_id, refund.refund_of, refund.amount), (Some(guest), Some(paid.id), -4_000));
     let lkr = |amount: i64| vec![Balance { currency: "LKR".into(), amount, base_amount: amount }];
@@ -517,9 +530,59 @@ async fn a_moved_deposit_is_refunded_from_the_stay_up_to_the_credit_it_holds(_: 
     // The stay spends 5176 (5000 and its taxes) of the 6000 credit; only 824 is left to refund.
     let spent = hotel.post(guest, hotel.charge(Source::Manual, "misc", 5_000, "LKR")).await.unwrap();
     assert_eq!(spent.total, 5_176);
-    let message = invalid(hotel.refund(paid.id, 825).await);
-    assert_eq!(message, "the stay's folio holds only 824 LKR of the deposit to refund");
-    assert!(hotel.refund(paid.id, 824).await.is_ok());
+    let message = invalid(hotel.refund_from(hotel.property, paid.id, 825, Some(guest)).await);
+    assert_eq!(message, "That folio holds only 824 LKR; refund from the folio that has the money");
+    assert!(hotel.refund_from(hotel.property, paid.id, 824, Some(guest)).await.is_ok());
+
+    // A deposit paid after the move stays on the deposit folio, and refunds from it by default.
+    let later = hotel.pay(deposit, Method::Cash, 2_000, "LKR", None).await.unwrap();
+    let refund = hotel.refund(later.id, 2_000).await.unwrap();
+    assert_eq!(refund.folio_id, Some(deposit));
+    assert_eq!(hotel.view(deposit).await.balances, lkr(0));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_refund_comes_only_from_a_folio_of_the_payment_s_reservation(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let acme = hotel.account().await;
+    let booking = hotel.book(Some(acme)).await;
+    let other = hotel.book(None).await;
+    let paid = hotel.pay(booking.deposit, Method::Cash, 10_000, "LKR", None).await.unwrap();
+    hotel.pay(other.guests[0], Method::Cash, 10_000, "LKR", None).await.unwrap();
+    let mut tx = hotel.tx().await;
+    let account_folio = folio::ensure_account_folio(&mut tx, hotel.tenant, hotel.property, acme).await.unwrap();
+    tx.commit().await.unwrap();
+
+    for from in [other.guests[0], other.deposit, account_folio, Uuid::now_v7()] {
+        let message = invalid(hotel.refund_from(hotel.property, paid.id, 100, Some(from)).await);
+        assert_eq!(message, "refund from the payment's reservation: its deposit folio or one of its stays' folios");
+    }
+    assert!(hotel.refund_from(hotel.property, paid.id, 100, Some(booking.deposit)).await.is_ok());
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn undoing_a_move_returns_only_what_the_stay_still_holds(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let booking = hotel.book(None).await;
+    let (deposit, guest) = (booking.deposit, booking.guests[0]);
+    let paid = hotel.pay(deposit, Method::Cash, 10_000, "LKR", None).await.unwrap();
+    hotel.mark_checked_in(booking.rooms[0]).await;
+    hotel.move_deposit_in(hotel.property, booking.id, booking.rooms[0]).await.unwrap();
+    hotel.refund_from(hotel.property, paid.id, 4_000, Some(guest)).await.unwrap();
+
+    let mut tx = hotel.tx().await;
+    folio::undo_deposit_move(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, booking.rooms[0]).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let lkr = |amount: i64| vec![Balance { currency: "LKR".into(), amount, base_amount: amount }];
+    assert_eq!(hotel.view(deposit).await.balances, lkr(-6_000), "the 6000 left goes back");
+    assert_eq!(hotel.view(guest).await.balances, lkr(0));
+
+    // Nothing is left to move back a second time.
+    let mut tx = hotel.tx().await;
+    folio::undo_deposit_move(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, booking.rooms[0]).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(hotel.audited("folio.deposit_move_undone").await.len(), 1);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
