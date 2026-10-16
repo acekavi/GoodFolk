@@ -141,7 +141,7 @@ async fn a_bulk_change_touches_exactly_what_it_selects_and_cascades(_: PgPoolOpt
     let bar_prices = hotel.stored(&bar).await;
     assert_eq!(bar_prices.len(), 240);
     assert_eq!(changed, u64::try_from(bar_prices.iter().filter(|p| selected(p)).count()).unwrap());
-    assert!((16..=18).contains(&changed), "8 or 9 weekend days, 2 occupancies: {changed}");
+    assert!((16..=20).contains(&changed), "8 to 10 weekend days, 2 occupancies: {changed}");
     for price in &bar_prices {
         assert_eq!(price.amount, if selected(price) { 11_000 } else { 10_000 }, "{price:?}");
     }
