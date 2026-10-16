@@ -301,6 +301,20 @@ export function rollBusinessDate(tenant: string, property: string): void {
 	});
 }
 
+/**
+ * Runs `script` with Bun as the schema owner (`E2E_OWNER_URL`, as `process.env.URL`) and returns what it prints,
+ * for checks and seeds the API cannot make. `env` is passed through as variables.
+ */
+export function runAsOwner(script: string, env: Record<string, string> = {}): string {
+	const owner = process.env.E2E_OWNER_URL;
+	if (!owner) throw new Error('set E2E_OWNER_URL to the e2e database, as goodfolk_owner');
+	return execFileSync('bun', ['-e', script], {
+		env: { ...process.env, ...env, URL: owner },
+		stdio: 'pipe',
+		encoding: 'utf8'
+	});
+}
+
 /** Creates a property of `rooms` rooms, all dirty, `assigned` of them to a housekeeper; the owner's page stays on it. */
 export async function housekeepingProperty(
 	page: Page,

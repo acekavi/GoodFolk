@@ -12,13 +12,26 @@ if (noSandbox && process.env.CI) throw new Error('PLAYWRIGHT_NO_SANDBOX is for l
 
 const API_PORT = 18080;
 const WEB_PORT = 4173;
+const MEDIA_PORT = 8090;
+
+// core-api and media-svc push to each other with a test-only shared secret; both reach RustFS on :9000
+// with its local defaults (see global-setup.ts).
+const SERVICE_AUTH = {
+	SVC_AUTH: 'secret',
+	INTERNAL_SHARED_SECRET: 'e2e-internal-shared-secret-0123456789abcdef',
+	EVENT_BUS: 'push'
+};
 
 export default defineConfig({
 	testDir: 'tests/e2e',
+	globalSetup: './tests/e2e/global-setup.ts',
 	fullyParallel: true,
 	forbidOnly: !!process.env.CI,
 	// Performance checks (@perf) run only when asked for: E2E_PERF=1.
 	grepInvert: process.env.E2E_PERF === '1' ? undefined : /@perf/,
+	// One file at a time when timing: another file's seeding beside a timed load skews it (the gallery gate
+	// read 480 ms at p90 beside the tape chart's seed, 300 ms alone).
+	workers: process.env.E2E_PERF === '1' ? 1 : undefined,
 	retries: process.env.CI ? 1 : 0,
 	reporter: process.env.CI ? [['github'], ['list']] : 'list',
 	use: {
@@ -41,11 +54,23 @@ export default defineConfig({
 				PORT: String(API_PORT),
 				DATABASE_URL: database,
 				GUEST_ID_KEY: 'HU5/qSn58655epIBi671lsojvXir+VQZ0MzXdTrKk6o=',
-				// Local service auth and bus for the media engine; a test-only secret.
-				SVC_AUTH: 'secret',
-				INTERNAL_SHARED_SECRET: 'e2e-internal-shared-secret-0123456789abcdef',
-				EVENT_BUS: 'push',
-				PUSH_ENDPOINT_MEDIA_PROCESS: 'http://localhost:8090/work',
+				...SERVICE_AUTH,
+				MEDIA_SVC_URL: `http://localhost:${MEDIA_PORT}`,
+				PUSH_ENDPOINT_MEDIA_PROCESS: `http://localhost:${MEDIA_PORT}/work`,
+				RUST_LOG: 'warn'
+			},
+			reuseExistingServer: !process.env.CI,
+			timeout: 600_000
+		},
+		{
+			// Processes uploads for real: renditions to RustFS, then its result back to core-api.
+			command: 'cargo run -q -p media-svc',
+			cwd: '../..',
+			url: `http://localhost:${MEDIA_PORT}/healthz`,
+			env: {
+				PORT: String(MEDIA_PORT),
+				...SERVICE_AUTH,
+				PUSH_ENDPOINT_MEDIA_RESULTS: `http://localhost:${API_PORT}/internal/events`,
 				RUST_LOG: 'warn'
 			},
 			reuseExistingServer: !process.env.CI,
