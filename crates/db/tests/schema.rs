@@ -117,6 +117,35 @@ async fn the_app_role_cannot_rewrite_money_rows(_: PgPoolOptions, opts: PgConnec
     .await
     .unwrap();
     assert_eq!(updatable, ["pdf_key"]);
+    for table in ["folio_line", "folio_line_tax", "payment", "invoice", "pos_bill"] {
+        for privilege in ["TRUNCATE", "REFERENCES", "TRIGGER"] {
+            let has: bool = sqlx::query_scalar("select has_table_privilege('goodfolk_app', $1, $2)")
+                .bind(table)
+                .bind(privilege)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert!(!has, "goodfolk_app has {privilege} on {table}");
+        }
+    }
+    for privilege in ["UPDATE", "DELETE"] {
+        let has: bool = sqlx::query_scalar("select has_table_privilege('goodfolk_app', 'pos_bill', $1)")
+            .bind(privilege)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(!has, "goodfolk_app has {privilege} on pos_bill");
+    }
+    let folio_updatable: Vec<String> = sqlx::query_scalar(
+        "select a.attname::text from pg_attribute a
+         where a.attrelid = 'folio'::regclass and a.attnum > 0 and not a.attisdropped
+           and has_column_privilege('goodfolk_app', 'folio', a.attname, 'UPDATE')
+         order by 1",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(folio_updatable, ["status", "version"]);
     for table in ["folio_line", "folio_line_tax", "payment"] {
         let columns: i64 = sqlx::query_scalar(
             "select count(*) from pg_attribute a

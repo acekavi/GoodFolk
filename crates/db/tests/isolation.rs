@@ -1031,3 +1031,87 @@ async fn invoices_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOption
     )
     .await;
 }
+
+/// Runs `statement` in `tenant`'s scope and returns its error message; `$1` is the tenant and `$2` a second property.
+async fn folio_statement_error(pool: &PgPool, tenant: TenantId, other: Uuid, statement: &'static str) -> String {
+    let mut tx = begin(pool, Scope::tenant(tenant)).await.unwrap();
+    sqlx::query(statement).bind(tenant.0).bind(other).execute(&mut *tx).await.unwrap_err().to_string()
+}
+
+async fn seed_folio_with_second_property(pool: &PgPool) -> (TenantId, Uuid) {
+    let tenant = seed_tenant(pool, "A").await;
+    seed_folio(pool, tenant).await;
+    let other = Uuid::now_v7();
+    let mut tx = begin(pool, Scope::tenant(tenant)).await.unwrap();
+    sqlx::query(
+        "insert into property (id, tenant_id, code, name, timezone, base_currency, business_date)
+         values ($2, $1, 'OTH', 'Other', 'Asia/Colombo', 'LKR', current_date)",
+    )
+    .bind(tenant.0)
+    .bind(other)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    (tenant, other)
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_folio_cannot_name_another_propertys_reservation(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts, 1).await;
+    let (tenant, other) = seed_folio_with_second_property(&pool).await;
+    let err = folio_statement_error(
+        &pool,
+        tenant,
+        other,
+        "insert into folio (id, tenant_id, property_id, kind, reservation_id)
+         select gen_random_uuid(), $1, $2, 'deposit', id from reservation",
+    )
+    .await;
+    assert!(err.contains("foreign key"), "unexpected error: {err}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_invoice_cannot_name_another_propertys_folio(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts, 1).await;
+    let (tenant, other) = seed_folio_with_second_property(&pool).await;
+    let err = folio_statement_error(
+        &pool,
+        tenant,
+        other,
+        "insert into invoice (id, tenant_id, property_id, folio_id, kind, serial, data, total_lkr)
+         select gen_random_uuid(), $1, $2, id, 'invoice', 'OTH-2026-000001', '{}', 1 from folio",
+    )
+    .await;
+    assert!(err.contains("foreign key"), "unexpected error: {err}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_payment_needs_a_folio_or_a_pos_bill(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts, 1).await;
+    let (tenant, other) = seed_folio_with_second_property(&pool).await;
+    let err = folio_statement_error(
+        &pool,
+        tenant,
+        other,
+        "insert into payment (id, tenant_id, method, amount, currency, base_amount, rate, rate_date, business_date)
+         values (gen_random_uuid(), $1, 'cash', 1, 'LKR', 1, 1, current_date, current_date)",
+    )
+    .await;
+    assert!(err.contains("payment_target_check"), "unexpected error: {err}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_lowercase_currency_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts, 1).await;
+    let (tenant, other) = seed_folio_with_second_property(&pool).await;
+    let err = folio_statement_error(
+        &pool,
+        tenant,
+        other,
+        "insert into fx_rate (tenant_id, property_id, date, currency, rate_to_base, source, source_date)
+         values ($1, $2, current_date, 'usd', 300, 'manual', current_date)",
+    )
+    .await;
+    assert!(err.contains("fx_rate_currency_check"), "unexpected error: {err}");
+}
