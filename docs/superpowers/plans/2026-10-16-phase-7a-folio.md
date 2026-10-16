@@ -514,8 +514,7 @@ pub async fn create_outlet / update_outlet / list_outlets (CRUD, If-Match on upd
 - **Taxes.** The category is `pos:<OUTLET>` unless an item names `misc`. Service charge applies only when
   `outlet.service_charge` is on, which requires an `SC` rule applying to `pos:*` or that outlet.
 - **Settled bills.** A settled bill creates a `payment` with `folio_id` null and `pos_bill_id` set, plus its taxed line
-  values in the bill row. Add `lines jsonb` to `pos_bill` in this task's migration
-  (`migrations/0021_pos_bill_lines.sql`).
+  values in the bill row. `pos_bill.lines jsonb` already exists (migration 0021, from Task 2's review).
 - **Validation.** 1–200 items. A stay must be in-house at the property.
 
 - [ ] **Tests:**
