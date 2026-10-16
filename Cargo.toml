@@ -24,6 +24,7 @@ reservations = { path = "modules/reservations" }
 rooms = { path = "modules/rooms" }
 storage = { path = "crates/storage" }
 svc-auth = { path = "crates/svc-auth" }
+tax = { path = "modules/tax" }
 
 anyhow = "1"
 async-trait = "0.1"
