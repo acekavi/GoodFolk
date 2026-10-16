@@ -10,6 +10,12 @@ Multi-tenant, cloud-hosted hotel property management system.
 | Path | Contents |
 |---|---|
 | `crates/core-api` | axum HTTP API (REST commands, GraphQL reads, server-sent events) |
+| `crates/media-svc` | The media service: verifies uploads over gRPC and makes the archive and renditions in worker subprocesses (no database) |
+| `crates/imaging` | The image pipeline: decode, upright, sRGB, resize, AVIF and WebP, the JPEG XL archive, the SSIMULACRA2 quality gate |
+| `crates/storage` | S3 operations (presigned multipart, signed GET, put/get/head/delete) and the dev bucket setup |
+| `crates/events` | The transactional outbox, its relay and the event bus (`PushBus`, `PubSubBus`) |
+| `crates/svc-auth` | Service-to-service auth: Google ID tokens in production, a shared secret locally |
+| `crates/proto`, `crates/media-types` | The media gRPC contract (compiled with `protox`, no `protoc`), and the job and result types core-api and media-svc share |
 | `crates/db` | Postgres pool, migrations, tenant-scoped transactions, change events |
 | `crates/domain` | Pure business rules with no I/O of their own, shared by callers instead of re-derived (the reservation-room state machine) |
 | `modules/*` | Domain modules (`identity`, `property`, `rooms`, `rates`, `reservations`, `housekeeping`, …) |
@@ -19,6 +25,8 @@ Multi-tenant, cloud-hosted hotel property management system.
 ## Development
 
 Prerequisites: Rust (installed from `rust-toolchain.toml` by rustup), Bun 1.3+, and Docker or Podman with compose.
+
+Build prerequisites for the media engine, which compiles its image codecs from source: `cmake`, `nasm`, a C++ compiler and `lzip` (it unpacks the libjxl release). The build targets `x86-64-v3` (`.cargo/config.toml`), so it needs a CPU with AVX2 and FMA.
 
 ```sh
 docker compose up -d postgres
@@ -34,10 +42,45 @@ cargo run -p core-api              # API on http://localhost:8080, as the goodfo
 cd web/pms && bun install && bun run dev   # app on http://localhost:5173
 ```
 
+### Media services
+
+Photos and documents need three more things beside Postgres: libjxl's command line tools, an S3 server (RustFS) and `media-svc`. None needs Docker.
+
+```sh
+deploy/dev/libjxl.sh install       # once: cjxl and djxl into ~/.cache/goodfolk-libjxl/bin (or set JXL_BIN_DIR)
+
+deploy/dev/rustfs.sh install      # once: downloads and verifies the RustFS binary into ~/.cache/goodfolk-rustfs
+deploy/dev/rustfs.sh start        # S3 on :9000, web console on :9001; also: stop, status
+cargo run -p storage --example ensure-buckets   # creates goodfolk-public and goodfolk-private; safe to repeat
+```
+
+RustFS (Apache-2.0) stands in for Cloudflare R2 locally. Its credentials are `goodfolk` / `goodfolk_dev_secret`, which are also the defaults of `S3_ACCESS_KEY` and `S3_SECRET_KEY` outside production; log in to the console on :9001 with them to look at the buckets. `docker compose up -d rustfs` runs the same server in a container instead.
+
+`ensure-buckets` makes `goodfolk-public` readable without credentials and gives `goodfolk-private` the CORS rules a browser needs to PUT upload parts from `http://localhost:5173` and `http://localhost:4173` (`DEV_CORS_ORIGINS` changes them).
+
+core-api and `media-svc` call each other, so give both the same service credentials (see [Configuration](#configuration)). Add these to the exports above, in the shell that starts each:
+
+```sh
+export SVC_AUTH=secret
+export INTERNAL_SHARED_SECRET=local-development-secret-at-least-32-bytes
+export EVENT_BUS=push
+export PUSH_ENDPOINT_MEDIA_PROCESS=http://localhost:8090/work              # core-api -> media-svc
+export PUSH_ENDPOINT_MEDIA_RESULTS=http://localhost:8080/internal/events   # media-svc -> core-api
+```
+
+Storage (`http://localhost:9000`, the two buckets, the credentials above) and `MEDIA_SVC_URL` (`http://localhost:8090`) default to these values outside production, so nothing else is needed. Run `media-svc` next to core-api:
+
+```sh
+cargo run -p media-svc             # on http://localhost:8090; the first build compiles the codecs
+```
+
+core-api's outbox relay delivers the `media-process` push when an upload completes, and media-svc pushes its result back. Without media-svc running, uploads stay on `Processing…`.
+
 ### Checks
 
 ```sh
-DATABASE_URL=$DATABASE_OWNER_URL cargo test --workspace   # tests create throwaway databases
+DATABASE_URL=$DATABASE_OWNER_URL cargo test --workspace   # tests create throwaway databases; they need RustFS on :9000 and libjxl installed
+cargo test -p imaging --release --lib --test quality_gate   # the image quality gate: every rendition of the fixtures scores SSIMULACRA2 >= 80 at full size
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 
@@ -60,6 +103,9 @@ Run by hand, because shared CI machines make timings noisy, and one at a time (`
 # tapeWindow for 10 rooms x 14 days, and x 42 days, of a 500-room property with 18 months of stays: p95 under 5 ms each
 # unassignedStays for 42 days: p95 under 5 ms; a tapeWindow response under 8 KB gzipped
 # housekeepingBoard for 500 rooms: p95 under 30 ms
+# POST .../media/uploads, including the gRPC call to media-svc: p95 under 50 ms
+# a 12 MP JPEG is ready in under 5 s from complete (all renditions and the archive); this one runs the release
+# media-svc, so build it first: cargo build --release -p media-svc
 DATABASE_URL=$DATABASE_OWNER_URL cargo test --release -p core-api --test perf -- --ignored --nocapture --test-threads=1
 
 # the month grid for the same property renders in under 60 ms and scrolls at 60 fps (see End-to-end tests;
@@ -70,12 +116,13 @@ DATABASE_URL=$DATABASE_OWNER_URL cargo test --release -p core-api --test perf --
 # the drag ghost within one frame, under 3,000 DOM nodes
 # the housekeeping board for 500 rooms renders in under 50 ms (p90 of ten) and the /hk app's first load on a throttled
 # 3G-class network, service worker included, takes under 2 s (p90 of five cold contexts)
+# a room type gallery of 50 photos paints in under 400 ms (p90 of ten cold loads); needs RustFS
 cd web/pms && E2E_PERF=1 E2E_DATABASE_URL=... bun run test:e2e --grep @perf
 ```
 
 ### End-to-end tests
 
-Playwright (`web/pms/tests/e2e`) drives the production build against a real API and Postgres. It starts both itself: the API on port 18080 (`cargo run -p core-api`) and `vite preview` on port 4173. Give it a migrated database of its own, so test accounts never land in your development data:
+Playwright (`web/pms/tests/e2e`) drives the production build against a real API and Postgres. It starts them itself: the API on port 18080 (`cargo run -p core-api`), `media-svc` on port 8090 (`cargo run -p media-svc`) and `vite preview` on port 4173. It cannot start RustFS: run that first (see Media services) with the buckets created, and the suite stops at once if nothing answers on :9000. Give it a migrated database of its own, so test accounts never land in your development data:
 
 ```sh
 # once: create and migrate a database for the tests (psql, or any Postgres client)
@@ -84,7 +131,8 @@ DATABASE_OWNER_URL=postgres://goodfolk_owner:goodfolk_owner_dev@localhost:5432/g
 
 cd web/pms
 bunx playwright install chromium   # once
-E2E_DATABASE_URL=postgres://goodfolk_api:goodfolk_api_dev@localhost:5432/goodfolk_e2e bun run test:e2e
+E2E_DATABASE_URL=postgres://goodfolk_api:goodfolk_api_dev@localhost:5432/goodfolk_e2e \
+E2E_OWNER_URL=postgres://goodfolk_owner:goodfolk_owner_dev@localhost:5432/goodfolk_e2e bun run test:e2e
 ```
 
 Chromium runs with its sandbox on, as in CI. If your machine cannot start it ("No usable sandbox!", for example on distributions that restrict unprivileged user namespaces), add `PLAYWRIGHT_NO_SANDBOX=1` for local runs; the config refuses it when `CI` is set.
@@ -193,6 +241,77 @@ This script sets up its own small hotel, and needs the API and `bun run dev` run
 
 The board of a 500-room property draws only the rows in view, so scrolling stays smooth.
 
+### Trying media by hand
+
+This script reuses the hotel from [Trying housekeeping by hand](#trying-housekeeping-by-hand) (property `HKP`, the reservations `HKP-000001` and `HKP-000002`, the owner `owner@example.com` and the housekeeper `mala@example.com`), and needs the media services from Development. Use a second browser profile or private window for the housekeeper. You need a few JPEGs on disk (any phone photos; keep one as `original.jpg`).
+
+1. Start the services and apply the migrations (through `0019`), as the schema owner:
+
+   ```sh
+   docker compose up -d postgres              # or your own Postgres on :5432
+   deploy/dev/rustfs.sh start
+   cargo run -p storage --example ensure-buckets   # prints "buckets ready"
+   cargo run -p core-api -- migrate
+   ```
+
+2. Start core-api and media-svc, each in a shell that has the exports from Development (the database, `GUEST_ID_KEY` and the media block), then the web app:
+
+   ```sh
+   cargo run -p core-api              # http://localhost:8080
+   cargo run -p media-svc             # http://localhost:8090
+   cd web/pms && bun run dev          # http://localhost:5173
+   ```
+
+   `curl -s http://localhost:8090/healthz` answers `ok`.
+3. Sign in as `owner@example.com` on `http://localhost:5173`. On **Room types**, add a second type `STD` (2 adults); you will use it in step 8.
+4. Each room type card has a **Photos of DLX** panel: `No photos yet.` Click **Add photos** (or drop files on it) and choose three JPEGs. Each file gets a tile that reads `Processing…` and turns into the picture on its own, without a reload: the browser put the file straight into RustFS, media-svc made the renditions, and the `media:<property>` event refreshed the page. A 12 MP photo takes a few seconds.
+5. Arrange the gallery. Drag a tile by its `⠿` handle, or use **Move photo 1 later**; reload the page and the order stays. **Caption** opens a field (up to 200 characters), **Save** keeps it, and it becomes the image's alternative text. **Remove** asks `Remove this photo from the gallery?`; **Remove photo** unlinks it. (Its files stay in storage until the daily sweep, step 13.)
+6. The renditions are public and permanent. Right-click a photo, copy the image address (it looks like `http://localhost:9000/goodfolk-public/t/<tenant>/a/<asset>/md.avif`) and ask for its headers:
+
+   ```sh
+   curl -sI http://localhost:9000/goodfolk-public/t/<tenant>/a/<asset>/md.avif
+   # HTTP/1.1 200 OK
+   # cache-control: public, max-age=31536000, immutable
+   # content-type: image/avif
+   ```
+
+   Swap `md.avif` for `md.webp` to get the WebP twin. Each photo has `thumb`, `sm`, `md`, `lg` and `xl` in both formats, at most 2400 px on the long edge and never enlarged. The same path under `goodfolk-private` answers `403`: only gallery renditions are public, and `archive.jxl` is never among them.
+7. Refusals. Make the files, then **drop** them on the panel (the picker's own filter hides them):
+
+   ```sh
+   head -c 26214401 /dev/zero > /tmp/huge.jpg   # 25 MiB and a byte
+   cp original.jpg /tmp/phone.heic              # a HEIC by name; any bytes will do
+   printf 'hello' > /tmp/notes.txt
+   ```
+
+   `huge.jpg` shows `Too large: the limit is 25 MB`; `notes.txt` shows `Not a supported image`; `phone.heic` shows `This file type is not accepted here` (HEIC is recognised and refused: no HEVC decoder can be shipped under the licence policy, and phones normally hand a browser a JPEG). Nothing was sent to the server for any of them. The server repeats the checks from the file's bytes, never its name, so a PDF renamed `.jpg` is refused too, at the end of its upload, with `This file type is not accepted here`.
+8. Deduplication. Add the same JPEG to `DLX`, then to `STD`. Both galleries show it, from the same address. It is stored once per property: one asset with two links.
+
+   ```sh
+   export DATABASE_OWNER_URL=postgres://goodfolk_owner:goodfolk_owner_dev@localhost:5432/goodfolk
+   bun -e 'const sql = new Bun.SQL(process.env.DATABASE_OWNER_URL); console.table(await sql`select a.id, a.status, count(m.room_type_id)::int as links from media_asset a join room_type_media m on m.asset_id = a.id where a.purpose = ${"gallery"} group by a.id, a.status, a.created_at order by a.created_at desc limit 5`); await sql.close()'
+   ```
+
+   The newest row has `links` 2. Adding that file to the same room type again changes nothing, since a photo is linked to a room type once. (The same file is stored again for a different property or tenant: files are never matched across them.)
+9. Issue photos. In the housekeeper's window go to `http://localhost:5173/hk`, sign in as `mala@example.com` and open **Report issue**: pick room `101`, a description, and **Add photos** (at most 5: once five are chosen the button is disabled with `An issue can have at most 5 photos`). **Report issue** sends the report, then the photos upload under it (`Issue reported for room 101.`). On the owner's **Housekeeping** board the issue in **Issues** shows the thumbnails live; click one for the large size. The links are private and signed for 60 minutes. Offline: choose a photo, then set **Network** to **Offline** in DevTools. The button is disabled with `Photos need a connection`, and submitting saves the text on the device without the photo (`Issue for room 101 saved on this device; it is sent when you are back online. Its photos were not sent: add them from the board once online.`); add the photo from the board once online. While a photo is still uploading, leaving the page asks `Photos are still uploading. Leave and drop them?`.
+10. Guest ID. As the owner, open `HKP-000001` on **Reservations**, expand **ID documents · <guest name>**, choose a **Kind** (`Passport`), **Add document** and pick a JPEG. It becomes a row with its kind, the date and the uploader's name. **View** fetches a fresh link and opens the picture (at the `md` size) in a dialog; closing it drops the picture, and viewing again fetches another link. A link works for 5 minutes (the address of the open image, in DevTools, is refused by storage after that), and every link writes a `guest_document.viewed` audit entry. There is no `psql` here; Bun's built-in client does the same:
+
+    ```sh
+    bun -e 'const sql = new Bun.SQL(process.env.DATABASE_OWNER_URL); console.table(await sql`select at, action, entity_id from audit_log where action = ${"guest_document.viewed"} order by at desc limit 5`); await sql.close()'
+    ```
+
+    One row per **View**. The development owner is a superuser, so row-level security does not hide other tenants' rows; with an owner that is not one, set `app.tenant_id` in a transaction first, as `web/pms/tests/e2e/media.spec.ts` does. The listing has no URLs in it at all: GraphQL returns `{id, kind, status, mime, uploadedAt, uploadedBy}` and nothing to fetch the file with. A PDF is accepted too (15 MB at most), shown with a document icon, and **View** opens the PDF in a new tab.
+11. As `mala@example.com` open `http://localhost:5173/p/<property>/reservations/<reservation id>` (the address of the modal): the reservation shows, but there is no **ID documents** section, and `{ guestDocuments(propertyId: "…", guestId: "…") { id } }` on `/graphql` answers an error. Only `GuestDocumentsManage` (owner, manager, front desk) opens guest documents.
+12. The archive. Every upload is kept losslessly, in the private bucket only. Open the console on `http://localhost:9001` (`goodfolk` / `goodfolk_dev_secret`) and browse `goodfolk-private` to `t/<tenant>/a/<asset>/`, using the ids from step 6: `archive.jxl` is there (the raw `upload` object is deleted once the archive has been written and read back). Download it and rebuild the JPEG you uploaded:
+
+    ```sh
+    ~/.cache/goodfolk-libjxl/bin/djxl archive.jxl restored.jpg
+    cmp restored.jpg original.jpg && echo identical     # identical, byte for byte
+    ```
+
+    The archive is about 20 % smaller than the JPEG. A PNG or WebP becomes a lossless JPEG XL of its pixels instead (`djxl archive.jxl out.png`), and a guest PDF is kept as `archive.pdf`. The delivered AVIF and WebP files carry no EXIF at all (no location), though the archive keeps every byte.
+13. The sweep. Once a day core-api cleans up after the media engine, under an advisory lock so that only one instance does it: guest documents more than a year old whose guest has no stay in the last 365 days or later (audited as `guest_document.deleted`), assets nothing links to after 24 hours (the photos you removed in step 5) with their files, uploads left `uploading` for 24 hours, assets `processing` for more than an hour (marked `failed`, `Processing timed out`), and outbox and receiver-dedupe rows after 7 and 30 days. There is no command or endpoint to run it by hand: it starts when core-api starts (it logs `media sweep done` with the counts, at the default `info` level) and then every 24 hours, checking hourly. So restarting core-api runs it, but everything it deletes is a day or a year old; nothing you did in this script is old enough yet, and the sweep is covered by its tests (`modules/media/tests/sweep.rs`) rather than by hand. To see it remove something, backdate a removed photo's `media_asset.created_at` by two days in the database, then restart core-api and read that log line.
+
 ### Configuration
 
 The API (`core-api serve`) reads:
@@ -209,6 +328,51 @@ The API (`core-api serve`) reads:
 | `APP_ENV` | `production` sets `Secure` cookies, disables GraphQL introspection and requires `DATABASE_LISTEN_URL`. |
 
 `core-api migrate` reads `DATABASE_OWNER_URL` (the schema owner) instead.
+
+#### Media engine (core-api and media-svc)
+
+Outside production, every variable marked "dev default" can be left out. With `APP_ENV=production` the storage variables, `MEDIA_SVC_URL` and the service-auth variables are required, and a missing one stops the process at startup, naming it.
+
+| Variable | Read by | Meaning |
+|---|---|---|
+| `S3_ENDPOINT` | both | S3 API URL. Dev default `http://localhost:9000` (RustFS); R2 is `https://<account>.r2.cloudflarestorage.com`. |
+| `S3_REGION` | both | Dev default `us-east-1`; `auto` for R2. |
+| `S3_ACCESS_KEY`, `S3_SECRET_KEY` | both | Dev defaults `goodfolk` / `goodfolk_dev_secret`. Never printed; `Debug` shows `<redacted>`. |
+| `S3_PUBLIC_BUCKET`, `S3_PRIVATE_BUCKET` | both | Dev defaults `goodfolk-public` and `goodfolk-private`. Only gallery renditions go to the public one. |
+| `S3_PATH_STYLE` | both | `true` or `false`: whether to address buckets as `endpoint/bucket/key`. Dev default `true`, production default `false`. |
+| `MEDIA_PUBLIC_BASE_URL` | both | Where the public bucket is served from: the CDN domain in production. Dev default `<S3_ENDPOINT>/<S3_PUBLIC_BUCKET>/`. |
+| `MEDIA_SVC_URL` | core-api | media-svc's address for gRPC. Dev default `http://localhost:8090`. |
+| `SVC_AUTH` | both | `google` (ID tokens, production) or `secret` (a shared secret; refused when `APP_ENV=production`). Required. |
+| `INTERNAL_SHARED_SECRET` | both | With `SVC_AUTH=secret`: the bearer secret, at least 32 bytes and no surrounding whitespace. |
+| `MEDIA_SVC_AUDIENCE` | both | With `SVC_AUTH=google`: the audience of ID tokens sent to media-svc (core-api puts it on its calls, media-svc requires it on its own endpoints). |
+| `CORE_API_AUDIENCE` | both | With `SVC_AUTH=google`: the same for `/internal/events` (media-svc puts it on its pushes, core-api requires it). |
+| `ALLOWED_SERVICE_EMAILS` | both | With `SVC_AUTH=google`: comma-separated service accounts whose tokens are accepted, at least one. |
+| `EVENT_BUS` | both | `push` (straight to the receiver; refused in production) or `pubsub`. Required. |
+| `PUSH_ENDPOINT_<TOPIC>` | both | With `EVENT_BUS=push`: where a topic is delivered, with `-` as `_`: `PUSH_ENDPOINT_MEDIA_PROCESS` (core-api sends, to media-svc's `/work`) and `PUSH_ENDPOINT_MEDIA_RESULTS` (media-svc sends, to core-api's `/internal/events`). |
+| `PUBSUB_PROJECT` | both | With `EVENT_BUS=pubsub`: the GCP project. Required. |
+| `PUBSUB_EMULATOR_HOST` | both | With `EVENT_BUS=pubsub`: `host:port` of the Pub/Sub emulator; unset, the real API is used with the metadata server's token. |
+| `PORT` | media-svc | Listen port, default 8090 (core-api's is 8080). One port serves gRPC, `/work` and `/healthz`. |
+| `MEDIA_WORKERS` | media-svc | Worker subprocesses at once, default `max(1, cpus / 8)`. |
+| `MEDIA_WORKER_THREADS` | media-svc | Threads per worker, default `max(1, cpus / MEDIA_WORKERS)`. |
+| `JXL_BIN_DIR` | media-svc, tests | Directory holding `cjxl` and `djxl`; default `~/.cache/goodfolk-libjxl/bin`. |
+| `APP_ENV` | media-svc | `production` logs JSON and makes `EVENT_BUS=push` and `SVC_AUTH=secret` errors. |
+| `DEV_CORS_ORIGINS` | `ensure-buckets` | Browser origins allowed to PUT to the private bucket, default `http://localhost:5173,http://localhost:4173`. |
+
+A development `.env`-style file for both services (source it in each shell):
+
+```sh
+DATABASE_OWNER_URL=postgres://goodfolk_owner:goodfolk_owner_dev@localhost:5432/goodfolk
+DATABASE_URL=postgres://goodfolk_api:goodfolk_api_dev@localhost:5432/goodfolk
+GUEST_ID_KEY=HU5/qSn58655epIBi671lsojvXir+VQZ0MzXdTrKk6o=   # development only
+SVC_AUTH=secret
+INTERNAL_SHARED_SECRET=local-development-secret-at-least-32-bytes
+EVENT_BUS=push
+PUSH_ENDPOINT_MEDIA_PROCESS=http://localhost:8090/work
+PUSH_ENDPOINT_MEDIA_RESULTS=http://localhost:8080/internal/events
+# Everything else (S3_*, MEDIA_PUBLIC_BASE_URL, MEDIA_SVC_URL, PORT) falls back to the local defaults above.
+```
+
+`set -a; . ./.env; set +a` exports it. Deployment notes (R2 bucket rules, the Pub/Sub topics, `Dockerfile.media-svc`) are in [ARCHITECTURE.md §8.5](docs/ARCHITECTURE.md).
 
 ### Adding staff
 

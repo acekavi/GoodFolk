@@ -106,13 +106,17 @@ Request DTOs derive `garde::Validate` and are checked with `error::validate(&bod
 
 ## Change events
 
-After a successful write, in the same transaction, call `db::notify(&mut tx, &Event { tenant_id, property_id, keys })`. Keys name **TanStack Query keys** the client should invalidate (`"properties"`, `"room-types:<property>"`, `"rooms:<property>"` (rooms, sections and block reasons), `"inventory:<property>:<yyyy-mm>"` (one per month a change touches), `"rate-plans:<property>"` (rate plans, meal supplements and cancellation policies), `"rates:<property>:<plan>:<yyyy-mm>"` (one per plan and month a price or restriction change touches, derived plans included), `"reservations:<property>"` (the reservation list), `"reservation:<id>"` (one reservation's detail), `"accounts:<property>"` (the Accounts list; accounts are tenant-wide but the key is scoped to the property the change came in through, like `guestsKey` — another property's open Accounts page doesn't live-refresh, see the Phase 3b carry-over in [ROADMAP.md](../ROADMAP.md)), `"tape:<property>:<yyyy-mm>"` (the tape chart, see below), `"hk:<property>"` and `"issues:<property>"` (housekeeping, see below)). Events never carry data. Choose keys so that a change refetches only screens that show it; the SPA's query keys start with the same string (`web/pms/src/lib/rooms.ts`, `inventory.ts`).
+After a successful write, in the same transaction, call `db::notify(&mut tx, &Event { tenant_id, property_id, keys })`. Keys name **TanStack Query keys** the client should invalidate (`"properties"`, `"room-types:<property>"`, `"rooms:<property>"` (rooms, sections and block reasons), `"inventory:<property>:<yyyy-mm>"` (one per month a change touches), `"rate-plans:<property>"` (rate plans, meal supplements and cancellation policies), `"rates:<property>:<plan>:<yyyy-mm>"` (one per plan and month a price or restriction change touches, derived plans included), `"reservations:<property>"` (the reservation list), `"reservation:<id>"` (one reservation's detail), `"accounts:<property>"` (the Accounts list; accounts are tenant-wide but the key is scoped to the property the change came in through, like `guestsKey` — another property's open Accounts page doesn't live-refresh, see the Phase 3b carry-over in [ROADMAP.md](../ROADMAP.md)), `"tape:<property>:<yyyy-mm>"` (the tape chart, see below), `"hk:<property>"` and `"issues:<property>"` (housekeeping, see below), `"media:<property>"` (photos and documents, see below)). Events never carry data. Choose keys so that a change refetches only screens that show it; the SPA's query keys start with the same string (`web/pms/src/lib/rooms.ts`, `inventory.ts`).
 
 Keep events small: `pg_notify` payloads must stay under 8000 bytes. Inventory month keys are clamped to the counter window (`[business date, business date + 730 days)`, `rooms::inventory::clamped_month_keys`, crate-internal), which caps a change at 25 month keys, and blocks may not end past the window. A new key family that grows with a date range needs the same kind of bound. Rate keys grow with the number of plans too (a change to a plan with many derived plans), so `rates` writes only inside the same 730-day window and sends its keys in as many events as it takes to keep each payload under 6000 bytes of keys.
 
 ### Housekeeping keys
 
 `hk:<property>` is the housekeeping board (room conditions, occupancy, assignments, block markers) and the housekeeper app's My rooms; `issues:<property>` is the open-issues list. Neither carries a date, so each is one small key. `hk:` is emitted by the condition commands (single and bulk), assignments (set and copy yesterday), **and by every command that changes what the board shows**: `check_in`, `undo_check_in` and `check_out` (a condition or occupancy), `create_reservation`, `assign_room`, `unassign_room`, `cancel_room` and `modify_room` (who is in a room, and when), the room commands (create, update and reorder: the room list itself) and `rooms::create_block` and `shorten_block` (a block marker). `rooms::hk_key` is the one definition of the key; `housekeeping::hk_key` re-exports it. Issue reports and resolutions emit only `issues:`, so a screen that shows issue counts (the board) listens to both. A command that changes any of these must emit the key in the same event as its others. The event string is one query key element, because `events.ts` invalidates `{ queryKey: [key] }`: the SPA reads the board under `['hk:<property>']`, My rooms under `['hk:<property>', 'mine']`, and the open issues under `['issues:<property>']`. A key spelled as `['hk', property]` would never be invalidated.
+
+### Media key
+
+`media:<property>` is every list that shows photos or documents: room-type galleries, an issue's photos and a guest's ID documents. The media module emits it (`media::media_key` is the one definition) whenever an asset or link changes: an upload completing (including a duplicate), a result arriving from media-svc (`ready` or `failed`), a reorder, caption, removal or deletion, and the sweep's deletions. It is how a tile turns from `Processing…` to the picture without a reload. The SPA reads each list under a query key that starts with the same string, so the event is one key element and the matching queries are invalidated with `{ queryKey: ['media:<property>'] }`.
 
 ### Tape keys
 
@@ -135,6 +139,34 @@ A new command that changes a stay's dates, room, status or existence, or a block
 ### Offline queues are per user
 
 The housekeeper app (`/hk`) queues condition changes and issue reports in IndexedDB while offline and replays them in order (`web/pms/src/lib/hk-queue.ts`, `hk-sync.svelte.ts`). Anything kept on a device is tagged with the user who made it, because a device can be shared: a queued item, the saved My rooms snapshot and the room choices carry their owner. Before every replay the client reads a **fresh** `GET /api/v1/me` (never the cached copy, which can be 30 s old) and sends an item only if its owner is the signed-in user; another user's items stay, are never sent and never shown, and can be discarded by the user who finds them. Signing out wipes the signer's own items and snapshot only, after warning if changes have not been sent. A new feature that keeps work on the device must follow the same rule. After sign-in the login page follows the `redirect` parameter only when it is a same-origin path, checked again after URL normalisation (`web/pms/src/lib/redirect.ts`: `/.//evil.com` becomes `//evil.com`).
+
+## Internal endpoints
+
+`POST /internal/events` on core-api and media-svc's `POST /work` (and its gRPC service) are called by other services, not browsers:
+
+- They sit behind the `svc-auth` layer (`crates/svc-auth`): a Google-signed ID token with the expected audience and an allowed service account in production, a bearer `INTERNAL_SHARED_SECRET` locally (`SVC_AUTH=secret`, refused when `APP_ENV=production`). A missing or wrong credential is a 401 problem (for gRPC, `UNAUTHENTICATED`).
+- They are mounted **outside the session and CSRF layers** and the 15 s request timeout (`routes::router`): there is no cookie or `x-goodfolk-csrf` header, and the caller owns its timeout, since a timed-out delivery is simply sent again. On media-svc only the health checks (`/healthz`, `grpc.health.v1`) are unauthenticated, so platform probes can reach them.
+- They accept messages in Pub/Sub's push format (`{message: {data, messageId, attributes}, subscription}`), whether Pub/Sub or `PushBus` sent them. The receiver records the message id in `processed_event` (`events::first_seen`) in the same transaction as the effect, so a redelivery is a no-op `204`; a message that can never be applied is a `400` (the bus drops it and keeps the reason), and one that failed transiently is a `500`, so the bus delivers it again. Add new internal routes to this router, never to the browser one.
+
+## Service events: the outbox rule
+
+**Enqueue in the business transaction; never publish directly.** A command that other services must hear about calls `events::enqueue(&mut tx, topic, &payload)` inside the transaction that makes the change, so the event exists exactly when the change does. Nothing outside `events::run_relay` calls an `EventBus`: a publish from a handler could be lost by a crash after the commit, or announce a change that then rolls back. The relay delivers at least once, so a **receiver must be idempotent on the outbox id** (the message id): record it with `events::first_seen` in the same transaction as the effect, and make the effect itself safe to repeat where it can be (object keys are deterministic for this reason). The enqueue also sends `pg_notify('gf_outbox')`, which wakes the relays when the transaction commits; the outbox and `processed_event` tables are reached only through `security definer` functions.
+
+## Definer-function rules
+
+A `SECURITY DEFINER` function runs with the migration owner's privileges, under forced row-level security that the owner is also subject to:
+
+1. **`set search_path = pg_catalog, public, pg_temp`, with `pg_temp` last.** Without it Postgres searches the session's temporary schema first, and a `goodfolk_app` session could shadow a table (`outbox`, `guest_search`) with a temporary one and have the function write to it, or fire a trigger on it, as the owner. Migration `0015` fixed the functions of `0009` and `0014`; a test pins the setting on every definer function.
+2. `revoke all … from public`, then `grant execute` to the one role that calls it.
+3. Filter by `app.current_tenant()` inside the function and return ids only, unless crossing tenants is the function's purpose (see "Reading around RLS" and the `sweep_read` policy above).
+
+## Guest-document links
+
+A guest ID document is never reachable through a stored or guessable URL.
+
+- GraphQL `guestDocuments(propertyId, guestId)` lists `{id, kind, status, mime, uploadedAt, uploadedBy}` and **no URL**. The only way to a file is `GET /api/v1/properties/{p}/guest-documents/{id}/link?size=thumb|md|original`, which needs `GuestDocumentsManage`, returns `{url, expires_at}` for **5 minutes**, and writes a `guest_document.viewed` audit entry for **every link issued**. The SPA fetches a fresh link per view and does not keep it.
+- **Property-scoped.** A document stays with the property it was uploaded at: the list, the link and the delete all filter by the property in the path, and another property of the same tenant gets 404 (never reveal existence), as another tenant does. Deleting is audited (`guest_document.deleted`), and so is the retention sweep's.
+- Issue-photo links are signed for 60 minutes at read time, and need only `HousekeepingView`. Gallery renditions are public and immutable.
 
 ## GraphQL
 
