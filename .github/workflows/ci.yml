@@ -143,4 +143,6 @@ jobs:
         if: failure()
         with:
           name: playwright-traces
-          path: web/pms/test-results
+          path: |
+            web/pms/test-results
+            ~/.cache/goodfolk-rustfs/rustfs.log
