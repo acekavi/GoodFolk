@@ -30,7 +30,7 @@ const BY_EXTENSION: Record<string, string> = {
 };
 const HEIC = new Set(['image/heic', 'image/heif', 'image/heic-sequence', 'image/heif-sequence']);
 
-/** Refusal messages, the same words the server uses. */
+/** Refusal messages: the server's words, plus the spec's 'Not a supported image' for photos. */
 export const NOT_ACCEPTED = 'This file type is not accepted here';
 export const NOT_AN_IMAGE = 'Not a supported image';
 export const EMPTY = 'The file is empty';
