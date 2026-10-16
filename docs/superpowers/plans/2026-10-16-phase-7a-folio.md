@@ -60,7 +60,7 @@ sections a task names. Design background: ARCHITECTURE.md §4.4 and §7.5–7.6.
   - `room:<reservation_room>:<YYYY-MM-DD>`
   - `meal_plan:<reservation_room>:<YYYY-MM-DD>`
   - `pos:<pos_bill>:<n>`
-  - `cancellation:<reservation>`
+  - `cancellation:<reservation_room>`
 - **Tax:**
   - Rates are in basis points (1000 = 10%).
   - Rounding is half-up per component in minor units, and the remainder goes to net.
@@ -441,7 +441,7 @@ pub enum Method { Cash, CardTerminal { approval: String, last4: String, brand: S
 pub async fn take_payment(tx, tenant, user, folio: Uuid, method: Method, amount: i64, currency: &str, evidence: Option<&str>) -> Result<PaymentRow, FolioError>;
 pub async fn refund(tx, tenant, user, payment: Uuid, amount: i64, reason: &str) -> Result<PaymentRow, FolioError>;
 pub async fn move_deposit(tx, tenant, user, reservation: Uuid, to_reservation_room: Uuid) -> Result<(), FolioError>; // no-op on zero balance
-pub async fn post_cancellation_fee(tx, tenant, user, reservation: Uuid, amount: i64, currency: &str) -> Result<(), FolioError>; // posting key cancellation:<reservation>
+pub async fn post_cancellation_fee(tx, tenant, user, property: Uuid, reservation_room: Uuid, amount: i64, currency: &str, inclusive: bool) -> Result<(), FolioError>; // posting key cancellation:<reservation_room>
 ```
 
 **Rules:**

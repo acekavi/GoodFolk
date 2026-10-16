@@ -81,16 +81,17 @@ impl Hotel {
         Ok(())
     }
 
-    /// `post_cancellation_fee` in `property`, in its own transaction, committed if it succeeds.
+    /// `post_cancellation_fee` for `stay` in `property`, exclusive, in its own transaction, committed if it
+    /// succeeds.
     async fn cancellation_fee_in(
         &self,
         property: Uuid,
-        reservation: Uuid,
+        stay: Uuid,
         amount: i64,
         currency: &str,
     ) -> Result<(), FolioError> {
         let mut tx = self.tx().await;
-        folio::post_cancellation_fee(&mut tx, self.tenant, Some(self.user), property, reservation, amount, currency)
+        folio::post_cancellation_fee(&mut tx, self.tenant, Some(self.user), property, stay, amount, currency, false)
             .await?;
         tx.commit().await.unwrap();
         Ok(())
@@ -409,23 +410,23 @@ async fn a_cancellation_posts_its_penalty_to_the_deposit_folio_once(_: PgPoolOpt
     let hotel = Hotel::new(opts).await;
     let booking = hotel.book(None).await;
 
-    hotel.cancellation_fee_in(hotel.property, booking.id, 10_000, "LKR").await.unwrap();
-    hotel.cancellation_fee_in(hotel.property, booking.id, 10_000, "LKR").await.unwrap();
+    hotel.cancellation_fee_in(hotel.property, booking.rooms[0], 10_000, "LKR").await.unwrap();
+    hotel.cancellation_fee_in(hotel.property, booking.rooms[0], 10_000, "LKR").await.unwrap();
 
     let deposit = hotel.view(booking.deposit).await;
     let [line] = &deposit.lines[..] else { panic!("one line: {:?}", deposit.lines) };
     assert_eq!((line.line.source, line.line.category.as_str()), (Source::CancellationFee, "fee"));
-    assert_eq!(line.line.posting_key, Some(format!("cancellation:{}", booking.id)));
+    assert_eq!(line.line.posting_key, Some(format!("cancellation:{}", booking.rooms[0])));
     assert_eq!(line.line.net, 10_000);
     let codes: Vec<&str> = line.taxes.iter().map(|tax| tax.code.as_str()).collect();
     assert_eq!(codes, ["SSCL", "TDL"], "a penalty is a supply, taxed under the \"*\" rules");
     assert_eq!(line.line.total, 10_000 + 100 + 253);
 
     let free = hotel.book(None).await;
-    hotel.cancellation_fee_in(hotel.property, free.id, 0, "LKR").await.unwrap();
+    hotel.cancellation_fee_in(hotel.property, free.rooms[0], 0, "LKR").await.unwrap();
     assert!(hotel.view(free.deposit).await.lines.is_empty(), "a free cancellation posts nothing");
     assert_eq!(
-        invalid(hotel.cancellation_fee_in(hotel.property, free.id, -1, "LKR").await),
+        invalid(hotel.cancellation_fee_in(hotel.property, free.rooms[0], -1, "LKR").await),
         "a cancellation penalty is not negative"
     );
 }
@@ -447,7 +448,7 @@ async fn every_payment_command_is_confined_to_its_property(_: PgPoolOptions, opt
     // Kandy's reservation and stay, moved or charged from here.
     not_found(hotel.move_deposit_in(hotel.property, there.id, there.rooms[0]).await);
     not_found(hotel.move_deposit_in(kandy, here.id, here.rooms[0]).await);
-    not_found(hotel.cancellation_fee_in(hotel.property, there.id, 100, "LKR").await);
+    not_found(hotel.cancellation_fee_in(hotel.property, there.rooms[0], 100, "LKR").await);
 
     assert_eq!(hotel.lines_on(&[there.deposit, there.guests[0]]).await, vec![]);
     let payments: i64 =

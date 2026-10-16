@@ -179,7 +179,7 @@ async fn cancel_emits_tape_keys_for_the_whole_stay_not_only_the_released_nights(
 
     hotel.try_cancel(booked.rooms[0].id, 1).await;
 
-    // Cancelling the reservation's only stay posts its penalty to the deposit folio first.
+    // The stay's penalty posts to the deposit folio first.
     let posted = recv(&mut listener).await;
     assert!(posted.iter().all(|key| key.starts_with("folio:")), "the penalty's folio: {posted:?}");
     let keys = recv(&mut listener).await;

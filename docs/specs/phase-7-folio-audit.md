@@ -41,7 +41,7 @@ Linen and guest laundry ([laundry.md](laundry.md)) follow 7a.
 - **Append-only.** The app role has no `update` or `delete` grant on lines, their taxes or payments.
 - **Reversal.** An equal negative line with `reverses = <line>` and a reason (1–500 characters). It carries its own negative tax lines, mirroring the original's. A line can be reversed once, and a reversal can't itself be reversed.
 - **Transfer.** A reversal on the source folio plus an identical line on the target folio, linked by `transfer_id`, in one transaction. Both folios must be open, and in the same property for guest and account folios.
-- **Posting key.** System postings carry a `posting_key` that is unique per folio: `room:<reservation_room>:<date>`, `meal_plan:<reservation_room>:<date>`, `pos:<pos_bill>`, `cancellation:<reservation>`. A repeat is a no-op that returns the existing line.
+- **Posting key.** System postings carry a `posting_key` that is unique per folio: `room:<reservation_room>:<date>`, `meal_plan:<reservation_room>:<date>`, `pos:<pos_bill>`, `cancellation:<reservation_room>`. A repeat is a no-op that returns the existing line.
 
 ## Routing
 
@@ -82,7 +82,7 @@ Linen and guest laundry ([laundry.md](laundry.md)) follow 7a.
 - **Deposits.**
   - Payments taken before arrival go on the reservation's deposit folio.
   - At the first check-in of the reservation, the deposit folio's balance moves to that stay's guest folio as transfer lines.
-  - On cancellation of the whole reservation, the Phase 3 cancellation penalty posts to the deposit folio as `cancellation_fee`. The remaining credit stays there, to be refunded (`FolioAdjust`) or written off by an `adjustment` line.
+  - When a reservation room is cancelled, its Phase 3 cancellation penalty posts to the reservation's deposit folio as `cancellation_fee`, in the room's currency, taxed (tax-inclusive when the room's rate plan prices include tax), once per room. The remaining credit stays there, to be refunded (`FolioAdjust`) or written off by an `adjustment` line.
 
 ## POS bills
 

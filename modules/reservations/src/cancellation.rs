@@ -73,9 +73,9 @@ pub fn cancellation_penalty(
 /// its booked terms set for cancelling on the business date is recorded. The reservation's version moves
 /// too: its derived status may change, so a client holding it must refetch.
 ///
-/// Cancelling the reservation's last stay cancels the whole reservation: the penalties of all its stays post to its
-/// deposit folio as a `cancellation_fee` line (taxed, so it needs a rate for a foreign currency on the business date,
-/// `Conflict` otherwise, and an open deposit folio, `Conflict` otherwise).
+/// A penalty posts to the reservation's deposit folio as this stay's `cancellation_fee` line
+/// ([`folio::post_cancellation_fee`]), tax-inclusive when its rate plan's prices are: that needs a rate for a foreign
+/// currency on the business date and an open deposit folio (`Conflict` otherwise).
 pub async fn cancel_room(
     tx: &mut Tx,
     tenant: TenantId,
@@ -85,10 +85,11 @@ pub async fn cancel_room(
     expected_version: i32,
 ) -> Result<CancelledRoom, ReservationsError> {
     let row: Option<StayRow> = sqlx::query_as(
-        "select reservation_id, room_type_id, status, lower(stay) as check_in, upper(stay) as check_out, currency,
-                cancellation_terms, version
-         from reservation_room where id = $1 and property_id = $2
-         for update",
+        "select rr.reservation_id, rr.room_type_id, rr.status, lower(rr.stay) as check_in,
+                upper(rr.stay) as check_out, rr.currency, rr.cancellation_terms, rr.version, rp.prices_include_tax
+         from reservation_room rr join rate_plan rp on rp.id = rr.rate_plan_id
+         where rr.id = $1 and rr.property_id = $2
+         for update of rr",
     )
     .bind(id)
     .bind(property)
@@ -143,7 +144,18 @@ pub async fn cancel_room(
     .bind(penalty)
     .fetch_one(&mut **tx)
     .await?;
-    post_penalty_if_whole(tx, tenant, actor, property, stay.reservation_id).await?;
+    // After this row and its counters, before the reservation: the deposit folio sits between them in the lock order.
+    folio::post_cancellation_fee(
+        tx,
+        tenant,
+        Some(actor),
+        property,
+        id,
+        penalty,
+        &stay.currency,
+        stay.prices_include_tax,
+    )
+    .await?;
     sqlx::query("update reservation set version = version + 1 where id = $1")
         .bind(stay.reservation_id)
         .execute(&mut **tx)
@@ -167,37 +179,6 @@ pub async fn cancel_room(
     Ok(CancelledRoom { id, reservation_id: stay.reservation_id, status, version, penalty, currency: stay.currency })
 }
 
-/// When every stay of `reservation` is now cancelled, posts the reservation's cancellation penalties, per currency,
-/// to its deposit folio ([`folio::post_cancellation_fee`]). The deposit folio is locked first, after this stay's row
-/// and its counters and before the reservation, as the lock order has it: cancellations of a reservation's last two
-/// stays run one after the other, and only the second sees the whole reservation cancelled.
-async fn post_penalty_if_whole(
-    tx: &mut Tx,
-    tenant: TenantId,
-    actor: UserId,
-    property: Uuid,
-    reservation: Uuid,
-) -> Result<(), ReservationsError> {
-    let deposit = folio::ensure_deposit_folio(tx, tenant, property, reservation).await?;
-    sqlx::query("select 1 from folio where id = $1 for update").bind(deposit).execute(&mut **tx).await?;
-    let penalties: Vec<(String, i64, bool)> = sqlx::query_as(
-        "select currency::text, coalesce(sum(cancellation_penalty), 0)::bigint, bool_and(status = 'cancelled')
-         from reservation_room where reservation_id = $1
-         group by currency
-         order by currency",
-    )
-    .bind(reservation)
-    .fetch_all(&mut **tx)
-    .await?;
-    if !penalties.iter().all(|&(_, _, cancelled)| cancelled) {
-        return Ok(());
-    }
-    for (currency, amount, _) in penalties {
-        folio::post_cancellation_fee(tx, tenant, Some(actor), property, reservation, amount, &currency).await?;
-    }
-    Ok(())
-}
-
 /// The parts of a `reservation_room` that cancelling reads.
 #[derive(sqlx::FromRow)]
 struct StayRow {
@@ -209,6 +190,8 @@ struct StayRow {
     currency: String,
     cancellation_terms: Option<Json<CancellationTerms>>,
     version: i32,
+    /// The rate plan's: the penalty, priced from it, includes tax.
+    prices_include_tax: bool,
 }
 
 #[cfg(test)]

@@ -538,21 +538,23 @@ pub async fn move_deposit(
     Ok(())
 }
 
-/// Posts the cancellation penalty `amount` in `currency` on the deposit folio of `reservation` in the property,
-/// as a `cancellation_fee` line in category `fee`, taxed by the property's rules (a penalty is a supply), on the
-/// business date. Nothing for a zero penalty; `Invalid` for a negative one.
+/// Posts the cancellation penalty `amount` of the stay `reservation_room` in the property, in `currency`, on its
+/// reservation's deposit folio: a `cancellation_fee` line in category `fee`, taxed by the property's rules (a penalty
+/// is a supply) on the business date. `inclusive` when the stay's rate plan prices include tax, so the line totals
+/// exactly the penalty. Nothing for a zero penalty; `Invalid` for a negative one; `NotFound` unless the stay is in the
+/// property.
 ///
-/// Posted once under the key `cancellation:<reservation>`, so a replay is a no-op. A reservation whose stays were
-/// penalised in several currencies posts one line per currency, under `cancellation:<reservation>:<CUR>`.
+/// Posted once under the key `cancellation:<reservation_room>`, so a replay is a no-op.
 #[allow(clippy::too_many_arguments)]
 pub async fn post_cancellation_fee(
     tx: &mut Tx,
     tenant: TenantId,
     user: Option<UserId>,
     property: Uuid,
-    reservation: Uuid,
+    reservation_room: Uuid,
     amount: i64,
     currency: &str,
+    inclusive: bool,
 ) -> Result<(), FolioError> {
     if amount < 0 {
         return Err(FolioError::Invalid("a cancellation penalty is not negative".into()));
@@ -560,23 +562,17 @@ pub async fn post_cancellation_fee(
     if amount == 0 {
         return Ok(());
     }
-    let deposit = ensure_deposit_folio(tx, tenant, property, reservation).await?;
-    let (business_date, currencies): (Date, i64) = sqlx::query_as(
-        "select p.business_date,
-                (select count(distinct rr.currency) from reservation_room rr
-                 where rr.reservation_id = $2 and rr.cancellation_penalty > 0)
-         from property p where p.id = $1",
+    let (reservation, business_date): (Uuid, Date) = sqlx::query_as(
+        "select rr.reservation_id, p.business_date
+         from reservation_room rr join property p on p.id = rr.property_id
+         where rr.id = $1 and rr.property_id = $2",
     )
+    .bind(reservation_room)
     .bind(property)
-    .bind(reservation)
     .fetch_optional(&mut **tx)
     .await?
-    .ok_or(FolioError::NotFound("property"))?;
-    let posting_key = if currencies > 1 {
-        format!("cancellation:{reservation}:{currency}")
-    } else {
-        format!("cancellation:{reservation}")
-    };
+    .ok_or(FolioError::NotFound("reservation room"))?;
+    let deposit = ensure_deposit_folio(tx, tenant, property, reservation).await?;
     let charge = NewCharge {
         source: Source::CancellationFee,
         category: "fee".into(),
@@ -585,8 +581,8 @@ pub async fn post_cancellation_fee(
         unit_net: amount,
         currency: currency.to_owned(),
         business_date,
-        posting_key: Some(posting_key),
-        inclusive: false,
+        posting_key: Some(format!("cancellation:{reservation_room}")),
+        inclusive,
         untaxed: false,
     };
     post_charge(tx, tenant, user, property, deposit, charge).await?;
