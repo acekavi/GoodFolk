@@ -172,20 +172,16 @@ async fn health_reports_serving() {
     assert_eq!(response.status(), 200);
 }
 
-#[tokio::test]
-async fn finalize_refuses_more_bytes_than_declared() {
+/// Uploads `sent` for a file declared as `declared` and returns the refusal's reason, checking the upload is gone.
+async fn refused_size(declared: Vec<u8>, sent: Vec<u8>) -> String {
     let server = start().await;
     let mut client = client(&server).await;
     let (tenant, asset) = (Uuid::now_v7(), Uuid::now_v7());
-    let declared = fixture("small.jpg");
     let created = client
         .create_upload(create(tenant, asset, Purpose::Gallery, declared.len() as u64))
         .await
         .unwrap()
         .into_inner();
-    // The browser sends more than it declared; the size is checked with `head` before anything is read.
-    let mut sent = declared.clone();
-    sent.extend_from_slice(&[0; 4096]);
     let response = http().put(&created.parts[0].url).body(sent).send().await.unwrap();
     let etag = response.headers()["etag"].to_str().unwrap().to_owned();
     let finalized = client
@@ -201,11 +197,27 @@ async fn finalize_refuses_more_bytes_than_declared() {
         .await
         .unwrap()
         .into_inner();
+    assert_eq!(server.storage.head(Bucket::Private, &upload_key(tenant, asset)).await.unwrap(), None);
     match finalized.result.unwrap() {
-        Outcome::Refused(refused) => assert_eq!(refused.reason, "The file is larger than declared"),
+        Outcome::Refused(refused) => refused.reason,
         Outcome::Verified(verified) => panic!("verified {verified:?}"),
     }
-    assert_eq!(server.storage.head(Bucket::Private, &upload_key(tenant, asset)).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn finalize_refuses_more_bytes_than_declared() {
+    // The browser sends more than it declared; the size is checked with `head` before anything is read.
+    let declared = fixture("small.jpg");
+    let mut sent = declared.clone();
+    sent.extend_from_slice(&[0; 4096]);
+    assert_eq!(refused_size(declared, sent).await, "The file is larger than declared");
+}
+
+#[tokio::test]
+async fn finalize_refuses_fewer_bytes_than_declared() {
+    let declared = fixture("small.jpg");
+    let sent = declared[..declared.len() / 2].to_vec();
+    assert_eq!(refused_size(declared, sent).await, "The file is smaller than declared");
 }
 
 #[tokio::test]

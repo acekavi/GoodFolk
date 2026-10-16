@@ -23,6 +23,7 @@ const PART_URL_TTL: Duration = Duration::from_secs(3600);
 const SNIFF_BYTES: usize = 4096;
 
 const TOO_LARGE: &str = "The file is larger than declared";
+const TOO_SMALL: &str = "The file is smaller than declared";
 const CHECKSUM: &str = "The file does not match its checksum";
 const WRONG_TYPE: &str = "This file type is not accepted here";
 const TOO_MANY_PIXELS: &str = "The image is larger than 100 megapixels";
@@ -132,10 +133,9 @@ impl Media for MediaSvc {
             tracing::error!("a completed upload has no object");
             return Err(Status::unavailable("storage is unavailable"));
         };
-        let verdict = if stored != request.declared_bytes || stored > max_bytes {
-            Err(TOO_LARGE)
-        } else {
-            self.read_and_verify(&key, &request, profile).await?
+        let verdict = match size_refusal(stored, request.declared_bytes, max_bytes) {
+            Some(reason) => Err(reason),
+            None => self.read_and_verify(&key, &request, profile).await?,
         };
 
         let result = match verdict {
@@ -174,6 +174,17 @@ impl MediaSvc {
     }
 }
 
+/// Why a file of `len` bytes is refused when `declared_bytes` were declared and the purpose takes at most `max_bytes`.
+fn size_refusal(len: u64, declared_bytes: u64, max_bytes: u64) -> Option<&'static str> {
+    if len > declared_bytes || len > max_bytes {
+        Some(TOO_LARGE)
+    } else if len < declared_bytes {
+        Some(TOO_SMALL)
+    } else {
+        None
+    }
+}
+
 /// Checks the uploaded bytes against what was declared and what the purpose accepts. Never decodes pixels.
 fn verify(
     body: &[u8],
@@ -182,8 +193,8 @@ fn verify(
     profile: Profile,
 ) -> Result<Verified, &'static str> {
     let len = u64::try_from(body.len()).unwrap_or(u64::MAX);
-    if len != declared_bytes || len > limits(profile).max_bytes {
-        return Err(TOO_LARGE);
+    if let Some(reason) = size_refusal(len, declared_bytes, limits(profile).max_bytes) {
+        return Err(reason);
     }
     let (sha256, blake3) = std::thread::scope(|scope| {
         let sha256 = scope.spawn(|| Sha256::digest(body));
@@ -228,9 +239,15 @@ mod tests {
     }
 
     #[test]
-    fn a_short_file_is_a_size_mismatch() {
+    fn a_short_file_is_smaller_than_declared() {
         let bytes = b"not much";
-        assert_eq!(verify(bytes, 9, &sha(bytes), Profile::Gallery).unwrap_err(), TOO_LARGE);
+        assert_eq!(verify(bytes, 9, &sha(bytes), Profile::Gallery).unwrap_err(), "The file is smaller than declared");
+    }
+
+    #[test]
+    fn a_long_file_is_larger_than_declared() {
+        let bytes = b"not much";
+        assert_eq!(verify(bytes, 7, &sha(bytes), Profile::Gallery).unwrap_err(), "The file is larger than declared");
     }
 
     #[test]
