@@ -36,7 +36,11 @@ const ACTIONS = {
 	/** Any condition, bulk changes, assignment, Copy yesterday and resolving issues; mirrors `HousekeepingSupervise`. */
 	housekeepingSupervise: ['owner', 'manager', 'hk_supervisor'],
 	/** Report a room issue; mirrors `RoomIssuesReport`. */
-	roomIssuesReport: ['owner', 'manager', 'hk_supervisor', 'housekeeping', 'front_desk']
+	roomIssuesReport: ['owner', 'manager', 'hk_supervisor', 'housekeeping', 'front_desk'],
+	/** Upload, reorder, caption and remove gallery photos; mirrors `MediaManage`. */
+	mediaManage: ['owner', 'manager'],
+	/** Upload, view and delete guests' ID documents; mirrors `GuestDocumentsManage`. */
+	guestDocumentsManage: ['owner', 'manager', 'front_desk']
 } satisfies Record<string, Role[]>;
 
 /** UI hint only; the API enforces permissions. A grant counts tenant-wide or for `propertyId`. */

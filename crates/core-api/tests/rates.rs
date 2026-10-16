@@ -324,7 +324,9 @@ async fn another_tenants_rates_cannot_be_changed(_: PgPoolOptions, opts: PgConne
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn a_price_change_tells_screens_to_refetch_each_plans_months(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
-    spawn_listener(PgPool::connect_with(opts.clone()).await.unwrap(), app.state.events.clone()).await.unwrap();
+    spawn_listener(PgPool::connect_with(opts.clone()).await.unwrap(), app.state.events.clone(), Default::default())
+        .await
+        .unwrap();
     let hotel = Hotel::new(&app, opts).await;
     let plans = format!("{}/rate-plans", hotel.path);
     let bar = post(&app, &hotel.owner, &plans, hotel.bar()).await.body;

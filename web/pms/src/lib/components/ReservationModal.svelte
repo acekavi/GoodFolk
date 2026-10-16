@@ -3,14 +3,17 @@
 	tape chart over the chart (shallow routing); each decides what closing means and passes it as `onclose`,
 	called when the dialog closes (Escape, the Close button or a click on the backdrop). Every room's own
 	actions (assign, cancel, modify, check in/out, occupants) live in `RoomCard`; this component keeps the
-	reservation-wide facts, the booker, the billed account and the history.
+	reservation-wide facts, the booker, every guest's ID documents (for `GuestDocumentsManage` only), the
+	billed account and the history.
 -->
 <script lang="ts">
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { onMount } from 'svelte';
 	import { accountKindLabel, accountsKey, fetchAccounts } from '$lib/accounts';
+	import { reservationGuests } from '$lib/guest-documents';
 	import { ApiError, errorMessage } from '$lib/api/problem';
 	import { ifMatch, rest, unwrap } from '$lib/api/rest';
+	import GuestDocuments from '$lib/components/GuestDocuments.svelte';
 	import RoomCard from '$lib/components/RoomCard.svelte';
 	import { Pending } from '$lib/pending.svelte';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
@@ -42,6 +45,7 @@
 	const checkInAllowed = $derived(!!me.data && can(me.data, 'frontDeskCheckIn', propertyId));
 	const viewConditions = $derived(!!me.data && can(me.data, 'housekeepingView', propertyId));
 	const supervise = $derived(!!me.data && can(me.data, 'housekeepingSupervise', propertyId));
+	const manageDocuments = $derived(!!me.data && can(me.data, 'guestDocumentsManage', propertyId));
 	// The same key and fetcher as the table's prefetch on hover and focus, so an opened row is often
 	// already loaded.
 	const reservation = createQuery(() => ({
@@ -198,6 +202,15 @@
 				<dt>ID</dt>
 				<dd>{idDocText(data.booker)}</dd>
 			</dl>
+			{#if manageDocuments}
+				{#each reservationGuests(data) as guest (guest.id)}
+					<GuestDocuments
+						{propertyId}
+						guestId={guest.id}
+						guestName="{guest.firstName} {guest.lastName}"
+					/>
+				{/each}
+			{/if}
 
 			{#each data.rooms as room (room.id)}
 				<RoomCard

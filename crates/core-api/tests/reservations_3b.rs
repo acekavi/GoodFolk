@@ -160,7 +160,9 @@ async fn a_booking_billed_to_an_account_is_modified_assigned_checked_in_and_chec
     opts: PgConnectOptions,
 ) {
     let app = TestApp::new(opts.clone()).await;
-    spawn_listener(PgPool::connect_with(opts.clone()).await.unwrap(), app.state.events.clone()).await.unwrap();
+    spawn_listener(PgPool::connect_with(opts.clone()).await.unwrap(), app.state.events.clone(), Default::default())
+        .await
+        .unwrap();
     let hotel = Hotel::new(&app, opts).await;
 
     let account = post(

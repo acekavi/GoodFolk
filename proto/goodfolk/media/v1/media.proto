@@ -1,0 +1,27 @@
+syntax = "proto3";
+package goodfolk.media.v1;
+
+service Media {
+  rpc CreateUpload(CreateUploadRequest) returns (CreateUploadResponse);
+  rpc Finalize(FinalizeRequest) returns (FinalizeResponse);
+}
+
+enum Purpose {
+  PURPOSE_UNSPECIFIED = 0;
+  PURPOSE_GALLERY = 1;
+  PURPOSE_ISSUE_PHOTO = 2;
+  PURPOSE_GUEST_DOCUMENT = 3;
+}
+
+message CreateUploadRequest { string tenant_id = 1; string asset_id = 2; Purpose purpose = 3; uint64 bytes = 4; }
+message PartUrl { uint32 number = 1; string url = 2; }
+message CreateUploadResponse { string s3_upload_id = 1; uint64 part_size = 2; repeated PartUrl parts = 3; int64 expires_at_unix = 4; }
+
+message CompletedPart { uint32 number = 1; string etag = 2; }
+message FinalizeRequest {
+  string tenant_id = 1; string asset_id = 2; Purpose purpose = 3; string s3_upload_id = 4;
+  repeated CompletedPart parts = 5; uint64 declared_bytes = 6; bytes sha256 = 7;
+}
+message Verified { bytes blake3 = 1; string mime = 2; uint64 bytes = 3; uint32 width = 4; uint32 height = 5; }
+message Refused { string reason = 1; }
+message FinalizeResponse { oneof result { Verified verified = 1; Refused refused = 2; } }

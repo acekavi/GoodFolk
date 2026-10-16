@@ -53,6 +53,8 @@ impl Role {
                     | HousekeepingUpdate
                     | HousekeepingSupervise
                     | RoomIssuesReport
+                    | MediaManage
+                    | GuestDocumentsManage
             ),
             Role::FrontDesk => matches!(
                 permission,
@@ -66,6 +68,7 @@ impl Role {
                     | FrontDeskCheckIn
                     | HousekeepingView
                     | RoomIssuesReport
+                    | GuestDocumentsManage
             ),
             Role::Housekeeping => matches!(
                 permission,
@@ -130,6 +133,10 @@ pub enum Permission {
     HousekeepingSupervise,
     /// Report a problem with a room, without changing its condition.
     RoomIssuesReport,
+    /// Upload, reorder, caption and remove room type gallery photos.
+    MediaManage,
+    /// Upload, view (through an audited signed link) and delete guests' ID documents.
+    GuestDocumentsManage,
 }
 
 /// A role held tenant-wide (`property_id: None`) or for one property.

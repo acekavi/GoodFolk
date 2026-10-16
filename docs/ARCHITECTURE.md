@@ -1,6 +1,6 @@
 # GoodFolk PMS — Architecture
 
-Status: **v0.6** (2026-09-23). v0.6 records the implementation decisions made while writing the Phase 0 plan: live updates over Postgres `LISTEN/NOTIFY`, SQL checked by integration tests, the `modules/` directory, and the outbox and Pub/Sub moved to Phase 6. Detailed references: [design/data-model.md](design/data-model.md), [design/api-conventions.md](design/api-conventions.md), [specs/](specs/). Decisions marked **[OPEN]** need confirmation before the related phase starts. See [ROADMAP.md](ROADMAP.md) for the delivery plan.
+Status: **v0.7** (2026-10-16). v0.7 records what Phase 6a built: the transactional outbox and event bus, service-to-service auth, the media pipeline (libjxl command line tools, exact SSIMULACRA2, worker subprocesses), RustFS in place of MinIO for local development, and the definer-function rules. v0.6 recorded the implementation decisions made while writing the Phase 0 plan: live updates over Postgres `LISTEN/NOTIFY`, SQL checked by integration tests, the `modules/` directory, and the outbox and Pub/Sub moved to Phase 6. Detailed references: [design/data-model.md](design/data-model.md), [design/api-conventions.md](design/api-conventions.md), [specs/](specs/). Decisions marked **[OPEN]** need confirmation before the related phase starts. See [ROADMAP.md](ROADMAP.md) for the delivery plan.
 
 **Target scale (year one):** about 40 tenants, 100 properties, 1,000 rooms in total (roughly 10 rooms per property on average). Primary market: Sri Lanka. English only at launch; multiple currencies from day one.
 
@@ -52,7 +52,7 @@ flowchart LR
   DOM -->|gRPC| CHAN
 
   subgraph Services["Internal services (tonic gRPC)"]
-    MEDIA[media-svc<br/>libvips · ffmpeg]
+    MEDIA[media-svc<br/>libjxl · AVIF · WebP<br/>ffmpeg from 6b]
     CHAN[channel-svc<br/>Channex sync]
     JOBS[jobs-svc<br/>night audit · schedules]
   end
@@ -85,12 +85,12 @@ This meets the "gRPC for microservices" requirement without paying the microserv
 |---|---|---|
 | HTTP framework | **axum** + tower + tower-http | compression (br/zstd), tracing, timeouts, CORS, request IDs |
 | GraphQL | **async-graphql** + `async-graphql-axum` | built-in DataLoader for batching N+1 queries; enforce query depth and complexity limits; persisted queries only in production |
-| gRPC | **tonic** + prost | `.proto` files in `/proto`, shared through a `proto` crate |
+| gRPC | **tonic** + prost | `.proto` files in `/proto`, shared through a `proto` crate. Compiled with `tonic-prost-build` and the pure-Rust **protox**, so no `protoc` is needed to build |
 | DB access | **sqlx** (Postgres) | no ORM overhead, prepared-statement cache. Queries use the `sqlx::query*` functions (checked at run time), and every query is exercised by integration tests against real Postgres, so builds need no database or offline query cache |
 | Allocator | **mimalloc** | measurable gains for many small allocations in async servers |
 | Serialization | serde / serde_json | JSON for REST and GraphQL, protobuf internally |
 | In-process cache | **moka** | rate and room-type metadata, config; invalidated through bus events |
-| Messaging | **UI invalidation:** Postgres `LISTEN/NOTIFY` (every API instance listens; delivered only on commit). **Service events (from Phase 6):** transactional outbox → Google Pub/Sub | Pub/Sub pushes events to Cloud Run services, which can then scale to zero. Pub/Sub is behind an `EventBus` trait so it can be swapped out |
+| Messaging | **UI invalidation:** Postgres `LISTEN/NOTIFY` (every API instance listens; delivered only on commit). **Service events (from Phase 6):** transactional outbox → Google Pub/Sub (§5.3) | Pub/Sub pushes events to Cloud Run services, which can then scale to zero. Pub/Sub is behind an `EventBus` trait so it can be swapped out; `PushBus` stands in for it locally |
 | Auth hashing | **argon2id** | |
 | Observability | `tracing` + OpenTelemetry → OTLP | structured logs, traces, RED metrics |
 | Validation | `validator` / `garde` at the edge | every external input is validated before it reaches domain code |
@@ -139,19 +139,19 @@ We need a generous free tier until hotels are onboarded, plus an easy way to run
 | Compute | **Cloud Run** services: `core-api`, `media-svc`, `channel-svc`, `jobs-svc` | Free allowance, then pay per use. `core-api` gets `min-instances=1` once hotels are live, to avoid cold starts on the front desk |
 | Primary DB | **PostgreSQL 17** on **Neon** (serverless Postgres, scale-to-zero, built-in pooler) | Free: 0.5 GB and 100 CU-hours per month, enough for development and pilots. Move to Neon's paid plan or Cloud SQL at launch. It is plain Postgres, so migrating is a dump and restore |
 | Connection pooling | sqlx pool per instance → Neon pooler (transaction mode, which is compatible with `SET LOCAL`) | |
-| Object storage | **Cloudflare R2** (S3 API, **zero egress fees**) | 10 GB free. MinIO for local dev |
-| Event bus | **Google Pub/Sub** (push subscriptions to Cloud Run) | Large free monthly allowance. The Pub/Sub emulator runs in local dev |
+| Object storage | **Cloudflare R2** (S3 API, **zero egress fees**) | 10 GB free. **RustFS** for local dev: MinIO's community edition is archived and no longer ships binaries, and RustFS is Apache-2.0 and S3-compatible |
+| Event bus | **Google Pub/Sub** (push subscriptions to Cloud Run) | Large free monthly allowance. Locally, `PushBus` posts straight to the receiver; the emulator is supported (`PUBSUB_EMULATOR_HOST`) |
 | Scheduling | **Cloud Scheduler** → `jobs-svc` every 15 min; the service works out which properties are due for night audit | 3 jobs free |
 | CDN / DNS | **Cloudflare** (static SPA, media renditions, IBE edge cache) | Free plan |
 | Secrets | **Secret Manager**, mounted into Cloud Run at runtime. Never in the repo | Small free allowance |
 | Region | **Singapore**: Cloud Run `asia-southeast1`, Neon `aws-ap-southeast-1`, Pub/Sub and Secret Manager in `asia-southeast1`, R2 with an Asia-Pacific location hint. The app and the database sit in the same metro area, so database round trips stay short | |
-| Build artifacts | Distroless or `scratch` image with a musl static binary; Artifact Registry | |
+| Build artifacts | Distroless image; Artifact Registry. `core-api` is a musl static binary (`Dockerfile`). `media-svc` is glibc on `distroless/cc`, with `tini` and the libjxl tools (`Dockerfile.media-svc`), because its C and C++ codecs are reliable there and not on musl | |
 
 Cost notes:
 - Open SSE connections count as active requests on Cloud Run. Once many front desks are live all day, `core-api` is effectively always on, so expect a small fixed monthly cost at that point. It is still cheap at this scale.
 - AV1 video encoding is the heaviest CPU consumer. It runs only in `media-svc`, is triggered by Pub/Sub push, and can be capped with max-instances.
 
-Local dev runs the same containers with `docker compose` (Postgres, MinIO, Pub/Sub emulator), so nothing is tied to GCP for development. Only thin adapters (`EventBus`, object store) touch provider APIs.
+Local dev needs nothing from GCP. `docker compose` runs Postgres and RustFS, and `deploy/dev` has scripts for running both RustFS and the libjxl tools as plain binaries (no Docker). Only thin adapters (`EventBus`, object store) touch provider APIs.
 
 ---
 
@@ -220,6 +220,21 @@ SSE instead of GraphQL subscriptions: it is one-directional, works over plain HT
 - REST: JSON, `Idempotency-Key` header required on all POSTs that create things, optimistic concurrency with a `version` column and `If-Match`, RFC 9457 problem+json errors, cursor pagination.
 - GraphQL: persisted queries in production (a hash allowlist), depth limit 8, a complexity budget per query, and DataLoaders for every relation.
 - Versioning: `/api/v1` for REST. GraphQL evolves through additive changes and deprecation.
+
+### 5.3 Service events: the transactional outbox
+
+A change that other services must hear about (a photo ready to process, later a rate change for the channel manager) is never published straight from a handler: a crash between the commit and the publish would lose it, and a publish before the commit could announce something that rolls back.
+
+- **Enqueue in the business transaction.** `events::enqueue(tx, topic, payload)` inserts an `outbox` row in the same transaction as the change, so the event exists exactly when the change does. Its id (a UUID v7) is the message id. Code never calls the bus directly.
+- **Wake-up, not polling.** `app.outbox_enqueue` also runs `pg_notify('gf_outbox')`, which Postgres delivers only if the transaction commits. Each API instance's existing `LISTEN` connection (§3.1) hears it and wakes that instance's relay (`events::run_relay`). An idle relay otherwise polls every **30 s**, so an idle Neon database can scale to zero.
+- **Relay.** It claims rows with `for update skip locked`, publishes each through the `EventBus` trait and marks it sent. A failed send is retried with backoff (1 s doubling, capped at 5 min); a permanent refusal is finished with its reason kept. Delivery is **at-least-once**.
+- **Buses.** `PubSubBus` publishes over the Pub/Sub REST API with metadata-server tokens in production (or to the emulator). `PushBus` posts the message straight to the receiver's endpoint in Pub/Sub's push format; it is for development and tests, and `EVENT_BUS=push` is refused when `APP_ENV=production`. The same receiving handlers serve both.
+- **Receivers dedupe on the outbox id.** Each records the message id in `processed_event` inside its own transaction, so a redelivery is a no-op `200`. A crash anywhere between claim and mark-sent redelivers the row, and it applies once.
+- **Housekeeping.** The daily media sweep purges sent outbox rows after 7 days and `processed_event` rows after 30. Neither table is tenant data: both are reached only through `security definer` functions (§11).
+
+### 5.4 Service-to-service auth
+
+Every internal endpoint (`POST /internal/events` on core-api, `POST /work` and the gRPC service on media-svc) sits behind the `svc-auth` tower layer, outside the session and CSRF layers. In production it checks a **Google-signed ID token** against Google's JWKS (cached, with a bounded stale grace), the expected audience, and the caller's service account against `ALLOWED_SERVICE_EMAILS`. Locally it compares `Authorization: Bearer <INTERNAL_SHARED_SECRET>` in constant time, and production refuses to start in that mode. Outgoing calls take their header from a `TokenSource`, which `PushBus` receives as a closure so `events` does not depend on `svc-auth`.
 
 ---
 
@@ -462,7 +477,9 @@ Tenant: users, roles, properties, billing. Property: time zone, currency, taxes,
 
 ## 8. Media engine (`media-svc`)
 
-Goal: store any upload at the **smallest size with no visible quality loss**, and **keep the original bit-exact** so nothing is ever lost permanently.
+Goal: store any upload at the **smallest size with no visible quality loss**, and **keep the original bit-exact** so nothing is ever lost permanently. Phase 6a (photos and documents) is built; video and audio are Phase 6b ([spec](specs/phase-6b-video-audio.md)). The full scope, limits and tests are in [specs/phase-6-media.md](specs/phase-6-media.md).
+
+Three purposes: `gallery` (room-type photos: public, permanent, immutable URLs), `issue_photo` and `guest_document` (private, reachable only through signed links of 60 and 5 minutes; every guest-document link is audited and scoped to the property that holds the document).
 
 ### 8.1 Flow
 
@@ -470,40 +487,78 @@ Goal: store any upload at the **smallest size with no visible quality loss**, an
 sequenceDiagram
   participant C as Client
   participant API as core-api
-  participant M as media-svc (gRPC)
+  participant M as media-svc
   participant S as Object storage
-  C->>API: POST /api/v1/media/uploads (type, size, sha256)
-  API->>M: CreateUpload
-  M-->>API: presigned multipart PUT URL(s)
-  API-->>C: upload URLs
-  C->>S: PUT original (direct, resumable)
-  C->>API: POST /api/v1/media/uploads/:id/complete
-  API->>M: Finalize
-  M->>S: read original, verify hash, sniff real type
-  M->>M: transcode renditions (worker pool)
-  M->>S: write renditions + archival original
-  M-->>API: event media.ready (via Pub/Sub)
+  C->>API: POST /api/v1/properties/:p/media/uploads (purpose, target, size, sha256)
+  API->>M: gRPC CreateUpload
+  M-->>API: presigned multipart part URLs (8 MiB parts)
+  API-->>C: part URLs
+  C->>S: PUT parts (direct, resumable, retried)
+  C->>API: POST .../media/uploads/:id/complete
+  API->>M: gRPC Finalize
+  M->>S: read the object, verify SHA-256 and size, sniff the real type
+  M-->>API: BLAKE3, mime, size, dimensions
+  API->>API: dedupe, then status processing + outbox media.process (one transaction)
+  API-)M: media-process (outbox relay -> PushBus or Pub/Sub -> POST /work)
+  M->>M: worker subprocess: archive + renditions
+  M->>S: write renditions and archive
+  M-)API: media-results (POST /internal/events)
+  API-)C: SSE media:<property>, the tile turns ready
 ```
 
-- Uploads go **directly to object storage** through presigned URLs. Large files never pass through the API.
-- Deduplication by content address: **BLAKE3** hash of the original, so the same photo used in 5 properties is stored once.
-- Real type detection comes from magic bytes, not the file extension. There is a per-tenant allowlist and size limits, and EXIF GPS is stripped from public renditions.
-- Encoding is CPU-bound and runs in a bounded worker pool (`spawn_blocking` / a dedicated rayon pool) in a separately scaled deployment.
+- Uploads go **directly to object storage** through presigned URLs. The bytes never pass through core-api.
+- **Deduplication** is by content: the BLAKE3 of the file, unique per `(tenant, property, purpose)`. The same file uploaded twice to a property is stored once and linked twice; a failed match is queued again. Matching is never done across tenants (an upload could not learn that another tenant holds a file) or across a tenant's properties (each property's media lives and is deleted with it). Two completes racing for the same file leave one asset and two links, not a unique-violation error.
+- Real type detection comes from magic bytes, never the extension, with a per-purpose allowlist and size limits. An image over 100 megapixels is refused before it is decoded. HEIC is recognised and refused.
+- core-api never links the codecs: the types it shares with media-svc live in `crates/media-types`.
+- Object keys are deterministic (`t/{tenant}/a/{asset}/upload`, `archive.jxl` (or `.jpg`, `.pdf`), `{size}.{format}`), so reprocessing a redelivered job overwrites with the same bytes.
 
-### 8.2 Formats (researched Sept 2026)
+### 8.2 Formats
 
 | Media | Archival original (lossless) | Delivery renditions | Why |
 |---|---|---|---|
-| **Photos** | JPEG sources → **JPEG XL lossless JPEG transcode** (about 20% smaller, bit-exact reversible to the original JPEG). PNG/TIFF/HEIC → JPEG XL lossless | **AVIF** (primary, about 93% browser support) + **WebP** fallback, at responsive widths (320/640/1024/1600/2400) | AVIF gives the best delivered size with universal-enough support. JXL is ideal for lossless archiving but is still behind a flag in Chrome, so it is not served to browsers |
-| **Video** | Original kept as uploaded | **AV1 (SVT-AV1, 10-bit, preset ~5–6, CRF ~28–30)** in **CMAF / HLS**, plus **H.264** fallback rendition; audio **Opus** (AV1) / AAC (H.264) | AV1 is about 30–50% smaller than H.264 at the same quality, with hardware decode now common. CMAF uses one set of segments for HLS and DASH |
-| **Audio** | Lossless sources → **FLAC**; lossy sources kept as-is | **Opus** 96–128 kbps | Opus is the most efficient general-purpose codec |
-| **Documents** | PDFs stored as-is (optionally linearized); other files **zstd**-compressed | First-page thumbnail (AVIF) | Compressing already-compressed PDFs gains little |
+| **Photos** | JPEG sources → **JPEG XL lossless JPEG transcode** (about 20% smaller, bit-exact reversible to the original JPEG); a JPEG cjxl cannot transcode (CMYK, for one) is kept as uploaded. PNG and WebP → lossless JPEG XL of the decoded pixels | **AVIF** (primary) + **WebP** fallback at `thumb` (320 square crop), `sm` 640, `md` 1024, `lg` 1600 and `xl` 2400 (long edge, never upscaled) | AVIF gives the best delivered size with universal-enough support. JXL is ideal for lossless archiving but is still behind a flag in Chrome, so it is not served to browsers. Delivered files are re-encoded from upright, sRGB pixels with no metadata, so no GPS survives |
+| **Video** (6b) | Original kept as uploaded | **AV1 (SVT-AV1, 10-bit, preset ~5–6, CRF ~28–30)** in **CMAF / HLS**, plus **H.264** fallback rendition; audio **Opus** (AV1) / AAC (H.264) | AV1 is about 30–50% smaller than H.264 at the same quality, with hardware decode now common. CMAF uses one set of segments for HLS and DASH |
+| **Audio** (6b) | Lossless sources → **FLAC**; lossy sources kept as-is | **Opus** 96–128 kbps | Opus is the most efficient general-purpose codec |
+| **Documents** | Images archived as JPEG XL like photos; PDFs stored as uploaded (see below) | Images get `thumb` and `md`. **A PDF gets no thumbnail in 6a** (the UI shows an icon) | Compressing already-compressed PDFs gains little |
 
-Tooling: **libvips** (fast, low memory) for images, with libjxl / libavif; **ffmpeg** with SVT-AV1 / libopus for AV and audio. They are called from Rust through bindings or supervised subprocesses.
+Deviations from the first design, all decided during 6a:
+- **HEIC is refused**, not archived: no HEVC decoder can be vendored under the licence policy, and phones normally hand a browser a JPEG.
+- **JPEG XL comes from libjxl's own `cjxl`/`djxl` (v0.12.0, BSD-3-Clause), run as subprocesses**, found through `JXL_BIN_DIR` (`deploy/dev/libjxl.sh install`). The Rust bindings (`jpegxl-rs`, `jpegxl-sys`) are GPL-3.0, which `deny.toml` forbids, and the official tools keep the byte-exact JPEG transcode.
+- **libvips is not used.** Decoding is the `image` crate; `fast_image_resize` resizes, `moxcms` converts colour, `ravif` writes AVIF and `webp` writes WebP.
+- **PDFs are not linearized** (that needs `qpdf`, a native tool we do not ship) and have **no first-page thumbnail** (a PDF engine arrives with 6b's tooling).
 
-"No quality loss" means: renditions are **visually lossless** at the chosen settings (checked with SSIMULACRA2 / VMAF thresholds in CI against a sample set), and the **archival original is mathematically lossless**. Re-encoding at better settings later is always possible from the archive.
+"No quality loss" means: delivered renditions are **visually lossless** and the **archival original is mathematically lossless**. The encoder quality for each format is the lowest whose `md` rendition scores SSIMULACRA2 ≥ 80 against the resized source; every rendition is then scored and any below 80 is re-encoded one step higher. The CI gate (`cargo test -p imaging --release --lib --test quality_gate`) decodes every delivered rendition of the fixture set and scores it **exactly, at full size** — never sampled. The scorer is a **port of the `ssimulacra2` crate (BSD-2)** that computes the same score in parallel row bands with a cached reference (it agrees with the stock crate to within 0.01), which is what keeps a 12 MP photo inside its 5 s gate. Re-encoding at better settings later is always possible from the archive.
 
-Delivery: renditions sit behind the CDN with immutable keys. Private media (IDs, invoices, guest documents) use **short-lived signed URLs** and are never cached publicly.
+### 8.3 Isolation and performance
+
+- **Worker subprocesses.** Each job runs `media-svc worker` (a synchronous process with no async runtime) reading the job on stdin and writing the result on stdout, so a crash in a native decoder cannot take the service down. A job gets 60 s and a **3 GiB address-space cap** (`RLIMIT_AS`; it caps virtual address space, not memory in use, and is a backstop behind the 100 MP header check). The worker is its own process group, and a timeout or a cancelled request **kills the whole group**, so the `cjxl`/`djxl` children die with it. A worker starts with a **cleared environment** (only `RAYON_NUM_THREADS`, `JXL_BIN_DIR`, `HOME`, `PATH` and `RUST_LOG`), and media-svc marks itself **not dumpable**, so a worker cannot read the service's secrets from `/proc/<ppid>/environ` either.
+- **`tini`.** In the container `media-svc` runs under `tini` as PID 1, which reaps any child orphaned by a kill and forwards signals (`Dockerfile.media-svc`).
+- **Failures.** A crash or timeout is retried in-process up to 3 attempts (backoff 1 s, then 4 s); a file that cannot be decoded fails at once. Either sends `media.failed` with a short reason the UI shows. The sweep fails any asset still `processing` after an hour.
+- **Concurrency.** `MEDIA_WORKERS` workers at once (default one per 8 CPUs, at least 1), each with an equal share of the CPUs as threads: one 12 MP job needs about 8 threads to be ready inside 5 s, so a few wide workers beat many narrow ones.
+- **x86-64-v3.** `.cargo/config.toml` builds the whole workspace for `target-cpu=x86-64-v3` (AVX2, FMA). The encoders and the scorer need it to meet the gate; every GCP x86 machine and GitHub runner has it. On an older CPU the binary dies with SIGILL, so a Graviton target would need its own flags.
+- **Gates** (never raise a threshold): upload init p95 < 50 ms server time including the gRPC call; a 12 MP JPEG `ready` in < 5 s from `complete`; a gallery of 50 photos paints in < 400 ms at p90.
+
+### 8.4 Access, audit and retention
+
+- Gallery renditions are written to the public bucket with `Cache-Control: public, max-age=31536000, immutable`. Everything else, the archive included, goes to the private bucket. A test pins that only gallery renditions are ever public.
+- Signed GET links are made by core-api itself with its own read credentials. GraphQL returns no guest-document URL at all; the only way to a file is the audited REST call (`GET …/guest-documents/{id}/link`), which writes one `guest_document.viewed` entry per link. Housekeepers cannot list or link guest documents.
+- A daily task in core-api, under a Postgres advisory lock so only one instance runs it (Phase 7's `jobs-svc` takes it over), deletes guest documents more than a year old whose guest has no stay departing within the last 365 days or later, removes unlinked assets after 24 hours, aborts uploads still `uploading` after 24 hours, fails stuck `processing` assets, and purges old outbox and `processed_event` rows.
+
+### 8.5 Deployment notes
+
+- **Cloudflare R2.** Create a public and a private bucket (`S3_PUBLIC_BUCKET`, `S3_PRIVATE_BUCKET`) and an API token for `S3_ACCESS_KEY` / `S3_SECRET_KEY` (`S3_REGION=auto`, `S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com`).
+  - **CORS on the private bucket:** allow `PUT` and `GET` from the app's origin and expose `ETag` (the browser sends part ETags back to complete the upload). The dev setup does this for localhost in `ensure_dev_buckets`; production is configured by hand.
+  - **Lifecycle rule:** abort incomplete multipart uploads after 1 day, so abandoned parts are not billed.
+  - **The public bucket sits behind the CDN domain**, and `MEDIA_PUBLIC_BASE_URL` is that domain; renditions are then served from the CDN edge with their immutable headers.
+- **Pub/Sub.** Two topics. `media-process` (core-api publishes) has a push subscription to media-svc `POST /work`; `media-results` (media-svc publishes) has one to core-api `POST /internal/events`. Both subscriptions use OIDC push authentication with the audience in `MEDIA_SVC_AUDIENCE` / `CORE_API_AUDIENCE`, each with its own push service account. Set `EVENT_BUS=pubsub` and `PUBSUB_PROJECT`, with `SVC_AUTH=google`.
+  - **The `media-process` subscription's ack deadline is 600 s**, so a job that queues behind others is not redelivered while it runs. media-svc's Cloud Run **request timeout is 600 s**, matching the ack deadline, and its **concurrency is bounded** to about `MEDIA_WORKERS × 2`, so pushes wait at Cloud Run rather than piling up inside one instance. A push queued behind one job (up to about 185 s with its retries) and then running its own (another 185 s) stays well inside both.
+  - **Both subscriptions have a dead-letter topic with `maxDeliveryAttempts`** (for example 5). A message the receiver refuses for good (a 400) then stops being redelivered and lands in the dead-letter topic.
+- **Service auth (`ALLOWED_SERVICE_EMAILS`).** Each service lists exactly the accounts that call it:
+  - **media-svc** lists core-api's runtime service account (its gRPC calls) and the `media-process` subscription's push service account (`/work`);
+  - **core-api** lists the `media-results` subscription's push service account (`/internal/events`).
+- **media-svc on Cloud Run.** core-api reaches media-svc's gRPC over TLS at an `https://` `MEDIA_SVC_URL`, and refuses any other scheme in production. Deploy media-svc with end-to-end HTTP/2 (`gcloud run deploy … --use-http2`): Cloud Run otherwise downgrades the request to HTTP/1.1 at the container, and gRPC fails.
+- **Images.** `Dockerfile` builds core-api (musl, distroless static). `Dockerfile.media-svc` builds media-svc on glibc for `distroless/cc`, copies in `cjxl` and `djxl` (`JXL_BIN_DIR=/opt/libjxl/bin`) and `tini`, and sets `APP_ENV=production`. The core-api build context must include `web/pms/src/lib/api/gql/persisted-documents.json` (§5.2).
+- **Database.** core-api needs `DATABASE_LISTEN_URL` (a direct connection) for `LISTEN`, which also carries the outbox wake-ups.
 
 ---
 
@@ -609,7 +664,9 @@ How money is taken:
 - Authorization: tenant from the session → `SET LOCAL` → RLS. Property permission is checked in the extractor. The UI never decides authorization.
 - Input validation at every edge. GraphQL cost limits. Per-tenant and per-IP rate limits.
 - PII: encryption at rest (managed DB and storage), field-level encryption for ID or passport numbers, audit log of access to guest documents, and GDPR export and erase per guest.
-- Append-only **audit log** for sensitive actions (rate changes, folio adjustments, overrides, permission changes).
+- Append-only **audit log** for sensitive actions (rate changes, folio adjustments, overrides, permission changes, guest-document views and deletes).
+- **`security definer` functions** (the guest search, the outbox and receiver-dedupe functions, the media sweep) all pin `set search_path = pg_catalog, public, pg_temp`, with `pg_temp` **last**. Postgres searches the session's temporary schema first for relations unless it is listed, so a `goodfolk_app` session could create a temporary table named `outbox` and have a definer function, running as the migration owner, write to it. Migration `0015` fixed the functions that `0009` and `0014` had already applied; every new definer function must do the same, revoke `public`'s execute, and grant it only to the role that needs it.
+- The one place the API crosses tenants is the media sweep, through a read-only **`sweep_read` owner policy** (`for select to <owner> using (true)`) on the four media tables; `goodfolk_app` is never a member of the owner, so the API gains nothing from it, and each candidate is re-checked in a tenant-scoped transaction. Details in [api-conventions.md](design/api-conventions.md).
 - Dependency scanning (`cargo audit`, `cargo deny`, `pnpm audit`) in CI.
 
 ---
@@ -623,18 +680,23 @@ GoodFolk/
 │   ├── core-api/             # axum binary: REST, GraphQL, SSE, auth, migrate command
 │   ├── db/                   # pool, migrations, tenant-scoped transactions, change events
 │   ├── domain/               # pure business rules: state machines, pricing math (from Phase 3)
-│   ├── proto/                # tonic-prost-build code from /proto (Phase 6)
-│   ├── media-svc/            # gRPC server + transcoding workers (Phase 6)
+│   ├── proto/                # tonic-prost-build (protox) code from /proto
+│   ├── media-svc/            # media gRPC + /work, supervised worker subprocesses
+│   ├── media-types/          # job and result types shared by core-api and media-svc
+│   ├── imaging/              # decode, resize, AVIF/WebP, JPEG XL archive, SSIMULACRA2
+│   ├── storage/              # S3 client (presigned multipart and GET) and dev bucket setup
+│   ├── events/               # outbox, relay and EventBus (PushBus, PubSubBus)
+│   ├── svc-auth/             # Google ID token or shared-secret auth between services
 │   ├── jobs-svc/             # night audit + scheduled jobs (Phase 7)
 │   └── channel-svc/          # Channex integration (Phase 8)
 ├── modules/                  # one crate per business domain: identity, property, rooms, rates,
 │                             # reservations, housekeeping, folio, tax, payments, …
-├── proto/                    # .proto contracts (Phase 6)
+├── proto/                    # .proto contracts
 ├── migrations/               # SQL migrations (Postgres), applied by `core-api migrate`
 ├── web/
 │   ├── pms/                  # SvelteKit SPA (includes housekeeping PWA routes)
 │   └── ibe/                  # SvelteKit SSR booking engine (Phase 9)
-├── deploy/                   # local dev support (Postgres roles), Cloud Run definitions / IaC
+├── deploy/                   # local dev support (Postgres roles, RustFS and libjxl scripts), Cloud Run definitions / IaC
 └── docs/                     # architecture, roadmap, design references, phase specs and plans
 ```
 
@@ -655,6 +717,11 @@ GoodFolk/
 | 9 | Resident pricing | Set by hand; no derivation across currencies (§7.2) |
 | 10 | Exchange rates | Central Bank of Sri Lanka daily TT selling rate, fetched automatically, with a manual override (§4.4) |
 | 11 | Taxes | Service charge, TDL, SSCL and VAT through an effective-dated, ordered rules engine, with a researched Sri Lanka preset. **Order A (cascade)** (§7.6.2) |
+| 12 | Local object storage | RustFS replaces MinIO, whose community edition is archived (§3.4) |
+| 13 | Service events | Transactional outbox, woken by `pg_notify('gf_outbox')` with a 30 s idle poll, PushBus locally and Pub/Sub in production, receivers dedupe on the outbox id (§5.3) |
+| 14 | Photo pipeline | JPEG XL through libjxl's CLI tools (the Rust bindings are GPL), exact parallel SSIMULACRA2 as the CI gate, `x86-64-v3` build, worker subprocesses with a 3 GiB address-space cap killed by process group, `tini` as PID 1 (§8) |
+| 15 | Photo scope | HEIC refused; PDFs neither linearized nor thumbnailed; dedup per property, not per tenant; guest documents scoped to the property that holds them (§8) |
+| 16 | Definer functions | All pin `search_path` with `pg_temp` last; the media sweep alone reads across tenants, through the `sweep_read` owner policy (§11) |
 
 ## 14. Open questions
 

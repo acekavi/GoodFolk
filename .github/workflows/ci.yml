@@ -28,9 +28,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Create database roles
         run: psql "$DATABASE_URL" -f deploy/dev/postgres-init.sql
+      # nasm: rav1e's assembly. lzip: libjxl.sh unpacks libjxl's release archive.
+      - name: Install build tools for the imaging crate
+        run: sudo apt-get update && sudo apt-get install -y nasm lzip
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/goodfolk-libjxl
+          key: libjxl-${{ hashFiles('deploy/dev/libjxl.sh') }}
+      # cjxl and djxl land in ~/.cache/goodfolk-libjxl/bin, where the imaging crate looks by default.
+      - name: Install libjxl's command line tools
+        run: sh deploy/dev/libjxl.sh install
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/goodfolk-rustfs/rustfs
+          key: rustfs-${{ hashFiles('deploy/dev/rustfs.sh') }}
+      # The storage tests need an S3 server on :9000.
+      - name: Start RustFS and create the development buckets
+        run: |
+          sh deploy/dev/rustfs.sh install && sh deploy/dev/rustfs.sh start
+          cargo run -p storage --example ensure-buckets
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # The exact SSIMULACRA2 checks need optimised code: minutes in a debug build.
+      - name: Image quality gate and metric equivalence, in release
+        run: cargo test -p imaging --release --lib --test quality_gate
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   web:
@@ -73,6 +95,8 @@ jobs:
       DATABASE_OWNER_URL: postgres://goodfolk_owner:goodfolk_owner_dev@localhost:5432/goodfolk
       # Playwright starts the API as the API role against this database.
       E2E_DATABASE_URL: postgres://goodfolk_api:goodfolk_api_dev@localhost:5432/goodfolk
+      # Tests seed and check what the API cannot as the schema owner.
+      E2E_OWNER_URL: postgres://goodfolk_owner:goodfolk_owner_dev@localhost:5432/goodfolk
     defaults:
       run:
         working-directory: web/pms
@@ -87,8 +111,27 @@ jobs:
         run: |
           psql "$DATABASE_OWNER_URL" -f ../../deploy/dev/postgres-init.sql
           cargo run -q -p core-api -- migrate
-      - name: Build the API that Playwright starts
-        run: cargo build -p core-api
+      # nasm: rav1e's assembly. lzip: libjxl.sh unpacks libjxl's release archive.
+      - name: Install build tools for the imaging crate
+        run: sudo apt-get update && sudo apt-get install -y nasm lzip
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/goodfolk-libjxl
+          key: libjxl-${{ hashFiles('deploy/dev/libjxl.sh') }}
+      # cjxl and djxl land in ~/.cache/goodfolk-libjxl/bin, where media-svc's workers look by default.
+      - name: Install libjxl's command line tools
+        run: sh ../../deploy/dev/libjxl.sh install
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/goodfolk-rustfs/rustfs
+          key: rustfs-${{ hashFiles('deploy/dev/rustfs.sh') }}
+      # The media tests upload to an S3 server on :9000, which Playwright cannot start.
+      - name: Start RustFS and create the development buckets
+        run: |
+          sh ../../deploy/dev/rustfs.sh install && sh ../../deploy/dev/rustfs.sh start
+          cargo run -p storage --example ensure-buckets
+      - name: Build the API and media-svc that Playwright starts
+        run: cargo build -p core-api -p media-svc
       - run: bun install --frozen-lockfile
       # Ubuntu 24.04 blocks the unprivileged user namespaces Chromium's sandbox needs; allow them so the
       # sandbox stays on.
@@ -100,4 +143,6 @@ jobs:
         if: failure()
         with:
           name: playwright-traces
-          path: web/pms/test-results
+          path: |
+            web/pms/test-results
+            ~/.cache/goodfolk-rustfs/rustfs.log

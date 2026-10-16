@@ -1,4 +1,4 @@
-# Local development services. Production uses Neon (see docs/ARCHITECTURE.md §3.4).
+# Local development services. Production uses Neon and Cloudflare R2 (see docs/ARCHITECTURE.md §3.4).
 services:
   postgres:
     image: postgres:17
@@ -17,5 +17,23 @@ services:
       interval: 2s
       retries: 30
 
+  # S3-compatible storage for the media engine (what deploy/dev/rustfs.sh runs without Docker). Create the buckets with
+  # `cargo run -p storage --example ensure-buckets`.
+  rustfs:
+    image: rustfs/rustfs:1.0.1
+    environment:
+      RUSTFS_ACCESS_KEY: goodfolk
+      RUSTFS_SECRET_KEY: goodfolk_dev_secret
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - rustfs-data:/data
+
 volumes:
   postgres-data:
+  rustfs-data:

@@ -222,7 +222,9 @@ async fn only_owners_and_managers_manage_rooms(_: PgPoolOptions, opts: PgConnect
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn a_new_room_tells_screens_to_refetch_rooms_and_inventory(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
-    spawn_listener(PgPool::connect_with(opts).await.unwrap(), app.state.events.clone()).await.unwrap();
+    spawn_listener(PgPool::connect_with(opts).await.unwrap(), app.state.events.clone(), Default::default())
+        .await
+        .unwrap();
     let (owner, property) = hotel(&app).await;
     let room_type = post(&app, &owner, &format!("{property}/room-types"), deluxe()).await.body["id"].clone();
     let mut events = app.state.events.subscribe();

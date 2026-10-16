@@ -1,0 +1,26 @@
+[package]
+name = "imaging"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+avif-decode.workspace = true
+fast_image_resize.workspace = true
+image.workspace = true
+infer.workspace = true
+media-types.workspace = true
+moxcms.workspace = true
+ravif.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
+webp.workspace = true
+yuvxyb.workspace = true
+
+[dev-dependencies]
+# The reference implementation the parallel port is checked against; not used by the library.
+ssimulacra2.workspace = true
+
+[lints]
+workspace = true

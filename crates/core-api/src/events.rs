@@ -9,8 +9,9 @@ use serde::Deserialize;
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
@@ -28,30 +29,43 @@ pub enum LiveEvent {
 /// How long the listener waits before each attempt to reconnect.
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 
-/// Subscribes to `NOTIFY gf_events` on `pool` (a direct connection: poolers in transaction mode cannot
-/// LISTEN), then forwards every notification to this instance's subscribers. Every instance runs one,
+/// Subscribes to `NOTIFY gf_events` and `NOTIFY gf_outbox` on `pool` (a direct connection: poolers in
+/// transaction mode cannot LISTEN), then forwards every `gf_events` notification to this instance's subscribers
+/// and wakes this instance's outbox relay through `outbox_wake` on every `gf_outbox` one. Every instance runs one,
 /// so every connected client hears about every change. Fails if the first subscription fails.
 ///
-/// Notifications sent while the connection is down are lost, so streams are told to resync when it
-/// drops, and again once the listener is back if reconnecting took more than one attempt.
+/// Notifications sent while the connection is down are lost, so streams are told to resync, and the relay is woken
+/// to look for rows it missed, when it drops, and again once the listener is back if reconnecting took more than
+/// one attempt.
 pub async fn spawn_listener(
     pool: PgPool,
     events: broadcast::Sender<LiveEvent>,
+    outbox_wake: Arc<Notify>,
 ) -> Result<tokio::task::JoinHandle<()>, sqlx::Error> {
     let listener = subscribe(&pool).await?;
-    Ok(tokio::spawn(forward(pool, listener, events)))
+    Ok(tokio::spawn(forward(pool, listener, events, outbox_wake)))
 }
 
 async fn subscribe(pool: &PgPool) -> Result<PgListener, sqlx::Error> {
     let mut listener = PgListener::connect_with(pool).await?;
-    listener.listen(db::CHANNEL).await?;
+    listener.listen_all([db::CHANNEL, ::events::OUTBOX_CHANNEL]).await?;
     Ok(listener)
 }
 
 // Sending with no subscribers is normal, so send results are ignored.
-async fn forward(pool: PgPool, mut listener: PgListener, events: broadcast::Sender<LiveEvent>) {
+async fn forward(
+    pool: PgPool,
+    mut listener: PgListener,
+    events: broadcast::Sender<LiveEvent>,
+    outbox_wake: Arc<Notify>,
+) {
+    let resync = || {
+        let _ = events.send(LiveEvent::Resync);
+        outbox_wake.notify_one();
+    };
     loop {
         match listener.try_recv().await {
+            Ok(Some(notification)) if notification.channel() == ::events::OUTBOX_CHANNEL => outbox_wake.notify_one(),
             Ok(Some(notification)) => match serde_json::from_str::<Event>(notification.payload()) {
                 Ok(event) => {
                     let _ = events.send(LiveEvent::Invalidate(event));
@@ -61,16 +75,16 @@ async fn forward(pool: PgPool, mut listener: PgListener, events: broadcast::Send
             Ok(None) => {
                 // The connection dropped and sqlx has already reconnected and listens again.
                 tracing::warn!("event listener connection lost and re-established; streams will resync");
-                let _ = events.send(LiveEvent::Resync);
+                resync();
             }
             Err(err) => {
                 // The connection is lost and sqlx could not re-establish it. Streams resync now, but
                 // changes committed until the listener is back are missed too, so they resync again then.
                 tracing::warn!(error = %err, "event listener connection lost; streams will resync");
-                let _ = events.send(LiveEvent::Resync);
+                resync();
                 drop(listener);
                 listener = reconnect(&pool).await;
-                let _ = events.send(LiveEvent::Resync);
+                resync();
             }
         }
     }

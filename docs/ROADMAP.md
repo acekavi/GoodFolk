@@ -30,7 +30,7 @@ Each later phase gets its step-by-step implementation plan at the start of that 
 
 **Done when:** a user signs up, creates two properties and switches between them, another tenant sees none of them, a change in one tab appears in another, and CI is green.
 
-Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub, `/proto`, MinIO (Phase 6); `If-Match`, login throttling, Playwright (Phase 1); persisted GraphQL queries (Phase 4); staff invitations (Phase 8).
+Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub, `/proto`, object storage for local development (Phase 6; RustFS in place of MinIO); `If-Match`, login throttling, Playwright (Phase 1); persisted GraphQL queries (Phase 4); staff invitations (Phase 8).
 
 ## Phase 1 — Rooms, room types, inventory base ([spec](specs/phase-1-rooms-inventory.md), [plan](superpowers/plans/2026-09-24-phase-1-rooms-inventory.md))
 
@@ -190,15 +190,43 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
   - **Left open by the final wave:** a lost response to a change the server committed queues it again, and the replay shows a stale-version conflict for the user's own tap; the `HousekeepingUpdate` doc comment in `rbac.rs` still says it resolves issues (that needs `HousekeepingSupervise`); copy-yesterday has no tests for released, expired and future blocks; the `/hk` screens keep an off-screen error banner, some duplicate accessible names and a weak stale-change e2e assertion; the board's `hk:` event now also fires for every reservation and room command (one refetch, about 20 ms on the server, per event on an open board); the service worker is registered origin-wide, so a staff-app visit also precaches the build.
   - **Photos** on issues, and linen and guest laundry ([laundry.md](specs/laundry.md)), come later (Phase 6 and with or after Phase 7).
 
-## Phase 6 — Media engine ([spec](specs/phase-6-media.md))
+## Phase 6a — Media engine: photos and documents ([spec](specs/phase-6-media.md), [plan](superpowers/plans/2026-10-14-phase-6a-media.md))
 
-- First internal service, so it also brings: `/proto` + `proto` crate, tonic health, service-to-service auth, the transactional outbox → Pub/Sub relay (`EventBus` trait), and MinIO + the Pub/Sub emulator in compose.
+- **First internal service: done.** `crates/proto` (compiled with `protox`, no `protoc`) and `crates/media-svc` (tonic `CreateUpload` and `Finalize`, gRPC health, `POST /work`), `crates/svc-auth` (Google ID tokens in production, a shared secret locally), and `crates/events`: the transactional outbox, its relay and the `EventBus` trait with `PushBus` (local) and `PubSubBus`. The relay wakes on `pg_notify('gf_outbox')` and polls every 30 s when idle. Receivers dedupe on the outbox id. See [ARCHITECTURE.md §5.3](ARCHITECTURE.md).
+- **Uploads: done.** Direct multipart to object storage through presigned part URLs (8 MiB parts, retried), `Finalize` verifying SHA-256 and size and sniffing the type from the bytes, refusal over 100 MP before decoding, dedup per property and purpose (migration `0017`; two completes racing leave one asset and two links).
+- **Image pipeline: done.** JPEG → lossless JPEG XL transcode (byte-exact), PNG and WebP → lossless JPEG XL; upright, sRGB, metadata-free AVIF and WebP renditions at `thumb`, `sm`, `md`, `lg` and `xl`; quality found by search against SSIMULACRA2 ≥ 80, with the CI gate scoring every delivered rendition exactly at full size. Jobs run in worker subprocesses under a 3 GiB address-space cap, killed by process group, with 3 attempts.
+- **Galleries, issue photos and guest documents: done.** A **Photos** panel on each room type (upload, live `Processing…` → ready, drag or arrow reorder, caption, remove), up to 5 photos on an issue from `/hk` and the board, and **ID documents** in the reservation modal with 5-minute audited links. Permissions `MediaManage` and `GuestDocumentsManage`; event key `media:<property>`; the daily sweep (retention, orphans, stale and stuck uploads, outbox purge). Migrations `0014`–`0019`.
+- **Deviations from the spec as first written**, each a ruling made during the phase:
+  - **RustFS replaces MinIO** for local development and tests: MinIO's community edition is archived and ships no binaries. Production is still Cloudflare R2.
+  - **HEIC is refused** ("This file type is not accepted here"): no HEVC decoder can be vendored under the licence policy.
+  - **JPEG XL through libjxl's `cjxl`/`djxl` command line tools** (`deploy/dev/libjxl.sh`, `JXL_BIN_DIR`): the Rust bindings are GPL-3.0, which `deny.toml` forbids.
+  - **PDFs are not linearized** (needs `qpdf`) and **get no thumbnail** (needs a PDF engine); both wait for 6b's tooling.
+  - **Dedup per property, not per tenant**, and guest documents scoped to the property that holds them.
+  - **Exact SSIMULACRA2**: a port of the `ssimulacra2` crate computing the same score in parallel row bands, replacing the sampled scorer the first version used; and an `x86-64-v3` build for the workspace, to meet the 5 s gate.
+- **Performance gates: done**, on `powersave`, nothing else heavy running:
 
-- `media-svc` (tonic): presigned multipart uploads, BLAKE3 dedup, type sniffing, EXIF stripping.
-- Image pipeline: JXL archive + AVIF/WebP responsive renditions (libvips).
+  | Gate | Spec | Measured |
+  |---|---|---|
+  | `POST …/media/uploads`, including the gRPC call, in-process, release | p95 < 50 ms | p95 13.7 ms and 15.2 ms |
+  | A 12 MP JPEG from `complete` to `ready`, all renditions and the archive | < 5 s | median 4.33 to 4.47 s on release runs, alone; the margin is thin on a laptop |
+  | A gallery of 50 photos paints (browser, p90 of ten cold loads) | < 400 ms | p90 293 ms |
+  | Quality gate, every rendition of the fixtures | SSIMULACRA2 ≥ 80 | minimum 80.31 |
+  | Gallery rendition `Cache-Control` | `public, max-age=31536000, immutable` | pinned by a test |
+
+  Run with `E2E_PERF=1` and the release `media-svc` (see the README). The Playwright suite for the whole phase (gallery, issue photo, guest ID with its audit row, housekeeper absence, refusals) is 81 tests.
+- Carried over from the Phase 6a reviews:
+  - **Production storage settings are not applied anywhere.** Cloudflare R2 needs the CORS rule on the private bucket (PUT and GET from the app origin, `ETag` exposed) and a lifecycle rule aborting incomplete multipart uploads after 1 day; the dev setup does only the CORS part, for localhost. Both are listed in [ARCHITECTURE.md §8.5](ARCHITECTURE.md) and wait for the deploy phase.
+  - **The Pub/Sub emulator round trip has never been run.** The test is `#[ignore]`d and needs `PUBSUB_EMULATOR_HOST=localhost:8085 cargo test -p events -- --ignored`; no emulator was available, so it has not been run, and nothing in CI sets it. Run it against the emulator, and once against real Pub/Sub with OIDC push, before relying on it.
+  - **Neither Docker image has been built.** `Dockerfile.media-svc` (glibc, `distroless/cc`, `tini`, `cjxl`/`djxl` copied in) and the Phase 0 `Dockerfile` (which now also needs `web/pms/src/lib/api/gql/persisted-documents.json` in its build context) were written without a Docker engine to build them; the `compose.yaml` RustFS service is the same.
+  - **`LISTEN/NOTIFY` against Neon's idle suspend is unmeasured.** The relay is woken by notification and polls every 30 s when idle, and the listener holds a direct connection open. Whether Neon's scale-to-zero still triggers with that traffic has not been tried; if it does not, lengthen the poll (the notification already makes delivery prompt) or stop polling while the listener is healthy.
+  - **Smaller items:** the performance seed leaves its objects in storage; the e2e `global-setup` checks that RustFS answers but not that the buckets exist; CI does not upload the RustFS and media-svc logs on failure; a `sm` AVIF can be larger than necessary because it inherits `md`'s quality, and a per-size search would shrink it; the daily sweep runs inside core-api until Phase 7's `jobs-svc` takes it over.
+
+## Phase 6b — Media engine: video and audio ([spec](specs/phase-6b-video-audio.md))
+
+- Separate from 6a; builds on `media-svc`, storage, the outbox and bus, and the upload flow.
 - Video/audio pipeline: SVT-AV1 + H.264 CMAF/HLS, Opus, FLAC archive (ffmpeg workers).
-- Quality gate in CI: SSIMULACRA2 / VMAF thresholds on a fixture set.
-- Room-type galleries, issue photos, and guest documents (private, signed URLs).
+- Quality gate in CI: VMAF thresholds on a fixture set.
+- PDF engine for first-page thumbnails (and linearizing), which 6a left out.
 
 ## Phase 7 — Folio and night audit ([spec](specs/phase-7-folio-audit.md))
 

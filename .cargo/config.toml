@@ -1,0 +1,4 @@
+# Every machine we build for (Cloud Run, GitHub runners, developer laptops) has AVX2 and FMA. The image pipeline's
+# encoders and SSIMULACRA2 scoring rely on them to meet the 12 MP processing gate.
+[build]
+rustflags = ["-C", "target-cpu=x86-64-v3"]

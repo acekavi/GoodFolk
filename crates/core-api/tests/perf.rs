@@ -12,6 +12,11 @@
 //!   p95.
 //! - Phase 5: `housekeepingBoard` for 500 rooms (stays at about 80%, half of them assigned, 30 open issues and
 //!   active blocks) in under 30 ms at p95.
+//! - Phase 6: starting a gallery upload (`POST …/media/uploads`, including media-svc's `CreateUpload` over gRPC)
+//!   in under 50 ms at p95; a 12 MP JPEG `ready` (every gallery rendition and the archive stored, the result
+//!   applied) in under 5 s from `complete` returning, at the median of five runs. These two run against an
+//!   in-process media-svc and RustFS (`deploy/dev/rustfs.sh start`), and the second runs media-svc's worker binary,
+//!   so build it first: `cargo build --release -p media-svc`.
 //!
 //! Ignored by default because debug builds are several times slower. Run them in release mode, one at a time:
 //!
@@ -22,10 +27,14 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
+use common::media::{self, Hotel};
 use common::{TestApp, TestResponse, uuid};
+use futures::FutureExt;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
 use time::format_description::well_known::Iso8601;
 use uuid::Uuid;
@@ -1072,4 +1081,99 @@ async fn housekeeping_board_p95_under_30ms(_: PgPoolOptions, opts: PgConnectOpti
     let p95 = samples[p95_index(SAMPLES)];
     println!("housekeepingBoard, {TAPE_ROOMS} rooms over {SAMPLES} samples: p50 {p50:?}, p95 {p95:?}");
     assert!(p95 < Duration::from_millis(30), "p95 {p95:?} is over the 30 ms gate");
+}
+
+/// Upload starts timed after the warm-up ones.
+const UPLOAD_WARMUP: usize = 20;
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn media_upload_init_p95_under_50ms(_: PgPoolOptions, opts: PgConnectOptions) {
+    let stack = media::stack(opts).await;
+    let app = &stack.app;
+    let hotel = Hotel::new(app, "owner@example.com", "GAL").await;
+    let uploads = format!("{}/media/uploads", hotel.path);
+
+    let mut started_uploads = Vec::with_capacity(SAMPLES + UPLOAD_WARMUP);
+    // Run as a unit so the uploads are cancelled below even when an assertion in it fails.
+    let timed = AssertUnwindSafe(async {
+        let mut samples: Vec<Duration> = Vec::with_capacity(SAMPLES);
+        for round in 0..SAMPLES + UPLOAD_WARMUP {
+            // A new file each round (and `post` a new idempotency key), so nothing is answered from an earlier start.
+            let filename = format!("photo-{round}.jpg");
+            let start = json!({"purpose": "gallery", "target_id": hotel.room_type, "filename": filename,
+                               "bytes": 4_571_573, "sha256": media::hex(&Sha256::digest(filename.as_bytes()))});
+            let started = Instant::now();
+            let response = post(app, &hotel.owner, &uploads, start).await;
+            let elapsed = started.elapsed();
+            started_uploads.push(uuid(&response.body["upload_id"]));
+            assert_eq!(response.body["parts"].as_array().map(Vec::len), Some(1), "{:?}", response.body);
+            // The first ones warm the connection pools, the gRPC channel and Postgres' caches.
+            if round >= UPLOAD_WARMUP {
+                samples.push(elapsed);
+            }
+        }
+        samples
+    })
+    .catch_unwind()
+    .await;
+    // Cancelling aborts each multipart upload in storage and removes its row.
+    for upload in started_uploads {
+        let cancelled = app.send(Method::DELETE, &format!("{uploads}/{upload}"), Some(&hotel.owner), None).await;
+        assert_eq!(cancelled.status, StatusCode::NO_CONTENT, "{:?}", cancelled.body);
+    }
+    let mut samples = timed.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+
+    samples.sort();
+    let p50 = samples[SAMPLES / 2];
+    let p95 = samples[p95_index(SAMPLES)];
+    println!(
+        "POST media/uploads (gallery), with media-svc's CreateUpload, {SAMPLES} samples: p50 {p50:?}, p95 {p95:?}"
+    );
+    assert!(p95 < Duration::from_millis(50), "p95 {p95:?} is over the 50 ms gate");
+}
+
+const PHOTO_RUNS: usize = 5;
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode after `cargo build --release -p media-svc` (see the module docs)"]
+async fn photo_12mp_ready_under_5s(_: PgPoolOptions, opts: PgConnectOptions) {
+    let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
+    let stack = media::stack(opts).await;
+    let app = &stack.app;
+    let photo = media::fixture("photo-12mp.jpg");
+
+    let mut runs: Vec<Duration> = Vec::with_capacity(PHOTO_RUNS);
+    for run in 0..PHOTO_RUNS {
+        // Each run in its own property: within one, the same file would link to the first run's asset.
+        let hotel = Hotel::new(app, &format!("owner{run}@example.com"), &format!("GAL{run}")).await;
+        let start = media::start_body("gallery", hotel.room_type, &photo);
+        let (upload, parts) = media::start_and_put(app, &hotel.owner, &hotel.path, start, &photo).await;
+        let completed = media::complete(app, &hotel.owner, &hotel.path, &upload, parts).await;
+        let started = Instant::now();
+        assert_eq!(completed.status, StatusCode::OK, "{:?}", completed.body);
+        assert_eq!(completed.body["status"], "processing");
+        let asset = uuid(&completed.body["asset_id"]);
+        loop {
+            let status: String = sqlx::query_scalar("select status from media_asset where id = $1")
+                .bind(asset)
+                .fetch_one(&superuser)
+                .await
+                .unwrap();
+            if status == "ready" {
+                break;
+            }
+            assert_eq!(status, "processing", "run {run}");
+            assert!(started.elapsed() < Duration::from_secs(60), "run {run}: the photo was not ready in 60 s");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let elapsed = started.elapsed();
+        println!("12 MP JPEG, run {}: ready {elapsed:?} after complete", run + 1);
+        runs.push(elapsed);
+    }
+
+    runs.sort();
+    let median = runs[PHOTO_RUNS / 2];
+    println!("12 MP JPEG to ready (every gallery rendition and the archive), median of {PHOTO_RUNS}: {median:?}");
+    assert!(median < Duration::from_secs(5), "median {median:?} is over the 5 s gate");
 }

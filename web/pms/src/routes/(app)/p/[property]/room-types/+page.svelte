@@ -3,6 +3,8 @@
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { ApiError, errorMessage } from '$lib/api/problem';
 	import { formKeys, ifMatch, rest, unwrap } from '$lib/api/rest';
+	import GalleryPanel from '$lib/components/GalleryPanel.svelte';
+	import { fetchGalleries, mediaKey } from '$lib/media';
 	import { fetchRoomTypes, moveItem, roomTypesKey, type RoomType } from '$lib/rooms';
 	import { can, fetchMe } from '$lib/session';
 
@@ -13,7 +15,12 @@
 		queryKey: roomTypesKey(propertyId),
 		queryFn: ({ signal }) => fetchRoomTypes(propertyId, signal)
 	}));
+	const galleries = createQuery(() => ({
+		queryKey: mediaKey(propertyId),
+		queryFn: ({ signal }) => fetchGalleries(propertyId, signal)
+	}));
 	const manage = $derived(!!me.data && can(me.data, 'manageRooms', propertyId));
+	const manageMedia = $derived(!!me.data && can(me.data, 'mediaManage', propertyId));
 
 	type Capacity = Pick<RoomType, 'baseOccupancy' | 'maxAdults' | 'maxChildren' | 'maxOccupancy'>;
 	type Overbooking = Pick<RoomType, 'overbooking'>;
@@ -131,135 +138,137 @@
 {#if roomTypes.error}
 	<p class="error" role="alert">{errorMessage(roomTypes.error)}</p>
 {:else if roomTypes.data}
-	<table>
-		<thead>
-			<tr>
-				<th>Code</th>
-				<th>Name</th>
-				<th>Base</th>
-				<th>Adults</th>
-				<th>Children</th>
-				<th>Max</th>
-				<th>Overbooking</th>
-				<th>Status</th>
-				{#if manage}<th><span class="visually-hidden">Actions</span></th>{/if}
-			</tr>
-		</thead>
-		<tbody>
-			{#each roomTypes.data as type, index (type.id)}
-				<tr
-					draggable={manage && !editing}
-					class:inactive={!type.active}
-					ondragstart={() => (dragged = index)}
-					ondragover={(event) => event.preventDefault()}
-					ondrop={() => {
-						if (dragged !== null) void reorder(dragged, index);
-						dragged = null;
-					}}
-				>
-					<td>{type.code}</td>
-					{#if editing?.id === type.id}
-						<td><input aria-label="Name of {type.code}" bind:value={editing.name} /></td>
-						<td
-							><input
-								aria-label="Base occupancy of {type.code}"
-								type="number"
-								min="1"
-								bind:value={editing.baseOccupancy}
-							/></td
-						>
-						<td
-							><input
-								aria-label="Maximum adults of {type.code}"
-								type="number"
-								min="1"
-								bind:value={editing.maxAdults}
-							/></td
-						>
-						<td
-							><input
-								aria-label="Maximum children of {type.code}"
-								type="number"
-								min="0"
-								bind:value={editing.maxChildren}
-							/></td
-						>
-						<td
-							><input
-								aria-label="Maximum occupancy of {type.code}"
-								type="number"
-								min="1"
-								bind:value={editing.maxOccupancy}
-							/></td
-						>
-						<td
-							><input
-								aria-label="Overbooking allowance of {type.code}"
-								type="number"
-								min="0"
-								max="20"
-								bind:value={editing.overbooking}
-							/></td
-						>
-					{:else}
-						<td>{type.name}</td>
-						<td>{type.baseOccupancy}</td>
-						<td>{type.maxAdults}</td>
-						<td>{type.maxChildren}</td>
-						<td>{type.maxOccupancy}</td>
-						<td>{type.overbooking}</td>
-					{/if}
-					<td>{type.active ? 'Active' : 'Inactive'}</td>
-					{#if manage}
-						<td class="actions">
-							{#if editing?.id === type.id}
-								<button
-									disabled={busy}
-									aria-label="Save {type.code}"
-									onclick={() =>
-										editing &&
-										update(type, {
-											name: editing.name,
-											...capacity(editing),
-											overbooking: editing.overbooking
-										})}>Save</button
-								>
-								<button class="secondary" onclick={() => (editing = null)}>Cancel</button>
-							{:else}
-								<button
-									class="secondary"
-									aria-label="Move {type.code} up"
-									disabled={busy || index === 0}
-									onclick={() => reorder(index, index - 1)}>↑</button
-								>
-								<button
-									class="secondary"
-									aria-label="Move {type.code} down"
-									disabled={busy || index === roomTypes.data.length - 1}
-									onclick={() => reorder(index, index + 1)}>↓</button
-								>
-								<button
-									class="secondary"
-									aria-label="Edit {type.code}"
-									disabled={busy}
-									onclick={() => (editing = { ...type })}>Edit</button
-								>
-								<button
-									class="secondary"
-									disabled={busy}
-									aria-label="{type.active ? 'Deactivate' : 'Activate'} {type.code}"
-									onclick={() => update(type, { active: !type.active })}
-									>{type.active ? 'Deactivate' : 'Activate'}</button
-								>
-							{/if}
-						</td>
-					{/if}
+	<div class="scroll">
+		<table>
+			<thead>
+				<tr>
+					<th>Code</th>
+					<th>Name</th>
+					<th>Base</th>
+					<th>Adults</th>
+					<th>Children</th>
+					<th>Max</th>
+					<th>Overbooking</th>
+					<th>Status</th>
+					{#if manage}<th><span class="visually-hidden">Actions</span></th>{/if}
 				</tr>
-			{:else}
-				<tr><td colspan="9">No room types yet.</td></tr>
-			{/each}
-		</tbody>
-	</table>
+			</thead>
+			<tbody>
+				{#each roomTypes.data as type, index (type.id)}
+					<tr
+						draggable={manage && !editing}
+						class:inactive={!type.active}
+						ondragstart={() => (dragged = index)}
+						ondragover={(event) => event.preventDefault()}
+						ondrop={() => {
+							if (dragged !== null) void reorder(dragged, index);
+							dragged = null;
+						}}
+					>
+						<td>{type.code}</td>
+						{#if editing?.id === type.id}
+							<td><input aria-label="Name of {type.code}" bind:value={editing.name} /></td>
+							<td
+								><input
+									aria-label="Base occupancy of {type.code}"
+									type="number"
+									min="1"
+									bind:value={editing.baseOccupancy}
+								/></td
+							>
+							<td
+								><input
+									aria-label="Maximum adults of {type.code}"
+									type="number"
+									min="1"
+									bind:value={editing.maxAdults}
+								/></td
+							>
+							<td
+								><input
+									aria-label="Maximum children of {type.code}"
+									type="number"
+									min="0"
+									bind:value={editing.maxChildren}
+								/></td
+							>
+							<td
+								><input
+									aria-label="Maximum occupancy of {type.code}"
+									type="number"
+									min="1"
+									bind:value={editing.maxOccupancy}
+								/></td
+							>
+							<td
+								><input
+									aria-label="Overbooking allowance of {type.code}"
+									type="number"
+									min="0"
+									max="20"
+									bind:value={editing.overbooking}
+								/></td
+							>
+						{:else}
+							<td>{type.name}</td>
+							<td>{type.baseOccupancy}</td>
+							<td>{type.maxAdults}</td>
+							<td>{type.maxChildren}</td>
+							<td>{type.maxOccupancy}</td>
+							<td>{type.overbooking}</td>
+						{/if}
+						<td>{type.active ? 'Active' : 'Inactive'}</td>
+						{#if manage}
+							<td class="actions">
+								{#if editing?.id === type.id}
+									<button
+										disabled={busy}
+										aria-label="Save {type.code}"
+										onclick={() =>
+											editing &&
+											update(type, {
+												name: editing.name,
+												...capacity(editing),
+												overbooking: editing.overbooking
+											})}>Save</button
+									>
+									<button class="secondary" onclick={() => (editing = null)}>Cancel</button>
+								{:else}
+									<button
+										class="secondary"
+										aria-label="Move {type.code} up"
+										disabled={busy || index === 0}
+										onclick={() => reorder(index, index - 1)}>↑</button
+									>
+									<button
+										class="secondary"
+										aria-label="Move {type.code} down"
+										disabled={busy || index === roomTypes.data.length - 1}
+										onclick={() => reorder(index, index + 1)}>↓</button
+									>
+									<button
+										class="secondary"
+										aria-label="Edit {type.code}"
+										disabled={busy}
+										onclick={() => (editing = { ...type })}>Edit</button
+									>
+									<button
+										class="secondary"
+										disabled={busy}
+										aria-label="{type.active ? 'Deactivate' : 'Activate'} {type.code}"
+										onclick={() => update(type, { active: !type.active })}
+										>{type.active ? 'Deactivate' : 'Activate'}</button
+									>
+								{/if}
+							</td>
+						{/if}
+					</tr>
+				{:else}
+					<tr><td colspan="9">No room types yet.</td></tr>
+				{/each}
+			</tbody>
+		</table>
+	</div>
 	{#if manage}
 		<p class="hint">Drag a row, or use the arrows, to change the order rooms are listed in.</p>
 		<form class="inline-form" aria-label="New room type" onsubmit={create}>
@@ -283,6 +292,29 @@
 			<button disabled={busy}>Add room type</button>
 		</form>
 	{/if}
+
+	<h2>Photos</h2>
+	{#if galleries.error}
+		<p class="error" role="alert">{errorMessage(galleries.error)}</p>
+	{:else if galleries.data}
+		{#each roomTypes.data as type (type.id)}
+			<GalleryPanel
+				{propertyId}
+				roomType={type}
+				media={galleries.data[type.id] ?? []}
+				manage={manageMedia}
+			/>
+		{/each}
+	{:else}
+		<p>Loading…</p>
+	{/if}
 {:else}
 	<p>Loading…</p>
 {/if}
+
+<style>
+	/* The table scrolls sideways on a phone rather than widening the page. */
+	.scroll {
+		overflow-x: auto;
+	}
+</style>

@@ -386,7 +386,9 @@ async fn a_booking_tells_screens_to_refetch_the_list_the_reservation_and_its_inv
     opts: PgConnectOptions,
 ) {
     let app = TestApp::new(opts.clone()).await;
-    spawn_listener(PgPool::connect_with(opts.clone()).await.unwrap(), app.state.events.clone()).await.unwrap();
+    spawn_listener(PgPool::connect_with(opts.clone()).await.unwrap(), app.state.events.clone(), Default::default())
+        .await
+        .unwrap();
     let hotel = Hotel::new(&app, opts).await;
     let guest = post(&app, &hotel.owner, &hotel.guests(), hotel.guest("Silva")).await.body;
     let mut events = app.state.events.subscribe();

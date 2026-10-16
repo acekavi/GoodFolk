@@ -217,6 +217,44 @@ export interface paths {
         patch: operations["update_cancellation_policy"];
         trace?: never;
     };
+    "/api/v1/properties/{property}/guest-documents/{document}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Deletes a guest document uploaded at the property (audited; 404 for another property's). Its files go when the daily sweep finds them unused. */
+        delete: operations["delete_guest_document"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/guest-documents/{document}/link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A link to one file of a guest document uploaded at the property (404 for another property's) that works for
+         *     5 minutes: `thumb` or `md` (WebP) for an image, `original` for a PDF (422 otherwise). Each link issued is audited
+         *     as `guest_document.viewed`. A document still processing is 409.
+         */
+        get: operations["guest_document_link"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/guests": {
         parameters: {
             query?: never;
@@ -319,6 +357,71 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["update_meal_supplement"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/media/uploads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Starts an upload: records the asset and has media-svc open a multipart upload, whose part URLs work for an hour.
+         *     Needs `MediaManage` for a gallery photo, `RoomIssuesReport` for an issue photo and `GuestDocumentsManage` for a
+         *     guest document. An issue holds at most 5 photos, counting uploads in progress (409). When media-svc cannot be
+         *     reached in 2 s the answer is 502 and nothing is recorded. A retried request with the same `Idempotency-Key` is
+         *     answered without starting another upload.
+         */
+        post: operations["start_media_upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/media/uploads/{upload}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Cancels an upload that has not completed: storage discards its parts and the upload is gone. One already
+         *     completed is 409.
+         */
+        delete: operations["cancel_media_upload"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/media/uploads/{upload}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Completes an upload once every part is in storage: media-svc checks the file against its declared size and
+         *     SHA-256 and sniffs its type, refusing a file that does not match or is not accepted for the purpose (422 with
+         *     the reason; the upload is gone). A file the property already holds for the same purpose links to that asset,
+         *     which is returned instead. A retried request with the same `Idempotency-Key` returns the same answer.
+         */
+        post: operations["complete_media_upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/properties/{property}/rate-plans": {
@@ -635,6 +738,26 @@ export interface paths {
         patch: operations["update_room_issue"];
         trace?: never;
     };
+    "/api/v1/properties/{property}/room-issues/{issue}/media/{asset}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Removes a photo from a room issue: the user who added it may (with `RoomIssuesReport`), as may anyone with
+         *     `HousekeepingSupervise`; anyone else gets 403. Its files go when the daily sweep finds them unused.
+         */
+        delete: operations["remove_room_issue_media"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/room-types": {
         parameters: {
             query?: never;
@@ -681,6 +804,41 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["update_room_type"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/room-types/{room_type}/media/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Puts the room type's photos in a new order; `asset_ids` must name each of them exactly once (422). */
+        put: operations["reorder_room_type_media"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/room-types/{room_type}/media/{asset}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Removes a photo from the room type's gallery. Its files go when the daily sweep finds them unused. */
+        delete: operations["remove_room_type_media"];
+        options?: never;
+        head?: never;
+        /** Sets the caption of a photo in the room type's gallery. */
+        patch: operations["caption_room_type_media"];
         trace?: never;
     };
     "/api/v1/properties/{property}/rooms": {
@@ -890,6 +1048,11 @@ export interface components {
             /** Format: uuid */
             guest_id: string;
         };
+        /**
+         * @description Where an asset is in its life: uploading, then processing, then ready or failed.
+         * @enum {string}
+         */
+        AssetStatus: "uploading" | "processing" | "ready" | "failed";
         AssignRoomRequest: {
             /**
              * Format: uuid
@@ -1023,6 +1186,10 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        CaptionRequest: {
+            /** @description At most 200 characters once trimmed; empty removes the caption. */
+            caption: string;
+        };
         /**
          * @description How a price is changed: by basis points (`percent`, 1500 = +15 %) or by minor units (`amount`).
          * @enum {string}
@@ -1063,6 +1230,10 @@ export interface components {
             status: components["schemas"]["RoomStatus"];
             /** Format: int32 */
             version: number;
+        };
+        CompleteUploadRequest: {
+            /** @description Every part, numbered from 1. */
+            parts: components["schemas"]["UploadedPart"][];
         };
         /**
          * @description How ready a room is for a guest.
@@ -1314,6 +1485,11 @@ export interface components {
              */
             version: number;
         };
+        /**
+         * @description The kind of ID document a guest document is.
+         * @enum {string}
+         */
+        DocumentKind: "passport" | "nic" | "driving_licence" | "other";
         /** @description A role held tenant-wide (`property_id: None`) or for one property. */
         Grant: {
             /** Format: uuid */
@@ -1377,6 +1553,11 @@ export interface components {
          * @enum {string}
          */
         IssueStatus: "open" | "resolved";
+        /**
+         * @description The file a guest-document link points at: a rendition, or the archived original.
+         * @enum {string}
+         */
+        LinkSize: "thumb" | "md" | "original";
         LoginRequest: {
             email: string;
             password: string;
@@ -1407,6 +1588,27 @@ export interface components {
             to?: string | null;
             /** Format: int32 */
             version: number;
+        };
+        /**
+         * @description An uploaded file. Its delivered images, once ready, are read through GraphQL; a guest document's only through
+         *     its signed link.
+         */
+        MediaAsset: {
+            /** Format: uuid */
+            asset_id: string;
+            /** Format: int64 */
+            bytes?: number | null;
+            /** @description Why processing failed, for a `failed` asset. */
+            error?: string | null;
+            filename: string;
+            /** Format: int32 */
+            height?: number | null;
+            mime?: string | null;
+            purpose: components["schemas"]["Purpose"];
+            /** @description `processing` until media-svc reports back; an existing copy of the same file may already be `ready`. */
+            status: components["schemas"]["AssetStatus"];
+            /** Format: int32 */
+            width?: number | null;
         };
         /** @description A room after [`modify_room`]. */
         ModifiedRoom: {
@@ -1542,6 +1744,11 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        /**
+         * @description What an asset is for. It decides the visibility, the size limit and the renditions.
+         * @enum {string}
+         */
+        Purpose: "gallery" | "issue_photo" | "guest_document";
         RatePlan: {
             active: boolean;
             allowed_meal_plans: components["schemas"]["MealPlan"][];
@@ -1597,6 +1804,10 @@ export interface components {
             room_id: string;
             /** Format: int32 */
             version: number;
+        };
+        ReorderMediaRequest: {
+            /** @description Every photo of the room type, each once, in the new order. */
+            asset_ids: string[];
         };
         ReorderRequest: {
             /** @description Every id of the collection, in the new display order. */
@@ -1791,6 +2002,12 @@ export interface components {
              */
             to: string;
         };
+        /** @description A short-lived link to one file of a guest document. */
+        SignedLink: {
+            /** Format: date-time */
+            expires_at: string;
+            url: string;
+        };
         SignupRequest: {
             display_name: string;
             email: string;
@@ -1803,6 +2020,39 @@ export interface components {
          * @enum {string}
          */
         Source: "front_desk" | "ibe" | "channel" | "phone" | "email";
+        StartUploadRequest: {
+            /**
+             * Format: int64
+             * @description The file's size: at most 25 MiB for photos and 15 MiB for guest documents.
+             */
+            bytes: number;
+            /** @description 1 to 255 characters. Only shown; the file's type is decided from its bytes. */
+            filename: string;
+            kind?: components["schemas"]["DocumentKind"] | null;
+            purpose: components["schemas"]["Purpose"];
+            /** @description The file's SHA-256, as 64 hexadecimal digits. */
+            sha256: string;
+            /**
+             * Format: uuid
+             * @description The room type (`gallery`), room issue (`issue_photo`) or guest (`guest_document`).
+             */
+            target_id: string;
+        };
+        StartedUpload: {
+            /**
+             * Format: date-time
+             * @description When the part URLs stop working.
+             */
+            expires_at: string;
+            /**
+             * Format: int64
+             * @description Every part is this many bytes except the last.
+             */
+            part_size: number;
+            parts: components["schemas"]["UploadPart"][];
+            /** Format: uuid */
+            upload_id: string;
+        };
         SwitchTenantRequest: {
             /** Format: uuid */
             tenant_id: string;
@@ -1964,6 +2214,18 @@ export interface components {
             notes: string;
             /** Format: int32 */
             version: number;
+        };
+        /** @description Where the browser PUTs one part of the file. */
+        UploadPart: {
+            /** Format: int32 */
+            number: number;
+            url: string;
+        };
+        /** @description A part the browser uploaded, with the `ETag` storage answered. */
+        UploadedPart: {
+            etag: string;
+            /** Format: int32 */
+            number: number;
         };
     };
     responses: never;
@@ -2596,6 +2858,86 @@ export interface operations {
             };
         };
     };
+    delete_guest_document: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                document: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    guest_document_link: {
+        parameters: {
+            query: {
+                size: components["schemas"]["LinkSize"];
+            };
+            header?: never;
+            path: {
+                property: string;
+                document: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignedLink"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     create_guest: {
         parameters: {
             query?: never;
@@ -2897,6 +3239,165 @@ export interface operations {
                 content?: never;
             };
             428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    start_media_upload: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartUploadRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartedUpload"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancel_media_upload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                upload: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    complete_media_upload: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+                upload: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CompleteUploadRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaAsset"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3907,6 +4408,39 @@ export interface operations {
             };
         };
     };
+    remove_room_issue_media: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                issue: string;
+                asset: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     create_room_type: {
         parameters: {
             query?: never;
@@ -4060,6 +4594,124 @@ export interface operations {
                 content?: never;
             };
             428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reorder_room_type_media: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                room_type: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReorderMediaRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remove_room_type_media: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                room_type: string;
+                asset: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    caption_room_type_media: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                room_type: string;
+                asset: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaptionRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

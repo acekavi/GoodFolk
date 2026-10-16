@@ -41,3 +41,51 @@ async fn the_app_role_cannot_bypass_row_level_security(pool: PgPool) {
     assert!(!bypass);
     assert_eq!(owns, 0);
 }
+
+/// The outbox tables are reachable only through their security definer functions (`migrations/0014_outbox.sql`).
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_outbox_is_reachable_only_through_its_functions(pool: PgPool) {
+    for table in ["outbox", "processed_event"] {
+        for privilege in ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"] {
+            let has: bool = sqlx::query_scalar("select has_table_privilege('goodfolk_app', $1, $2)")
+                .bind(table)
+                .bind(privilege)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert!(!has, "goodfolk_app has {privilege} on {table}");
+        }
+    }
+    for function in [
+        "app.outbox_enqueue(uuid, text, jsonb)",
+        "app.outbox_claim(int, int)",
+        "app.outbox_sent(uuid)",
+        "app.outbox_retry(uuid, text, int)",
+        "app.event_first_seen(text)",
+        "app.outbox_refused(uuid, text)",
+    ] {
+        let can: bool =
+            sqlx::query_scalar("select has_function_privilege('goodfolk_app', $1::regprocedure, 'execute')")
+                .bind(function)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(can, "goodfolk_app cannot execute {function}");
+    }
+}
+
+/// A security definer function that searches the session's temporary schema first can be hijacked by a temp table of
+/// the same name: `pg_temp` must come last (`migrations/0015_definer_search_path.sql`).
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn definer_functions_search_pg_temp_last(pool: PgPool) {
+    let bad: Vec<String> = sqlx::query_scalar(
+        "select p.proname::text from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+         where n.nspname = 'app' and p.prosecdef
+           and not coalesce(p.proconfig @> array['search_path=pg_catalog, public, pg_temp'], false)
+         order by 1",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(bad.is_empty(), "security definer functions with a weak search_path: {bad:?}");
+}
