@@ -11,6 +11,7 @@ publish = false
 db = { path = "crates/db" }
 domain = { path = "crates/domain" }
 events = { path = "crates/events" }
+folio = { path = "modules/folio" }
 housekeeping = { path = "modules/housekeeping" }
 identity = { path = "modules/identity" }
 imaging = { path = "crates/imaging" }

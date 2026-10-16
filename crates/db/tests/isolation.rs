@@ -491,6 +491,7 @@ enum Seed {
     AccountsAndOccupants,
     Housekeeping,
     Media,
+    Folio,
 }
 
 impl Seed {
@@ -501,6 +502,7 @@ impl Seed {
             Seed::AccountsAndOccupants => seed_accounts_and_occupants(pool, tenant).await,
             Seed::Housekeeping => seed_housekeeping(pool, tenant).await,
             Seed::Media => seed_media(pool, tenant).await,
+            Seed::Folio => seed_folio(pool, tenant).await,
         }
     }
 }
@@ -844,6 +846,188 @@ async fn guest_documents_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnec
         "insert into guest_document (id, tenant_id, guest_id, asset_id, kind)
          select gen_random_uuid(), $1, guest_id, asset_id, 'passport' from guest_document",
         Seed::Media,
+    )
+    .await;
+}
+
+/// On top of [`seed_accounts_and_occupants`], for `tenant`: one row in every Phase 7 table. The guest folio carries a
+/// room line with a tax component, a payment, an invoice and a POS bill; the account is a routing target.
+async fn seed_folio(pool: &PgPool, tenant: TenantId) {
+    seed_accounts_and_occupants(pool, tenant).await;
+    let (folio, line, payment, outlet) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    let mut tx = begin(pool, Scope::tenant(tenant)).await.unwrap();
+    let statements = [
+        "insert into tax_rule (id, tenant_id, property_id, code, name, kind, rate_bp, applies_to, base, sequence,
+                               presentation, effective_from)
+         select gen_random_uuid(), $1, id, 'VAT', 'Value added tax', 'tax', 1800, array['*'], array['net'], 40,
+                'on_bill', date '2026-01-01'
+         from property",
+        "insert into outlet (id, tenant_id, property_id, code, name) select $5, $1, id, 'BAR', 'Bar' from property",
+        "insert into fx_rate (tenant_id, property_id, date, currency, rate_to_base, source, source_date)
+         select $1, id, current_date, 'USD', 300.5, 'cbsl', current_date from property",
+        "insert into fx_alert (property_id, tenant_id, message) select id, $1, 'No rate' from property",
+        "insert into folio (id, tenant_id, property_id, kind, reservation_room_id)
+         select $2, $1, property_id, 'guest', id from reservation_room",
+        "insert into folio_line (id, tenant_id, folio_id, source, category, description, net, total, currency, base_total,
+                                 rate, rate_date, business_date)
+         values ($3, $1, $2, 'room', 'room', 'Room 101', 10000, 11800, 'LKR', 11800, 1, current_date, current_date)",
+        "insert into folio_line_tax (tenant_id, line_id, code, name, kind, rate_bp, base, amount, presentation)
+         values ($1, $3, 'VAT', 'Value added tax', 'tax', 1800, 10000, 1800, 'on_bill')",
+        "insert into payment (id, tenant_id, folio_id, method, amount, currency, base_amount, rate, rate_date,
+                              business_date)
+         values ($4, $1, $2, 'cash', 11800, 'LKR', 11800, 1, current_date, current_date)",
+        "insert into routing_rule (tenant_id, reservation_id, category, account_id)
+         select $1, r.id, 'laundry', a.id from reservation r, account a",
+        "insert into pos_bill (id, tenant_id, property_id, outlet_id, bill_no, business_date, body_hash, settled)
+         select gen_random_uuid(), $1, property_id, id, 'B-1', current_date, sha256('x'), false from outlet",
+        "insert into invoice (id, tenant_id, property_id, folio_id, kind, serial, data, total_lkr)
+         select gen_random_uuid(), $1, property_id, id, 'invoice', 'MAIN-2026-000001', '{}', 11800 from folio",
+    ];
+    for statement in statements {
+        sqlx::query(statement)
+            .bind(tenant.0)
+            .bind(folio)
+            .bind(line)
+            .bind(payment)
+            .bind(outlet)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn tax_rules_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "tax_rule",
+        "insert into tax_rule (id, tenant_id, property_id, code, name, kind, rate_bp, applies_to, base, sequence,
+                               presentation, effective_from)
+         select gen_random_uuid(), $1, property_id, 'XTAX', 'Intruder', 'tax', 1, array['*'], array['net'], 50,
+                'on_bill', date '2026-01-01'
+         from tax_rule",
+        Seed::Folio,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn outlets_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "outlet",
+        "insert into outlet (id, tenant_id, property_id, code, name) select gen_random_uuid(), $1, property_id, 'SPA', 'Spa' from outlet",
+        Seed::Folio,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn fx_rates_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "fx_rate",
+        "insert into fx_rate (tenant_id, property_id, date, currency, rate_to_base, source, source_date)
+         select $1, property_id, date, 'EUR', 330, 'manual', date from fx_rate",
+        Seed::Folio,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn fx_alerts_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "fx_alert",
+        "insert into fx_alert (property_id, tenant_id, message) select gen_random_uuid(), $1, 'x' from fx_alert",
+        Seed::Folio,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn folios_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "folio",
+        "insert into folio (id, tenant_id, property_id, kind, account_id)
+         select gen_random_uuid(), $1, property_id, 'account', a.id from folio, account a",
+        Seed::Folio,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn folio_lines_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "folio_line",
+        "insert into folio_line (id, tenant_id, folio_id, source, category, description, net, total, currency, base_total,
+                                 rate, rate_date, business_date)
+         select gen_random_uuid(), $1, folio_id, 'manual', 'misc', 'Intruder', 1, 1, 'LKR', 1, 1, current_date, current_date
+         from folio_line",
+        Seed::Folio,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn folio_line_taxes_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "folio_line_tax",
+        "insert into folio_line_tax (tenant_id, line_id, code, name, kind, rate_bp, base, amount, presentation)
+         select $1, line_id, 'XTAX', 'Intruder', 'tax', 1, 1, 1, 'on_bill' from folio_line_tax",
+        Seed::Folio,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn payments_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "payment",
+        "insert into payment (id, tenant_id, folio_id, method, amount, currency, base_amount, rate, rate_date, business_date)
+         select gen_random_uuid(), $1, folio_id, 'cash', 1, 'LKR', 1, 1, current_date, current_date from payment",
+        Seed::Folio,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn routing_rules_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "routing_rule",
+        "insert into routing_rule (tenant_id, reservation_id, category, account_id)
+         select $1, reservation_id, 'misc', account_id from routing_rule",
+        Seed::Folio,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn pos_bills_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "pos_bill",
+        "insert into pos_bill (id, tenant_id, property_id, outlet_id, bill_no, business_date, body_hash, settled)
+         select gen_random_uuid(), $1, property_id, outlet_id, 'B-2', business_date, body_hash, settled from pos_bill",
+        Seed::Folio,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn invoices_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "invoice",
+        "insert into invoice (id, tenant_id, property_id, folio_id, kind, serial, data, total_lkr)
+         select gen_random_uuid(), $1, property_id, folio_id, 'invoice', 'MAIN-2026-000002', '{}', 1 from invoice",
+        Seed::Folio,
     )
     .await;
 }

@@ -59,6 +59,13 @@ fn each_role_has_exactly_its_permissions() {
         RoomIssuesReport,
         MediaManage,
         GuestDocumentsManage,
+        FolioView,
+        FolioPost,
+        FolioAdjust,
+        InvoiceIssue,
+        TaxSettingsManage,
+        FxOverride,
+        PosPost,
     ];
     let expected: [(Role, &[Permission]); 6] = [
         (Role::Owner, &all),
@@ -82,6 +89,12 @@ fn each_role_has_exactly_its_permissions() {
                 RoomIssuesReport,
                 MediaManage,
                 GuestDocumentsManage,
+                FolioView,
+                FolioPost,
+                FolioAdjust,
+                InvoiceIssue,
+                FxOverride,
+                PosPost,
             ],
         ),
         (
@@ -98,6 +111,9 @@ fn each_role_has_exactly_its_permissions() {
                 HousekeepingView,
                 RoomIssuesReport,
                 GuestDocumentsManage,
+                FolioView,
+                FolioPost,
+                InvoiceIssue,
             ],
         ),
         (
@@ -113,7 +129,10 @@ fn each_role_has_exactly_its_permissions() {
                 RoomIssuesReport,
             ],
         ),
-        (Role::Accountant, &[PropertiesView, RoomsView, InventoryView, RatesView, ReservationsView]),
+        (
+            Role::Accountant,
+            &[PropertiesView, RoomsView, InventoryView, RatesView, ReservationsView, FolioView, InvoiceIssue],
+        ),
         (
             Role::HkSupervisor,
             &[
@@ -186,4 +205,42 @@ fn only_owners_and_managers_manage_media() {
 #[test]
 fn the_front_desk_manages_guest_documents_and_housekeeping_does_not() {
     assert_eq!(roles_allowed(Permission::GuestDocumentsManage), [Role::Owner, Role::Manager, Role::FrontDesk]);
+}
+
+#[test]
+fn folio_view_is_for_everyone_who_handles_money() {
+    assert_eq!(roles_allowed(Permission::FolioView), [Role::Owner, Role::Manager, Role::FrontDesk, Role::Accountant]);
+}
+
+#[test]
+fn the_front_desk_posts_to_folios_and_the_accountant_does_not() {
+    assert_eq!(roles_allowed(Permission::FolioPost), [Role::Owner, Role::Manager, Role::FrontDesk]);
+}
+
+#[test]
+fn only_owners_and_managers_adjust_folios() {
+    assert_eq!(roles_allowed(Permission::FolioAdjust), [Role::Owner, Role::Manager]);
+}
+
+#[test]
+fn invoices_are_issued_by_the_front_desk_and_the_accountant_too() {
+    assert_eq!(
+        roles_allowed(Permission::InvoiceIssue),
+        [Role::Owner, Role::Manager, Role::FrontDesk, Role::Accountant]
+    );
+}
+
+#[test]
+fn only_owners_manage_tax_settings() {
+    assert_eq!(roles_allowed(Permission::TaxSettingsManage), [Role::Owner]);
+}
+
+#[test]
+fn only_owners_and_managers_override_exchange_rates() {
+    assert_eq!(roles_allowed(Permission::FxOverride), [Role::Owner, Role::Manager]);
+}
+
+#[test]
+fn only_owners_and_managers_post_pos_bills() {
+    assert_eq!(roles_allowed(Permission::PosPost), [Role::Owner, Role::Manager]);
 }

@@ -55,6 +55,12 @@ impl Role {
                     | RoomIssuesReport
                     | MediaManage
                     | GuestDocumentsManage
+                    | FolioView
+                    | FolioPost
+                    | FolioAdjust
+                    | InvoiceIssue
+                    | FxOverride
+                    | PosPost
             ),
             Role::FrontDesk => matches!(
                 permission,
@@ -69,6 +75,9 @@ impl Role {
                     | HousekeepingView
                     | RoomIssuesReport
                     | GuestDocumentsManage
+                    | FolioView
+                    | FolioPost
+                    | InvoiceIssue
             ),
             Role::Housekeeping => matches!(
                 permission,
@@ -94,7 +103,16 @@ impl Role {
                     | RoomIssuesReport
             ),
             Role::Accountant => {
-                matches!(permission, PropertiesView | RoomsView | InventoryView | RatesView | ReservationsView)
+                matches!(
+                    permission,
+                    PropertiesView
+                        | RoomsView
+                        | InventoryView
+                        | RatesView
+                        | ReservationsView
+                        | FolioView
+                        | InvoiceIssue
+                )
             }
         }
     }
@@ -137,6 +155,20 @@ pub enum Permission {
     MediaManage,
     /// Upload, view (through an audited signed link) and delete guests' ID documents.
     GuestDocumentsManage,
+    /// See folios, their lines, payments and invoices.
+    FolioView,
+    /// Post charges, take payments and refunds, and transfer lines.
+    FolioPost,
+    /// Reverse lines, post adjustments, waive fees and override a folio's charges.
+    FolioAdjust,
+    /// Issue invoices and credit notes.
+    InvoiceIssue,
+    /// Change a property's tax rules, outlets and tax identity.
+    TaxSettingsManage,
+    /// Set an exchange rate by hand.
+    FxOverride,
+    /// Post a point-of-sale bill to a folio.
+    PosPost,
 }
 
 /// A role held tenant-wide (`property_id: None`) or for one property.

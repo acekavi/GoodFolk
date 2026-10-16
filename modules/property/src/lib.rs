@@ -99,6 +99,7 @@ pub async fn create_property(
             return Err(if taken { PropertyError::CodeTaken } else { err.into() });
         }
     };
+    insert_preset_rules(tx, tenant, property.id).await?;
     sqlx::query(
         "insert into audit_log (id, tenant_id, actor_user_id, action, entity, entity_id, data)
          values ($1, $2, $3, 'property.created', 'property', $4, $5)",
@@ -112,6 +113,36 @@ pub async fn create_property(
     .await?;
     db::notify(tx, &Event { tenant_id: tenant, property_id: None, keys: vec![PROPERTIES_KEY.into()] }).await?;
     Ok(property)
+}
+
+/// Gives a new property the Sri Lanka tax rules. `kind`, `presentation` and `condition` are stored as the serde forms
+/// of the `tax` types, which is also how the folio module reads them back.
+async fn insert_preset_rules(tx: &mut Tx, tenant: TenantId, property: Uuid) -> Result<(), sqlx::Error> {
+    let to_text = |value: serde_json::Value| value.as_str().map(str::to_owned);
+    for rule in tax::sri_lanka_preset(false) {
+        sqlx::query(
+            "insert into tax_rule (id, tenant_id, property_id, code, name, kind, rate_bp, applies_to, base, sequence,
+                                   presentation, condition, effective_from, effective_to)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(tenant.0)
+        .bind(property)
+        .bind(&rule.code)
+        .bind(&rule.name)
+        .bind(to_text(serde_json::json!(rule.kind)))
+        .bind(i32::try_from(rule.rate_bp).expect("preset rates are at most 10000"))
+        .bind(&rule.applies_to)
+        .bind(&rule.base)
+        .bind(rule.sequence)
+        .bind(to_text(serde_json::json!(rule.presentation)))
+        .bind(serde_json::json!(rule.condition))
+        .bind(rule.effective_from)
+        .bind(rule.effective_to)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
 }
 
 /// Lists properties by code. `only` limits the result to those ids (for property-scoped staff).
