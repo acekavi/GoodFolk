@@ -158,7 +158,7 @@ mod tests {
         ("SVC_AUTH", "google"),
         ("MEDIA_SVC_AUDIENCE", "https://media-svc.example.run.app"),
         ("CORE_API_AUDIENCE", "https://core-api.example.run.app"),
-        ("ALLOWED_SERVICE_EMAILS", "media-svc@example.iam.gserviceaccount.com"),
+        ("ALLOWED_SERVICE_EMAILS", "media-results-push@example.iam.gserviceaccount.com"),
     ];
 
     /// `pairs`, then the media variables of the environment `pairs` names (production or not).
