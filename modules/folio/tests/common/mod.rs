@@ -210,7 +210,6 @@ impl Hotel {
             business_date: self.business_date,
             posting_key: None,
             inclusive: false,
-            untaxed: false,
         }
     }
 

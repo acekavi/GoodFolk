@@ -7,8 +7,8 @@ use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::TestRunner;
 use reservations::{
-    AssignedRoom, CancelledRoom, CheckInOverride, CheckedIn, CheckedOut, ModifiedRoom, ReservationsError, RoomChanges,
-    UndoneCheckIn,
+    AssignedRoom, CancelledRoom, CheckInOverride, CheckedIn, CheckedOut, CreatedReservation, ModifiedRoom,
+    ReservationsError, RoomChanges, UndoneCheckIn,
 };
 use rooms::{BlockKind, NewBlockReason, Room};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -997,51 +997,167 @@ async fn balances(hotel: &Hotel, folio: Uuid) -> (Vec<(String, i64)>, usize) {
     (view.balances.into_iter().map(|balance| (balance.currency, balance.amount)).collect(), view.payments.len())
 }
 
+/// A reservation of two BAR stays from today for two nights, with its deposit folio and each stay's guest folio.
+async fn two_stays(hotel: &Hotel, plans: &Plans) -> (CreatedReservation, Uuid, [Uuid; 2]) {
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let room = || hotel.room(hotel.deluxe.id, &plans.bar, 0, 2);
+    let booked = hotel.try_book(&booker, vec![room(), room()]).await.unwrap();
+    let mut tx = hotel.tx().await;
+    let deposit = folio::ensure_deposit_folio(&mut tx, hotel.tenant, hotel.property, booked.id).await.unwrap();
+    let guests = [
+        folio::ensure_guest_folio(&mut tx, hotel.tenant, hotel.property, booked.rooms[0].id).await.unwrap(),
+        folio::ensure_guest_folio(&mut tx, hotel.tenant, hotel.property, booked.rooms[1].id).await.unwrap(),
+    ];
+    tx.commit().await.unwrap();
+    (booked, deposit, guests)
+}
+
+/// A cash payment of `amount` USD on `folio`, committed.
+async fn pay(hotel: &Hotel, folio: Uuid, amount: i64) {
+    let mut tx = hotel.tx().await;
+    let method = folio::Method::Cash;
+    folio::take_payment(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, folio, method, amount, "USD", None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}
+
+/// Marks `folio` invoiced, committed.
+async fn invoice(hotel: &Hotel, folio: Uuid) {
+    let mut tx = hotel.tx().await;
+    sqlx::query("update folio set status = 'invoiced' where id = $1").bind(folio).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+}
+
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn the_first_check_in_of_a_reservation_takes_its_deposit_and_the_second_does_not(
     _: PgPoolOptions,
     opts: PgConnectOptions,
 ) {
     let (hotel, plans) = Hotel::for_booking(opts, 2).await;
-    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
-    let room = || hotel.room(hotel.deluxe.id, &plans.bar, 0, 2);
-    let booked = hotel.try_book(&booker, vec![room(), room()]).await.unwrap();
+    let (booked, deposit, guests) = two_stays(&hotel, &plans).await;
     let (first, second) = (&booked.rooms[0], &booked.rooms[1]);
-    let mut tx = hotel.tx().await;
-    let deposit = folio::ensure_deposit_folio(&mut tx, hotel.tenant, hotel.property, booked.id).await.unwrap();
-    let guests = [
-        folio::ensure_guest_folio(&mut tx, hotel.tenant, hotel.property, first.id).await.unwrap(),
-        folio::ensure_guest_folio(&mut tx, hotel.tenant, hotel.property, second.id).await.unwrap(),
-    ];
-    tx.commit().await.unwrap();
-    let hotel = &hotel;
-    let pay = move |amount: i64| async move {
-        let mut tx = hotel.tx().await;
-        folio::take_payment(
-            &mut tx,
-            hotel.tenant,
-            Some(hotel.user),
-            hotel.property,
-            deposit,
-            folio::Method::Cash,
-            amount,
-            "USD",
-            None,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-    };
-    pay(5_000).await;
+    pay(&hotel, deposit, 5_000).await;
 
     hotel.try_check_in(first.id, first.version).await.unwrap();
 
-    assert_eq!(balances(hotel, deposit).await, (vec![("USD".into(), 0)], 2));
-    assert_eq!(balances(hotel, guests[0]).await, (vec![("USD".into(), -5_000)], 1));
+    assert_eq!(balances(&hotel, deposit).await, (vec![("USD".into(), 0)], 2));
+    assert_eq!(balances(&hotel, guests[0]).await, (vec![("USD".into(), -5_000)], 1));
 
-    pay(2_000).await;
+    pay(&hotel, deposit, 2_000).await;
     hotel.try_check_in(second.id, second.version).await.unwrap();
 
-    assert_eq!(balances(hotel, guests[1]).await, (vec![], 0), "only the first check-in takes the deposit");
-    assert_eq!(balances(hotel, deposit).await, (vec![("USD".into(), -2_000)], 3));
+    assert_eq!(balances(&hotel, guests[1]).await, (vec![], 0), "only the first check-in takes the deposit");
+    assert_eq!(balances(&hotel, deposit).await, (vec![("USD".into(), -2_000)], 3));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn undoing_the_first_check_in_returns_the_deposit_for_the_next_one(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 2).await;
+    let (booked, deposit, guests) = two_stays(&hotel, &plans).await;
+    let (first, second) = (&booked.rooms[0], &booked.rooms[1]);
+    pay(&hotel, deposit, 5_000).await;
+    let checked_in = hotel.try_check_in(first.id, first.version).await.unwrap();
+
+    hotel.try_undo_check_in(first.id, checked_in.version).await.unwrap();
+
+    assert_eq!(balances(&hotel, deposit).await, (vec![("USD".into(), -5_000)], 3));
+    assert_eq!(balances(&hotel, guests[0]).await, (vec![("USD".into(), 0)], 2));
+    assert_eq!(hotel.audited("folio.deposit_move_undone").await.len(), 1);
+
+    hotel.try_check_in(second.id, second.version).await.unwrap();
+
+    assert_eq!(balances(&hotel, guests[1]).await, (vec![("USD".into(), -5_000)], 1), "the whole deposit");
+    assert_eq!(balances(&hotel, deposit).await, (vec![("USD".into(), 0)], 4));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_undone_then_cancelled_stay_leaves_its_fee_and_deposit_on_the_deposit_folio(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let (hotel, plans) = Hotel::for_booking(opts, 2).await;
+    let (booked, deposit, guests) = two_stays(&hotel, &plans).await;
+    let first = &booked.rooms[0];
+    pay(&hotel, deposit, 5_000).await;
+    let checked_in = hotel.try_check_in(first.id, first.version).await.unwrap();
+    let undone = hotel.try_undo_check_in(first.id, checked_in.version).await.unwrap();
+
+    let cancelled = hotel.try_cancel(first.id, undone.version).await.unwrap();
+
+    assert_eq!(cancelled.penalty, 10_000, "arriving today: the first night");
+    let query = folio::FolioQuery::Folio { property: hotel.property, folio: deposit };
+    let view = folio::folios_for(&mut hotel.tx().await, query).await.unwrap().pop().unwrap();
+    let [fee] = &view.lines[..] else { panic!("one line: {:?}", view.lines) };
+    assert_eq!((fee.line.source, fee.line.net), (folio::Source::CancellationFee, 10_000));
+    assert_eq!(view.balances[0].amount, fee.line.total - 5_000, "the fee less the deposit");
+    assert_eq!(balances(&hotel, guests[0]).await.0, vec![("USD".into(), 0)]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_invoiced_folio_stops_a_check_in_that_moves_a_deposit(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 2).await;
+    let (booked, deposit, _) = two_stays(&hotel, &plans).await;
+    let first = &booked.rooms[0];
+    pay(&hotel, deposit, 5_000).await;
+    invoice(&hotel, deposit).await;
+
+    conflict(hotel.try_check_in(first.id, first.version).await);
+
+    assert_eq!(hotel.room_row(first.id).await.status, "confirmed");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_invoiced_deposit_folio_stops_a_cancellation_with_a_penalty(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 2).await;
+    let (booked, deposit, _) = two_stays(&hotel, &plans).await;
+    invoice(&hotel, deposit).await;
+
+    conflict(hotel.try_cancel(booked.rooms[0].id, booked.rooms[0].version).await);
+
+    assert_eq!(hotel.room_row(booked.rooms[0].id).await.status, "confirmed");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn concurrent_first_check_ins_move_the_deposit_once(_: PgPoolOptions, opts: PgConnectOptions) {
+    // The test database's owner watches for the lock wait: the app pool's two connections are both busy.
+    let watcher = sqlx::PgPool::connect_with(opts.clone()).await.unwrap();
+    let (hotel, plans) = Hotel::for_booking(opts, 2).await;
+    let (booked, deposit, guests) = two_stays(&hotel, &plans).await;
+    let (first, second) = (booked.rooms[0].clone(), booked.rooms[1].clone());
+    pay(&hotel, deposit, 5_000).await;
+
+    let mut tx = hotel.tx().await;
+    reservations::check_in(&mut tx, hotel.tenant, hotel.user, hotel.property, first.id, first.version, None)
+        .await
+        .unwrap();
+    let (pool, tenant, user, property) = (hotel.pool.clone(), hotel.tenant, hotel.user, hotel.property);
+    let other = tokio::spawn(async move {
+        let mut tx = db::begin(&pool, db::Scope::tenant(tenant)).await.unwrap();
+        reservations::check_in(&mut tx, tenant, user, property, second.id, second.version, None).await.unwrap();
+        tx.commit().await.unwrap();
+    });
+    // The second check-in waits on the deposit folio's lock.
+    let mut waited = false;
+    for _ in 0..1_000 {
+        let blocked: bool = sqlx::query_scalar(
+            "select exists (select 1 from pg_stat_activity
+                            where datname = current_database() and wait_event_type = 'Lock')",
+        )
+        .fetch_one(&watcher)
+        .await
+        .unwrap();
+        if blocked {
+            waited = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(waited, "the second check-in never waited");
+    tx.commit().await.unwrap();
+    other.await.unwrap();
+
+    assert_eq!(balances(&hotel, deposit).await, (vec![("USD".into(), 0)], 2), "moved once");
+    assert_eq!(balances(&hotel, guests[0]).await.0, vec![("USD".into(), -5_000)]);
+    assert_eq!(balances(&hotel, guests[1]).await, (vec![], 0));
 }

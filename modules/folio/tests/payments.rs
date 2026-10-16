@@ -328,7 +328,26 @@ async fn a_charge_to_account_credits_the_stay_and_charges_the_account_untaxed(
     let (_, audited) = &hotel.audited("folio.payment_taken").await[0];
     assert_eq!(audited["account_folio"], serde_json::json!(account.folio.id));
 
-    assert_eq!(invalid(hotel.refund(paid.id, 1).await), "Reverse the account charge instead");
+    assert_eq!(invalid(hotel.refund(paid.id, 1).await), "Move the account charge back to the stay instead");
+    let mut tx = hotel.tx().await;
+    let reversed =
+        folio::reverse(&mut tx, hotel.tenant, None, hotel.property, account.folio.id, line.line.id, "Oops").await;
+    assert_eq!(invalid(reversed), "Move the account charge back to the stay instead");
+    drop(tx);
+
+    // The undo: the account's line moves back to the stay.
+    let mut tx = hotel.tx().await;
+    folio::transfer(&mut tx, hotel.tenant, None, hotel.property, line.line.id, guest, "Guest pays").await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        hotel.view(account.folio.id).await.balances,
+        vec![Balance { currency: "LKR".into(), amount: 0, base_amount: 0 }]
+    );
+    assert_eq!(
+        hotel.view(guest).await.balances,
+        vec![Balance { currency: "LKR".into(), amount: spa.total, base_amount: spa.base_total }],
+        "the stay owes the spa again"
+    );
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -454,4 +473,93 @@ async fn every_payment_command_is_confined_to_its_property(_: PgPoolOptions, opt
     let payments: i64 =
         sqlx::query_scalar("select count(*) from payment").fetch_one(&mut *hotel.tx().await).await.unwrap();
     assert_eq!(payments, 1, "only Kandy's own payment");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_refund_after_the_rate_changes_still_nets_the_payment_to_zero_in_lkr(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts).await;
+    hotel.rate("USD", Decimal::new(3_005, 1)).await;
+    let folio = hotel.book(None).await.guests[0];
+    let paid = hotel.pay(folio, Method::Cash, 10_001, "USD", None).await.unwrap();
+    assert_eq!(paid.base_amount, 3_005_301, "100.01 × 300.5 = 30,053.005");
+    hotel.rate("USD", Decimal::from(320)).await;
+
+    let first = hotel.refund(paid.id, 3_333).await.unwrap();
+    let last = hotel.refund(paid.id, 6_668).await.unwrap();
+
+    assert_eq!(first.base_amount, -1_001_567, "3,005,301 × 3,333 / 10,001, half-up");
+    assert_eq!(last.base_amount, -(3_005_301 - 1_001_567), "the last refund takes exactly the base left");
+    for refund in [&first, &last] {
+        assert_eq!((refund.rate, refund.rate_date), (paid.rate, paid.rate_date), "the original's rate");
+    }
+    assert_eq!(hotel.view(folio).await.balances, vec![Balance { currency: "USD".into(), amount: 0, base_amount: 0 }]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_moved_deposit_is_refunded_from_the_stay_up_to_the_credit_it_holds(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let booking = hotel.book(None).await;
+    let (deposit, guest) = (booking.deposit, booking.guests[0]);
+    let paid = hotel.pay(deposit, Method::Cash, 10_000, "LKR", None).await.unwrap();
+    hotel.mark_checked_in(booking.rooms[0]).await;
+    hotel.move_deposit_in(hotel.property, booking.id, booking.rooms[0]).await.unwrap();
+
+    let refund = hotel.refund(paid.id, 4_000).await.unwrap();
+
+    assert_eq!((refund.folio_id, refund.refund_of, refund.amount), (Some(guest), Some(paid.id), -4_000));
+    let lkr = |amount: i64| vec![Balance { currency: "LKR".into(), amount, base_amount: amount }];
+    assert_eq!(hotel.view(guest).await.balances, lkr(-6_000));
+    assert_eq!(hotel.view(deposit).await.balances, lkr(0));
+
+    // The stay spends 5176 (5000 and its taxes) of the 6000 credit; only 824 is left to refund.
+    let spent = hotel.post(guest, hotel.charge(Source::Manual, "misc", 5_000, "LKR")).await.unwrap();
+    assert_eq!(spent.total, 5_176);
+    let message = invalid(hotel.refund(paid.id, 825).await);
+    assert_eq!(message, "the stay's folio holds only 824 LKR of the deposit to refund");
+    assert!(hotel.refund(paid.id, 824).await.is_ok());
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_invoiced_folio_takes_no_payment_and_no_refund(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let folio = hotel.book(None).await.guests[0];
+    let paid = hotel.pay(folio, Method::Cash, 1_000, "LKR", None).await.unwrap();
+    let mut tx = hotel.tx().await;
+    sqlx::query("update folio set status = 'invoiced' where id = $1").bind(folio).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+
+    for result in [hotel.pay(folio, Method::Cash, 1_000, "LKR", None).await, hotel.refund(paid.id, 100).await] {
+        assert!(matches!(result, Err(FolioError::Conflict(_))), "expected Conflict, got {result:?}");
+    }
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn payment_texts_have_length_limits(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let folio = hotel.book(None).await.guests[0];
+    let long = |n: usize| "A".repeat(n);
+
+    assert!(hotel.pay(folio, card(&long(50), "1111", "Visa"), 100, "LKR", Some(&long(500))).await.is_ok());
+    assert!(hotel.pay(folio, Method::BankTransfer { reference: long(100) }, 100, "LKR", None).await.is_ok());
+    let refused = [
+        (
+            hotel.pay(folio, card(&long(51), "1111", "Visa"), 100, "LKR", None).await,
+            "the approval code has 1 to 50 characters",
+        ),
+        (
+            hotel.pay(folio, card(" ", "1111", "Visa"), 100, "LKR", None).await,
+            "the approval code has 1 to 50 characters",
+        ),
+        (
+            hotel.pay(folio, Method::BankTransfer { reference: long(101) }, 100, "LKR", None).await,
+            "the bank reference has 1 to 100 characters",
+        ),
+        (hotel.pay(folio, Method::Cash, 100, "LKR", Some(&long(501))).await, "the evidence has 1 to 500 characters"),
+    ];
+    for (result, message) in refused {
+        assert_eq!(invalid(result), message);
+    }
 }

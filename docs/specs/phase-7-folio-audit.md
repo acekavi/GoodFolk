@@ -75,13 +75,13 @@ Linen and guest laundry ([laundry.md](laundry.md)) follow 7a.
 
 ## Payments
 
-- **Methods.** `cash`; `card_terminal` (approval code, last 4, brand); `bank_transfer` (reference); `account`, which moves the amount to the reservation's account folio as a charge there and a credit here.
+- **Methods.** `cash`; `card_terminal` (approval code, last 4, brand); `bank_transfer` (reference); `account`, which moves the amount to the reservation's account folio as a charge there and a credit here (undone by moving the account's line back to the stay, never by a refund); and `transfer`, internal only, never chosen by staff, for a credit moving between two folios.
 - **Currency.** Any accepted currency, stored with its base equivalent.
 - **Evidence.** An optional `evidence` text (for example a bank encashment receipt). 7b flags non-resident LKR payments without it.
-- **Refunds.** A refund is a negative payment with `refund_of`, in the same currency and method. In total it can't exceed what remains of the original. Refunds need `FolioAdjust`.
+- **Refunds.** A refund is a negative payment with `refund_of`, in the same currency and method. In total it can't exceed what remains of the original. Its base amount is the original's in proportion, at the original's rate, so a fully refunded payment nets to zero in LKR. Refunds need `FolioAdjust`.
 - **Deposits.**
   - Payments taken before arrival go on the reservation's deposit folio.
-  - At the first check-in of the reservation, the deposit folio's balance moves to that stay's guest folio as transfer lines.
+  - At the first check-in of the reservation, the deposit folio's balance in each currency moves to that stay's guest folio as a pair of `transfer` payments sharing a `transfer_id`: the base amounts are carried exactly, and the pair's rate is the rate on the date moved, for reference. Undoing that check-in moves it back the same way. A deposit refunded after it moved is refunded from the stay's folio, up to the credit it holds.
   - When a reservation room is cancelled, its Phase 3 cancellation penalty posts to the reservation's deposit folio as `cancellation_fee`, in the room's currency, taxed (tax-inclusive when the room's rate plan prices include tax), once per room. The remaining credit stays there, to be refunded (`FolioAdjust`) or written off by an `adjustment` line.
 
 ## POS bills

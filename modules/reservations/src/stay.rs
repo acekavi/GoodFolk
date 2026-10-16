@@ -194,7 +194,8 @@ pub async fn check_in(
 /// `checked_in_at` and `checked_in_business_date` and puts the room back to the condition it had before the
 /// check-in (`clean` for a stay checked in before that was recorded), locking its condition after this row;
 /// bumps both versions, audits `reservation_room.check_in_undone` (with the restored condition) and notifies as
-/// [`check_in`] does, plus the housekeeping board.
+/// [`check_in`] does, plus the housekeeping board. A deposit the check-in moved to this stay goes back to the
+/// deposit folio ([`folio::undo_deposit_move`]).
 pub async fn undo_check_in(
     tx: &mut Tx,
     tenant: TenantId,
@@ -243,6 +244,8 @@ pub async fn undo_check_in(
     .bind(id)
     .fetch_one(&mut **tx)
     .await?;
+    // After this row and the room's condition, before the reservation: the folios sit between them in the lock order.
+    folio::undo_deposit_move(tx, tenant, Some(actor), property, id).await?;
     sqlx::query("update reservation set version = version + 1 where id = $1")
         .bind(reservation_id)
         .execute(&mut **tx)

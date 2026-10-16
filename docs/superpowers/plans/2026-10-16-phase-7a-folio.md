@@ -55,7 +55,7 @@ sections a task names. Design background: ARCHITECTURE.md §4.4 and §7.5–7.6.
 - **Line sources** are exactly `room`, `meal_plan`, `laundry`, `pos`, `manual`, `cancellation_fee`, `no_show_fee` and
   `adjustment`. **Categories** are exactly `room`, `meal_plan`, `laundry`, `pos:<OUTLET>`, `misc` and `fee`.
 - **Folio kinds** are `guest`, `account` and `deposit`. **Folio statuses** are `open` and `invoiced`.
-- **Payment methods** are `cash`, `card_terminal`, `bank_transfer` and `account`.
+- **Payment methods** are `cash`, `card_terminal`, `bank_transfer` and `account`, plus `transfer` (internal only, never chosen by staff: a credit moving between two folios).
 - **Posting keys:**
   - `room:<reservation_room>:<YYYY-MM-DD>`
   - `meal_plan:<reservation_room>:<YYYY-MM-DD>`

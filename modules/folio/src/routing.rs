@@ -1,7 +1,7 @@
 //! Routing: which of a stay's charges its reservation's account pays, by category.
 
 use crate::folios::{ensure_account_folio, ensure_guest_folio, lock_folios};
-use crate::lines::{LineRow, NewCharge, check_charge, line_by_key, post_locked};
+use crate::lines::{LineRow, NewCharge, Posting, check_charge, line_by_key, post_locked};
 use crate::{FolioError, audit, check_category, notify};
 use db::{TenantId, Tx, UserId};
 use std::collections::BTreeSet;
@@ -138,5 +138,5 @@ pub async fn post_for_stay(
     {
         return Ok(line);
     }
-    post_locked(tx, tenant, user, &target, charge, description, resident, None).await
+    post_locked(tx, tenant, user, &target, charge, description, Posting { resident, ..Posting::default() }).await
 }

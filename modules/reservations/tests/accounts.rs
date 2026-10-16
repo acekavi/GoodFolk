@@ -529,7 +529,6 @@ async fn a_routed_posting_replayed_after_the_account_changes_is_not_posted_again
         business_date: hotel.business_date,
         posting_key: Some(key.clone()),
         inclusive: false,
-        untaxed: false,
     };
     let post = |charge: folio::NewCharge| async {
         let mut tx = hotel.tx().await;

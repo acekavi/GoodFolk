@@ -6,10 +6,11 @@ use crate::folios::{
     FolioKind, FolioStatus, Locked, PAYMENT_COLUMNS, PaymentRow, ensure_account_folio, ensure_deposit_folio,
     ensure_guest_folio, lock_folios,
 };
-use crate::lines::{NewCharge, check_charge, post_charge, post_locked};
+use crate::lines::{ACCOUNT_CHARGE_UNDO, NewCharge, Posting, business_date, check_charge, line_by_key, post_locked};
 use crate::{FolioError, Source, audit, folio_key, notify, reason};
 use db::{TenantId, Tx, UserId};
-use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::{Decimal, RoundingStrategy};
 use time::Date;
 use uuid::Uuid;
 
@@ -84,8 +85,8 @@ fn text<'a>(what: &str, value: &'a str, max: usize) -> Result<&'a str, FolioErro
     Ok(value)
 }
 
-/// `Invalid` when `value` holds a run of [`CARD_NUMBER_DIGITS`] or more digits, spaces and dashes between digits
-/// ignored: a card number is never stored.
+/// `Invalid` when `value` holds a run of [`CARD_NUMBER_DIGITS`] or more digits, any punctuation or spaces between
+/// digits ignored (no Luhn check: anything that long is refused): a card number is never stored.
 fn no_card_number(what: &str, value: &str) -> Result<(), FolioError> {
     if has_card_number(value) {
         return Err(FolioError::Invalid(format!("the {what} looks like a card number; never record one")));
@@ -101,7 +102,7 @@ fn has_card_number(value: &str) -> bool {
             if digits >= CARD_NUMBER_DIGITS {
                 return true;
             }
-        } else if !(digits > 0 && (c == ' ' || c == '-')) {
+        } else if c.is_alphanumeric() {
             digits = 0;
         }
     }
@@ -179,8 +180,9 @@ impl Conversion {
 }
 
 /// The conversion of `currency` on the property's business date. `Invalid` for a currency the property does not
-/// accept; `Conflict` ("No exchange rate for <CUR> on <YYYY-MM-DD>") when no rate is in force.
-async fn conversion(tx: &mut Tx, property: Uuid, currency: &str) -> Result<Conversion, FolioError> {
+/// accept, unless the money is only `moving` between folios; `Conflict` ("No exchange rate for <CUR> on
+/// <YYYY-MM-DD>") when no rate is in force.
+async fn conversion(tx: &mut Tx, property: Uuid, currency: &str, moving: bool) -> Result<Conversion, FolioError> {
     let (business_date, base_currency, accepted): (Date, String, Vec<String>) = sqlx::query_as(
         "select business_date, base_currency::text, accepted_currencies::text[] from property where id = $1",
     )
@@ -188,7 +190,7 @@ async fn conversion(tx: &mut Tx, property: Uuid, currency: &str) -> Result<Conve
     .fetch_optional(&mut **tx)
     .await?
     .ok_or(FolioError::NotFound("property"))?;
-    if !accepted.iter().any(|code| code == currency) {
+    if !moving && !accepted.iter().any(|code| code == currency) {
         return Err(FolioError::Invalid(format!("{currency} is not a currency this property accepts")));
     }
     let rate = fx::rate_for(tx, property, currency, business_date)
@@ -281,7 +283,7 @@ pub async fn take_payment(
     for id in &ids {
         check_open(locked.iter().find(|row| row.id == *id).ok_or(FolioError::NotFound("folio"))?)?;
     }
-    let conversion = conversion(tx, property, currency).await?;
+    let conversion = conversion(tx, property, currency, false).await?;
     let transfer_id = account_folio.map(|_| Uuid::now_v7());
 
     let payment = insert_payment(
@@ -318,10 +320,10 @@ pub async fn take_payment(
             business_date: conversion.business_date,
             posting_key: None,
             inclusive: false,
-            untaxed: true,
         };
         let description = check_charge(&charge)?;
-        post_locked(tx, tenant, user, target, charge, description, None, transfer_id).await?;
+        let posting = Posting { transfer_id, untaxed: true, ..Posting::default() };
+        post_locked(tx, tenant, user, target, charge, description, posting).await?;
         keys.push(folio_key(account_folio));
     }
 
@@ -345,12 +347,16 @@ pub async fn take_payment(
 }
 
 /// Refunds `amount` (more than 0) of `payment` in the property, for `reason` (1 to 500 characters, no card number):
-/// a negative payment in the same currency and method with `refund_of` set, at the business date's rate.
+/// a negative payment in the same currency and method with `refund_of` set, at the original's rate. Its base amount
+/// is the original's in proportion (half-up), and the refund that empties the payment takes exactly the base left, so
+/// a payment and its refunds always net to zero in the base currency too. No rate is looked up.
 ///
-/// `NotFound` unless the payment is on a folio of the property. Its folio is locked first, so concurrent refunds of
-/// one payment run one at a time, and together they never exceed it (`Invalid`). A refund, a charge to account
-/// ("Reverse the account charge instead") and a transfer between folios are never refunded (`Invalid`). The folio
-/// must be open (`Conflict`). The caller checks `FolioAdjust`. Audited as `folio.refunded`; queues `folio:<id>`.
+/// `NotFound` unless the payment is on a folio of the property. A deposit whose credit in that currency has moved to
+/// a stay (see [`move_deposit`]) is refunded from that stay's folio, which must hold at least `amount` of credit in
+/// the currency (`Invalid`). The folios are locked first, in ascending id order, so concurrent refunds of one payment
+/// run one at a time, and together they never exceed it (`Invalid`). A refund, a charge to account ("Move the account
+/// charge back to the stay instead") and a transfer between folios are never refunded (`Invalid`). The folio refunded
+/// from must be open (`Conflict`). The caller checks `FolioAdjust`. Audited as `folio.refunded`; queues `folio:<id>`.
 #[allow(clippy::too_many_arguments)]
 pub async fn refund(
     tx: &mut Tx,
@@ -366,57 +372,76 @@ pub async fn refund(
     }
     let reason = reason(reason_text)?;
     no_card_number("reason", reason)?;
-    let folio: Uuid = sqlx::query_scalar(
-        "select p.folio_id from payment p join folio f on f.id = p.folio_id where p.id = $1 and f.property_id = $2",
-    )
+    // A payment never changes, so it is read before the locks.
+    let original: PaymentRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select {PAYMENT_COLUMNS} from payment
+         where id = $1 and folio_id in (select id from folio where property_id = $2)"
+    )))
     .bind(payment)
     .bind(property)
     .fetch_optional(&mut **tx)
     .await?
     .ok_or(FolioError::NotFound("payment"))?;
-    let locked = lock_folios(tx, property, &[folio]).await?.pop().ok_or(FolioError::NotFound("payment"))?;
-
-    let original: PaymentRow =
-        sqlx::query_as(sqlx::AssertSqlSafe(format!("select {PAYMENT_COLUMNS} from payment where id = $1")))
-            .bind(payment)
-            .fetch_one(&mut **tx)
-            .await?;
+    let paid_on = original.folio_id.ok_or(FolioError::NotFound("payment"))?;
     if original.refund_of.is_some() || original.amount < 0 {
         return Err(FolioError::Invalid("a refund can't be refunded".into()));
     }
     match original.method.as_str() {
-        "account" => return Err(FolioError::Invalid("Reverse the account charge instead".into())),
+        "account" => return Err(FolioError::Invalid(ACCOUNT_CHARGE_UNDO.into())),
         "transfer" => return Err(FolioError::Invalid("a transfer between folios can't be refunded".into())),
         _ => {}
     }
-    check_open(&locked)?;
-    let refunded: i64 =
-        sqlx::query_scalar("select coalesce(-sum(amount), 0)::bigint from payment where refund_of = $1")
-            .bind(payment)
-            .fetch_one(&mut **tx)
-            .await?;
+
+    let target = moved_to(tx, paid_on, &original.currency).await?.unwrap_or(paid_on);
+    let locked = lock_folios(tx, property, &[paid_on, target]).await?;
+    if moved_to(tx, paid_on, &original.currency).await?.unwrap_or(paid_on) != target {
+        return Err(FolioError::Conflict("the deposit moved meanwhile; try again".into()));
+    }
+    check_open(locked.iter().find(|folio| folio.id == target).ok_or(FolioError::NotFound("folio"))?)?;
+
+    let (refunded, refunded_base): (i64, i64) = sqlx::query_as(
+        "select coalesce(-sum(amount), 0)::bigint, coalesce(-sum(base_amount), 0)::bigint
+         from payment where refund_of = $1",
+    )
+    .bind(payment)
+    .fetch_one(&mut **tx)
+    .await?;
     let left = original.amount - refunded;
     if amount > left {
         return Err(FolioError::Invalid(format!("at most {left} of the payment is left to refund")));
     }
+    if target != paid_on {
+        let credit = -folio_balance(tx, target, &original.currency).await?;
+        if amount > credit {
+            return Err(FolioError::Invalid(format!(
+                "the stay's folio holds only {credit} {} of the deposit to refund",
+                original.currency
+            )));
+        }
+    }
+    let base = if amount == left {
+        original.base_amount - refunded_base
+    } else {
+        proportional_base(original.base_amount, amount, original.amount)?
+    };
 
-    let conversion = conversion(tx, property, &original.currency).await?;
+    let today = business_date(tx, property).await?;
     let refund = insert_payment(
         tx,
         tenant,
         user,
         NewPayment {
-            folio,
+            folio: target,
             method: &original.method,
             amount: -amount,
             currency: &original.currency,
-            base_amount: conversion.to_base(-amount)?,
-            rate: conversion.rate,
-            rate_date: conversion.rate_date,
+            base_amount: -base,
+            rate: original.rate,
+            rate_date: original.rate_date,
             details: serde_json::json!({ "reason": reason }),
             evidence: None,
             refund_of: Some(payment),
-            business_date: conversion.business_date,
+            business_date: today,
             transfer_id: None,
         },
     )
@@ -424,22 +449,107 @@ pub async fn refund(
     let data = serde_json::json!({
         "payment": refund.id,
         "refund_of": payment,
-        "folio": folio,
+        "folio": target,
         "amount": -amount,
         "currency": original.currency,
         "method": original.method,
         "reason": reason,
     });
-    audit(tx, tenant, user, "folio.refunded", "folio", folio, data).await?;
-    notify(tx, tenant, property, vec![folio_key(folio)]).await?;
+    audit(tx, tenant, user, "folio.refunded", "folio", target, data).await?;
+    notify(tx, tenant, property, vec![folio_key(target)]).await?;
     Ok(refund)
+}
+
+/// `base × amount / whole`, rounded half away from zero, in exact decimal arithmetic.
+fn proportional_base(base: i64, amount: i64, whole: i64) -> Result<i64, FolioError> {
+    Decimal::from(base)
+        .checked_mul(Decimal::from(amount))
+        .and_then(|product| product.checked_div(Decimal::from(whole)))
+        .and_then(|value| value.round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero).to_i64())
+        .ok_or_else(|| FolioError::Invalid("the amount is too large".into()))
+}
+
+/// The stay's guest folio that a deposit folio's credit in `currency` last moved to, if it is there now: the latest
+/// `transfer` on the deposit folio in that currency moved it out (it names `to_folio`) rather than back. `None` for
+/// any other folio.
+async fn moved_to(tx: &mut Tx, folio: Uuid, currency: &str) -> Result<Option<Uuid>, sqlx::Error> {
+    let latest: Option<Option<Uuid>> = sqlx::query_scalar(
+        "select (p.details ->> 'to_folio')::uuid
+         from payment p join folio f on f.id = p.folio_id
+         where p.folio_id = $1 and f.kind = 'deposit' and p.method = 'transfer' and p.currency = $2
+         order by p.taken_at desc, p.id desc
+         limit 1",
+    )
+    .bind(folio)
+    .bind(currency)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(latest.flatten())
+}
+
+/// Charges less payments on `folio` in `currency`.
+async fn folio_balance(tx: &mut Tx, folio: Uuid, currency: &str) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "select coalesce(sum(amount), 0)::bigint
+         from (select total as amount from folio_line where folio_id = $1 and currency = $2
+               union all
+               select -amount from payment where folio_id = $1 and currency = $2) as entries",
+    )
+    .bind(folio)
+    .bind(currency)
+    .fetch_one(&mut **tx)
+    .await
+}
+
+/// Inserts a pair of `transfer` payments sharing a new `transfer_id`: `amount` (with `base`) on `from`, its negation
+/// on `to`, each naming the other folio. The pair's rate is the one on the date moved, for reference only: the base
+/// amounts are carried, never converted again.
+#[allow(clippy::too_many_arguments)]
+async fn transfer_pair(
+    tx: &mut Tx,
+    tenant: TenantId,
+    user: Option<UserId>,
+    from: Uuid,
+    to: Uuid,
+    currency: &str,
+    amount: i64,
+    base: i64,
+    conversion: &Conversion,
+) -> Result<Uuid, sqlx::Error> {
+    let transfer_id = Uuid::now_v7();
+    for (folio, sign, details) in
+        [(from, 1, serde_json::json!({ "to_folio": to })), (to, -1, serde_json::json!({ "from_folio": from }))]
+    {
+        insert_payment(
+            tx,
+            tenant,
+            user,
+            NewPayment {
+                folio,
+                method: "transfer",
+                amount: sign * amount,
+                currency,
+                base_amount: sign * base,
+                rate: conversion.rate,
+                rate_date: conversion.rate_date,
+                details,
+                evidence: None,
+                refund_of: None,
+                business_date: conversion.business_date,
+                transfer_id: Some(transfer_id),
+            },
+        )
+        .await?;
+    }
+    Ok(transfer_id)
 }
 
 /// Moves the deposit folio's balance of `reservation`, in each currency, to the guest folio of the stay
 /// `to_reservation_room`, at the reservation's first check-in: a no-op when another of its stays has been checked in,
 /// or when nothing is left. Each currency moves as a pair of `transfer` payments sharing a `transfer_id`, one on
-/// each folio, so both folios keep their base amounts exactly (the deposit folio clears in the base currency too);
-/// the pair records the business date's rate (`Conflict` if none).
+/// each folio, carrying the deposit folio's base balance exactly (the deposit folio clears in the base currency too).
+/// The pair records the rate on the date moved, for reference (`Conflict` if there is none). An internal move: the
+/// currency need not be one the property accepts today.
 ///
 /// Called by check-in after the stay is checked in: locks both folios (in ascending id order) and nothing else.
 /// `NotFound` unless the stay is the reservation's, in the property; `Conflict` for an invoiced folio. Audited as
@@ -480,7 +590,8 @@ pub async fn move_deposit(
         return Ok(());
     }
 
-    // `(currency, amount, base)`: charges less payments, per currency.
+    // `(currency, amount, base)`: charges less payments, per currency. A currency whose amount nets to zero is not
+    // moved, even if a base residue is left from rounding at different rates: there is no money in it to move.
     let balances: Vec<(String, i64, i64)> = sqlx::query_as(
         "select currency, sum(amount)::bigint, sum(base)::bigint
          from (select currency::text as currency, total as amount, base_total as base from folio_line
@@ -503,33 +614,8 @@ pub async fn move_deposit(
 
     let mut moved = Vec::new();
     for (currency, amount, base) in balances {
-        let conversion = conversion(tx, property, &currency).await?;
-        let transfer_id = Uuid::now_v7();
-        for (folio, sign, details) in [
-            (deposit, 1, serde_json::json!({ "to_folio": guest })),
-            (guest, -1, serde_json::json!({ "from_folio": deposit })),
-        ] {
-            insert_payment(
-                tx,
-                tenant,
-                user,
-                NewPayment {
-                    folio,
-                    method: "transfer",
-                    amount: sign * amount,
-                    currency: &currency,
-                    base_amount: sign * base,
-                    rate: conversion.rate,
-                    rate_date: conversion.rate_date,
-                    details,
-                    evidence: None,
-                    refund_of: None,
-                    business_date: conversion.business_date,
-                    transfer_id: Some(transfer_id),
-                },
-            )
-            .await?;
-        }
+        let conversion = conversion(tx, property, &currency, true).await?;
+        let transfer_id = transfer_pair(tx, tenant, user, deposit, guest, &currency, amount, base, &conversion).await?;
         moved.push(serde_json::json!({ "currency": currency, "amount": -amount, "transfer_id": transfer_id }));
     }
     let data = serde_json::json!({ "reservation_room": to_reservation_room, "to_folio": guest, "moved": moved });
@@ -538,11 +624,75 @@ pub async fn move_deposit(
     Ok(())
 }
 
+/// Moves back to the deposit folio whatever [`move_deposit`] moved to the stay `reservation_room`'s guest folio and is
+/// still there, per currency: the net of the `transfer` payments between the two folios, mirrored as new `transfer`
+/// pairs with the same base amounts. A no-op when nothing moved. Called when a check-in is undone.
+///
+/// Locks both folios (in ascending id order) and nothing else. `NotFound` unless the stay is in the property;
+/// `Conflict` for an invoiced folio or no rate on the business date. Audited as `folio.deposit_move_undone`; queues
+/// both folios' keys.
+pub async fn undo_deposit_move(
+    tx: &mut Tx,
+    tenant: TenantId,
+    user: Option<UserId>,
+    property: Uuid,
+    reservation_room: Uuid,
+) -> Result<(), FolioError> {
+    let folios: Option<(Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
+        "select g.id, d.id
+         from reservation_room rr
+         left join folio g on g.kind = 'guest' and g.reservation_room_id = rr.id
+         left join folio d on d.kind = 'deposit' and d.reservation_id = rr.reservation_id
+         where rr.id = $1 and rr.property_id = $2",
+    )
+    .bind(reservation_room)
+    .bind(property)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let (Some(guest), Some(deposit)) = folios.ok_or(FolioError::NotFound("reservation room"))? else {
+        return Ok(());
+    };
+    let locked = lock_folios(tx, property, &[deposit, guest]).await?;
+
+    let moved: Vec<(String, i64, i64)> = sqlx::query_as(
+        "select currency::text, sum(amount)::bigint, sum(base_amount)::bigint
+         from payment
+         where folio_id = $1 and method = 'transfer'
+           and (details ->> 'from_folio' = $2::text or details ->> 'to_folio' = $2::text)
+         group by currency
+         having sum(amount) <> 0
+         order by currency",
+    )
+    .bind(guest)
+    .bind(deposit)
+    .fetch_all(&mut **tx)
+    .await?;
+    if moved.is_empty() {
+        return Ok(());
+    }
+    for folio in &locked {
+        check_open(folio)?;
+    }
+
+    let mut returned = Vec::new();
+    for (currency, amount, base) in moved {
+        let conversion = conversion(tx, property, &currency, true).await?;
+        let transfer_id =
+            transfer_pair(tx, tenant, user, guest, deposit, &currency, -amount, -base, &conversion).await?;
+        returned.push(serde_json::json!({ "currency": currency, "amount": amount, "transfer_id": transfer_id }));
+    }
+    let data = serde_json::json!({ "reservation_room": reservation_room, "from_folio": guest, "returned": returned });
+    audit(tx, tenant, user, "folio.deposit_move_undone", "folio", deposit, data).await?;
+    notify(tx, tenant, property, vec![folio_key(deposit), folio_key(guest)]).await?;
+    Ok(())
+}
+
 /// Posts the cancellation penalty `amount` of the stay `reservation_room` in the property, in `currency`, on its
 /// reservation's deposit folio: a `cancellation_fee` line in category `fee`, taxed by the property's rules (a penalty
 /// is a supply) on the business date. `inclusive` when the stay's rate plan prices include tax, so the line totals
 /// exactly the penalty. Nothing for a zero penalty; `Invalid` for a negative one; `NotFound` unless the stay is in the
-/// property.
+/// property. A system posting of the stay's own currency: it need not be one the property accepts today, but a rate
+/// on the business date is needed (`Conflict`), and an open deposit folio (`Conflict`).
 ///
 /// Posted once under the key `cancellation:<reservation_room>`, so a replay is a no-op.
 #[allow(clippy::too_many_arguments)]
@@ -573,6 +723,7 @@ pub async fn post_cancellation_fee(
     .await?
     .ok_or(FolioError::NotFound("reservation room"))?;
     let deposit = ensure_deposit_folio(tx, tenant, property, reservation).await?;
+    let key = format!("cancellation:{reservation_room}");
     let charge = NewCharge {
         source: Source::CancellationFee,
         category: "fee".into(),
@@ -581,11 +732,16 @@ pub async fn post_cancellation_fee(
         unit_net: amount,
         currency: currency.to_owned(),
         business_date,
-        posting_key: Some(format!("cancellation:{reservation_room}")),
+        posting_key: Some(key.clone()),
         inclusive,
-        untaxed: false,
     };
-    post_charge(tx, tenant, user, property, deposit, charge).await?;
+    let description = check_charge(&charge)?;
+    let locked = lock_folios(tx, property, &[deposit]).await?.pop().ok_or(FolioError::NotFound("folio"))?;
+    if line_by_key(tx, property, &key).await?.is_some() {
+        return Ok(());
+    }
+    post_locked(tx, tenant, user, &locked, charge, description, Posting { internal: true, ..Posting::default() })
+        .await?;
     Ok(())
 }
 
@@ -596,7 +752,7 @@ mod tests {
     #[test]
     fn a_run_of_twelve_digits_is_a_card_number_whatever_separates_them() {
         for card in
-            ["4111111111111111", "4111 1111 1111 1111", "4111-1111-1111-1111", "ref 123456789012", "4111 - 1111 1111"]
+            ["4111111111111111", "4111 1111 1111 1111", "4111.1111/1111_1111", "ref 123456789012", "4111 - 1111 1111"]
         {
             assert!(has_card_number(card), "{card}");
         }

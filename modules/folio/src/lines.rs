@@ -25,6 +25,9 @@ const MAX_UNIT_NET: u64 = 10_000_000_000_000;
 /// The indexes that keep a posting key to one line per tenant, and (the older, narrower one) per folio.
 const POSTING_KEY_INDEXES: [&str; 2] = ["folio_line_posting_key_idx", "folio_line_folio_id_posting_key_key"];
 
+/// How a charge to account is undone: its account line moves back, never reversed and never refunded.
+pub(crate) const ACCOUNT_CHARGE_UNDO: &str = "Move the account charge back to the stay instead";
+
 /// The index that lets a line be reversed (or moved) once.
 const REVERSED_ONCE_INDEX: &str = "folio_line_reversed_once_idx";
 
@@ -79,9 +82,21 @@ pub struct NewCharge {
     pub posting_key: Option<String>,
     /// `unit_net` already includes the taxes; the net is back-calculated so net plus taxes equal the price exactly.
     pub inclusive: bool,
-    /// Posted without taxes. Only for internal transfers and adjustments of amounts already taxed where they were
-    /// first charged, such as a charge to account; never for a new supply.
+}
+
+/// How [`post_locked`] posts a charge beyond the charge itself.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Posting {
+    /// Whether the stay's rate plan is sold to residents, for the tax rules.
+    pub resident: Option<bool>,
+    /// Links the line to the payment it moved.
+    pub transfer_id: Option<Uuid>,
+    /// Posted without taxes: an amount already taxed where it was first charged (a charge to account). Never set for
+    /// a new supply, and never by staff.
     pub untaxed: bool,
+    /// A system posting of an amount that already exists (a cancellation penalty): the currency need not be one the
+    /// property accepts today. Staff charges always check it.
+    pub internal: bool,
 }
 
 /// Refuses a malformed charge before anything is locked, and returns its trimmed description.
@@ -131,7 +146,7 @@ pub async fn post_charge(
         (FolioKind::Guest, Some(stay)) => stay_residency(tx, stay).await?,
         _ => None,
     };
-    post_locked(tx, tenant, user, &locked, charge, description, resident, None).await
+    post_locked(tx, tenant, user, &locked, charge, description, Posting { resident, ..Posting::default() }).await
 }
 
 /// The line posted under `key` on any of `property`'s folios, if there is one.
@@ -157,9 +172,8 @@ pub(crate) async fn stay_residency(tx: &mut Tx, reservation_room: Uuid) -> Resul
     Ok(residency.flatten().map(|residency| residency == "resident"))
 }
 
-/// Posts `charge` on the locked `folio`, whose posting key (if any) the caller has already looked up, with
-/// `transfer_id` linking it to the payment it moved.
-#[allow(clippy::too_many_arguments)]
+/// Posts `charge` on the locked `folio`, whose posting key (if any) the caller has already looked up, as `posting`
+/// says.
 pub(crate) async fn post_locked(
     tx: &mut Tx,
     tenant: TenantId,
@@ -167,9 +181,9 @@ pub(crate) async fn post_locked(
     folio: &Locked,
     charge: NewCharge,
     description: String,
-    resident: Option<bool>,
-    transfer_id: Option<Uuid>,
+    posting: Posting,
 ) -> Result<LineRow, FolioError> {
+    let Posting { resident, transfer_id, untaxed, internal } = posting;
     check_open(folio)?;
     let (base_currency, accepted, vat_registered): (String, Vec<String>, bool) = sqlx::query_as(
         "select base_currency::text, accepted_currencies::text[], vat_registered from property where id = $1",
@@ -178,14 +192,14 @@ pub(crate) async fn post_locked(
     .fetch_optional(&mut **tx)
     .await?
     .ok_or(FolioError::NotFound("property"))?;
-    if !accepted.contains(&charge.currency) {
+    if !internal && !accepted.contains(&charge.currency) {
         return Err(FolioError::Invalid(format!("{} is not a currency this property accepts", charge.currency)));
     }
 
     let amount = i64::from(charge.quantity)
         .checked_mul(charge.unit_net)
         .ok_or_else(|| FolioError::Invalid("the amount is too large".into()))?;
-    let breakdown = if charge.untaxed {
+    let breakdown = if untaxed {
         tax::Breakdown { net: amount, components: Vec::new(), total: amount }
     } else {
         let rules = crate::load_rules(tx, folio.property_id).await?;
@@ -325,8 +339,8 @@ fn check_open(folio: &Locked) -> Result<(), FolioError> {
 /// property's business date with `reason` (1 to 500 characters).
 ///
 /// Locks the folio. `NotFound` if the folio is not in `property` or the line is not on it; `Invalid` for a reversal
-/// (a reversal is never reversed); `Conflict` for a line already reversed or transferred, or an invoiced folio.
-/// Audited as `folio.line_reversed`; queues `folio:<id>`.
+/// (a reversal is never reversed) and for the account's line of a charge to account (it moves back to the stay);
+/// `Conflict` for a line already reversed or transferred, or an invoiced folio. Audited as `folio.line_reversed`; queues `folio:<id>`.
 pub async fn reverse(
     tx: &mut Tx,
     tenant: TenantId,
@@ -347,6 +361,16 @@ pub async fn reverse(
     .await?
     .ok_or(FolioError::NotFound("line"))?;
     check_reversible(tx, &original).await?;
+    if let Some(transfer_id) = original.transfer_id {
+        let charged_to_account: bool =
+            sqlx::query_scalar("select exists (select 1 from payment where transfer_id = $1 and method = 'account')")
+                .bind(transfer_id)
+                .fetch_one(&mut **tx)
+                .await?;
+        if charged_to_account {
+            return Err(FolioError::Invalid(ACCOUNT_CHARGE_UNDO.into()));
+        }
+    }
     check_open(&locked)?;
 
     let today = business_date(tx, locked.property_id).await?;
@@ -475,7 +499,7 @@ async fn may_transfer(tx: &mut Tx, a: &Locked, b: &Locked) -> Result<bool, sqlx:
     })
 }
 
-async fn business_date(tx: &mut Tx, property: Uuid) -> Result<Date, FolioError> {
+pub(crate) async fn business_date(tx: &mut Tx, property: Uuid) -> Result<Date, FolioError> {
     sqlx::query_scalar("select business_date from property where id = $1")
         .bind(property)
         .fetch_optional(&mut **tx)
