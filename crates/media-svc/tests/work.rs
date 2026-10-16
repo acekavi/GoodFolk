@@ -249,6 +249,22 @@ mod hooked {
     }
 
     #[tokio::test]
+    async fn the_worker_sees_none_of_the_services_secrets() {
+        let test = "hooked::the_worker_sees_none_of_the_services_secrets";
+        let env = [
+            ("MEDIA_TEST_WORKER_SECRETS", "{dir}/secrets"),
+            // The local RustFS secret, so the service under test still reaches storage with it set.
+            ("S3_SECRET_KEY", "goodfolk_dev_secret"),
+            ("INTERNAL_SHARED_SECRET", "a-local-secret-of-at-least-32-bytes"),
+        ];
+        let Some(dir) = hooked(test, &env) else { return };
+        let server = start().await;
+        let job = uploaded(&server, Profile::Gallery, fixture("small.jpg"), "image/jpeg").await;
+        let MediaResult::Ready { .. } = process(&server, &job).await else { panic!("not ready") };
+        assert_eq!(lines(dir.join("secrets")), [""], "the worker ran once and saw no secret");
+    }
+
+    #[tokio::test]
     async fn a_runaway_allocation_fails_without_retry() {
         let test = "hooked::a_runaway_allocation_fails_without_retry";
         let Some(dir) = hooked(test, &[("MEDIA_TEST_WORKER_ALLOC", "4294967296")]) else { return };

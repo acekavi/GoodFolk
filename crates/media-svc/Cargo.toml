@@ -15,7 +15,8 @@ futures.workspace = true
 imaging.workspace = true
 media-types.workspace = true
 proto.workspace = true
-# Safe wrappers for the worker's address-space limit and for killing a timed-out worker's process group.
+# Safe wrappers for the worker's address-space limit, for killing a timed-out worker's process group and for keeping
+# the service's own environment out of a worker's reach (not dumpable).
 rustix = { version = "1", features = ["process"] }
 serde.workspace = true
 serde_json.workspace = true

@@ -143,9 +143,10 @@ pub async fn run(
     rayon_threads: usize,
     timeout: Duration,
 ) -> Result<Outcome, WorkerError> {
-    let mut child = tokio::process::Command::new(exe)
-        .arg("worker")
-        .env("RAYON_NUM_THREADS", rayon_threads.to_string())
+    let mut command = tokio::process::Command::new(exe);
+    // The worker parses hostile files, so it gets none of the service's secrets: only what it needs to run.
+    command.arg("worker").env_clear().envs(forwarded_env()).env("RAYON_NUM_THREADS", rayon_threads.to_string());
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -195,6 +196,19 @@ pub async fn run(
     } else {
         Err(WorkerError::Exited(status))
     }
+}
+
+/// The variables a worker inherits: where the JPEG XL tools are (`JXL_BIN_DIR`, else under `HOME`), `PATH` and
+/// `RUST_LOG`, plus the test hooks' `MEDIA_TEST_WORKER_*` in debug builds. `RAYON_NUM_THREADS` is set per worker.
+fn forwarded_env() -> impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)> {
+    std::env::vars_os().filter(|(name, _)| {
+        let Some(name) = name.to_str() else { return false };
+        #[cfg(debug_assertions)]
+        if name.starts_with("MEDIA_TEST_WORKER_") {
+            return true;
+        }
+        matches!(name, "JXL_BIN_DIR" | "HOME" | "PATH" | "RUST_LOG")
+    })
 }
 
 fn parse(out: &[u8]) -> Result<Outcome, WorkerError> {
@@ -345,7 +359,9 @@ fn write<'a>(header: &Header, pieces: impl Iterator<Item = &'a [u8]>) -> io::Res
 /// - `MEDIA_TEST_WORKER_CRASH=1`: abort at start;
 /// - `MEDIA_TEST_WORKER_SPAWNS=<file>`: append a line per start;
 /// - `MEDIA_TEST_WORKER_HANG=<file>`: start `sleep`, append "<worker pid> <sleep pid>", then never finish;
-/// - `MEDIA_TEST_WORKER_ALLOC=<bytes>`: reserve that much first; refused, exit [`EXIT_OUT_OF_ADDRESS_SPACE`].
+/// - `MEDIA_TEST_WORKER_ALLOC=<bytes>`: reserve that much first; refused, exit [`EXIT_OUT_OF_ADDRESS_SPACE`];
+/// - `MEDIA_TEST_WORKER_SECRETS=<file>`: append a line naming each service secret visible to the worker (empty when
+///   none is).
 ///
 /// The parent honours `MEDIA_TEST_WORKER_TIMEOUT_MS` (see [`timeout`]).
 #[cfg(debug_assertions)]
@@ -362,6 +378,13 @@ mod test_hooks {
     pub(super) fn on_start() -> Option<std::process::ExitCode> {
         if let Ok(path) = std::env::var("MEDIA_TEST_WORKER_SPAWNS") {
             append(&path, "spawn");
+        }
+        if let Ok(path) = std::env::var("MEDIA_TEST_WORKER_SECRETS") {
+            let visible: Vec<&str> = ["S3_SECRET_KEY", "INTERNAL_SHARED_SECRET"]
+                .into_iter()
+                .filter(|name| std::env::var_os(name).is_some())
+                .collect();
+            append(&path, &visible.join(" "));
         }
         if std::env::var("MEDIA_TEST_WORKER_CRASH").is_ok_and(|v| v == "1") {
             std::process::abort();

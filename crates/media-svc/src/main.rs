@@ -24,6 +24,9 @@ fn main() -> anyhow::Result<ExitCode> {
 }
 
 async fn serve() -> anyhow::Result<()> {
+    // A worker runs as the same user; without this it could read the service's secrets from /proc/<ppid>/environ.
+    rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+        .context("marking media-svc not dumpable")?;
     let config = Config::from_env()?;
     init_tracing(config.production);
     let storage = if config.production { StorageConfig::from_env()? } else { StorageConfig::dev()? };
