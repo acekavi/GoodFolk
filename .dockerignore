@@ -1,4 +1,6 @@
 target
 web
+# core-api embeds the persisted GraphQL documents (crates/core-api/src/persisted.rs).
+!web/pms/src/lib/api/gql/persisted-documents.json
 docs
 .git
