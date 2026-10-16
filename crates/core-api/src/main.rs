@@ -41,7 +41,7 @@ async fn serve() -> anyhow::Result<()> {
         let media_auth = media_auth.clone();
         Box::pin(async move { media_auth.header().await.map_err(|e| ::events::BusError::Retryable(e.to_string())) })
     });
-    let bus = ::events::bus_from_env(Some(push_auth))?;
+    let bus = ::events::bus_from_env(&[::media::PROCESS_TOPIC], Some(push_auth))?;
     let sweep_lock: PgConnectOptions =
         config.database_listen_url.parse().context("DATABASE_LISTEN_URL is not a connection string")?;
     // One direct connection, kept open, used only for LISTEN (and to reconnect it).

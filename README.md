@@ -348,7 +348,7 @@ Outside production, every variable marked "dev default" can be left out. With `A
 | `CORE_API_AUDIENCE` | both | With `SVC_AUTH=google`: the same for `/internal/events` (media-svc puts it on its pushes, core-api requires it). |
 | `ALLOWED_SERVICE_EMAILS` | both | With `SVC_AUTH=google`: comma-separated service accounts whose tokens are accepted, at least one. media-svc lists core-api's runtime service account and the `media-process` push service account; core-api lists the `media-results` push service account (ARCHITECTURE §8.5). |
 | `EVENT_BUS` | both | `push` (straight to the receiver; refused in production) or `pubsub`. Required. |
-| `PUSH_ENDPOINT_<TOPIC>` | both | With `EVENT_BUS=push`: where a topic is delivered, with `-` as `_`: `PUSH_ENDPOINT_MEDIA_PROCESS` (core-api sends, to media-svc's `/work`) and `PUSH_ENDPOINT_MEDIA_RESULTS` (media-svc sends, to core-api's `/internal/events`). |
+| `PUSH_ENDPOINT_<TOPIC>` | both | With `EVENT_BUS=push`: where a topic is delivered, with `-` as `_`: `PUSH_ENDPOINT_MEDIA_PROCESS` (core-api sends, to media-svc's `/work`) and `PUSH_ENDPOINT_MEDIA_RESULTS` (media-svc sends, to core-api's `/internal/events`). Each service needs the endpoint of the topic it sends, or it refuses to start, naming the variable. |
 | `PUBSUB_PROJECT` | both | With `EVENT_BUS=pubsub`: the GCP project. Required. |
 | `PUBSUB_EMULATOR_HOST` | both | With `EVENT_BUS=pubsub`: `host:port` of the Pub/Sub emulator; unset, the real API is used with the metadata server's token. |
 | `PORT` | media-svc | Listen port, default 8090 (core-api's is 8080). One port serves gRPC, `/work` and `/healthz`. |

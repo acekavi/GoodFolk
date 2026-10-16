@@ -18,7 +18,7 @@ const MAX_FILENAME: usize = 255;
 const MAX_ERROR: usize = 200;
 
 /// The outbox topic media-svc's `/work` endpoint receives.
-const PROCESS_TOPIC: &str = "media-process";
+pub const PROCESS_TOPIC: &str = "media-process";
 
 /// The reason stored when media-svc's result cannot be trusted.
 const PROCESSING_FAILED: &str = "Processing failed";

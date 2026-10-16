@@ -38,7 +38,7 @@ async fn serve() -> anyhow::Result<()> {
     });
     let svc = MediaSvc {
         storage: Arc::new(Storage::new(storage)?),
-        bus: events::bus_from_env(Some(auth))?,
+        bus: events::bus_from_env(&[media_svc::RESULTS_TOPIC], Some(auth))?,
         workers: Arc::new(Semaphore::new(config.workers)),
         worker_exe: std::env::current_exe().context("locating the media-svc binary")?,
     };

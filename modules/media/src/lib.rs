@@ -11,8 +11,8 @@ mod links;
 mod sweep;
 
 pub use assets::{
-    Completed, NewUpload, PendingUpload, Verified, apply_result, complete_upload, pending_upload, refuse_upload,
-    set_s3_upload_id, start_upload,
+    Completed, NewUpload, PROCESS_TOPIC, PendingUpload, Verified, apply_result, complete_upload, pending_upload,
+    refuse_upload, set_s3_upload_id, start_upload,
 };
 pub use guest_documents::{
     GuestDocumentRow, MAX_LISTED_DOCUMENTS, delete_guest_document, guest_document_link_key, guest_documents,

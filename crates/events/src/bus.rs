@@ -67,15 +67,20 @@ impl PushBus {
         Ok(Self { endpoints, http: client(Duration::from_secs(600))?, auth })
     }
 
-    /// Reads `PUSH_ENDPOINT_<TOPIC_UPPER_SNAKE>` variables, e.g. `PUSH_ENDPOINT_MEDIA_PROCESS` for `media-process`.
-    pub fn from_env(auth: Option<HeaderProvider>) -> anyhow::Result<Self> {
+    /// Reads `PUSH_ENDPOINT_<TOPIC_UPPER_SNAKE>` for each of `topics`, e.g. `PUSH_ENDPOINT_MEDIA_PROCESS` for
+    /// `media-process`. A missing or malformed endpoint is an error naming the variable.
+    fn from_vars(
+        var: &impl Fn(&str) -> Option<String>,
+        topics: &[&str],
+        auth: Option<HeaderProvider>,
+    ) -> anyhow::Result<Self> {
         let mut endpoints = HashMap::new();
-        for (key, value) in std::env::vars() {
-            if let Some(suffix) = key.strip_prefix("PUSH_ENDPOINT_") {
-                let topic = suffix.to_ascii_lowercase().replace('_', "-");
-                let url = Url::parse(&value).with_context(|| format!("{key} is not a URL"))?;
-                endpoints.insert(topic, url);
-            }
+        for topic in topics {
+            let name = format!("PUSH_ENDPOINT_{}", topic.to_ascii_uppercase().replace('-', "_"));
+            let value =
+                var(&name).with_context(|| format!("EVENT_BUS=push needs {name}, where `{topic}` is delivered"))?;
+            let url = Url::parse(&value).with_context(|| format!("{name} is not a URL"))?;
+            endpoints.insert((*topic).to_owned(), url);
         }
         Self::new(endpoints, auth)
     }
@@ -221,25 +226,76 @@ impl EventBus for PubSubBus {
     }
 }
 
-/// `EVENT_BUS=push` (refused when `APP_ENV=production`, and needs `auth`) or `EVENT_BUS=pubsub`, which ignores `auth`, needs `PUBSUB_PROJECT` and uses
+/// `EVENT_BUS=push` (refused when `APP_ENV=production`, and needs `auth` and a `PUSH_ENDPOINT_…` for each of `topics`,
+/// the topics the caller publishes) or `EVENT_BUS=pubsub`, which ignores `auth`, needs `PUBSUB_PROJECT` and uses
 /// `PUBSUB_EMULATOR_HOST` when set.
-pub fn bus_from_env(auth: Option<HeaderProvider>) -> anyhow::Result<Arc<dyn EventBus>> {
-    let kind = std::env::var("EVENT_BUS").context("EVENT_BUS is required (push or pubsub)")?;
+pub fn bus_from_env(topics: &[&str], auth: Option<HeaderProvider>) -> anyhow::Result<Arc<dyn EventBus>> {
+    bus_from_vars(|name| std::env::var(name).ok(), topics, auth)
+}
+
+fn bus_from_vars(
+    var: impl Fn(&str) -> Option<String>,
+    topics: &[&str],
+    auth: Option<HeaderProvider>,
+) -> anyhow::Result<Arc<dyn EventBus>> {
+    let kind = var("EVENT_BUS").context("EVENT_BUS is required (push or pubsub)")?;
     match kind.as_str() {
         "push" => {
-            if std::env::var("APP_ENV").is_ok_and(|env| env == "production") {
+            if var("APP_ENV").is_some_and(|env| env == "production") {
                 bail!("EVENT_BUS=push is not allowed when APP_ENV=production");
             }
             let Some(auth) = auth else { bail!("EVENT_BUS=push needs service auth") };
-            Ok(Arc::new(PushBus::from_env(Some(auth))?))
+            Ok(Arc::new(PushBus::from_vars(&var, topics, Some(auth))?))
         }
         "pubsub" => {
-            let project = std::env::var("PUBSUB_PROJECT").context("PUBSUB_PROJECT is required")?;
-            match std::env::var("PUBSUB_EMULATOR_HOST") {
-                Ok(host) if !host.is_empty() => Ok(Arc::new(PubSubBus::emulator(&project, &host)?)),
+            let project = var("PUBSUB_PROJECT").context("PUBSUB_PROJECT is required")?;
+            match var("PUBSUB_EMULATOR_HOST") {
+                Some(host) if !host.is_empty() => Ok(Arc::new(PubSubBus::emulator(&project, &host)?)),
                 _ => Ok(Arc::new(PubSubBus::google(&project)?)),
             }
         }
         other => bail!("EVENT_BUS must be push or pubsub, not {other}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HeaderProvider, bus_from_vars};
+    use std::sync::Arc;
+
+    fn auth() -> HeaderProvider {
+        Arc::new(|| Box::pin(async { Ok("Bearer x".to_owned()) }))
+    }
+
+    fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        |name| pairs.iter().find(|(key, _)| *key == name).map(|(_, value)| (*value).to_owned())
+    }
+
+    #[test]
+    fn a_push_bus_needs_an_endpoint_for_each_topic_it_publishes() {
+        let vars = [("EVENT_BUS", "push"), ("PUSH_ENDPOINT_MEDIA_RESULTS", "http://localhost:8080/internal/events")];
+
+        let missing = bus_from_vars(lookup(&vars), &["media-process"], Some(auth())).err().unwrap();
+
+        assert!(format!("{missing:#}").contains("PUSH_ENDPOINT_MEDIA_PROCESS"), "{missing:#}");
+        assert!(bus_from_vars(lookup(&vars), &["media-results"], Some(auth())).is_ok());
+    }
+
+    #[test]
+    fn a_malformed_push_endpoint_is_named_but_not_shown() {
+        let vars = [("EVENT_BUS", "push"), ("PUSH_ENDPOINT_MEDIA_PROCESS", "not a url")];
+
+        let err = bus_from_vars(lookup(&vars), &["media-process"], Some(auth())).err().unwrap();
+        let shown = format!("{err:#}");
+
+        assert!(shown.contains("PUSH_ENDPOINT_MEDIA_PROCESS") && !shown.contains("not a url"), "{shown}");
+    }
+
+    #[test]
+    fn a_pubsub_bus_needs_no_push_endpoints() {
+        let vars =
+            [("EVENT_BUS", "pubsub"), ("PUBSUB_PROJECT", "goodfolk"), ("PUBSUB_EMULATOR_HOST", "localhost:8085")];
+
+        assert!(bus_from_vars(lookup(&vars), &["media-process"], None).is_ok());
     }
 }
