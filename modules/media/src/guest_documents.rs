@@ -111,7 +111,8 @@ pub async fn guest_document_link_key(
         return Err(MediaError::Conflict("The document is not ready yet".into()));
     }
     let key = match size {
-        // An image's archive is JPEG XL, which browsers cannot show.
+        // An image's archive is JPEG XL, which browsers cannot show (or, for a JPEG cjxl could not transcode, the JPEG
+        // as uploaded, with its metadata); either way an image is shown through its renditions.
         LinkSize::Original if mime.as_deref() != Some(PDF) => {
             return Err(MediaError::Invalid("Images are viewed at the md size".into()));
         }

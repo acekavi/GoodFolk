@@ -1,6 +1,6 @@
 mod common;
 
-use common::{Hotel, asset_of, guest_target};
+use common::{Hotel, asset_of, guest_target, ready};
 use media::{
     LinkSize, MediaError, Verified, Visibility, complete_upload, delete_guest_document, guest_document_link_key,
     guest_documents,
@@ -49,6 +49,26 @@ async fn guest_document_link_audits_each_call(_: PgPoolOptions, opts: PgConnectO
     assert_eq!(sizes, ["thumb", "thumb"]);
 
     assert!(matches!(hotel.link(Uuid::now_v7(), LinkSize::Md).await, Err(MediaError::NotFound("document"))));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_image_kept_as_uploaded_jpeg_is_still_viewed_through_its_renditions(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts).await;
+    let guest = hotel.guest().await;
+    let asset = asset_of(&hotel.upload(guest_target(guest), 1).await);
+    let document = guest_documents(&mut hotel.tx().await, hotel.property, guest).await.unwrap()[0].id;
+    let mut result = ready(hotel.tenant, asset);
+    let MediaResult::Ready { archive_key, .. } = &mut result else { unreachable!() };
+    *archive_key = format!("t/{}/a/{asset}/archive.jpg", hotel.tenant.0);
+    hotel.apply(&result).await;
+
+    let err = hotel.link(document, LinkSize::Original).await.unwrap_err();
+
+    assert!(matches!(&err, MediaError::Invalid(m) if m == "Images are viewed at the md size"), "{err:?}");
+    assert_eq!(hotel.audited("guest_document.viewed").await, 0);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

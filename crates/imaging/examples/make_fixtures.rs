@@ -35,6 +35,7 @@ fn main() -> Result<()> {
     fs::write(dir.join("doc.pdf"), &pdf)?;
     fs::write(dir.join("fake.jpg"), &pdf)?;
     fs::write(dir.join("elf.png"), elf_like())?;
+    fs::write(dir.join("cmyk.jpg"), cmyk_jpeg())?;
     Ok(())
 }
 
@@ -208,5 +209,92 @@ fn elf_like() -> Vec<u8> {
     for (i, byte) in out.iter_mut().enumerate().skip(64) {
         *byte = (i.wrapping_mul(31) % 251) as u8;
     }
+    out
+}
+
+/// A 64 x 48 baseline JPEG with four components (Adobe CMYK, no colour transform), flat 8 x 8 blocks in four
+/// gradients. The `image` crate cannot write CMYK, so it is written here: quantisation of 1 everywhere, the standard
+/// luminance DC table and an AC table holding only end-of-block.
+fn cmyk_jpeg() -> Vec<u8> {
+    const W: u16 = 64;
+    const H: u16 = 48;
+    let segment = |out: &mut Vec<u8>, marker: u8, data: &[u8]| {
+        out.extend_from_slice(&[0xFF, marker]);
+        out.extend_from_slice(&u16::try_from(data.len() + 2).unwrap().to_be_bytes());
+        out.extend_from_slice(data);
+    };
+    let dc_bits: [u8; 16] = [0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0];
+    let dc_values: Vec<u8> = (0..12).collect();
+    // Canonical Huffman codes (length, code) for the DC categories, as JPEG assigns them.
+    let mut dc_codes = [(0u8, 0u16); 12];
+    let (mut code, mut k) = (0u16, 0usize);
+    for (len, count) in (1u8..).zip(dc_bits) {
+        for _ in 0..count {
+            dc_codes[usize::from(dc_values[k])] = (len, code);
+            code += 1;
+            k += 1;
+        }
+        code <<= 1;
+    }
+
+    let mut out = vec![0xFF, 0xD8];
+    segment(&mut out, 0xEE, b"Adobe\x00\x64\x00\x00\x00\x00\x00");
+    let mut dqt = vec![0u8];
+    dqt.extend_from_slice(&[1; 64]);
+    segment(&mut out, 0xDB, &dqt);
+    let mut sof = vec![8];
+    sof.extend_from_slice(&H.to_be_bytes());
+    sof.extend_from_slice(&W.to_be_bytes());
+    sof.push(4);
+    for id in 1..=4 {
+        sof.extend_from_slice(&[id, 0x11, 0]);
+    }
+    segment(&mut out, 0xC0, &sof);
+    let mut dht = vec![0x00];
+    dht.extend_from_slice(&dc_bits);
+    dht.extend_from_slice(&dc_values);
+    dht.push(0x10);
+    dht.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00]);
+    segment(&mut out, 0xC4, &dht);
+    segment(&mut out, 0xDA, &[4, 1, 0x00, 2, 0x00, 3, 0x00, 4, 0x00, 0, 63, 0]);
+
+    let (mut acc, mut nbits) = (0u32, 0u32);
+    let mut bits = |out: &mut Vec<u8>, len: u8, value: u16| {
+        acc = (acc << len) | u32::from(value);
+        nbits += u32::from(len);
+        while nbits >= 8 {
+            let byte = u8::try_from((acc >> (nbits - 8)) & 0xFF).unwrap();
+            out.push(byte);
+            if byte == 0xFF {
+                out.push(0x00);
+            }
+            nbits -= 8;
+        }
+        acc &= (1 << nbits) - 1;
+    };
+    let mut predicted = [0i32; 4];
+    for by in 0..i32::from(H / 8) {
+        for bx in 0..i32::from(W / 8) {
+            let levels = [bx * 32, by * 40, (bx + by) * 16, 255 - bx * 24];
+            for (component, level) in levels.into_iter().enumerate() {
+                // A flat block's only coefficient: DC = 8 x (level - 128).
+                let dc = 8 * (level.clamp(0, 255) - 128);
+                let diff = dc - predicted[component];
+                predicted[component] = dc;
+                let category = u8::try_from(32 - diff.unsigned_abs().leading_zeros()).unwrap();
+                let (len, code) = dc_codes[usize::from(category)];
+                bits(&mut out, len, code);
+                if category > 0 {
+                    let extra = if diff < 0 { diff + (1 << category) - 1 } else { diff };
+                    bits(&mut out, category, u16::try_from(extra).unwrap());
+                }
+                // End of block: the AC table's one code, a single 0 bit.
+                bits(&mut out, 1, 0);
+            }
+        }
+    }
+    // Pad the last byte with ones.
+    bits(&mut out, 7, 0x7F);
+    out.extend_from_slice(&[0xFF, 0xD9]);
     out
 }

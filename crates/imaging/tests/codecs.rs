@@ -100,14 +100,24 @@ fn pdf_and_heic_are_not_decoded_here() {
 #[test]
 fn jpeg_archive_round_trips_byte_exact() {
     let original = fixture("photo-12mp.jpg");
-    let jxl = archive(&original, SourceType::Jpeg).unwrap();
+    let (jxl, ext) = archive(&original, SourceType::Jpeg).unwrap();
+    assert_eq!(ext, "jxl");
     assert!(jxl.len() < original.len(), "archive {} bytes, original {} bytes", jxl.len(), original.len());
     assert_eq!(reconstruct_jpeg(&jxl).unwrap(), original);
 }
 
 #[test]
+fn a_cmyk_jpeg_cjxl_cannot_transcode_is_archived_as_uploaded() {
+    let original = fixture("cmyk.jpg");
+    assert_eq!(decode(&original, SourceType::Jpeg).unwrap().dimensions(), (64, 48));
+    let (archive, ext) = archive(&original, SourceType::Jpeg).unwrap();
+    assert_eq!(ext, "jpg");
+    assert_eq!(archive, original);
+}
+
+#[test]
 fn a_pixel_archive_holds_no_jpeg_to_reconstruct() {
-    let jxl = archive(&fixture("alpha.png"), SourceType::Png).unwrap();
+    let (jxl, _) = archive(&fixture("alpha.png"), SourceType::Png).unwrap();
     assert!(matches!(reconstruct_jpeg(&jxl), Err(ImagingError::Corrupt(_))));
 }
 
@@ -116,7 +126,8 @@ fn lossless_archives_decode_to_the_same_pixels() {
     for (name, ty) in [("alpha.png", SourceType::Png), ("photo.webp", SourceType::Webp)] {
         let bytes = fixture(name);
         let pixels = decode(&bytes, ty).unwrap();
-        let jxl = archive(&bytes, ty).unwrap();
+        let (jxl, ext) = archive(&bytes, ty).unwrap();
+        assert_eq!(ext, "jxl");
         let back = decode_archive(&jxl);
         assert!(back == pixels, "{name} did not survive the archive");
     }

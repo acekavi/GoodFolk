@@ -149,7 +149,12 @@ async fn store(svc: &MediaSvc, job: &ProcessJob, output: Output) -> anyhow::Resu
 
     let archive = archive_key(tenant, asset, &output.archive_ext);
     let archive_len = output.archive.len() as u64;
-    let content_type = if output.archive_ext == "pdf" { "application/pdf" } else { "image/jxl" };
+    let content_type = match output.archive_ext.as_str() {
+        "pdf" => "application/pdf",
+        // A JPEG cjxl could not transcode, kept as uploaded.
+        "jpg" => "image/jpeg",
+        _ => "image/jxl",
+    };
     // Every object goes up at once: one after another, they would add up to a noticeable part of a photo's time
     // to `ready`.
     let archive_put = svc.storage.put(Bucket::Private, &archive, output.archive, content_type, None);

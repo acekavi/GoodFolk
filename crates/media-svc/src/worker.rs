@@ -230,7 +230,7 @@ fn parse(out: &[u8]) -> Result<Outcome, WorkerError> {
     };
     let outcome = match header {
         Header::Unreadable { detail } => Outcome::Unreadable(detail),
-        Header::Done { archive_ext, .. } if !matches!(archive_ext.as_str(), "jxl" | "pdf") => {
+        Header::Done { archive_ext, .. } if !matches!(archive_ext.as_str(), "jxl" | "jpg" | "pdf") => {
             return Err(WorkerError::Malformed("unknown archive type"));
         }
         Header::Done { width, height, archive_ext, archive_len, renditions } => {
@@ -473,6 +473,16 @@ mod tests {
         let Header::Done { width, height, archive_len, renditions, .. } = done(3, 2) else { unreachable!() };
         let header = Header::Done { width, height, archive_ext: "../x".into(), archive_len, renditions };
         assert!(matches!(parse(&frame(&header, b"abcde")), Err(WorkerError::Malformed(_))));
+    }
+
+    #[test]
+    fn every_archive_type_the_worker_writes_is_accepted() {
+        for ext in ["jxl", "jpg", "pdf"] {
+            let Header::Done { width, height, archive_len, renditions, .. } = done(3, 2) else { unreachable!() };
+            let header = Header::Done { width, height, archive_ext: ext.into(), archive_len, renditions };
+            let Outcome::Done(output) = parse(&frame(&header, b"abcde")).unwrap() else { panic!("not done") };
+            assert_eq!(output.archive_ext, ext);
+        }
     }
 
     #[test]

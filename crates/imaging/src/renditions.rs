@@ -147,13 +147,12 @@ pub fn process(bytes: &[u8], ty: SourceType, profile: Profile) -> Result<Process
         drop(img);
         let renditions = levels.and_then(render);
 
-        let archive = match (jpeg_archive, pixel_archive) {
-            (Some(h), _) | (_, Some(h)) => {
-                h.join().map_err(|_| ImagingError::Encode("archive thread panicked".into()))?
-            }
+        let (archive, archive_ext) = match (jpeg_archive, pixel_archive) {
+            (Some(h), _) => h.join().map_err(|_| ImagingError::Encode("archive thread panicked".into()))??,
+            (None, Some(h)) => (h.join().map_err(|_| ImagingError::Encode("archive thread panicked".into()))??, "jxl"),
             (None, None) => unreachable!("one of the two archive threads is always started"),
-        }?;
-        Ok(Processed { width, height, archive, archive_ext: "jxl", renditions: renditions? })
+        };
+        Ok(Processed { width, height, archive, archive_ext, renditions: renditions? })
     })
 }
 

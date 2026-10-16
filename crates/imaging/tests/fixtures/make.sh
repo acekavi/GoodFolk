@@ -7,7 +7,7 @@
 #
 # Downloaded (CC0, see SOURCES.md): photo-12mp.jpg, photo.heic.
 # Derived: small.jpg, rotated.jpg, gps.jpg, p3.jpg, onesided.jpg, truncated.jpg, alpha.png, photo.webp,
-#          bomb.png, doc.pdf, fake.jpg, elf.png.
+#          bomb.png, doc.pdf, fake.jpg, elf.png, cmyk.jpg.
 # elf.png is 4 KiB of fixed ELF-header-like bytes plus deterministic filler.
 # No progressive JPEG fixture: the marker walker is pinned in src/decode.rs by a hand-built stream
 # (SOF2 plus several scans), since no local tool is guaranteed to write one.

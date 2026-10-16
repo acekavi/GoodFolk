@@ -49,6 +49,7 @@ This phase also brings in the infrastructure deferred from Phase 0, because `med
 
 - **Archive** (private bucket, kept for the asset's life):
   - JPEG becomes a JPEG XL lossless transcode. It is reversible byte for byte and about 20% smaller.
+  - A JPEG cjxl refuses to transcode (a CMYK JPEG, for one) is kept as uploaded, byte for byte, as `archive.jpg` (ruling: still lossless, just not smaller; the refusal is deterministic, so it is neither retried nor a failure).
   - PNG and WebP become lossless JPEG XL of the decoded pixels.
   - JPEG XL is written by libjxl's own BSD-licensed `cjxl`/`djxl` tools (v0.12.0), run as subprocesses (ruling: the Rust bindings are GPL, which `deny.toml` forbids).
   - PDF is kept as uploaded (ruling: linearizing needs qpdf, a native tool we don't ship; revisit with 6b's tooling).

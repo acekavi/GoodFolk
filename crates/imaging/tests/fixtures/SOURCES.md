@@ -25,4 +25,5 @@ Total size stays under 12 MB.
 | `bomb.png` | a PNG header claiming 20000x20000 pixels, with no pixel data |
 | `doc.pdf` | a generated one page PDF |
 | `fake.jpg` | the bytes of `doc.pdf` |
+| `cmyk.jpg` | a generated 64x48 baseline JPEG with four components (Adobe CMYK, flat 8x8 blocks), which cjxl cannot transcode |
 | `elf.png` | 4 KiB starting `\x7fELF` with an x86-64 header-like prefix and deterministic filler |

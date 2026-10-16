@@ -9,9 +9,11 @@ use std::{
 const BIN_DIR_VAR: &str = "JXL_BIN_DIR";
 const STDERR_LIMIT: usize = 300;
 
-/// A tool failure: the tool is missing, or it ran and said no.
+/// A tool failure: the tool is missing, it ran and said no (exited with an error status, which running it again
+/// would repeat), or it could not run to the end (it would not start, or a signal killed it).
 pub(crate) enum ToolError {
     Missing(String),
+    Refused(String),
     Failed(String),
 }
 
@@ -60,5 +62,6 @@ pub(crate) fn run(tool: &str, args: &[&str], input: &[u8]) -> Result<Vec<u8>, To
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stderr: String = stderr.trim().chars().take(STDERR_LIMIT).collect();
-    Err(ToolError::Failed(format!("{tool} exited with {}: {stderr}", output.status)))
+    let message = format!("{tool} exited with {}: {stderr}", output.status);
+    Err(if output.status.code().is_some() { ToolError::Refused(message) } else { ToolError::Failed(message) })
 }

@@ -10,27 +10,41 @@ use crate::{
 
 fn encode_err(e: ToolError) -> ImagingError {
     match e {
-        ToolError::Missing(m) | ToolError::Failed(m) => ImagingError::Encode(m),
+        ToolError::Missing(m) | ToolError::Refused(m) | ToolError::Failed(m) => ImagingError::Encode(m),
     }
 }
 
-/// Lossless archive. JPEG: JXL transcode with reconstruction data. PNG/WebP: lossless JXL of
-/// decoded pixels.
-pub fn archive(bytes: &[u8], ty: SourceType) -> Result<Vec<u8>, ImagingError> {
+/// Lossless archive and its file extension. JPEG: JXL transcode with reconstruction data (`jxl`), or the JPEG itself
+/// (`jpg`) when cjxl refuses to transcode it. PNG/WebP: lossless JXL of decoded pixels (`jxl`).
+pub fn archive(bytes: &[u8], ty: SourceType) -> Result<(Vec<u8>, &'static str), ImagingError> {
     match ty {
         // Reject a corrupt JPEG up front: the transcoder would otherwise store what it can parse.
         SourceType::Jpeg => {
             decode(bytes, ty)?;
             archive_jpeg(bytes)
         }
-        SourceType::Png | SourceType::Webp => lossless_pixels(&decode(bytes, ty)?),
+        SourceType::Png | SourceType::Webp => Ok((lossless_pixels(&decode(bytes, ty)?)?, "jxl")),
         SourceType::Heic | SourceType::Pdf => Err(ImagingError::Unsupported),
     }
 }
 
-/// The archive of a JPEG the caller has already decoded, so it is known to be whole.
-pub(crate) fn archive_jpeg(bytes: &[u8]) -> Result<Vec<u8>, ImagingError> {
-    run("cjxl", &["-", "-", "--lossless_jpeg=1", "--quiet"], bytes).map_err(encode_err)
+/// The archive of a JPEG the caller has already decoded, so it is known to be whole, and its extension.
+pub(crate) fn archive_jpeg(bytes: &[u8]) -> Result<(Vec<u8>, &'static str), ImagingError> {
+    archive_jpeg_with(bytes, |input| run("cjxl", &["-", "-", "--lossless_jpeg=1", "--quiet"], input))
+}
+
+/// [`archive_jpeg`] with `cjxl` standing in for the tool. A JPEG cjxl refuses to transcode (CMYK, for one) is kept
+/// as uploaded, byte for byte: still lossless, just not smaller. The refusal is deterministic, so it is neither
+/// retried nor a failure. A missing or killed cjxl is an encode error, which the caller may retry.
+fn archive_jpeg_with(
+    bytes: &[u8],
+    cjxl: impl FnOnce(&[u8]) -> Result<Vec<u8>, ToolError>,
+) -> Result<(Vec<u8>, &'static str), ImagingError> {
+    match cjxl(bytes) {
+        Ok(jxl) => Ok((jxl, "jxl")),
+        Err(ToolError::Refused(_)) => Ok((bytes.to_vec(), "jpg")),
+        Err(error) => Err(encode_err(error)),
+    }
 }
 
 /// Encodes the pixels as a PNG (without a colour profile, so sRGB) and has cjxl store it
@@ -58,6 +72,33 @@ pub fn reconstruct_jpeg(jxl: &[u8]) -> Result<Vec<u8>, ImagingError> {
     }
     run("djxl", &["-", "-", "--output_format", "jpeg", "--quiet"], jxl).map_err(|e| match e {
         ToolError::Missing(m) => ImagingError::Encode(m),
-        ToolError::Failed(m) => ImagingError::Corrupt(m),
+        ToolError::Refused(m) | ToolError::Failed(m) => ImagingError::Corrupt(m),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ToolError, archive_jpeg_with};
+    use crate::ImagingError;
+
+    const JPEG: &[u8] = b"\xFF\xD8 a whole JPEG \xFF\xD9";
+
+    #[test]
+    fn a_jpeg_cjxl_refuses_is_kept_as_uploaded() {
+        let (archive, ext) = archive_jpeg_with(JPEG, |_| Err(ToolError::Refused("cjxl exited with 1".into()))).unwrap();
+        assert_eq!((archive.as_slice(), ext), (JPEG, "jpg"));
+    }
+
+    #[test]
+    fn a_jpeg_cjxl_transcodes_is_archived_as_jpeg_xl() {
+        let (archive, ext) = archive_jpeg_with(JPEG, |_| Ok(b"jxl".to_vec())).unwrap();
+        assert_eq!((archive.as_slice(), ext), (&b"jxl"[..], "jxl"));
+    }
+
+    #[test]
+    fn a_missing_or_killed_cjxl_is_an_encode_error() {
+        for error in [ToolError::Missing("cjxl not found".into()), ToolError::Failed("cjxl killed".into())] {
+            assert!(matches!(archive_jpeg_with(JPEG, |_| Err(error)), Err(ImagingError::Encode(_))));
+        }
+    }
 }

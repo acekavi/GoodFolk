@@ -105,6 +105,18 @@ async fn a_pdf_is_archived_as_uploaded() {
 }
 
 #[tokio::test]
+async fn a_jpeg_cjxl_cannot_transcode_is_archived_as_uploaded() {
+    let server = start().await;
+    let body = fixture("cmyk.jpg");
+    let job = uploaded(&server, Profile::Gallery, body.clone(), "image/jpeg").await;
+    let MediaResult::Ready { archive_key, renditions, .. } = process(&server, &job).await else { panic!("not ready") };
+    assert!(!renditions.is_empty());
+    assert!(archive_key.ends_with("/archive.jpg"));
+    assert_eq!(server.storage.get(Bucket::Private, &archive_key).await.unwrap(), body);
+    assert_eq!(server.storage.head(Bucket::Public, &archive_key).await.unwrap(), None, "the archive is never public");
+}
+
+#[tokio::test]
 async fn work_rejects_unauthenticated() {
     let server = start().await;
     let job = ProcessJob {
