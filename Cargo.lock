@@ -1371,12 +1371,19 @@ name = "folio"
 version = "0.1.0"
 dependencies = [
  "db",
+ "fx",
  "property",
+ "rust_decimal",
+ "serde",
  "serde_json",
  "sqlx",
  "tax",
+ "thiserror",
  "time",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "utoipa",
  "uuid",
 ]
 
@@ -3466,6 +3473,7 @@ dependencies = [
  "base64 0.23.1",
  "db",
  "domain",
+ "folio",
  "housekeeping",
  "property",
  "proptest",
