@@ -142,3 +142,53 @@ async fn a_stay_is_taxed_with_its_rate_plan_s_residency(_: PgPoolOptions, opts: 
 
     assert_eq!(levied_lines, vec![2, 0, 0], "only the non-resident plan's stay pays the levy, posted either way");
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn two_concurrent_postings_of_one_key_make_one_line(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let stay = hotel.book(None).await;
+    let room = stay.rooms[0];
+    let key = format!("room:{room}:{}", hotel.business_date);
+    let charge = NewCharge { posting_key: Some(key.clone()), ..hotel.charge(Source::Room, "room", 10_000, "LKR") };
+
+    let mut first = hotel.tx().await;
+    let posted = folio::post_for_stay(&mut first, hotel.tenant, None, room, charge.clone()).await.unwrap();
+    let (pool, tenant) = (hotel.pool.clone(), hotel.tenant);
+    let second = tokio::spawn(async move {
+        let mut tx = db::begin(&pool, db::Scope::tenant(tenant)).await.unwrap();
+        let line = folio::post_for_stay(&mut tx, tenant, None, room, charge).await;
+        if line.is_ok() {
+            tx.commit().await.unwrap();
+        }
+        line
+    });
+    hotel.until_blocked().await;
+    first.commit().await.unwrap();
+
+    match second.await.unwrap() {
+        Ok(line) => assert_eq!(line, posted, "the loser gets the existing line"),
+        Err(FolioError::Conflict(_)) => {}
+        Err(other) => panic!("expected the existing line or a conflict, got {other:?}"),
+    }
+    assert_eq!(hotel.lines_on(&[stay.guests[0]]).await, vec![(stay.guests[0], posted.total, Some(key))]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_key_used_in_another_property_is_a_conflict_not_a_second_line(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let kandy = hotel.add_property("KAN").await;
+    let (here, there) = (hotel.book(None).await, hotel.book_in(kandy, 1, None, None).await);
+    let charge = NewCharge {
+        posting_key: Some(format!("room:{}", there.rooms[0])),
+        ..hotel.charge(Source::Room, "room", 10_000, "LKR")
+    };
+    hotel.post_for_stay(there.rooms[0], charge.clone()).await.unwrap();
+
+    let message = match hotel.post_for_stay(here.rooms[0], charge).await {
+        Err(FolioError::Conflict(message)) => message,
+        other => panic!("expected Conflict, got {other:?}"),
+    };
+
+    assert_eq!(message, "the posting key is used in another property");
+    assert!(hotel.lines_on(&[here.guests[0]]).await.is_empty());
+}

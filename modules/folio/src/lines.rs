@@ -5,6 +5,7 @@ use crate::{FolioError, Source, audit, check_category, folio_key, notify, reason
 use db::{TenantId, Tx, UserId};
 use rust_decimal::Decimal;
 use serde::Serialize;
+use sqlx::Connection;
 use std::collections::HashMap;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
@@ -14,6 +15,18 @@ const MAX_DESCRIPTION: usize = 200;
 
 /// The longest posting key, in characters.
 const MAX_POSTING_KEY: usize = 200;
+
+/// The largest quantity of a line, either way.
+const MAX_QUANTITY: u32 = 9_999;
+
+/// The largest unit price, either way, in minor units.
+const MAX_UNIT_NET: u64 = 10_000_000_000_000;
+
+/// The indexes that keep a posting key to one line per tenant, and (the older, narrower one) per folio.
+const POSTING_KEY_INDEXES: [&str; 2] = ["folio_line_posting_key_idx", "folio_line_folio_id_posting_key_key"];
+
+/// The index that lets a line be reversed (or moved) once.
+const REVERSED_ONCE_INDEX: &str = "folio_line_reversed_once_idx";
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow, Serialize, utoipa::ToSchema)]
 pub struct LineRow {
@@ -62,7 +75,7 @@ pub struct NewCharge {
     pub unit_net: i64,
     pub currency: String,
     pub business_date: Date,
-    /// Set by system postings so a repeat is a no-op.
+    /// Set by system postings so a repeat is a no-op: unique in the tenant, so it embeds a globally unique id.
     pub posting_key: Option<String>,
     /// `unit_net` already includes the taxes; the net is back-calculated so net plus taxes equal the price exactly.
     pub inclusive: bool,
@@ -75,8 +88,11 @@ pub(crate) fn check_charge(charge: &NewCharge) -> Result<String, FolioError> {
     if !(1..=MAX_DESCRIPTION).contains(&description.chars().count()) {
         return Err(FolioError::Invalid(format!("describe the charge in 1 to {MAX_DESCRIPTION} characters")));
     }
-    if charge.quantity == 0 {
-        return Err(FolioError::Invalid("the quantity can't be zero".into()));
+    if !(1..=MAX_QUANTITY).contains(&charge.quantity.unsigned_abs()) {
+        return Err(FolioError::Invalid(format!("the quantity is 1 to {MAX_QUANTITY}, either way")));
+    }
+    if charge.unit_net.unsigned_abs() > MAX_UNIT_NET {
+        return Err(FolioError::Invalid("the unit price is too large".into()));
     }
     if let Some(key) = &charge.posting_key
         && !(1..=MAX_POSTING_KEY).contains(&key.chars().count())
@@ -89,21 +105,22 @@ pub(crate) fn check_charge(charge: &NewCharge) -> Result<String, FolioError> {
 /// Posts `charge` on `folio`, taxed with the property's rules effective on its business date and the stay's
 /// residency, with its base-currency equivalent at the rate in force that day.
 ///
-/// Locks the folio. A `posting_key` the folio already has returns that line and posts nothing. Otherwise the folio
-/// must be open (`Conflict`), the currency one the property accepts (`Invalid`), and a rate for it must exist on the
-/// business date (`Conflict`, "No exchange rate for <CUR> on <YYYY-MM-DD>"). Queues `folio:<id>`; a `manual` charge
-/// is audited as `folio.charge_posted`.
+/// Locks the folio; `NotFound` unless it is in `property`. A `posting_key` already used on any of the property's
+/// folios returns that line and posts nothing. Otherwise the folio must be open (`Conflict`), the currency one the
+/// property accepts (`Invalid`), and a rate for it must exist on the business date (`Conflict`, "No exchange rate for
+/// <CUR> on <YYYY-MM-DD>"). Queues `folio:<id>`; a `manual` charge is audited as `folio.charge_posted`.
 pub async fn post_charge(
     tx: &mut Tx,
     tenant: TenantId,
     user: Option<UserId>,
+    property: Uuid,
     folio: Uuid,
     charge: NewCharge,
 ) -> Result<LineRow, FolioError> {
     let description = check_charge(&charge)?;
-    let locked = lock_folios(tx, &[folio]).await?.pop().ok_or(FolioError::NotFound("folio"))?;
+    let locked = lock_folios(tx, property, &[folio]).await?.pop().ok_or(FolioError::NotFound("folio"))?;
     if let Some(key) = &charge.posting_key
-        && let Some(line) = line_by_key(tx, &[folio], key).await?
+        && let Some(line) = line_by_key(tx, property, key).await?
     {
         return Ok(line);
     }
@@ -114,12 +131,13 @@ pub async fn post_charge(
     post_locked(tx, tenant, user, &locked, charge, description, resident).await
 }
 
-/// The line posted under `key` on any of `folios`, if there is one.
-pub(crate) async fn line_by_key(tx: &mut Tx, folios: &[Uuid], key: &str) -> Result<Option<LineRow>, sqlx::Error> {
+/// The line posted under `key` on any of `property`'s folios, if there is one.
+pub(crate) async fn line_by_key(tx: &mut Tx, property: Uuid, key: &str) -> Result<Option<LineRow>, sqlx::Error> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select {LINE_COLUMNS} from folio_line where folio_id = any($1) and posting_key = $2 limit 1"
+        "select {LINE_COLUMNS} from folio_line
+         where posting_key = $2 and folio_id in (select id from folio where property_id = $1)"
     )))
-    .bind(folios)
+    .bind(property)
     .bind(key)
     .fetch_optional(&mut **tx)
     .await
@@ -181,7 +199,8 @@ pub(crate) async fn post_locked(
     let base_total =
         fx::to_base(breakdown.total, fx::exponent(&charge.currency), fx::exponent(&base_currency), rate.rate)?;
 
-    let line: LineRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    let mut savepoint = tx.begin().await?;
+    let inserted: Result<LineRow, sqlx::Error> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "insert into folio_line (id, tenant_id, folio_id, source, category, description, quantity, net, total,
                                  currency, base_total, rate, rate_date, business_date, posting_key, posted_by)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
@@ -203,8 +222,23 @@ pub(crate) async fn post_locked(
     .bind(charge.business_date)
     .bind(&charge.posting_key)
     .bind(user.map(|user| user.0))
-    .fetch_one(&mut **tx)
-    .await?;
+    .fetch_one(&mut *savepoint)
+    .await;
+    // A key another transaction posted since the lookup: its line is the answer, as for any replay.
+    let line = match inserted {
+        Ok(line) => {
+            savepoint.commit().await?;
+            line
+        }
+        Err(err) if POSTING_KEY_INDEXES.iter().any(|index| violates(&err, index)) => {
+            savepoint.rollback().await?;
+            let key = charge.posting_key.as_deref().unwrap_or_default();
+            return line_by_key(tx, folio.property_id, key)
+                .await?
+                .ok_or_else(|| FolioError::Conflict("the posting key is used in another property".into()));
+        }
+        Err(err) => return Err(err.into()),
+    };
 
     if !breakdown.components.is_empty() {
         let components = &breakdown.components;
@@ -246,6 +280,11 @@ pub(crate) async fn post_locked(
     Ok(line)
 }
 
+/// Whether `err` is a violation of the unique index `index`.
+fn violates(err: &sqlx::Error, index: &str) -> bool {
+    err.as_database_error().and_then(|db_err| db_err.constraint()).is_some_and(|name| name == index)
+}
+
 fn kind_str(kind: tax::Kind) -> &'static str {
     match kind {
         tax::Kind::Tax => "tax",
@@ -273,19 +312,20 @@ fn check_open(folio: &Locked) -> Result<(), FolioError> {
 /// Reverses `line` of `folio` with an equal negative line carrying the original's taxes negated, posted on the
 /// property's business date with `reason` (1 to 500 characters).
 ///
-/// Locks the folio. `NotFound` if the line is not on the folio; `Invalid` for a reversal (a reversal is never
-/// reversed); `Conflict` for a line already reversed or transferred, or an invoiced folio. Audited as
-/// `folio.line_reversed`; queues `folio:<id>`.
+/// Locks the folio. `NotFound` if the folio is not in `property` or the line is not on it; `Invalid` for a reversal
+/// (a reversal is never reversed); `Conflict` for a line already reversed or transferred, or an invoiced folio.
+/// Audited as `folio.line_reversed`; queues `folio:<id>`.
 pub async fn reverse(
     tx: &mut Tx,
     tenant: TenantId,
     user: Option<UserId>,
+    property: Uuid,
     folio: Uuid,
     line: Uuid,
     reason_text: &str,
 ) -> Result<LineRow, FolioError> {
     let reason = reason(reason_text)?;
-    let locked = lock_folios(tx, &[folio]).await?.pop().ok_or(FolioError::NotFound("folio"))?;
+    let locked = lock_folios(tx, property, &[folio]).await?.pop().ok_or(FolioError::NotFound("folio"))?;
     let original: LineRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select {LINE_COLUMNS} from folio_line where id = $1 and folio_id = $2"
     )))
@@ -299,7 +339,14 @@ pub async fn reverse(
 
     let today = business_date(tx, locked.property_id).await?;
     let reversal = copy_line(tx, user, &original, folio, -1, today, Some(original.id), reason, None).await?;
-    let data = serde_json::json!({ "line": original.id, "reversal": reversal.id, "reason": reason });
+    let data = serde_json::json!({
+        "line": original.id,
+        "reversal": reversal.id,
+        "reason": reason,
+        "total": original.total,
+        "base_total": original.base_total,
+        "currency": original.currency,
+    });
     audit(tx, tenant, user, "folio.line_reversed", "folio", folio, data).await?;
     notify(tx, tenant, locked.property_id, vec![folio_key(folio)]).await?;
     Ok(reversal)
@@ -308,7 +355,7 @@ pub async fn reverse(
 /// Moves `from_line` to `to_folio`: a reversal on its folio and an identical line on the target, sharing a
 /// `transfer_id`, both on the property's business date with `reason`.
 ///
-/// Locks both folios in ascending id order. Both must be in the same property (`NotFound` otherwise) and open
+/// Locks both folios in ascending id order. Both must be in `property` (`NotFound` otherwise) and open
 /// (`Conflict`). A guest folio exchanges lines with its reservation's deposit folio, its reservation's account folio,
 /// and any other stay's guest folio in the property (`Invalid` otherwise). The line must be neither a reversal
 /// (`Invalid`) nor already reversed or transferred (`Conflict`). Audited as `folio.line_transferred`; queues both
@@ -317,25 +364,26 @@ pub async fn transfer(
     tx: &mut Tx,
     tenant: TenantId,
     user: Option<UserId>,
+    property: Uuid,
     from_line: Uuid,
     to_folio: Uuid,
     reason_text: &str,
 ) -> Result<(LineRow, LineRow), FolioError> {
     let reason = reason(reason_text)?;
-    let from_folio: Uuid = sqlx::query_scalar("select folio_id from folio_line where id = $1")
-        .bind(from_line)
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or(FolioError::NotFound("line"))?;
+    let from_folio: Uuid = sqlx::query_scalar(
+        "select l.folio_id from folio_line l join folio f on f.id = l.folio_id where l.id = $1 and f.property_id = $2",
+    )
+    .bind(from_line)
+    .bind(property)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or(FolioError::NotFound("line"))?;
     if from_folio == to_folio {
         return Err(FolioError::Invalid("the line is already on that folio".into()));
     }
-    let locked = lock_folios(tx, &[from_folio, to_folio]).await?;
+    let locked = lock_folios(tx, property, &[from_folio, to_folio]).await?;
     let source = locked.iter().find(|folio| folio.id == from_folio).ok_or(FolioError::NotFound("line"))?;
-    let target = locked
-        .iter()
-        .find(|folio| folio.id == to_folio && folio.property_id == source.property_id)
-        .ok_or(FolioError::NotFound("folio"))?;
+    let target = locked.iter().find(|folio| folio.id == to_folio).ok_or(FolioError::NotFound("folio"))?;
     if !may_transfer(tx, source, target).await? {
         return Err(FolioError::Invalid(
             "a stay's line moves only to its reservation's deposit or account folio, or to another stay's folio".into(),
@@ -362,6 +410,9 @@ pub async fn transfer(
         "moved": moved.id,
         "transfer_id": transfer_id,
         "reason": reason,
+        "total": original.total,
+        "base_total": original.base_total,
+        "currency": original.currency,
     });
     audit(tx, tenant, user, "folio.line_transferred", "folio", from_folio, data).await?;
     notify(tx, tenant, source.property_id, vec![folio_key(from_folio), folio_key(to_folio)]).await?;
@@ -421,6 +472,8 @@ async fn business_date(tx: &mut Tx, property: Uuid) -> Result<Date, FolioError> 
 }
 
 /// A copy of `original` on `folio`, with every amount (its taxes' too) multiplied by `sign`, at the original's rate.
+/// The copy carries no posting key: the original keeps it. A second reversal of `original` that a concurrent
+/// transaction committed first is a `Conflict`.
 #[allow(clippy::too_many_arguments)]
 async fn copy_line(
     tx: &mut Tx,
@@ -432,7 +485,7 @@ async fn copy_line(
     reverses: Option<Uuid>,
     reason: &str,
     transfer_id: Option<Uuid>,
-) -> Result<LineRow, sqlx::Error> {
+) -> Result<LineRow, FolioError> {
     let line: LineRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "insert into folio_line (id, tenant_id, folio_id, source, category, description, quantity, net, total,
                                  currency, base_total, rate, rate_date, business_date, reverses, reason, transfer_id,
@@ -452,7 +505,14 @@ async fn copy_line(
     .bind(user.map(|user| user.0))
     .bind(original.id)
     .fetch_one(&mut **tx)
-    .await?;
+    .await
+    .map_err(|err| {
+        if violates(&err, REVERSED_ONCE_INDEX) {
+            FolioError::Conflict("This line was already reversed".into())
+        } else {
+            err.into()
+        }
+    })?;
     sqlx::query(
         "insert into folio_line_tax (tenant_id, line_id, code, name, kind, rate_bp, base, amount, presentation)
          select tenant_id, $1, code, name, kind, rate_bp, $2::bigint * base, $2::bigint * amount, presentation

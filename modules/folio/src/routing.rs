@@ -14,11 +14,8 @@ pub const DEFAULT_ROUTING: [&str; 2] = ["room", "meal_plan"];
 #[derive(sqlx::FromRow)]
 struct Stay {
     property_id: Uuid,
-    reservation_id: Uuid,
     /// The rate plan's.
     residency: Option<String>,
-    /// The reservation's current account.
-    account_id: Option<Uuid>,
     /// That account, when a routing rule sends the charge's category to it.
     routed_account: Option<Uuid>,
 }
@@ -98,10 +95,10 @@ pub async fn follow_account_change(
 /// charge's category names the reservation's current account, else on the stay's guest folio. Taxed with the stay's
 /// rate plan residency, as [`crate::post_charge`].
 ///
-/// A posting key is unique across every folio the stay posts to (its guest folio, its reservation's deposit folio
-/// and its reservation's account folio), so a key posted before a routing change returns the existing line wherever
-/// it is. The stay's postings run one at a time: the guest folio (and the routed folio) are locked, in ascending id
-/// order, before the key is looked up. No `reservation_room` lock is taken, so the lock order holds.
+/// A posting key names one line in the tenant (see the crate docs), so a key posted before a routing or account
+/// change returns the existing line wherever it is. The stay's postings run one at a time: the guest folio (and the
+/// routed folio) are locked, in ascending id order, before the key is looked up. No `reservation_room` lock is taken,
+/// so the lock order holds.
 pub async fn post_for_stay(
     tx: &mut Tx,
     tenant: TenantId,
@@ -111,7 +108,7 @@ pub async fn post_for_stay(
 ) -> Result<LineRow, FolioError> {
     let description = check_charge(&charge)?;
     let stay: Stay = sqlx::query_as(
-        "select rr.property_id, rr.reservation_id, rp.residency, r.account_id,
+        "select rr.property_id, rp.residency,
                 (select rule.account_id from routing_rule rule
                  where rule.reservation_id = r.id and rule.category = $2 and rule.account_id = r.account_id)
                   as routed_account
@@ -125,8 +122,7 @@ pub async fn post_for_stay(
     .fetch_optional(&mut **tx)
     .await?
     .ok_or(FolioError::NotFound("reservation room"))?;
-    let Stay { property_id: property, reservation_id: reservation, residency, account_id: account, routed_account } =
-        stay;
+    let Stay { property_id: property, residency, routed_account } = stay;
     let resident = residency.map(|residency| residency == "resident");
 
     let guest = ensure_guest_folio(tx, tenant, property, reservation_room).await?;
@@ -134,24 +130,13 @@ pub async fn post_for_stay(
         Some(account) => ensure_account_folio(tx, tenant, property, account).await?,
         None => guest,
     };
-    let locked = lock_folios(tx, &[guest, target]).await?;
+    let locked = lock_folios(tx, property, &[guest, target]).await?;
     let target = locked.into_iter().find(|folio| folio.id == target).ok_or(FolioError::NotFound("folio"))?;
 
-    if let Some(key) = &charge.posting_key {
-        let mut folios: Vec<Uuid> = sqlx::query_scalar(
-            "select id from folio
-             where property_id = $1
-               and ((kind = 'deposit' and reservation_id = $2) or (kind = 'account' and account_id = $3))",
-        )
-        .bind(property)
-        .bind(reservation)
-        .bind(account)
-        .fetch_all(&mut **tx)
-        .await?;
-        folios.extend([guest, target.id]);
-        if let Some(line) = line_by_key(tx, &folios, key).await? {
-            return Ok(line);
-        }
+    if let Some(key) = &charge.posting_key
+        && let Some(line) = line_by_key(tx, property, key).await?
+    {
+        return Ok(line);
     }
     post_locked(tx, tenant, user, &target, charge, description, resident).await
 }

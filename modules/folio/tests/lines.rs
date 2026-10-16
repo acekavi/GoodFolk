@@ -31,14 +31,16 @@ async fn view(hotel: &Hotel, folio: Uuid) -> FolioView {
 
 async fn reverse(hotel: &Hotel, folio: Uuid, line: Uuid) -> Result<LineRow, FolioError> {
     let mut tx = hotel.tx().await;
-    let reversal = folio::reverse(&mut tx, hotel.tenant, Some(hotel.user), folio, line, " Posted twice ").await?;
+    let reversal =
+        folio::reverse(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, folio, line, " Posted twice ").await?;
     tx.commit().await.unwrap();
     Ok(reversal)
 }
 
 async fn transfer(hotel: &Hotel, line: Uuid, to: Uuid) -> Result<(LineRow, LineRow), FolioError> {
     let mut tx = hotel.tx().await;
-    let moved = folio::transfer(&mut tx, hotel.tenant, Some(hotel.user), line, to, "Wrong room").await?;
+    let moved =
+        folio::transfer(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, line, to, "Wrong room").await?;
     tx.commit().await.unwrap();
     Ok(moved)
 }
@@ -146,10 +148,15 @@ async fn malformed_charges_are_invalid(_: PgPoolOptions, opts: PgConnectOptions)
         NewCharge { category: "pos:bar".into(), ..charge.clone() },
         NewCharge { description: "  ".into(), ..charge.clone() },
         NewCharge { quantity: 0, ..charge.clone() },
-        NewCharge { quantity: 2, unit_net: i64::MAX, ..charge.clone() },
+        NewCharge { quantity: 10_000, ..charge.clone() },
+        NewCharge { quantity: -10_000, ..charge.clone() },
+        NewCharge { unit_net: 10_000_000_000_001, ..charge.clone() },
+        NewCharge { unit_net: -10_000_000_000_001, ..charge.clone() },
     ] {
         invalid(hotel.post(stay.guests[0], bad).await);
     }
+    let largest = NewCharge { quantity: -9_999, unit_net: 10_000_000_000_000, ..charge.clone() };
+    hotel.post(stay.guests[0], largest).await.expect("the bounds themselves are allowed");
     assert!(matches!(hotel.post(Uuid::now_v7(), charge).await, Err(FolioError::NotFound("folio"))));
 }
 
@@ -178,6 +185,10 @@ async fn a_reversal_nets_to_zero_including_taxes(_: PgPoolOptions, opts: PgConne
     let audited = hotel.audited("folio.line_reversed").await;
     assert_eq!(audited.len(), 1);
     assert_eq!(audited[0].1["reversal"], serde_json::json!(reversal.id));
+    assert_eq!(
+        (&audited[0].1["total"], &audited[0].1["base_total"], &audited[0].1["currency"]),
+        (&serde_json::json!(line.total), &serde_json::json!(line.base_total), &serde_json::json!("USD"))
+    );
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -194,7 +205,7 @@ async fn reversing_twice_is_a_conflict_and_reversing_a_reversal_is_invalid(_: Pg
     let other = hotel.book(None).await;
     assert!(matches!(reverse(&hotel, other.guests[0], line.id).await, Err(FolioError::NotFound("line"))));
     let mut tx = hotel.tx().await;
-    invalid(folio::reverse(&mut tx, hotel.tenant, None, folio, line.id, " ").await);
+    invalid(folio::reverse(&mut tx, hotel.tenant, None, hotel.property, folio, line.id, " ").await);
     assert_eq!(hotel.lines_on(&[folio]).await.len(), 2);
 }
 
@@ -222,7 +233,12 @@ async fn a_transfer_moves_the_exact_amount_and_links_both_lines(_: PgPoolOptions
         vec![Balance { currency: "LKR".into(), amount: line.total, base_amount: line.base_total }]
     );
     assert_eq!(taxes(&target, moved.id), taxes(&source, line.id), "the taxes move with the line");
-    assert_eq!(hotel.audited("folio.line_transferred").await.len(), 1);
+    let audited = hotel.audited("folio.line_transferred").await;
+    assert_eq!(audited.len(), 1);
+    assert_eq!(
+        (&audited[0].1["total"], &audited[0].1["base_total"], &audited[0].1["currency"]),
+        (&serde_json::json!(line.total), &serde_json::json!(line.base_total), &serde_json::json!("LKR"))
+    );
 
     conflict(transfer(&hotel, line.id, to.guests[0]).await);
     invalid(transfer(&hotel, reversal.id, to.guests[0]).await);
@@ -376,5 +392,152 @@ async fn folios_for_reads_three_folios_in_one_statement_per_kind(_: PgPoolOption
             Balance { currency: "LKR".into(), amount: first.total, base_amount: first.base_total },
             Balance { currency: "USD".into(), amount: second.total, base_amount: second.base_total },
         ]
+    );
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_transfer_to_an_invoiced_folio_is_a_conflict(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let (stay, other) = (hotel.book(None).await, hotel.book(None).await);
+    let line = hotel.post(stay.guests[0], hotel.charge(Source::Manual, "misc", 100, "LKR")).await.unwrap();
+    let mut tx = hotel.tx().await;
+    sqlx::query("update folio set status = 'invoiced', version = version + 1 where id = $1")
+        .bind(other.guests[0])
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    conflict(transfer(&hotel, line.id, other.guests[0]).await);
+    assert_eq!(hotel.lines_on(&[stay.guests[0], other.guests[0]]).await.len(), 1, "nothing moved");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_reversed_key_stays_used_and_its_copies_carry_no_key(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let (stay, other) = (hotel.book(None).await, hotel.book(None).await);
+    let key = |n: u8| format!("laundry:{}:{n}", stay.rooms[0]);
+    let charge =
+        |n: u8| NewCharge { posting_key: Some(key(n)), ..hotel.charge(Source::Laundry, "laundry", 700, "LKR") };
+    let reversed = hotel.post(stay.guests[0], charge(1)).await.unwrap();
+    let moved = hotel.post(stay.guests[0], charge(2)).await.unwrap();
+
+    let reversal = reverse(&hotel, stay.guests[0], reversed.id).await.unwrap();
+    let (out, into) = transfer(&hotel, moved.id, other.guests[0]).await.unwrap();
+    assert_eq!((reversal.posting_key, out.posting_key, into.posting_key), (None, None, None));
+
+    assert_eq!(hotel.post(stay.guests[0], charge(1)).await.unwrap(), reversed, "the replay is still a no-op");
+    assert_eq!(hotel.post(other.guests[0], charge(2)).await.unwrap(), moved, "found on any folio of the property");
+    assert_eq!(hotel.lines_on(&[stay.guests[0], other.guests[0]]).await.len(), 5);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_charge_on_another_property_s_folio_is_not_found(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let kandy = hotel.add_property("KAN").await;
+    let there = hotel.book_in(kandy, 1, None, None).await;
+
+    let result = hotel.post(there.guests[0], hotel.charge(Source::Manual, "misc", 100, "LKR")).await;
+
+    assert!(matches!(result, Err(FolioError::NotFound("folio"))), "{result:?}");
+    assert!(hotel.lines_on(&[there.guests[0]]).await.is_empty());
+}
+
+/// A charge on `folio` of `property`, committed.
+async fn post_in(hotel: &Hotel, property: Uuid, folio: Uuid) -> LineRow {
+    let mut tx = hotel.tx().await;
+    let charge = hotel.charge(Source::Manual, "misc", 100, "LKR");
+    let line = folio::post_charge(&mut tx, hotel.tenant, Some(hotel.user), property, folio, charge).await.unwrap();
+    tx.commit().await.unwrap();
+    line
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn reversing_on_another_property_s_folio_is_not_found(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let kandy = hotel.add_property("KAN").await;
+    let there = hotel.book_in(kandy, 1, None, None).await;
+    let line = post_in(&hotel, kandy, there.guests[0]).await;
+
+    let result = reverse(&hotel, there.guests[0], line.id).await;
+
+    assert!(matches!(result, Err(FolioError::NotFound("folio"))), "{result:?}");
+    assert_eq!(hotel.lines_on(&[there.guests[0]]).await.len(), 1, "nothing reversed");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn moving_another_property_s_line_is_not_found(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let kandy = hotel.add_property("KAN").await;
+    let here = hotel.book(None).await;
+    let there = hotel.book_in(kandy, 1, None, None).await;
+    let line = post_in(&hotel, kandy, there.guests[0]).await;
+
+    let result = transfer(&hotel, line.id, here.guests[0]).await;
+
+    assert!(matches!(result, Err(FolioError::NotFound("line"))), "{result:?}");
+    assert_eq!(hotel.lines_on(&[here.guests[0], there.guests[0]]).await.len(), 1, "nothing moved");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn two_concurrent_reversals_of_a_line_make_one_reversal_and_a_conflict(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let stay = hotel.book(None).await;
+    let folio = stay.guests[0];
+    let line = hotel.post(folio, hotel.charge(Source::Manual, "misc", 1_000, "LKR")).await.unwrap();
+
+    let mut first = hotel.tx().await;
+    folio::reverse(&mut first, hotel.tenant, Some(hotel.user), hotel.property, folio, line.id, "Twice").await.unwrap();
+    let (pool, tenant, user, property) = (hotel.pool.clone(), hotel.tenant, hotel.user, hotel.property);
+    let second = tokio::spawn(async move {
+        let mut tx = db::begin(&pool, db::Scope::tenant(tenant)).await.unwrap();
+        folio::reverse(&mut tx, tenant, Some(user), property, folio, line.id, "Twice").await
+    });
+    hotel.until_blocked().await;
+    first.commit().await.unwrap();
+
+    conflict(second.await.unwrap());
+    let reversals: i64 = sqlx::query_scalar("select count(*) from folio_line where reverses = $1")
+        .bind(line.id)
+        .fetch_one(&mut *hotel.tx().await)
+        .await
+        .unwrap();
+    assert_eq!(reversals, 1);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn opposing_concurrent_transfers_do_not_deadlock(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let (one, two) = (hotel.book(None).await, hotel.book(None).await);
+    let (g1, g2) = (one.guests[0], two.guests[0]);
+    let on_one = hotel.post(g1, hotel.charge(Source::Manual, "misc", 100, "LKR")).await.unwrap();
+    let on_two = hotel.post(g2, hotel.charge(Source::Manual, "misc", 200, "LKR")).await.unwrap();
+
+    let mut first = hotel.tx().await;
+    folio::transfer(&mut first, hotel.tenant, Some(hotel.user), hotel.property, on_one.id, g2, "Swap").await.unwrap();
+    let (pool, tenant, user, property) = (hotel.pool.clone(), hotel.tenant, hotel.user, hotel.property);
+    let second = tokio::spawn(async move {
+        let mut tx = db::begin(&pool, db::Scope::tenant(tenant)).await.unwrap();
+        let moved = folio::transfer(&mut tx, tenant, Some(user), property, on_two.id, g1, "Swap").await;
+        if moved.is_ok() {
+            tx.commit().await.unwrap();
+        }
+        moved
+    });
+    hotel.until_blocked().await;
+    first.commit().await.unwrap();
+
+    match second.await.unwrap() {
+        Ok(_) | Err(FolioError::Conflict(_)) => {}
+        Err(other) => panic!("expected the second transfer to finish or conflict, got {other:?}"),
+    }
+    let (one_view, two_view) = (view(&hotel, g1).await, view(&hotel, g2).await);
+    assert_eq!(
+        one_view.balances,
+        vec![Balance { currency: "LKR".into(), amount: on_two.total, base_amount: on_two.base_total }]
+    );
+    assert_eq!(
+        two_view.balances,
+        vec![Balance { currency: "LKR".into(), amount: on_one.total, base_amount: on_one.base_total }]
     );
 }

@@ -5,13 +5,15 @@ use db::{Scope, TenantId, Tx, UserId, begin};
 use folio::{FolioError, LineRow, NewCharge, Source};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
-use sqlx::postgres::PgConnectOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use time::{Date, Duration};
 use uuid::Uuid;
 
 /// A tenant with one user and one LKR property (`GAL`) with the Sri Lanka preset, accepting LKR, USD, EUR and GBP.
 pub struct Hotel {
     pub pool: PgPool,
+    /// The test database's owner, which sees every session's lock waits.
+    pub owner: PgPool,
     pub tenant: TenantId,
     pub user: UserId,
     pub property: Uuid,
@@ -30,7 +32,8 @@ pub struct Booking {
 
 impl Hotel {
     pub async fn new(opts: PgConnectOptions) -> Self {
-        let pool = app_pool(opts, 2).await;
+        let owner = PgPoolOptions::new().max_connections(1).connect_with(opts.clone()).await.unwrap();
+        let pool = app_pool(opts, 4).await;
         let tenant = TenantId(Uuid::now_v7());
         let user = UserId(Uuid::now_v7());
         let mut tx = begin(&pool, Scope::tenant(tenant)).await.unwrap();
@@ -42,7 +45,7 @@ impl Hotel {
             .await
             .unwrap();
         tx.commit().await.unwrap();
-        let mut hotel = Self { pool, tenant, user, property: Uuid::nil(), business_date: Date::MIN };
+        let mut hotel = Self { pool, owner, tenant, user, property: Uuid::nil(), business_date: Date::MIN };
         hotel.property = hotel.add_property("GAL").await;
         hotel.business_date = sqlx::query_scalar("select business_date from property where id = $1")
             .bind(hotel.property)
@@ -213,7 +216,7 @@ impl Hotel {
     /// `post_charge` in its own transaction, committed if it succeeds.
     pub async fn post(&self, folio: Uuid, charge: NewCharge) -> Result<LineRow, FolioError> {
         let mut tx = self.tx().await;
-        let line = folio::post_charge(&mut tx, self.tenant, Some(self.user), folio, charge).await?;
+        let line = folio::post_charge(&mut tx, self.tenant, Some(self.user), self.property, folio, charge).await?;
         tx.commit().await.unwrap();
         Ok(line)
     }
@@ -233,6 +236,24 @@ impl Hotel {
         folio::set_routing(&mut tx, self.tenant, Some(self.user), reservation, &categories).await?;
         tx.commit().await.unwrap();
         Ok(())
+    }
+
+    /// Waits until some session of the test database is blocked on a lock: the second of two racing transactions.
+    pub async fn until_blocked(&self) {
+        for _ in 0..1_000 {
+            let blocked: bool = sqlx::query_scalar(
+                "select exists (select 1 from pg_stat_activity
+                                where datname = current_database() and wait_event_type = 'Lock')",
+            )
+            .fetch_one(&self.owner)
+            .await
+            .unwrap();
+            if blocked {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("no transaction ever waited on a lock");
     }
 
     /// `(folio, total, posting key)` of every line of the folios `ids`, oldest first.

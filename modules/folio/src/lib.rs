@@ -4,9 +4,18 @@
 //! new line (a reversal or a transfer), never an edit. Writes queue a `folio:<id>` change event for every folio they
 //! touch, and staff actions record an audit entry in the same transaction.
 //!
+//! Every write names its property, and a folio (or a line's folio) of another property is `NotFound`.
+//!
+//! A posting key names one charge in the whole tenant (a unique index holds it), and every key embeds a globally
+//! unique id, such as the stay's or the POS bill's. A replay of a key returns the line already posted and posts
+//! nothing, wherever routing or a change of account has since sent that charge. A key whose line was reversed stays
+//! used: its replay is still a no-op, and a correction is a manual charge. Reversal and transfer lines carry no key.
+//!
 //! A system posting for a stay (room, meal plan, laundry, POS) goes through [`post_for_stay`], never
-//! [`post_charge`]: only `post_for_stay` applies the reservation's routing and checks a posting key across every
-//! folio the stay posts to, so a replay after a routing change returns the existing line instead of posting twice.
+//! [`post_charge`]: only `post_for_stay` applies the reservation's routing.
+//!
+//! A line on the folio of an account the reservation is no longer billed to can't be transferred back to the stay;
+//! reverse it and post a manual charge instead.
 
 mod folios;
 mod lines;

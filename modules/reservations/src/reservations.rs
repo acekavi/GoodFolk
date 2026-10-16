@@ -329,8 +329,8 @@ pub struct UpdatedReservation {
 }
 
 /// Sets or clears the reservation `id` of the property's billed-to account and notes, at `expected_version`.
-/// A change of account re-points the reservation's routing rules, with the same categories, to the new account; clearing
-/// it deletes them. The audit entry lists the affected categories as `routing`.
+/// A change of account re-points the reservation's routing rules, with the same categories, to the new account;
+/// clearing it deletes them. The audit entry lists the affected categories as `routing`.
 ///
 /// Locks only the `reservation` row. Every reservation-room command (`cancel_room`, `assign_room`,
 /// `unassign_room`) takes `reservation` LAST, after `reservation_room` (and, for `assign_room`, `room`) --

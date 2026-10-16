@@ -134,13 +134,14 @@ pub(crate) struct Locked {
 }
 
 /// Locks the folios `ids` (`for update`, in ascending id order, as every folio command does) and returns those that
-/// exist in this tenant, in id order.
-pub(crate) async fn lock_folios(tx: &mut Tx, ids: &[Uuid]) -> Result<Vec<Locked>, sqlx::Error> {
+/// exist in `property`, in id order.
+pub(crate) async fn lock_folios(tx: &mut Tx, property: Uuid, ids: &[Uuid]) -> Result<Vec<Locked>, sqlx::Error> {
     sqlx::query_as(
         "select id, property_id, kind, reservation_room_id, account_id, reservation_id, status
-         from folio where id = any($1) order by id for update",
+         from folio where id = any($1) and property_id = $2 order by id for update",
     )
     .bind(ids)
+    .bind(property)
     .fetch_all(&mut **tx)
     .await
 }
