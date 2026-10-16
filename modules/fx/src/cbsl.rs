@@ -25,6 +25,9 @@ const CURRENCIES: [(&str, &str); 9] = [
 ];
 
 /// How far back the request looks, so a weekend or a holiday still finds the last published rate.
+/// The most of the bank's page that is read.
+const MAX_BYTES: u64 = 2 * 1024 * 1024;
+
 const WINDOW_DAYS: i64 = 7;
 
 pub struct Cbsl {
@@ -42,6 +45,7 @@ impl Cbsl {
         crate::install_tls_provider();
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(20))
+            .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!("GoodFolk/", env!("CARGO_PKG_VERSION"), " (exchange-rate import)"))
             .build()
             .map_err(|error| FxError::Source(error.to_string()))?;
@@ -57,16 +61,29 @@ fn iso(date: Date) -> String {
 impl RateSource for Cbsl {
     async fn tt_selling(&self, currencies: &[String], on: Date) -> Result<Vec<(String, Date, Decimal)>, FxError> {
         let body = request_body(currencies, on);
-        let response = self
+        let mut response = self
             .client
             .post(&self.url)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(body)
             .send()
             .await
-            .and_then(|r| r.error_for_status())
             .map_err(|error| FxError::Source(error.to_string()))?;
-        let html = response.text().await.map_err(|error| FxError::Source(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(FxError::Source(format!("the bank answered {}", response.status())));
+        }
+        let too_big = || FxError::Source("the bank's page is over 2 MB".to_owned());
+        if response.content_length().is_some_and(|length| length > MAX_BYTES) {
+            return Err(too_big());
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|error| FxError::Source(error.to_string()))? {
+            if bytes.len() as u64 + chunk.len() as u64 > MAX_BYTES {
+                return Err(too_big());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let html = String::from_utf8_lossy(&bytes);
         Ok(newest_on_or_before(parse_cbsl(&html)?, currencies, on))
     }
 }
@@ -103,12 +120,14 @@ fn newest_on_or_before(
 
 /// Every Sell Rate on the page, as `(currency, date, rate)`. Any deviation from the layout seen on 2026-10-16 (a
 /// heading the bank has not told us about, renamed columns, a malformed date or rate) is [`FxError::Layout`] rather
-/// than a guess, so a redesign raises the alert instead of storing wrong money.
+/// than a guess (a page with no currency at all is one too), so a redesign raises the alert instead of storing wrong money.
 pub fn parse_cbsl(html: &str) -> Result<Vec<(String, Date, Decimal)>, FxError> {
     let layout = |what: &str| FxError::Layout(what.to_owned());
     let mut rows = Vec::new();
     let sections = html.split("<h2 id=\"LOOKUPS_").skip(1);
+    let mut any_heading = false;
     for section in sections {
+        any_heading = true;
         let heading = between(section, ">", "</h2>").ok_or_else(|| layout("a heading is not closed"))?.trim();
         let (code, _) = CURRENCIES
             .iter()
@@ -134,6 +153,9 @@ pub fn parse_cbsl(html: &str) -> Result<Vec<(String, Date, Decimal)>, FxError> {
             }
             rows.push(((*code).to_owned(), date, sell));
         }
+    }
+    if !any_heading {
+        return Err(layout("the page has no currency headings"));
     }
     Ok(rows)
 }

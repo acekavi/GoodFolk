@@ -6,6 +6,7 @@ use fx::{FxError, RateSource, exponent, import, rate_for, set_manual, to_base};
 use rust_decimal::Decimal;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use time::Date;
 use time::macros::date;
 
@@ -17,11 +18,13 @@ fn dec(s: &str) -> Decimal {
 struct Fake {
     rates: Vec<(&'static str, Date, &'static str)>,
     fail: bool,
+    calls: AtomicUsize,
 }
 
 #[async_trait]
 impl RateSource for Fake {
     async fn tt_selling(&self, currencies: &[String], _on: Date) -> Result<Vec<(String, Date, Decimal)>, FxError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail {
             return Err(FxError::Layout("the columns changed".into()));
         }
@@ -42,26 +45,30 @@ fn full(source_date: Date) -> Fake {
             ("GBP", source_date, "447.0403"),
         ],
         fail: false,
+        calls: AtomicUsize::new(0),
     }
 }
 
 #[test]
 fn to_base_converts_minor_units_exactly_and_rounds_half_up() {
     // USD 100.00 at 335.6485 is LKR 33,564.85.
-    assert_eq!(to_base(10_000, 2, 2, dec("335.6485")), 3_356_485);
+    assert_eq!(to_base(10_000, 2, 2, dec("335.6485")).unwrap(), 3_356_485);
     // JPY has no minor unit: 1,000 yen at 2.1344 is LKR 2,134.40.
-    assert_eq!(to_base(1_000, 0, 2, dec("2.1344")), 213_440);
+    assert_eq!(to_base(1_000, 0, 2, dec("2.1344")).unwrap(), 213_440);
     // A base currency without a minor unit: USD 1.00 at 335.6485 is 336 whole units.
-    assert_eq!(to_base(100, 2, 0, dec("335.6485")), 336);
+    assert_eq!(to_base(100, 2, 0, dec("335.6485")).unwrap(), 336);
     // Exactly half rounds up: 0.5 cents.
-    assert_eq!(to_base(1, 2, 2, dec("0.5")), 1);
-    assert_eq!(to_base(1, 2, 2, dec("0.49")), 0);
+    assert_eq!(to_base(1, 2, 2, dec("0.5")).unwrap(), 1);
+    assert_eq!(to_base(1, 2, 2, dec("0.49")).unwrap(), 0);
     // A refund mirrors the charge.
-    assert_eq!(to_base(-1, 2, 2, dec("0.5")), -1);
-    assert_eq!(to_base(-10_000, 2, 2, dec("335.6485")), -3_356_485);
+    assert_eq!(to_base(-1, 2, 2, dec("0.5")).unwrap(), -1);
+    assert_eq!(to_base(-10_000, 2, 2, dec("335.6485")).unwrap(), -3_356_485);
     // Three-decimal currencies: KWD 1.000 at 1,090.5 is LKR 1,090.50.
-    assert_eq!(to_base(1_000, 3, 2, dec("1090.5")), 109_050);
-    assert_eq!(to_base(i64::MAX, 2, 2, dec("999999999999")), i64::MAX);
+    assert_eq!(to_base(1_000, 3, 2, dec("1090.5")).unwrap(), 109_050);
+    assert!(to_base(i64::MAX, 2, 2, dec("999999999999")).is_err());
+    assert!(to_base(i64::MIN, 2, 2, dec("999999999999")).is_err());
+    assert!(to_base(1, 19, 2, dec("1")).is_err());
+    assert!(to_base(1, 2, 19, dec("1")).is_err());
 }
 
 #[test]
@@ -118,6 +125,13 @@ async fn a_manual_override_is_audited_and_validated(_: PgPoolOptions, opts: PgCo
         .await
         .unwrap();
     assert_eq!(audited, 2);
+    let data: Vec<serde_json::Value> =
+        sqlx::query_scalar("select data from audit_log where action = 'fx.overridden' order by id")
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(data[0]["previous"], serde_json::Value::Null);
+    assert_eq!(data[1]["previous"], "340.5");
     tx.commit().await.unwrap();
     let stored = h.stored("USD").await;
     assert_eq!(stored, vec![(day, day, dec("341.25"), "manual".to_owned())]);
@@ -166,7 +180,7 @@ async fn a_weekend_keeps_the_banks_own_date(_: PgPoolOptions, opts: PgConnectOpt
 async fn a_failing_source_raises_the_alert_and_stores_nothing(_: PgPoolOptions, opts: PgConnectOptions) {
     let h = Hotel::new(opts).await;
     let today = date!(2026 - 10 - 16);
-    let report = import(&h.pool, &Fake { rates: vec![], fail: true }, today).await;
+    let report = import(&h.pool, &Fake { rates: vec![], fail: true, calls: AtomicUsize::new(0) }, today).await;
     assert_eq!((report.stored, report.alerted), (0, 1));
     assert!(h.alert().await.unwrap().contains("layout"));
     assert!(h.stored("USD").await.is_empty());
@@ -176,7 +190,11 @@ async fn a_failing_source_raises_the_alert_and_stores_nothing(_: PgPoolOptions, 
 async fn a_missing_currency_raises_the_alert_but_keeps_the_rest(_: PgPoolOptions, opts: PgConnectOptions) {
     let h = Hotel::new(opts).await;
     let today = date!(2026 - 10 - 16);
-    let source = Fake { rates: vec![("USD", today, "335.6485"), ("EUR", today, "377.9703")], fail: false };
+    let source = Fake {
+        rates: vec![("USD", today, "335.6485"), ("EUR", today, "377.9703")],
+        fail: false,
+        calls: AtomicUsize::new(0),
+    };
     let report = import(&h.pool, &source, today).await;
     assert_eq!((report.stored, report.alerted), (2, 1));
     assert!(h.alert().await.unwrap().contains("GBP"));
@@ -206,4 +224,31 @@ async fn an_import_serves_every_tenant(_: PgPoolOptions, opts: PgConnectOptions)
     assert_eq!((report.properties, report.stored), (2, 6));
     assert_eq!(first.stored("USD").await.len(), 1);
     assert_eq!(second.stored("USD").await.len(), 1);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_source_is_asked_once_for_all_properties(_: PgPoolOptions, opts: PgConnectOptions) {
+    let first = Hotel::new(opts).await;
+    let second = Hotel::in_pool(first.pool.clone()).await;
+    let today = date!(2026 - 10 - 16);
+    let source = full(today);
+    import(&first.pool, &source, today).await;
+    assert_eq!(source.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(second.stored("EUR").await.len(), 1);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_stale_rate_is_stored_but_alerts(_: PgPoolOptions, opts: PgConnectOptions) {
+    let h = Hotel::new(opts).await;
+    let today = date!(2026 - 10 - 16);
+    let old = date!(2026 - 10 - 09);
+    let source = Fake {
+        rates: vec![("USD", old, "335.6485"), ("EUR", today, "377.9703"), ("GBP", today, "447.0403")],
+        fail: false,
+        calls: AtomicUsize::new(0),
+    };
+    let report = import(&h.pool, &source, today).await;
+    assert_eq!((report.stored, report.alerted), (3, 1));
+    assert_eq!(h.alert().await.unwrap(), "Central Bank rate for USD is from 2026-10-09");
+    assert_eq!(h.stored("USD").await.len(), 1);
 }

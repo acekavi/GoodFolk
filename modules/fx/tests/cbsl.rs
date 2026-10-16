@@ -41,6 +41,6 @@ fn an_unreadable_rate_is_a_layout_error() {
 }
 
 #[test]
-fn a_page_without_currencies_has_no_rows() {
-    assert!(parse_cbsl("<html><body>No data</body></html>").unwrap().is_empty());
+fn a_page_without_currencies_is_a_layout_error() {
+    assert!(matches!(parse_cbsl("<html><body>No data</body></html>"), Err(FxError::Layout(_))));
 }

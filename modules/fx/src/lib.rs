@@ -68,21 +68,18 @@ pub fn exponent(currency: &str) -> u32 {
 }
 
 /// `amount` minor units of a currency (with `currency_exponent` decimals) in base minor units (with `base_exponent`
-/// decimals) at `rate`, rounded half away from zero. A result beyond `i64` saturates; rates are bounded by
-/// `numeric(18,6)`, so that takes an amount no folio holds.
-pub fn to_base(amount: i64, currency_exponent: u32, base_exponent: u32, rate: Decimal) -> i64 {
-    let ten = |exponent: u32| Decimal::from(10u64.pow(exponent));
-    let converted = Decimal::new(amount, currency_exponent)
-        .checked_mul(rate)
-        .and_then(|major| major.checked_mul(ten(base_exponent)));
-    match converted {
-        Some(value) => value
-            .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
-            .to_i64()
-            .unwrap_or(if value.is_sign_negative() { i64::MIN } else { i64::MAX }),
-        None if (amount < 0) == rate.is_sign_negative() => i64::MAX,
-        None => i64::MIN,
+/// decimals) at `rate`, rounded half away from zero. An amount the result cannot hold, or an exponent above 18, is an
+/// error: money is never clamped.
+pub fn to_base(amount: i64, currency_exponent: u32, base_exponent: u32, rate: Decimal) -> Result<i64, FxError> {
+    let too_large = || FxError::Invalid("amount too large to convert".into());
+    if currency_exponent > 18 || base_exponent > 18 {
+        return Err(too_large());
     }
+    Decimal::new(amount, currency_exponent)
+        .checked_mul(rate)
+        .and_then(|major| major.checked_mul(Decimal::from(10u64.pow(base_exponent))))
+        .and_then(|value| value.round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero).to_i64())
+        .ok_or_else(too_large)
 }
 
 /// The rate to convert `currency` to the property's base currency on `on`: 1 for the base currency itself, else the
@@ -137,6 +134,13 @@ pub async fn set_manual(
     if !accepted.iter().any(|c| c == currency) {
         return Err(FxError::Invalid(format!("{currency} is not an accepted currency of this property")));
     }
+    let previous: Option<Decimal> =
+        sqlx::query_scalar("select rate_to_base from fx_rate where property_id = $1 and date = $2 and currency = $3")
+            .bind(property)
+            .bind(date)
+            .bind(currency)
+            .fetch_optional(&mut **tx)
+            .await?;
     sqlx::query(
         "insert into fx_rate (tenant_id, property_id, date, currency, rate_to_base, source, source_date, set_by)
          values ($1, $2, $3, $4, $5, 'manual', $3, $6)
@@ -160,7 +164,12 @@ pub async fn set_manual(
     .bind(tenant.0)
     .bind(user.0)
     .bind(property)
-    .bind(serde_json::json!({ "date": date.to_string(), "currency": currency, "rate": rate.to_string() }))
+    .bind(serde_json::json!({
+        "date": date.to_string(),
+        "currency": currency,
+        "rate": rate.to_string(),
+        "previous": previous.map(|p| p.normalize().to_string()),
+    }))
     .execute(&mut **tx)
     .await?;
     db::notify(tx, &Event { tenant_id: tenant, property_id: Some(property), keys: vec![fx_key(property)] }).await?;
@@ -205,24 +214,43 @@ pub async fn import(pool: &PgPool, source: &dyn RateSource, today: Date) -> Impo
             return report;
         }
     };
-    for (tenant, property, base, accepted) in targets {
-        if base != "LKR" {
-            continue;
-        }
+    let targets: Vec<(Uuid, Uuid, Vec<String>)> = targets
+        .into_iter()
+        .filter(|(_, _, base, _)| base == "LKR")
+        .map(|(tenant, property, base, accepted)| {
+            (tenant, property, accepted.into_iter().filter(|c| *c != base).collect())
+        })
+        .collect();
+    // One request for every currency any property wants; each property then takes its own.
+    let mut union: Vec<String> = targets.iter().flat_map(|(_, _, wanted)| wanted.iter().cloned()).collect();
+    union.sort();
+    union.dedup();
+    let fetched = if union.is_empty() { Ok(Vec::new()) } else { source.tt_selling(&union, today).await };
+    let fetched = fetched.map_err(|error| {
+        tracing::error!(%error, "fx import: the rate source failed");
+        alert_message(&error)
+    });
+    for (tenant, property, wanted) in targets {
         report.properties += 1;
-        let wanted: Vec<String> = accepted.into_iter().filter(|c| *c != base).collect();
-        match import_one(pool, source, today, TenantId(tenant), property, &wanted).await {
-            Ok((stored, missing)) => {
-                report.stored += stored;
-                if !missing.is_empty() {
-                    tracing::error!(%property, ?missing, "fx import: the source lacks rates");
-                    report.alerted += 1;
+        let all = match &fetched {
+            Ok(all) => all,
+            Err(message) => {
+                report.alerted += 1;
+                if let Err(error) = raise_alert(pool, TenantId(tenant), property, message).await {
+                    tracing::error!(%error, %property, "fx import: raising the alert failed");
                 }
+                continue;
+            }
+        };
+        match import_one(pool, all, today, TenantId(tenant), property, &wanted).await {
+            Ok((stored, alerted)) => {
+                report.stored += stored;
+                report.alerted += u32::from(alerted);
             }
             Err(error) => {
-                tracing::error!(%error, %property, "fx import: no complete set of rates");
+                tracing::error!(%error, %property, "fx import: storing the rates failed");
                 report.alerted += 1;
-                if let Err(error) = raise_alert(pool, TenantId(tenant), property, &error.to_string()).await {
+                if let Err(error) = raise_alert(pool, TenantId(tenant), property, &alert_message(&error)).await {
                     tracing::error!(%error, %property, "fx import: raising the alert failed");
                 }
             }
@@ -231,23 +259,32 @@ pub async fn import(pool: &PgPool, source: &dyn RateSource, today: Date) -> Impo
     report
 }
 
-/// Stores the rates of one property and clears or raises its alert, returning how many rates it stored and which
-/// currencies the source lacked. Rates found are stored even when others are missing.
+/// What staff see: the cause, except for database errors, whose detail stays in the log.
+fn alert_message(error: &FxError) -> String {
+    match error {
+        FxError::Database(_) => "Exchange-rate import failed; see the logs".to_owned(),
+        other => other.to_string(),
+    }
+}
+
+/// A rate older than this many days at import time is stored but raises the alert: the bank has stopped publishing it.
+const STALE_DAYS: i64 = 5;
+
+/// Stores the rates of one property from the rates fetched for all properties and clears or raises its alert, returning how
+/// many rates it stored and whether an alert was raised (a currency missing or stale). Rates found are stored even
+/// when others are missing.
 async fn import_one(
     pool: &PgPool,
-    source: &dyn RateSource,
+    all: &[(String, Date, Decimal)],
     today: Date,
     tenant: TenantId,
     property: Uuid,
     wanted: &[String],
-) -> Result<(u32, Vec<String>), FxError> {
-    let found = if wanted.is_empty() { Vec::new() } else { source.tt_selling(wanted, today).await? };
+) -> Result<(u32, bool), FxError> {
+    let found: Vec<&(String, Date, Decimal)> = all.iter().filter(|(c, _, _)| wanted.contains(c)).collect();
     let mut tx = db::begin(pool, Scope::tenant(tenant)).await?;
     let mut stored = 0;
     for (currency, source_date, rate) in &found {
-        if !wanted.contains(currency) {
-            continue;
-        }
         let written = sqlx::query(
             "insert into fx_rate (tenant_id, property_id, date, currency, rate_to_base, source, source_date)
              values ($1, $2, $3, $4, $5, 'cbsl', $6)
@@ -265,17 +302,27 @@ async fn import_one(
         .await?;
         stored += u32::try_from(written.rows_affected()).unwrap_or_default();
     }
-    let missing: Vec<String> = wanted.iter().filter(|c| !found.iter().any(|(f, _, _)| f == *c)).cloned().collect();
-    if missing.is_empty() {
+    let mut problems: Vec<String> = Vec::new();
+    let missing: Vec<&str> =
+        wanted.iter().filter(|c| !found.iter().any(|(f, _, _)| f == *c)).map(String::as_str).collect();
+    if !missing.is_empty() {
+        problems.push(format!("The rate source has no rate for {}", missing.join(", ")));
+    }
+    for (currency, source_date, _) in &found {
+        if (today - *source_date).whole_days() > STALE_DAYS {
+            problems.push(format!("Central Bank rate for {currency} is from {source_date}"));
+        }
+    }
+    if problems.is_empty() {
         sqlx::query("delete from fx_alert where property_id = $1").bind(property).execute(&mut *tx).await?;
     } else {
-        upsert_alert(&mut tx, tenant, property, &format!("The rate source has no rate for {}", missing.join(", ")))
-            .await?;
+        tracing::error!(%property, ?problems, "fx import: the rates are incomplete or stale");
+        upsert_alert(&mut tx, tenant, property, &problems.join("; ")).await?;
     }
     db::notify(&mut tx, &Event { tenant_id: tenant, property_id: Some(property), keys: vec![fx_key(property)] })
         .await?;
     tx.commit().await?;
-    Ok((stored, missing))
+    Ok((stored, !problems.is_empty()))
 }
 
 async fn raise_alert(pool: &PgPool, tenant: TenantId, property: Uuid, message: &str) -> Result<(), sqlx::Error> {
