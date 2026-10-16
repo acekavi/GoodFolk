@@ -10,7 +10,7 @@ use std::time::Duration;
 use storage::{Storage, StorageConfig};
 use svc_auth::{TokenSource, Verifier};
 use tokio::sync::broadcast;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use uuid::Uuid;
 
 /// How long connecting to media-svc may take.
@@ -55,10 +55,7 @@ impl MediaServices {
         media_auth: Arc<TokenSource>,
         internal_auth: Arc<Verifier>,
     ) -> anyhow::Result<Self> {
-        let channel = Endpoint::from_shared(media_svc_url.to_owned())
-            .context("MEDIA_SVC_URL is not a URL")?
-            .connect_timeout(MEDIA_SVC_CONNECT_TIMEOUT)
-            .connect_lazy();
+        let channel = media_channel(media_svc_url)?;
         Ok(Self { storage, media: MediaClient::new(channel), media_auth, internal_auth })
     }
 
@@ -76,6 +73,18 @@ impl MediaServices {
         )
         .expect("the local media-svc URL is valid")
     }
+}
+
+/// A lazily connecting channel to media-svc. An `https` address speaks TLS, trusting the Mozilla roots: `from_shared`
+/// leaves TLS off whatever the scheme, which would send cleartext h2c to port 443.
+fn media_channel(media_svc_url: &str) -> anyhow::Result<Channel> {
+    let mut endpoint = Endpoint::from_shared(media_svc_url.to_owned()).context("MEDIA_SVC_URL is not a URL")?;
+    if endpoint.uri().scheme() == Some(&axum::http::uri::Scheme::HTTPS) {
+        endpoint = endpoint
+            .tls_config(ClientTlsConfig::new().with_enabled_roots())
+            .context("MEDIA_SVC_URL: the TLS configuration")?;
+    }
+    Ok(endpoint.connect_timeout(MEDIA_SVC_CONNECT_TIMEOUT).connect_lazy())
 }
 
 impl AppState {
@@ -99,5 +108,36 @@ impl AppState {
             media_auth,
             internal_auth,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::media_channel;
+    use proto::media::media_client::MediaClient;
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+
+    /// The first bytes a client sends to `scheme://localhost:<port>`, which must speak media-svc's gRPC.
+    async fn first_bytes(scheme: &str) -> Vec<u8> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut media = MediaClient::new(media_channel(&format!("{scheme}://localhost:{port}")).unwrap());
+        tokio::spawn(async move { media.create_upload(proto::media::CreateUploadRequest::default()).await });
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut bytes = [0u8; 3];
+        socket.read_exact(&mut bytes).await.unwrap();
+        bytes.to_vec()
+    }
+
+    #[tokio::test]
+    async fn an_https_media_svc_url_speaks_tls() {
+        // A TLS handshake record: content type 22, protocol major version 3.
+        assert_eq!(&first_bytes("https").await[..2], &[0x16, 0x03]);
+    }
+
+    #[tokio::test]
+    async fn an_http_media_svc_url_speaks_cleartext_h2c() {
+        assert_eq!(first_bytes("http").await, b"PRI");
     }
 }

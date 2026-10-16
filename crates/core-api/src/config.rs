@@ -76,8 +76,11 @@ impl Config {
             None if production => bail!("MEDIA_SVC_URL (media-svc's gRPC address) is required in production"),
             None => crate::state::LOCAL_MEDIA_SVC_URL.to_owned(),
         };
-        if media_svc_url.parse::<axum::http::Uri>().is_err() {
+        let Ok(media_svc_uri) = media_svc_url.parse::<axum::http::Uri>() else {
             bail!("MEDIA_SVC_URL is not a URL");
+        };
+        if production && media_svc_uri.scheme() != Some(&axum::http::uri::Scheme::HTTPS) {
+            bail!("MEDIA_SVC_URL must be an https:// address in production");
         }
         // SVC_AUTH, INTERNAL_SHARED_SECRET and ALLOWED_SERVICE_EMAILS are shared by both directions.
         let media_svc_auth = TokenSource::from_vars("MEDIA_SVC_AUDIENCE", &var)?;
@@ -502,6 +505,18 @@ mod tests {
         let shown = format!("{err:#}");
 
         assert!(shown.contains("MEDIA_SVC_URL") && !shown.contains("not a url"), "{shown}");
+    }
+
+    #[test]
+    fn production_refuses_a_plain_http_media_svc_url_without_showing_it() {
+        let mut pairs = production_pairs();
+        pairs.retain(|(name, _)| *name != "MEDIA_SVC_URL");
+        pairs.push(("MEDIA_SVC_URL", "http://media-svc.internal:8090"));
+
+        let err = Config::from_vars(|name| lookup(&pairs, name)).unwrap_err();
+        let shown = format!("{err:#}");
+
+        assert!(shown.contains("MEDIA_SVC_URL") && !shown.contains("media-svc.internal"), "{shown}");
     }
 
     #[test]

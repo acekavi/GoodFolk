@@ -341,7 +341,7 @@ Outside production, every variable marked "dev default" can be left out. With `A
 | `S3_PUBLIC_BUCKET`, `S3_PRIVATE_BUCKET` | both | Dev defaults `goodfolk-public` and `goodfolk-private`. Only gallery renditions go to the public one. |
 | `S3_PATH_STYLE` | both | `true` or `false`: whether to address buckets as `endpoint/bucket/key`. Dev default `true`, production default `false`. |
 | `MEDIA_PUBLIC_BASE_URL` | both | Where the public bucket is served from: the CDN domain in production. Dev default `<S3_ENDPOINT>/<S3_PUBLIC_BUCKET>/`. |
-| `MEDIA_SVC_URL` | core-api | media-svc's address for gRPC. Dev default `http://localhost:8090`. |
+| `MEDIA_SVC_URL` | core-api | media-svc's address for gRPC. Dev default `http://localhost:8090`. An `https://` address is reached over TLS, and production refuses any other scheme. |
 | `SVC_AUTH` | both | `google` (ID tokens, production) or `secret` (a shared secret; refused when `APP_ENV=production`). Required. |
 | `INTERNAL_SHARED_SECRET` | both | With `SVC_AUTH=secret`: the bearer secret, at least 32 bytes and no surrounding whitespace. |
 | `MEDIA_SVC_AUDIENCE` | both | With `SVC_AUTH=google`: the audience of ID tokens sent to media-svc (core-api puts it on its calls, media-svc requires it on its own endpoints). |
