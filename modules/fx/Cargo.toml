@@ -20,9 +20,10 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
 db = { workspace = true, features = ["testing"] }
 property.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["net"] }
 
 [lints]
 workspace = true
