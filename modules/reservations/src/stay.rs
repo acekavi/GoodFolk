@@ -276,7 +276,8 @@ pub async fn undo_check_in(
 ///
 /// Then every night the stay keeps before `min(check-out, business date + 1)` whose charges are not yet posted is
 /// posted ([`folio::post_unposted_nights`], locking the stay's folios after the inventory days), so no night is
-/// missed; that needs a rate for the stay's currency on each such night (`Conflict`).
+/// missed; that needs a rate for the stay's currency on each such night (`Conflict`). The lines already posted for
+/// the released nights are reversed ([`folio::reverse_released_nights`]); one on an invoiced folio is a `Conflict`.
 ///
 /// Sets the room's condition to `dirty` (locking `room_condition` after this row, bumping its version), bumps
 /// both versions, audits `reservation_room.checked_out` (recording the released nights, if any, and the
@@ -342,6 +343,9 @@ pub async fn check_out(
     // in the lock order.
     let before = new_check_out.min(today + Duration::days(1));
     folio::post_unposted_nights(tx, tenant, Some(actor), id, before).await?;
+    if !released_nights.is_empty() {
+        folio::reverse_released_nights(tx, tenant, Some(actor), property, id, &released_nights).await?;
+    }
 
     let (version, checked_out_at): (i32, OffsetDateTime) = sqlx::query_as(
         "update reservation_room

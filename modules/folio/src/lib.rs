@@ -16,7 +16,8 @@
 //!
 //! A stay's nights post as `room` and `meal_plan` lines under their posting keys: a business date's for every
 //! in-house stay ([`post_business_date_charges`], one transaction per stay, a stay that fails reported and skipped),
-//! and at check-out every night before `min(departure, business date + 1)` still unposted ([`post_unposted_nights`]).
+//! and at check-out every night before `min(departure, business date + 1)` still unposted ([`post_unposted_nights`]);
+//! an early check-out reverses the lines of the nights it releases ([`reverse_released_nights`]).
 //!
 //! A payment is positive, with its base amount at the business date's rate; a refund is negative, with the
 //! original's base in proportion, so a payment and its refunds net to zero in the base currency too. A charge to
@@ -45,7 +46,7 @@ pub use folios::{
 };
 pub use lines::{LineRow, NewCharge, post_charge, reverse, transfer};
 pub use payments::{Method, move_deposit, post_cancellation_fee, refund, take_payment, undo_deposit_move};
-pub use posting::{PostReport, post_business_date_charges, post_unposted_nights};
+pub use posting::{PostReport, post_business_date_charges, post_unposted_nights, reverse_released_nights};
 pub use routing::{DEFAULT_ROUTING, follow_account_change, post_for_stay, set_routing};
 pub use rules::load_rules;
 

@@ -3,7 +3,7 @@
 //! so a night is charged once however often it is posted.
 
 use crate::lines::{NewCharge, line_by_key};
-use crate::{FolioError, Source, audit, post_for_stay};
+use crate::{FolioError, Source, audit, post_for_stay, reverse};
 use db::{Scope, TenantId, Tx, UserId};
 use sqlx::PgPool;
 use time::{Date, Duration};
@@ -16,7 +16,8 @@ pub struct PostReport {
     pub stays: u32,
     /// Lines posted by this run.
     pub lines: u32,
-    /// Charges skipped because their posting key was already used.
+    /// Charges skipped because their posting key was already used. Approximate under a race: a concurrent run that
+    /// posts a key between this run's lookup and its posting makes both count the line as posted (it is posted once).
     pub skipped_existing: u32,
     /// Stays that could not be posted, with the reason (such as a missing exchange rate). Nothing of theirs was
     /// posted; a rerun once the cause is fixed posts them.
@@ -171,6 +172,43 @@ pub async fn post_unposted_nights(
         post_night(tx, tenant, user, reservation_room, &night, &mut counts).await?;
     }
     Ok(counts.lines)
+}
+
+/// The reason on the reversal of a night an early check-out releases.
+const RELEASED_NIGHT: &str = "Night released at early check-out";
+
+/// Reverses the `room` and `meal_plan` lines already posted for `reservation_room`'s `dates`, the nights an early
+/// check-out releases, with the reason "Night released at early check-out", and returns how many it reversed. Lines
+/// are found in `property` by their posting keys; one already reversed (or moved) is left alone. Each reversal is
+/// [`reverse`]'s, on the property's business date, so a line on an invoiced folio is a `Conflict`. Folios are locked
+/// in ascending id order. Check-out calls it, holding the stay's row, after the release and before marking the stay
+/// checked out.
+pub async fn reverse_released_nights(
+    tx: &mut Tx,
+    tenant: TenantId,
+    user: Option<UserId>,
+    property: Uuid,
+    reservation_room: Uuid,
+    dates: &[Date],
+) -> Result<u32, FolioError> {
+    let keys: Vec<String> = dates
+        .iter()
+        .flat_map(|date| [format!("room:{reservation_room}:{date}"), format!("meal_plan:{reservation_room}:{date}")])
+        .collect();
+    let lines: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "select l.folio_id, l.id from folio_line l join folio f on f.id = l.folio_id
+         where f.property_id = $1 and l.posting_key = any($2)
+           and not exists (select 1 from folio_line r where r.reverses = l.id)
+         order by l.folio_id, l.id",
+    )
+    .bind(property)
+    .bind(&keys)
+    .fetch_all(&mut **tx)
+    .await?;
+    for (folio, line) in &lines {
+        reverse(tx, tenant, user, property, *folio, *line, RELEASED_NIGHT).await?;
+    }
+    Ok(u32::try_from(lines.len()).unwrap_or(u32::MAX))
 }
 
 /// The nights of `stay` in `[from, before)` (from its arrival when `from` is `None`), oldest first.

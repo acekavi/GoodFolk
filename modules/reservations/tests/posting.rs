@@ -341,3 +341,67 @@ async fn no_nights_before_the_cut_off_posts_nothing(_: PgPoolOptions, opts: PgCo
     assert_eq!(posted, 0);
     assert_eq!(hotel.lines().await, vec![]);
 }
+
+/// The total of the lines posted under `keys` and of their reversals.
+async fn net_of(hotel: &Hotel, keys: &[String]) -> (usize, i64) {
+    sqlx::query_as(
+        "select count(*)::int8, coalesce(sum(total), 0)::int8 from folio_line
+         where posting_key = any($1) or reverses in (select id from folio_line where posting_key = any($1))",
+    )
+    .bind(keys)
+    .fetch_one(&mut *hotel.tx().await)
+    .await
+    .map(|(count, total): (i64, i64)| (usize::try_from(count).unwrap(), total))
+    .unwrap()
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_early_check_out_reverses_tonights_posted_charges(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = hotel(opts, 1).await;
+    let stay = hotel.checked_in(None, vec![hotel.stay(&plans.bar, MealPlan::Bb, 0, 3)]).await.rooms[0].id;
+    hotel.post(hotel.day(0)).await;
+    hotel.move_business_date(1).await;
+    // Tonight's charges are posted, then the guest leaves early today: tonight is released.
+    hotel.post(hotel.day(1)).await;
+
+    hotel.check_out(stay).await;
+
+    let tonight = [room_key(stay, hotel.day(1)), meal_key(stay, hotel.day(1))];
+    assert_eq!(net_of(&hotel, &tonight).await, (4, 0), "both of tonight's lines and their reversals net to zero");
+    let reasons: Vec<Option<String>> =
+        sqlx::query_scalar("select reason from folio_line where reverses is not null order by id")
+            .fetch_all(&mut *hotel.tx().await)
+            .await
+            .unwrap();
+    assert_eq!(reasons, vec![Some("Night released at early check-out".to_owned()); 2]);
+    let last_night = [room_key(stay, hotel.day(0)), meal_key(stay, hotel.day(0))];
+    let (count, total) = net_of(&hotel, &last_night).await;
+    assert_eq!(count, 2, "the night stayed is not reversed");
+    assert!(total > 0);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_released_night_on_an_invoiced_folio_refuses_the_check_out(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = hotel(opts, 1).await;
+    let stay = hotel.checked_in(None, vec![hotel.stay(&plans.bar, MealPlan::Ro, 0, 3)]).await.rooms[0].id;
+    hotel.post(hotel.day(0)).await;
+    hotel.move_business_date(1).await;
+    hotel.post(hotel.day(1)).await;
+    let mut tx = hotel.tx().await;
+    sqlx::query("update folio set status = 'invoiced' where reservation_room_id = $1")
+        .bind(stay)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let version: i32 = sqlx::query_scalar("select version from reservation_room where id = $1")
+        .bind(stay)
+        .fetch_one(&mut *hotel.tx().await)
+        .await
+        .unwrap();
+    let mut tx = hotel.tx().await;
+    let refused = reservations::check_out(&mut tx, hotel.tenant, hotel.user, hotel.property, stay, version).await;
+
+    assert!(matches!(refused, Err(reservations::ReservationsError::Conflict(_))), "{refused:?}");
+}
