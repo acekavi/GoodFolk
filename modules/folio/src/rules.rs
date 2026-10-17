@@ -51,3 +51,12 @@ pub async fn load_rules(tx: &mut Tx, property: Uuid) -> Result<Vec<tax::Rule>, s
     .await?;
     rows.into_iter().map(into_rule).collect()
 }
+
+/// Makes every service charge of `rules` apply to no category, for a POS outlet that charges none. The rules stay in
+/// the set, so a base naming one (`SC` in SSCL's and VAT's) still validates and counts it as zero, as the engine
+/// counts any lower rule that does not apply to a line. Removing them instead would fail validation.
+pub(crate) fn without_service_charge(rules: &mut [tax::Rule]) {
+    for rule in rules.iter_mut().filter(|rule| rule.kind == tax::Kind::ServiceCharge) {
+        rule.applies_to.clear();
+    }
+}

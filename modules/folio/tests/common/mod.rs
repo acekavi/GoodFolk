@@ -238,6 +238,21 @@ impl Hotel {
         Ok(())
     }
 
+    /// Marks `stay` checked in, as `reservations::check_in` does before it moves the deposit.
+    pub async fn mark_checked_in(&self, stay: Uuid) {
+        let mut tx = self.tx().await;
+        sqlx::query(
+            "update reservation_room rr
+             set status = 'checked_in', checked_in_at = now(), checked_in_business_date = p.business_date
+             from property p where rr.id = $1 and p.id = rr.property_id",
+        )
+        .bind(stay)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
     /// Waits until some session of the test database is blocked on a lock: the second of two racing transactions.
     pub async fn until_blocked(&self) {
         for _ in 0..1_000 {

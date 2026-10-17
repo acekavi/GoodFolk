@@ -32,10 +32,16 @@
 //!
 //! A line on the folio of an account the reservation is no longer billed to can't be transferred back to the stay;
 //! reverse it and post a manual charge instead.
+//!
+//! A POS bill ([`post_pos_bill`]) is posted once per outlet and bill number: a replay of the same body returns the
+//! bill first posted, and a different body under that number is a `Conflict`. A bill to an in-house stay posts each
+//! item through [`post_for_stay`] under `pos:<bill>:<n>`; a bill settled at the outlet is recorded with its taxed
+//! lines and a payment on no folio. An outlet with its service charge off is taxed as if the property had none.
 
 mod folios;
 mod lines;
 mod payments;
+mod pos;
 mod posting;
 mod routing;
 mod rules;
@@ -46,6 +52,10 @@ pub use folios::{
 };
 pub use lines::{LineRow, NewCharge, post_charge, reverse, transfer};
 pub use payments::{Method, move_deposit, post_cancellation_fee, refund, take_payment, undo_deposit_move};
+pub use pos::{
+    NewOutlet, OutletChanges, OutletRow, PosBillIn, PosBillRow, PosItem, PosLine, PosLineTax, PosOutcome, PosTarget,
+    create_outlet, list_outlets, post_pos_bill, update_outlet,
+};
 pub use posting::{PostReport, post_business_date_charges, post_unposted_nights, reverse_released_nights};
 pub use routing::{DEFAULT_ROUTING, follow_account_change, post_for_stay, set_routing};
 pub use rules::load_rules;
@@ -113,11 +123,14 @@ pub fn folio_key(folio: Uuid) -> String {
 /// Whether `category` is one a line can carry: `room`, `meal_plan`, `laundry`, `misc`, `fee` or `pos:<OUTLET>`.
 fn valid_category(category: &str) -> bool {
     match category.strip_prefix("pos:") {
-        Some(outlet) => {
-            (1..=10).contains(&outlet.len()) && outlet.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
-        }
+        Some(outlet) => valid_outlet_code(outlet),
         None => matches!(category, "room" | "meal_plan" | "laundry" | "misc" | "fee"),
     }
+}
+
+/// Whether `code` is an outlet code: 1 to 10 upper-case letters and digits.
+fn valid_outlet_code(code: &str) -> bool {
+    (1..=10).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
 }
 
 fn check_category(category: &str) -> Result<(), FolioError> {

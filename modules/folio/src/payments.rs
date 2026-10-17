@@ -119,7 +119,8 @@ fn evidence(value: Option<&str>) -> Result<Option<&str>, FolioError> {
 
 /// A payment row to insert.
 struct NewPayment<'a> {
-    folio: Uuid,
+    /// `None` only for a POS bill settled at its outlet.
+    folio: Option<Uuid>,
     method: &'a str,
     amount: i64,
     currency: &'a str,
@@ -131,6 +132,7 @@ struct NewPayment<'a> {
     refund_of: Option<Uuid>,
     business_date: Date,
     transfer_id: Option<Uuid>,
+    pos_bill: Option<Uuid>,
 }
 
 async fn insert_payment(
@@ -141,8 +143,8 @@ async fn insert_payment(
 ) -> Result<PaymentRow, sqlx::Error> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "insert into payment (id, tenant_id, folio_id, method, amount, currency, base_amount, rate, rate_date, details,
-                              evidence, refund_of, business_date, transfer_id, taken_by)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                              evidence, refund_of, business_date, transfer_id, taken_by, pos_bill_id)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
          returning {PAYMENT_COLUMNS}"
     )))
     .bind(Uuid::now_v7())
@@ -160,6 +162,7 @@ async fn insert_payment(
     .bind(payment.business_date)
     .bind(payment.transfer_id)
     .bind(user.map(|user| user.0))
+    .bind(payment.pos_bill)
     .fetch_one(&mut **tx)
     .await
 }
@@ -179,10 +182,16 @@ impl Conversion {
     }
 }
 
-/// The conversion of `currency` on the property's business date. `Invalid` for a currency the property does not
-/// accept, unless the money is only `moving` between folios; `Conflict` ("No exchange rate for <CUR> on
-/// <YYYY-MM-DD>") when no rate is in force.
-async fn conversion(tx: &mut Tx, property: Uuid, currency: &str, moving: bool) -> Result<Conversion, FolioError> {
+/// The conversion of `currency` on `on`, or the property's business date when `None`. `Invalid` for a currency the
+/// property does not accept, unless the money is only `moving` between folios; `Conflict` ("No exchange rate for
+/// <CUR> on <YYYY-MM-DD>") when no rate is in force.
+async fn conversion(
+    tx: &mut Tx,
+    property: Uuid,
+    currency: &str,
+    moving: bool,
+    on: Option<Date>,
+) -> Result<Conversion, FolioError> {
     let (business_date, base_currency, accepted): (Date, String, Vec<String>) = sqlx::query_as(
         "select business_date, base_currency::text, accepted_currencies::text[] from property where id = $1",
     )
@@ -193,6 +202,7 @@ async fn conversion(tx: &mut Tx, property: Uuid, currency: &str, moving: bool) -
     if !moving && !accepted.iter().any(|code| code == currency) {
         return Err(FolioError::Invalid(format!("{currency} is not a currency this property accepts")));
     }
+    let business_date = on.unwrap_or(business_date);
     let rate = fx::rate_for(tx, property, currency, business_date)
         .await?
         .ok_or_else(|| FolioError::Conflict(format!("No exchange rate for {currency} on {business_date}")))?;
@@ -283,7 +293,7 @@ pub async fn take_payment(
     for id in &ids {
         check_open(locked.iter().find(|row| row.id == *id).ok_or(FolioError::NotFound("folio"))?)?;
     }
-    let conversion = conversion(tx, property, currency, false).await?;
+    let conversion = conversion(tx, property, currency, false, None).await?;
     let transfer_id = account_folio.map(|_| Uuid::now_v7());
 
     let payment = insert_payment(
@@ -291,7 +301,7 @@ pub async fn take_payment(
         tenant,
         user,
         NewPayment {
-            folio,
+            folio: Some(folio),
             method: method.as_str(),
             amount,
             currency,
@@ -303,6 +313,7 @@ pub async fn take_payment(
             refund_of: None,
             business_date: conversion.business_date,
             transfer_id,
+            pos_bill: None,
         },
     )
     .await?;
@@ -344,6 +355,49 @@ pub async fn take_payment(
     audit(tx, tenant, user, "folio.payment_taken", "folio", folio, data).await?;
     notify(tx, tenant, property, keys).await?;
     Ok(payment)
+}
+
+/// Records the payment of the POS bill `pos_bill`, settled at its outlet: `amount` (more than 0) in `currency`, on no
+/// folio, with its base amount at the rate in force on the bill's `business_date` (`Conflict`, "No exchange rate for
+/// <CUR> on <YYYY-MM-DD>", when there is none). The currency must be one the property accepts (`Invalid`), and the
+/// method can't be [`Method::Account`] (`Invalid`: there is no stay to charge from). Card details never hold a card
+/// number (`Invalid`). The caller audits the bill.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn pay_pos_bill(
+    tx: &mut Tx,
+    tenant: TenantId,
+    user: Option<UserId>,
+    property: Uuid,
+    pos_bill: Uuid,
+    method: &Method,
+    amount: i64,
+    currency: &str,
+    business_date: Date,
+) -> Result<PaymentRow, FolioError> {
+    if *method == Method::Account {
+        return Err(FolioError::Invalid("a bill settled at the outlet can't be charged to account".into()));
+    }
+    if amount <= 0 {
+        return Err(FolioError::Invalid("a bill settled at the outlet totals more than 0".into()));
+    }
+    let details = method.details()?;
+    let conversion = conversion(tx, property, currency, false, Some(business_date)).await?;
+    let payment = NewPayment {
+        folio: None,
+        method: method.as_str(),
+        amount,
+        currency,
+        base_amount: conversion.to_base(amount)?,
+        rate: conversion.rate,
+        rate_date: conversion.rate_date,
+        details,
+        evidence: None,
+        refund_of: None,
+        business_date,
+        transfer_id: None,
+        pos_bill: Some(pos_bill),
+    };
+    Ok(insert_payment(tx, tenant, user, payment).await?)
 }
 
 /// Refunds `amount` (more than 0) of `payment` in the property, for `reason` (1 to 500 characters, no card number),
@@ -433,7 +487,7 @@ pub async fn refund(
         tenant,
         user,
         NewPayment {
-            folio: target,
+            folio: Some(target),
             method: &original.method,
             amount: -amount,
             currency: &original.currency,
@@ -445,6 +499,7 @@ pub async fn refund(
             refund_of: Some(payment),
             business_date: today,
             transfer_id: None,
+            pos_bill: None,
         },
     )
     .await?;
@@ -525,7 +580,7 @@ async fn transfer_pair(
             tenant,
             user,
             NewPayment {
-                folio,
+                folio: Some(folio),
                 method: "transfer",
                 amount: sign * amount,
                 currency,
@@ -537,6 +592,7 @@ async fn transfer_pair(
                 refund_of: None,
                 business_date: conversion.business_date,
                 transfer_id: Some(transfer_id),
+                pos_bill: None,
             },
         )
         .await?;
@@ -614,7 +670,7 @@ pub async fn move_deposit(
 
     let mut moved = Vec::new();
     for (currency, amount, base) in balances {
-        let conversion = conversion(tx, property, &currency, true).await?;
+        let conversion = conversion(tx, property, &currency, true, None).await?;
         let transfer_id = transfer_pair(tx, tenant, user, deposit, guest, &currency, amount, base, &conversion).await?;
         moved.push(serde_json::json!({ "currency": currency, "amount": -amount, "transfer_id": transfer_id }));
     }
@@ -685,7 +741,7 @@ pub async fn undo_deposit_move(
             continue;
         }
         let base = if amount == moved_in { moved_base } else { proportional_base(moved_base, amount, moved_in)? };
-        let conversion = conversion(tx, property, &currency, true).await?;
+        let conversion = conversion(tx, property, &currency, true, None).await?;
         let transfer_id =
             transfer_pair(tx, tenant, user, guest, deposit, &currency, -amount, -base, &conversion).await?;
         returned.push(serde_json::json!({ "currency": currency, "amount": amount, "transfer_id": transfer_id }));

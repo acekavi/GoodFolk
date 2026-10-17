@@ -11,7 +11,7 @@ use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
 /// The longest line description, in characters.
-const MAX_DESCRIPTION: usize = 200;
+pub(crate) const MAX_DESCRIPTION: usize = 200;
 
 /// The longest posting key, in characters.
 const MAX_POSTING_KEY: usize = 200;
@@ -97,6 +97,9 @@ pub(crate) struct Posting {
     /// A system posting of an amount that already exists (a cancellation penalty): the currency need not be one the
     /// property accepts today. Staff charges always check it.
     pub internal: bool,
+    /// Taxed without the property's service charge: a POS bill of an outlet that charges none. Set only by the POS
+    /// path.
+    pub exclude_service_charge: bool,
 }
 
 /// Refuses a malformed charge before anything is locked, and returns its trimmed description.
@@ -183,7 +186,7 @@ pub(crate) async fn post_locked(
     description: String,
     posting: Posting,
 ) -> Result<LineRow, FolioError> {
-    let Posting { resident, transfer_id, untaxed, internal } = posting;
+    let Posting { resident, transfer_id, untaxed, internal, exclude_service_charge } = posting;
     check_open(folio)?;
     let (base_currency, accepted, vat_registered): (String, Vec<String>, bool) = sqlx::query_as(
         "select base_currency::text, accepted_currencies::text[], vat_registered from property where id = $1",
@@ -202,7 +205,10 @@ pub(crate) async fn post_locked(
     let breakdown = if untaxed {
         tax::Breakdown { net: amount, components: Vec::new(), total: amount }
     } else {
-        let rules = crate::load_rules(tx, folio.property_id).await?;
+        let mut rules = crate::load_rules(tx, folio.property_id).await?;
+        if exclude_service_charge {
+            crate::rules::without_service_charge(&mut rules);
+        }
         let context = tax::Context {
             date: charge.business_date,
             category: charge.category.clone(),
@@ -307,11 +313,11 @@ pub(crate) async fn post_locked(
 }
 
 /// Whether `err` is a violation of the unique index `index`.
-fn violates(err: &sqlx::Error, index: &str) -> bool {
+pub(crate) fn violates(err: &sqlx::Error, index: &str) -> bool {
     err.as_database_error().and_then(|db_err| db_err.constraint()).is_some_and(|name| name == index)
 }
 
-fn kind_str(kind: tax::Kind) -> &'static str {
+pub(crate) fn kind_str(kind: tax::Kind) -> &'static str {
     match kind {
         tax::Kind::Tax => "tax",
         tax::Kind::Levy => "levy",
@@ -319,7 +325,7 @@ fn kind_str(kind: tax::Kind) -> &'static str {
     }
 }
 
-fn presentation_str(presentation: tax::Presentation) -> &'static str {
+pub(crate) fn presentation_str(presentation: tax::Presentation) -> &'static str {
     match presentation {
         tax::Presentation::OnBill => "on_bill",
         tax::Presentation::Absorbed => "absorbed",

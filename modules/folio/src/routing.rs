@@ -106,6 +106,19 @@ pub async fn post_for_stay(
     reservation_room: Uuid,
     charge: NewCharge,
 ) -> Result<LineRow, FolioError> {
+    post_routed(tx, tenant, user, reservation_room, charge, false).await
+}
+
+/// [`post_for_stay`], taxed without the service charge when `exclude_service_charge` (the POS path, for an outlet
+/// that charges none).
+pub(crate) async fn post_routed(
+    tx: &mut Tx,
+    tenant: TenantId,
+    user: Option<UserId>,
+    reservation_room: Uuid,
+    charge: NewCharge,
+    exclude_service_charge: bool,
+) -> Result<LineRow, FolioError> {
     let description = check_charge(&charge)?;
     let stay: Stay = sqlx::query_as(
         "select rr.property_id, rp.residency,
@@ -138,5 +151,14 @@ pub async fn post_for_stay(
     {
         return Ok(line);
     }
-    post_locked(tx, tenant, user, &target, charge, description, Posting { resident, ..Posting::default() }).await
+    post_locked(
+        tx,
+        tenant,
+        user,
+        &target,
+        charge,
+        description,
+        Posting { resident, exclude_service_charge, ..Posting::default() },
+    )
+    .await
 }

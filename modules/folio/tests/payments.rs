@@ -112,21 +112,6 @@ impl Hotel {
         let query = FolioQuery::Folio { property: self.property, folio };
         folio::folios_for(&mut self.tx().await, query).await.unwrap().pop().expect("the folio")
     }
-
-    /// Marks `stay` checked in, as `reservations::check_in` does before it moves the deposit.
-    async fn mark_checked_in(&self, stay: Uuid) {
-        let mut tx = self.tx().await;
-        sqlx::query(
-            "update reservation_room rr
-             set status = 'checked_in', checked_in_at = now(), checked_in_business_date = p.business_date
-             from property p where rr.id = $1 and p.id = rr.property_id",
-        )
-        .bind(stay)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-    }
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
