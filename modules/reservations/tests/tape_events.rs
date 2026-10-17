@@ -114,6 +114,17 @@ async fn recv(listener: &mut PgListener) -> Vec<String> {
     event.keys
 }
 
+/// The next event's keys that is not only a folio's: check-out posts its unposted nights, whose lines notify their
+/// folios, before its own event.
+async fn recv_past_folios(listener: &mut PgListener) -> Vec<String> {
+    loop {
+        let keys = recv(listener).await;
+        if !keys.iter().all(|key| key.starts_with("folio:")) {
+            return keys;
+        }
+    }
+}
+
 /// Only the `tape:` keys of `keys`, as a set (duplicates would be a bug; order doesn't matter to the chart).
 fn tape_only(keys: &[String]) -> BTreeSet<String> {
     keys.iter().filter(|key| key.starts_with("tape:")).cloned().collect()
@@ -249,7 +260,7 @@ async fn check_out_emits_tape_keys_for_the_original_range(_: PgPoolOptions, opts
 
     hotel.try_check_out(room, 4).await;
 
-    let keys = recv(&mut listener).await;
+    let keys = recv_past_folios(&mut listener).await;
     let expected = rooms::tape_keys(hotel.property, hotel.day(0), hotel.day(5)).into_iter().collect::<BTreeSet<_>>();
     assert_eq!(tape_only(&keys), expected);
 }

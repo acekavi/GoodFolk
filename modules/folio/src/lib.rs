@@ -14,6 +14,10 @@
 //! A system posting for a stay (room, meal plan, laundry, POS) goes through [`post_for_stay`], never
 //! [`post_charge`]: only `post_for_stay` applies the reservation's routing.
 //!
+//! A stay's nights post as `room` and `meal_plan` lines under their posting keys: a business date's for every
+//! in-house stay ([`post_business_date_charges`], one transaction per stay, a stay that fails reported and skipped),
+//! and at check-out every night before `min(departure, business date + 1)` still unposted ([`post_unposted_nights`]).
+//!
 //! A payment is positive, with its base amount at the business date's rate; a refund is negative, with the
 //! original's base in proportion, so a payment and its refunds net to zero in the base currency too. A charge to
 //! account (a payment here, an untaxed `adjustment` on the account's folio) and a deposit moved to the first stay (a
@@ -31,6 +35,7 @@
 mod folios;
 mod lines;
 mod payments;
+mod posting;
 mod routing;
 mod rules;
 
@@ -40,6 +45,7 @@ pub use folios::{
 };
 pub use lines::{LineRow, NewCharge, post_charge, reverse, transfer};
 pub use payments::{Method, move_deposit, post_cancellation_fee, refund, take_payment, undo_deposit_move};
+pub use posting::{PostReport, post_business_date_charges, post_unposted_nights};
 pub use routing::{DEFAULT_ROUTING, follow_account_change, post_for_stay, set_routing};
 pub use rules::load_rules;
 

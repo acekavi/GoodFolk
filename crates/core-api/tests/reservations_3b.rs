@@ -60,6 +60,15 @@ impl Hotel {
         let id = uuid(&property["id"]);
         let path = format!("/api/v1/properties/{id}");
         let business_date = Date::parse(property["business_date"].as_str().unwrap(), &Iso8601::DEFAULT).unwrap();
+        // BAR sells in USD, and check-out posts the stay's unposted nights with a base amount.
+        sqlx::query(
+            "insert into fx_rate (tenant_id, property_id, date, currency, rate_to_base, source, source_date)
+             select tenant_id, id, business_date, 'USD', 300, 'cbsl', business_date from property where id = $1",
+        )
+        .bind(id)
+        .execute(&superuser)
+        .await
+        .unwrap();
         let deluxe = json!({"code": "DLX", "name": "Deluxe", "base_occupancy": 2, "max_adults": 2,
                             "max_children": 1, "max_occupancy": 3});
         let deluxe = uuid(&post(app, &owner, &format!("{path}/room-types"), deluxe).await.body["id"]);
