@@ -219,6 +219,9 @@ pub struct InvoicePayment {
     /// In minor units of `currency`; a refund is negative.
     pub amount: i64,
     pub currency: String,
+    /// `amount` in whole rupees, rounded half up, for a payment in LKR; `None` for one in another currency.
+    #[serde(default)]
+    pub amount_lkr: Option<i64>,
 }
 
 #[cfg(test)]
@@ -300,7 +303,12 @@ mod tests {
             net_lkr: -29_703,
             total_lkr: -30_000,
             total_words: "Minus Thirty Thousand Rupees Only".into(),
-            payments: vec![InvoicePayment { method: "cash".into(), amount: -10_000, currency: "USD".into() }],
+            payments: vec![InvoicePayment {
+                method: "cash".into(),
+                amount: -10_000,
+                currency: "USD".into(),
+                amount_lkr: None,
+            }],
             vat_registered: false,
             credits_serial: Some("GAL-2026-000001".into()),
             reason: Some("Billed twice".into()),

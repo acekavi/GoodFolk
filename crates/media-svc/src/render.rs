@@ -2,8 +2,9 @@
 //! template and fonts, stores the PDF privately and publishes [`MediaResult::InvoiceRendered`].
 //!
 //! Typst runs in-process (on a blocking thread), not in a worker subprocess: it is pure Rust and the template is our
-//! own. The answer is 200 only once the result is published, 400 for a body that is not a job, and 503 otherwise, so
-//! the bus delivers the job again. The key is deterministic, so a redelivered job rewrites the same object.
+//! own. The answer is 200 only once the result is published, 400 for a body that is not a job or a job too large to
+//! render, and 503 otherwise, so the bus delivers the job again. The key is deterministic, so a redelivered job
+//! rewrites the same object.
 
 use std::sync::{Arc, LazyLock};
 
@@ -30,6 +31,11 @@ use crate::work::publish;
 
 /// Renders at once; more wait for a permit.
 pub(crate) const CONCURRENT_RENDERS: usize = 2;
+/// The most lines, payments and taxes a job may carry. Larger is refused for good (400), so no push can hold a
+/// render slot or the memory of a huge layout.
+pub const MAX_LINES: usize = 2000;
+pub const MAX_PAYMENTS: usize = 500;
+pub const MAX_TAXES: usize = 50;
 /// Compilations a memoised result survives unused before it is evicted, so the cache does not grow with every
 /// invoice while the template's own parse stays warm.
 const CACHE_AGE: usize = 10;
@@ -56,6 +62,10 @@ pub(crate) async fn render(State(state): State<RenderState>, body: Body) -> Stat
             return StatusCode::BAD_REQUEST;
         }
     };
+    if let Some(what) = oversized(&job.data) {
+        tracing::error!(invoice = %job.invoice_id, what, "an invoice-render job is too large to render");
+        return StatusCode::BAD_REQUEST;
+    }
     match handle(&state, job.tenant_id, job.invoice_id, job.data).await {
         Ok(()) => StatusCode::OK,
         Err(error) => {
@@ -66,13 +76,29 @@ pub(crate) async fn render(State(state): State<RenderState>, body: Body) -> Stat
 }
 
 async fn handle(state: &RenderState, tenant_id: Uuid, invoice_id: Uuid, data: InvoiceData) -> anyhow::Result<()> {
-    let pdf = {
-        let _permit = state.permits.acquire().await?;
-        tokio::task::spawn_blocking(move || pdf(&data)).await??
-    };
+    // The permit moves into the render, so it is released when the render ends, even if this request is dropped.
+    let permit = state.permits.clone().acquire_owned().await?;
+    let pdf = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        pdf(&data)
+    })
+    .await??;
     let key = invoice_pdf_key(tenant_id, invoice_id);
     state.svc.storage.put(Bucket::Private, &key, pdf, "application/pdf", None).await?;
     publish(&state.svc, MediaResult::InvoiceRendered { tenant_id, invoice_id, key }).await
+}
+
+/// What of `data` is over its limit, if anything.
+fn oversized(data: &InvoiceData) -> Option<&'static str> {
+    if data.lines.len() > MAX_LINES {
+        Some("lines")
+    } else if data.payments.len() > MAX_PAYMENTS {
+        Some("payments")
+    } else if data.taxes.len() > MAX_TAXES {
+        Some("taxes")
+    } else {
+        None
+    }
 }
 
 /// `data` as a PDF. The same data always gives the same bytes.

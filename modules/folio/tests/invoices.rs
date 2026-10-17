@@ -174,8 +174,10 @@ async fn an_invoice_freezes_the_folio_and_a_credit_note_reopens_it(_: PgPoolOpti
     // The rounding difference lands on the net, so 10,000 + 100 + 253 is the printed 10,353.
     assert_eq!((issued.net_lkr, issued.total_lkr), (10_000, 10_353));
     assert_eq!(issued.total_words, "Ten Thousand Three Hundred Fifty-Three Rupees Only");
-    let amounts: Vec<(i64, &str)> = issued.payments.iter().map(|p| (p.amount, p.currency.as_str())).collect();
-    assert_eq!(amounts, [(1_100_000, "LKR"), (-64_750, "LKR")]);
+    let amounts: Vec<(i64, &str, Option<i64>)> =
+        issued.payments.iter().map(|p| (p.amount, p.currency.as_str(), p.amount_lkr)).collect();
+    // In whole rupees too, half away from zero: the refund of LKR 647.50 prints as -648.
+    assert_eq!(amounts, [(1_100_000, "LKR", Some(11_000)), (-64_750, "LKR", Some(-648))]);
     assert_eq!(issued.payments[0].method, "cash");
     assert_eq!((issued.credits_serial.clone(), issued.reason.clone()), (None, None));
 
@@ -284,7 +286,8 @@ async fn a_usd_line_is_invoiced_in_whole_rupees(_: PgPoolOptions, opts: PgConnec
     let taxes: Vec<(i32, i64)> = issued.taxes.iter().map(|t| (t.rate_bp, t.amount_lkr)).collect();
     assert_eq!(taxes, [(100, 301), (250, 760)]);
     assert_eq!((issued.net_lkr, issued.total_lkr), (30_050, 31_111));
-    assert_eq!(issued.payments, vec![InvoicePayment { method: "cash".into(), amount: 10_353, currency: "USD".into() }]);
+    let usd = InvoicePayment { method: "cash".into(), amount: 10_353, currency: "USD".into(), amount_lkr: None };
+    assert_eq!(issued.payments, vec![usd], "a foreign payment has no rupee amount");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

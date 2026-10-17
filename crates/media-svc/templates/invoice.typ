@@ -1,5 +1,6 @@
 // An invoice or credit note, laid out from `data.json` (media_types::InvoiceData). Every `_lkr` value is whole
-// rupees; a line's `total` and a payment's `amount` are minor units of their own `currency`. Changing the layout needs
+// rupees; a line's `total` and a payment's `amount` are minor units of their own `currency`. The template only prints
+// what it is given: every figure is computed before the data is snapshotted. Changing the layout needs
 // no code change: media-svc only supplies the data and the fonts (Noto Sans Regular and Bold).
 
 #let d = json("data.json")
@@ -50,12 +51,6 @@
   let fraction = str(calc.rem(calc.abs(amount), unit))
   let digits = if places == 0 { whole } else { whole + "." + "0" * (places - fraction.len()) + fraction }
   (if amount < 0 { "-" } else { "" }) + currency + " " + digits
-}
-
-// LKR minor units to whole rupees, half away from zero.
-#let rupees(amount) = {
-  let whole = calc.quo(calc.abs(amount) + 50, 100)
-  if amount < 0 { -whole } else { whole }
 }
 
 // Basis points as a percentage: 1800 -> "18%", 250 -> "2.5%".
@@ -182,7 +177,7 @@
     stroke: (_, y) => (bottom: 0.4pt + rule),
     ..d.payments.map(p => (
       methods.at(p.method, default: p.method),
-      if p.currency == "LKR" { "LKR " + grouped(rupees(p.amount)) } else { money(p.amount, p.currency) },
+      if p.amount_lkr != none { "LKR " + grouped(p.amount_lkr) } else { money(p.amount, p.currency) },
     )).flatten(),
   )
 ]

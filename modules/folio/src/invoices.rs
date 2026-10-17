@@ -433,8 +433,18 @@ fn round_half_up(minor: i128, unit: i128) -> i128 {
     }
 }
 
+/// `payment` as printed; one in LKR also in whole rupees, rounded half up as a line is.
 fn payment(payment: &PaymentRow) -> InvoicePayment {
-    InvoicePayment { method: payment.method.clone(), amount: payment.amount, currency: payment.currency.clone() }
+    let unit = 10_i128.pow(fx::exponent(INVOICE_CURRENCY));
+    let amount_lkr = (payment.currency == INVOICE_CURRENCY)
+        .then(|| round_half_up(i128::from(payment.amount), unit))
+        .and_then(|rupees| i64::try_from(rupees).ok());
+    InvoicePayment {
+        method: payment.method.clone(),
+        amount: payment.amount,
+        currency: payment.currency.clone(),
+        amount_lkr,
+    }
 }
 
 /// The credit note of `original`: its parties, supply period and figures (negated), dated `issued_on`, with no

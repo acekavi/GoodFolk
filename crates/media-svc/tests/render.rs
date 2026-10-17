@@ -58,8 +58,14 @@ fn tax_invoice() -> InvoiceData {
         total_lkr: 73_425,
         total_words: "Seventy-Three Thousand Four Hundred Twenty-Five Rupees Only".into(),
         payments: vec![
-            InvoicePayment { method: "card_terminal".into(), amount: 20_000, currency: "USD".into() },
-            InvoicePayment { method: "cash".into(), amount: 1_342_500, currency: "LKR".into() },
+            InvoicePayment { method: "card_terminal".into(), amount: 20_000, currency: "USD".into(), amount_lkr: None },
+            // Printed as given: the template never rounds.
+            InvoicePayment {
+                method: "cash".into(),
+                amount: 1_342_500,
+                currency: "LKR".into(),
+                amount_lkr: Some(13_425),
+            },
         ],
         vat_registered: true,
         credits_serial: None,
@@ -259,5 +265,36 @@ async fn render_answers_503_until_the_result_is_published() {
     let server = start_with(CaptureBus { fail: true, ..CaptureBus::default() }).await;
     let job = job();
     assert_eq!(post_render(&server, push(&job), Some(&bearer())).await, 503);
+    server.storage.delete(Bucket::Private, &invoice_pdf_key(job.tenant_id, job.invoice_id)).await.unwrap();
+}
+
+#[tokio::test]
+async fn an_oversized_job_is_refused_for_good() {
+    let server = start().await;
+    let line = tax_invoice().lines[0].clone();
+    let payment = tax_invoice().payments[0].clone();
+    let tax = tax_invoice().taxes[0].clone();
+    let oversized = [
+        InvoiceData { lines: vec![line; render::MAX_LINES + 1], ..tax_invoice() },
+        InvoiceData { payments: vec![payment; render::MAX_PAYMENTS + 1], ..tax_invoice() },
+        InvoiceData { taxes: vec![tax; render::MAX_TAXES + 1], ..tax_invoice() },
+    ];
+    for data in oversized {
+        let job = InvoiceRenderJob { data, ..job() };
+        assert_eq!(post_render(&server, push(&job), Some(&bearer())).await, 400);
+        let key = invoice_pdf_key(job.tenant_id, job.invoice_id);
+        assert_eq!(server.storage.head(Bucket::Private, &key).await.unwrap(), None, "nothing is stored");
+    }
+    assert!(server.bus.sent.lock().unwrap().is_empty());
+
+    // At the limits, it renders.
+    let at_limits = InvoiceData {
+        lines: vec![tax_invoice().lines[0].clone(); render::MAX_LINES],
+        payments: vec![tax_invoice().payments[0].clone(); render::MAX_PAYMENTS],
+        taxes: vec![tax_invoice().taxes[0].clone(); render::MAX_TAXES],
+        ..tax_invoice()
+    };
+    let job = InvoiceRenderJob { data: at_limits, ..job() };
+    assert_eq!(post_render(&server, push(&job), Some(&bearer())).await, 200);
     server.storage.delete(Bucket::Private, &invoice_pdf_key(job.tenant_id, job.invoice_id)).await.unwrap();
 }
