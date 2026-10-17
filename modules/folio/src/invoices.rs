@@ -8,11 +8,13 @@
 //! `folio` before `property_counter`), so a rolled-back issue gives its number back and concurrent issues queue on
 //! the counter row instead of skipping or colliding.
 //!
-//! **Figures.** Every printed figure is whole rupees. A line's `total_lkr` is its base total rounded half away from
-//! zero to the rupee. A tax is converted the same way per line, at that line's rate, and then summed per tax and
-//! rate; only on-bill taxes are printed, since an absorbed tax is not part of the bill. `total_lkr` is the sum of the
-//! lines, and `net_lkr` is `total_lkr` less the printed taxes, so it takes the rounding difference and the printed
-//! figures always add up. Reversals are printed as negative lines, so the corrections stay visible.
+//! **Figures.** Every printed figure is whole rupees, rounded half away from zero, and the invoice total is exactly
+//! the money settled: `total_lkr` is the sum of the lines' base totals, rounded once. The lines' `total_lkr` share it
+//! out by the largest remainder method (see [`allocate`]), so they sum to it exactly. Each tax is converted at its
+//! line's rate to base minor units, summed per tax and rate, and rounded once; only on-bill taxes are printed, since
+//! an absorbed tax is not part of the bill. `net_lkr` is `total_lkr` less the printed taxes, so it takes the rounding
+//! difference and the printed figures always add up. Reversals are printed as negative lines, so the corrections stay
+//! visible.
 
 use crate::folios::{FolioKind, FolioQuery, FolioStatus, LineWithTaxes, PaymentRow, folios_for, lock_folios};
 use crate::lines::violates;
@@ -86,7 +88,8 @@ async fn issuer(tx: &mut Tx, property: Uuid) -> Result<Issuer, FolioError> {
 
 /// Issues the invoice of `folio`, which must be open (`Conflict`), have a zero balance in every currency (`Conflict`,
 /// "The folio must be settled before it is invoiced") and at least one line (`Conflict`, "Nothing to invoice"), in a
-/// property whose base currency is LKR (`Invalid`).
+/// property whose base currency is LKR (`Invalid`). A VAT-registered property needs its TIN set (`Conflict`). Every
+/// refusal comes before the serial is taken.
 ///
 /// Locks the folio (`NotFound` unless it is in `property`), then takes the next `invoice` serial, snapshots the
 /// invoice data, marks the folio invoiced, audits `invoice.issued`, queues the `invoice-render` job and queues
@@ -117,6 +120,9 @@ pub async fn issue_invoice(
     ) else {
         return Err(FolioError::Conflict("Nothing to invoice".into()));
     };
+    if issuer.vat_registered && issuer.tin.is_none() {
+        return Err(FolioError::Conflict("Set the property's TIN before issuing a tax invoice".into()));
+    }
     let purchaser = purchaser(tx, locked.kind, folio).await?;
     let sequences = tax_sequences(tx, property).await?;
 
@@ -239,10 +245,12 @@ pub async fn set_invoice_pdf(tx: &mut Tx, tenant: TenantId, invoice: Uuid, key: 
         return Err(FolioError::Invalid(format!("{key:?} is not an object of invoice {invoice}")));
     }
     let changed: Option<(Uuid, Uuid)> = sqlx::query_as(
-        "update invoice set pdf_key = $2 where id = $1 and pdf_key is null returning folio_id, property_id",
+        "update invoice set pdf_key = $2 where id = $1 and tenant_id = $3 and pdf_key is null
+         returning folio_id, property_id",
     )
     .bind(invoice)
     .bind(key)
+    .bind(tenant.0)
     .fetch_optional(&mut **tx)
     .await?;
     if let Some((folio, property)) = changed {
@@ -251,13 +259,20 @@ pub async fn set_invoice_pdf(tx: &mut Tx, tenant: TenantId, invoice: Uuid, key: 
     Ok(())
 }
 
-/// Whether `key` is `t/<tenant>/invoices/<invoice>` followed by an extension (`.pdf`) or one file name (`/x.pdf`).
+/// Whether `key` is `t/<tenant>/invoices/<invoice>` followed by an extension of 1 to 10 letters and digits (`.pdf`)
+/// or by one file name that is not a dotfile and has no `..` (`/x.pdf`).
 fn owned_key(tenant: TenantId, invoice: Uuid, key: &str) -> bool {
     let prefix = format!("t/{}/invoices/{invoice}", tenant.0);
-    key.strip_prefix(&prefix).is_some_and(|rest| {
-        let name = rest.strip_prefix('/').filter(|name| !name.starts_with('.')).or_else(|| rest.strip_prefix('.'));
-        name.is_some_and(|name| !name.is_empty() && !name.contains('/'))
-    })
+    let Some(rest) = key.strip_prefix(&prefix) else {
+        return false;
+    };
+    if let Some(extension) = rest.strip_prefix('.') {
+        (1..=10).contains(&extension.len()) && extension.bytes().all(|b| b.is_ascii_alphanumeric())
+    } else if let Some(name) = rest.strip_prefix('/') {
+        !name.is_empty() && !name.starts_with('.') && !name.contains('/') && !name.contains("..")
+    } else {
+        false
+    }
 }
 
 fn already_credited() -> FolioError {
@@ -321,42 +336,69 @@ struct Figures {
 }
 
 fn figures(lines: &[LineWithTaxes], sequences: &HashMap<String, i32>) -> Result<Figures, FolioError> {
-    let too_large = || FolioError::Invalid("the invoice total is too large".into());
+    let fit =
+        |value: i128| i64::try_from(value).map_err(|_| FolioError::Invalid("the invoice total is too large".into()));
     let base_exponent = fx::exponent(INVOICE_CURRENCY);
-    let mut printed = Vec::with_capacity(lines.len());
-    let mut total: i128 = 0;
-    // Keyed by (sequence, code, rate), so the taxes print in the order they are calculated.
+    let unit = 10_i128.pow(base_exponent);
+    let (line_rupees, total) = allocate(lines.iter().map(|entry| i128::from(entry.line.base_total)), unit);
+    let printed = lines
+        .iter()
+        .zip(line_rupees)
+        .map(|(entry, total_lkr)| {
+            let line = &entry.line;
+            Ok(InvoiceLine {
+                description: line.description.clone(),
+                quantity: line.quantity,
+                currency: line.currency.clone(),
+                total: line.total,
+                total_lkr: fit(total_lkr)?,
+            })
+        })
+        .collect::<Result<Vec<_>, FolioError>>()?;
+    // Base minor units of each tax, keyed by (sequence, code, rate) so the taxes print in the order they are
+    // calculated.
     let mut taxes: BTreeMap<(i32, String, i32), (String, i128)> = BTreeMap::new();
     for entry in lines {
         let line = &entry.line;
-        let total_lkr = whole_rupees(line.base_total, base_exponent);
-        total += i128::from(total_lkr);
-        printed.push(InvoiceLine {
-            description: line.description.clone(),
-            quantity: line.quantity,
-            currency: line.currency.clone(),
-            total: line.total,
-            total_lkr,
-        });
         for tax in entry.taxes.iter().filter(|tax| tax.presentation == "on_bill") {
             let base = fx::to_base(tax.amount, fx::exponent(&line.currency), base_exponent, line.rate)?;
             let sequence = sequences.get(&tax.code).copied().unwrap_or(i32::MAX);
             let sum = taxes.entry((sequence, tax.code.clone(), tax.rate_bp)).or_insert_with(|| (tax.name.clone(), 0));
-            sum.1 += i128::from(whole_rupees(base, base_exponent));
+            sum.1 += i128::from(base);
         }
     }
-    let fit = |value: i128| i64::try_from(value).map_err(|_| too_large());
     let taxes = taxes
         .into_iter()
-        .map(|((_, _, rate_bp), (name, amount))| Ok(InvoiceTax { name, rate_bp, amount_lkr: fit(amount)? }))
+        .map(|((_, _, rate_bp), (name, base))| {
+            Ok(InvoiceTax { name, rate_bp, amount_lkr: fit(round_half_up(base, unit))? })
+        })
         .collect::<Result<Vec<_>, FolioError>>()?;
     let tax_total: i128 = taxes.iter().map(|tax| i128::from(tax.amount_lkr)).sum();
     Ok(Figures { lines: printed, taxes, net_lkr: fit(total - tax_total)?, total_lkr: fit(total)? })
 }
 
-/// `minor` base units in whole rupees, rounded half away from zero, so a negative line rounds as its positive does.
-fn whole_rupees(minor: i64, exponent: u32) -> i64 {
-    let unit = 10_i64.pow(exponent);
+/// Whole units of `minors` (in units of `unit` minor units) that sum exactly to their rounded total, by the largest
+/// remainder method: the total is the sum rounded half up; each amount is floored toward −∞ (so a negative amount's
+/// remainder is measured from below, like a positive one's), and the amounts with the largest remainders, the
+/// earliest first on a tie, each get one more unit until the parts sum to the total. Returns the parts and the total.
+fn allocate(minors: impl Iterator<Item = i128>, unit: i128) -> (Vec<i128>, i128) {
+    let minors: Vec<i128> = minors.collect();
+    let total = round_half_up(minors.iter().sum(), unit);
+    let mut parts: Vec<i128> = minors.iter().map(|minor| minor.div_euclid(unit)).collect();
+    let short = total - parts.iter().sum::<i128>();
+    let mut order: Vec<usize> = (0..minors.len()).collect();
+    // A stable sort keeps the earlier line first among equal remainders.
+    order.sort_by_key(|&index| std::cmp::Reverse(minors[index].rem_euclid(unit)));
+    // The remainders sum to less than one unit per amount, so `short` is between 0 and the number of amounts.
+    for &index in order.iter().take(usize::try_from(short).unwrap_or(0)) {
+        parts[index] += 1;
+    }
+    (parts, total)
+}
+
+/// `minor` in whole units of `unit` minor units, rounded half away from zero, so a negative amount rounds as its
+/// positive does.
+fn round_half_up(minor: i128, unit: i128) -> i128 {
     let (quotient, remainder) = (minor / unit, minor % unit);
     if remainder * 2 >= unit {
         quotient + 1
@@ -371,7 +413,8 @@ fn payment(payment: &PaymentRow) -> InvoicePayment {
     InvoicePayment { method: payment.method.clone(), amount: payment.amount, currency: payment.currency.clone() }
 }
 
-/// The credit note of `original`: its parties, supply period and figures (negated), dated `issued_on`.
+/// The credit note of `original`: its parties, supply period and figures (negated), dated `issued_on`, with no
+/// payments.
 fn negated(original: InvoiceData, serial: String, issued_on: Date, reason: &str) -> InvoiceData {
     let total_lkr = -original.total_lkr;
     InvoiceData {
@@ -392,11 +435,8 @@ fn negated(original: InvoiceData, serial: String, issued_on: Date, reason: &str)
             })
             .collect(),
         taxes: original.taxes.into_iter().map(|tax| InvoiceTax { amount_lkr: -tax.amount_lkr, ..tax }).collect(),
-        payments: original
-            .payments
-            .into_iter()
-            .map(|payment| InvoicePayment { amount: -payment.amount, ..payment })
-            .collect(),
+        // The money stays on the reopened folio: a credit note records no payment.
+        payments: Vec::new(),
         net_lkr: -original.net_lkr,
         total_lkr,
         total_words: lkr_in_words(total_lkr),
@@ -456,15 +496,29 @@ async fn finish(tx: &mut Tx, tenant: TenantId, invoice: &InvoiceRow, data: &Invo
 
 #[cfg(test)]
 mod tests {
-    use super::{owned_key, whole_rupees};
+    use super::{allocate, owned_key, round_half_up};
     use db::TenantId;
     use uuid::Uuid;
 
     #[test]
     fn rupees_round_half_away_from_zero() {
         for (minor, rupees) in [(0, 0), (49, 0), (50, 1), (149, 1), (150, 2), (-49, 0), (-50, -1), (-150, -2)] {
-            assert_eq!(whole_rupees(minor, 2), rupees, "{minor}");
+            assert_eq!(round_half_up(minor, 100), rupees, "{minor}");
         }
+    }
+
+    #[test]
+    fn line_rupees_sum_to_the_rounded_total() {
+        // 30 nights of 10,050.50: 301,515 in all, where rounding each night would print 301,530.
+        let (parts, total) = allocate(std::iter::repeat_n(1_005_050, 30), 100);
+        assert_eq!((total, parts.iter().sum::<i128>()), (301_515, 301_515));
+        assert_eq!((parts[0], parts[14], parts[15], parts[29]), (10_051, 10_051, 10_050, 10_050));
+        // A reversal's remainder is measured from below: -5,176.25 floors to -5,177 with 75 left over.
+        assert_eq!(allocate([517_625, -517_625].into_iter(), 100), (vec![5_176, -5_176], 0));
+        assert_eq!(allocate([517_625, -517_625, 1_035_250].into_iter(), 100), (vec![5_176, -5_176, 10_353], 10_353));
+        // Equal remainders go to the earlier line.
+        assert_eq!(allocate([150, 150, 150].into_iter(), 100), (vec![2, 2, 1], 5));
+        assert_eq!(allocate(std::iter::empty(), 100), (vec![], 0));
     }
 
     #[test]
@@ -482,6 +536,11 @@ mod tests {
             format!("{prefix}/../x.pdf"),
             format!("{prefix}/a/b.pdf"),
             format!("{prefix}0.pdf"),
+            format!("{prefix}."),
+            format!("{prefix}..pdf"),
+            format!("{prefix}.p/df"),
+            format!("{prefix}.abcdefghijk"),
+            format!("{prefix}/a..pdf"),
             format!("t/{}/invoices/{other}.pdf", tenant.0),
             format!("t/{other}/invoices/{invoice}.pdf"),
         ] {

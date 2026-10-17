@@ -212,10 +212,7 @@ async fn an_invoice_freezes_the_folio_and_a_credit_note_reopens_it(_: PgPoolOpti
         credited.taxes.iter().map(|t| (t.name.clone(), t.rate_bp, t.amount_lkr)).collect::<Vec<_>>(),
         issued.taxes.iter().map(|t| (t.name.clone(), t.rate_bp, -t.amount_lkr)).collect::<Vec<_>>()
     );
-    assert_eq!(
-        credited.payments,
-        issued.payments.iter().map(|p| InvoicePayment { amount: -p.amount, ..p.clone() }).collect::<Vec<_>>()
-    );
+    assert_eq!(credited.payments, [], "the money stays on the folio");
     assert_eq!((&credited.supplier, &credited.purchaser), (&issued.supplier, &issued.purchaser));
     assert_eq!((credited.supply_from, credited.supply_to), (issued.supply_from, issued.supply_to));
     assert_eq!(hotel.folio_state(folio).await, (FolioStatus::Open, 3));
@@ -238,8 +235,21 @@ async fn a_vat_registered_property_issues_a_tax_invoice(_: PgPoolOptions, opts: 
     let stay = hotel.book(None).await;
     hotel.settled(stay.guests[0], 1_000_000).await;
 
-    let issued = data(&hotel.issue(stay.guests[0]).await.unwrap());
+    let refused = hotel.issue(stay.guests[0]).await;
+    assert_eq!(conflict(refused), "Set the property's TIN before issuing a tax invoice");
+    let mut tx = hotel.tx().await;
+    sqlx::query("update property set tin = '134567890-7000' where id = $1")
+        .bind(hotel.property)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
 
+    let invoice = hotel.issue(stay.guests[0]).await.unwrap();
+    assert_eq!(invoice.serial, hotel.serial(1), "the refusal took no number");
+    let issued = data(&invoice);
+
+    assert_eq!(issued.supplier.tin.as_deref(), Some("134567890-7000"));
     assert_eq!((issued.title.as_str(), issued.vat_registered), ("TAX INVOICE", true));
     // 1,035,250 + VAT 186,345 = 1,221,595 cents. Taxes print in their calculation order.
     let taxes: Vec<(i32, i64)> = issued.taxes.iter().map(|t| (t.rate_bp, t.amount_lkr)).collect();
@@ -457,4 +467,68 @@ async fn the_link_waits_for_the_pdf_and_is_audited(_: PgPoolOptions, opts: PgCon
     let mut tx = hotel.tx().await;
     not_found(folio::credit_note(&mut tx, hotel.tenant, Some(hotel.user), other_property, invoice.id, "Wrong").await);
     assert_eq!(hotel.audited("invoice.viewed").await.len(), 1);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_line_totals_sum_to_the_money_settled(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let stay = hotel.book(None).await;
+    let folio = stay.guests[0];
+    // 30 nights at 10,050.50 with the taxes included: 301,515.00 settled, where rounding each night would print
+    // 301,530.
+    for _ in 0..30 {
+        let night = folio::NewCharge { inclusive: true, ..hotel.charge(Source::Manual, "room", 1_005_050, "LKR") };
+        assert_eq!(hotel.post(folio, night).await.unwrap().total, 1_005_050);
+    }
+    hotel.pay(folio, 30_151_500, "LKR").await;
+
+    let issued = data(&hotel.issue(folio).await.unwrap());
+
+    assert_eq!(issued.total_lkr, 301_515);
+    assert_eq!(issued.lines.iter().map(|l| l.total_lkr).sum::<i64>(), 301_515);
+    let taxes: i64 = issued.taxes.iter().map(|t| t.amount_lkr).sum();
+    assert_eq!(issued.net_lkr + taxes, issued.total_lkr);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_mixed_currency_folio_prints_lines_that_sum_to_its_total(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    hotel.rate("USD", Decimal::new(3005, 1)).await;
+    let stay = hotel.book(None).await;
+    let folio = stay.guests[0];
+    let mut base = 0;
+    for (unit_net, currency) in [(10_000, "USD"), (333_333, "LKR"), (1_999, "USD"), (50_050, "LKR")] {
+        let line = hotel.post(folio, hotel.charge(Source::Manual, "room", unit_net, currency)).await.unwrap();
+        base += line.base_total;
+        hotel.pay(folio, line.total, currency).await;
+    }
+
+    let issued = data(&hotel.issue(folio).await.unwrap());
+
+    let rounded = (base + 50) / 100;
+    assert_eq!(issued.total_lkr, rounded);
+    assert_eq!(issued.lines.iter().map(|l| l.total_lkr).sum::<i64>(), rounded);
+    let taxes: i64 = issued.taxes.iter().map(|t| t.amount_lkr).sum();
+    assert_eq!(issued.net_lkr + taxes, issued.total_lkr);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_series_continues_past_six_digits(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let stay = hotel.book(None).await;
+    hotel.settled(stay.guests[0], 10_000).await;
+    let mut tx = hotel.tx().await;
+    sqlx::query(
+        "insert into property_counter (tenant_id, property_id, name, value) values ($1, $2, 'invoice', 999999)",
+    )
+    .bind(hotel.tenant.0)
+    .bind(hotel.property)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let invoice = hotel.issue(stay.guests[0]).await.unwrap();
+
+    assert_eq!(invoice.serial, format!("GAL-{}-1000000", hotel.business_date.year()));
 }
