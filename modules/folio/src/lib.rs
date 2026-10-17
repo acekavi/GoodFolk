@@ -37,19 +37,27 @@
 //! bill first posted, and a different body under that number is a `Conflict`. A bill to an in-house stay posts each
 //! item through [`post_for_stay`] under `pos:<bill>:<n>`; a bill settled at the outlet is recorded with its taxed
 //! lines and a payment on no folio. An outlet with its service charge off is taxed as if the property had none.
+//!
+//! An invoice ([`issue_invoice`]) is issued on a settled folio in whole LKR under a gapless per-property serial, and
+//! freezes the folio: every money path refuses an invoiced folio until a credit note ([`credit_note`]) reopens it.
+//! Each queues an `invoice-render` job carrying its [`media_types::InvoiceData`] snapshot; media-svc renders the PDF,
+//! whose key arrives through [`set_invoice_pdf`].
 
 mod folios;
+mod invoices;
 mod lines;
 mod payments;
 mod pos;
 mod posting;
 mod routing;
 mod rules;
+mod words;
 
 pub use folios::{
     Balance, FolioKind, FolioQuery, FolioRow, FolioStatus, FolioView, LineTax, LineWithTaxes, PaymentRow,
     ensure_account_folio, ensure_deposit_folio, ensure_guest_folio, folios_for,
 };
+pub use invoices::{INVOICE_RENDER_TOPIC, InvoiceRow, credit_note, invoice_link_key, issue_invoice, set_invoice_pdf};
 pub use lines::{LineRow, NewCharge, post_charge, reverse, transfer};
 pub use payments::{Method, move_deposit, post_cancellation_fee, refund, take_payment, undo_deposit_move};
 pub use pos::{
@@ -59,6 +67,7 @@ pub use pos::{
 pub use posting::{PostReport, post_business_date_charges, post_unposted_nights, reverse_released_nights};
 pub use routing::{DEFAULT_ROUTING, follow_account_change, post_for_stay, set_routing};
 pub use rules::load_rules;
+pub use words::lkr_in_words;
 
 use db::{Event, TenantId, Tx, UserId};
 use uuid::Uuid;

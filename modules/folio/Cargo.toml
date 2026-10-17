@@ -7,7 +7,9 @@ publish.workspace = true
 
 [dependencies]
 db.workspace = true
+events.workspace = true
 fx.workspace = true
+media-types.workspace = true
 rust_decimal.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -1371,7 +1371,9 @@ name = "folio"
 version = "0.1.0"
 dependencies = [
  "db",
+ "events",
  "fx",
+ "media-types",
  "property",
  "rust_decimal",
  "serde",
@@ -2474,6 +2476,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "time",
  "uuid",
 ]
 
