@@ -65,6 +65,7 @@ export SVC_AUTH=secret
 export INTERNAL_SHARED_SECRET=local-development-secret-at-least-32-bytes
 export EVENT_BUS=push
 export PUSH_ENDPOINT_MEDIA_PROCESS=http://localhost:8090/work              # core-api -> media-svc
+export PUSH_ENDPOINT_INVOICE_RENDER=http://localhost:8090/render           # core-api -> media-svc
 export PUSH_ENDPOINT_MEDIA_RESULTS=http://localhost:8080/internal/events   # media-svc -> core-api
 ```
 
@@ -346,9 +347,9 @@ Outside production, every variable marked "dev default" can be left out. With `A
 | `INTERNAL_SHARED_SECRET` | both | With `SVC_AUTH=secret`: the bearer secret, at least 32 bytes and no surrounding whitespace. |
 | `MEDIA_SVC_AUDIENCE` | both | With `SVC_AUTH=google`: the audience of ID tokens sent to media-svc (core-api puts it on its calls, media-svc requires it on its own endpoints). |
 | `CORE_API_AUDIENCE` | both | With `SVC_AUTH=google`: the same for `/internal/events` (media-svc puts it on its pushes, core-api requires it). |
-| `ALLOWED_SERVICE_EMAILS` | both | With `SVC_AUTH=google`: comma-separated service accounts whose tokens are accepted, at least one. media-svc lists core-api's runtime service account and the `media-process` push service account; core-api lists the `media-results` push service account (ARCHITECTURE §8.5). |
+| `ALLOWED_SERVICE_EMAILS` | both | With `SVC_AUTH=google`: comma-separated service accounts whose tokens are accepted, at least one. media-svc lists core-api's runtime service account and the `media-process` and `invoice-render` push service accounts; core-api lists the `media-results` push service account (ARCHITECTURE §8.5). |
 | `EVENT_BUS` | both | `push` (straight to the receiver; refused in production) or `pubsub`. Required. |
-| `PUSH_ENDPOINT_<TOPIC>` | both | With `EVENT_BUS=push`: where a topic is delivered, with `-` as `_`: `PUSH_ENDPOINT_MEDIA_PROCESS` (core-api sends, to media-svc's `/work`) and `PUSH_ENDPOINT_MEDIA_RESULTS` (media-svc sends, to core-api's `/internal/events`). Each service needs the endpoint of the topic it sends, or it refuses to start, naming the variable. |
+| `PUSH_ENDPOINT_<TOPIC>` | both | With `EVENT_BUS=push`: where a topic is delivered, with `-` as `_`: `PUSH_ENDPOINT_MEDIA_PROCESS` (core-api sends, to media-svc's `/work`), `PUSH_ENDPOINT_INVOICE_RENDER` (core-api sends, to media-svc's `/render`) and `PUSH_ENDPOINT_MEDIA_RESULTS` (media-svc sends, to core-api's `/internal/events`). Each service needs the endpoint of the topic it sends, or it refuses to start, naming the variable. |
 | `PUBSUB_PROJECT` | both | With `EVENT_BUS=pubsub`: the GCP project. Required. |
 | `PUBSUB_EMULATOR_HOST` | both | With `EVENT_BUS=pubsub`: `host:port` of the Pub/Sub emulator; unset, the real API is used with the metadata server's token. |
 | `PORT` | media-svc | Listen port, default 8090 (core-api's is 8080). One port serves gRPC, `/work` and `/healthz`. |
@@ -368,6 +369,7 @@ SVC_AUTH=secret
 INTERNAL_SHARED_SECRET=local-development-secret-at-least-32-bytes
 EVENT_BUS=push
 PUSH_ENDPOINT_MEDIA_PROCESS=http://localhost:8090/work
+PUSH_ENDPOINT_INVOICE_RENDER=http://localhost:8090/render
 PUSH_ENDPOINT_MEDIA_RESULTS=http://localhost:8080/internal/events
 # Everything else (S3_*, MEDIA_PUBLIC_BASE_URL, MEDIA_SVC_URL, PORT) falls back to the local defaults above.
 ```

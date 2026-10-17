@@ -21,7 +21,9 @@ pub async fn events(State(state): State<AppState>, body: Bytes) -> StatusCode {
         return StatusCode::BAD_REQUEST;
     };
     let tenant = match &result {
-        MediaResult::Ready { tenant_id, .. } | MediaResult::Failed { tenant_id, .. } => TenantId(*tenant_id),
+        MediaResult::Ready { tenant_id, .. }
+        | MediaResult::Failed { tenant_id, .. }
+        | MediaResult::InvoiceRendered { tenant_id, .. } => TenantId(*tenant_id),
     };
     match apply(&state, &envelope, tenant, &result).await {
         Ok(()) => StatusCode::NO_CONTENT,

@@ -106,6 +106,20 @@ pub enum MediaResult {
         asset_id: Uuid,
         reason: String,
     },
+    /// An invoice's or credit note's PDF is stored at `key`.
+    InvoiceRendered {
+        tenant_id: Uuid,
+        invoice_id: Uuid,
+        key: String,
+    },
+}
+
+/// An `invoice-render` job: lay `data` out as the PDF of `invoice_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvoiceRenderJob {
+    pub tenant_id: Uuid,
+    pub invoice_id: Uuid,
+    pub data: InvoiceData,
 }
 
 /// Whether a document is an invoice or a credit note.
@@ -265,9 +279,8 @@ mod tests {
         assert_eq!((Format::Avif.as_str(), Format::Webp.as_str()), ("avif", "webp"));
     }
 
-    #[test]
-    fn invoice_data_round_trips_with_its_wire_shape() {
-        let data = InvoiceData {
+    fn credit_note() -> InvoiceData {
+        InvoiceData {
             kind: InvoiceKind::CreditNote,
             supplier: Supplier { legal_name: "Galle Ltd".into(), address: None, tin: Some("123456789".into()) },
             purchaser: Purchaser { name: "Acme".into(), tin: None },
@@ -291,12 +304,32 @@ mod tests {
             vat_registered: false,
             credits_serial: Some("GAL-2026-000001".into()),
             reason: Some("Billed twice".into()),
-        };
+        }
+    }
+
+    #[test]
+    fn invoice_data_round_trips_with_its_wire_shape() {
+        let data = credit_note();
         let json = serde_json::to_value(&data).unwrap();
         assert_eq!(json["kind"], "credit_note");
         assert_eq!(json["issued_on"], "2026-10-17");
         assert_eq!(serde_json::from_value::<InvoiceData>(json).unwrap(), data);
         assert_eq!(InvoiceKind::try_from("invoice".to_owned()), Ok(InvoiceKind::Invoice));
         assert!(InvoiceKind::try_from("receipt".to_owned()).is_err());
+    }
+
+    #[test]
+    fn a_render_job_and_its_result_round_trip_with_their_wire_shape() {
+        let (tenant_id, invoice_id) = (Uuid::nil(), Uuid::max());
+        // The shape folio queues on `invoice-render`.
+        let queued = serde_json::json!({ "tenant_id": tenant_id, "invoice_id": invoice_id, "data": credit_note() });
+        let job: InvoiceRenderJob = serde_json::from_value(queued).unwrap();
+        assert_eq!(job, InvoiceRenderJob { tenant_id, invoice_id, data: credit_note() });
+
+        let rendered = MediaResult::InvoiceRendered { tenant_id, invoice_id, key: "t/a/invoices/b.pdf".into() };
+        let json = serde_json::to_value(&rendered).unwrap();
+        assert_eq!(json["type"], "invoice_rendered");
+        assert_eq!(json["key"], "t/a/invoices/b.pdf");
+        assert_eq!(serde_json::from_value::<MediaResult>(json).unwrap(), rendered);
     }
 }

@@ -57,6 +57,7 @@ export default defineConfig({
 				...SERVICE_AUTH,
 				MEDIA_SVC_URL: `http://localhost:${MEDIA_PORT}`,
 				PUSH_ENDPOINT_MEDIA_PROCESS: `http://localhost:${MEDIA_PORT}/work`,
+				PUSH_ENDPOINT_INVOICE_RENDER: `http://localhost:${MEDIA_PORT}/render`,
 				RUST_LOG: 'warn'
 			},
 			reuseExistingServer: !process.env.CI,

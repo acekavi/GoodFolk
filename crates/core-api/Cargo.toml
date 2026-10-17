@@ -16,6 +16,7 @@ base64.workspace = true
 db.workspace = true
 domain.workspace = true
 events.workspace = true
+folio.workspace = true
 futures.workspace = true
 garde.workspace = true
 housekeeping.workspace = true
