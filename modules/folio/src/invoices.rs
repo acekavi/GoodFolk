@@ -9,8 +9,9 @@
 //! the counter row instead of skipping or colliding.
 //!
 //! **Figures.** Every printed figure is whole rupees, rounded half away from zero, and the invoice total is exactly
-//! the money settled: `total_lkr` is the sum of the lines' base totals, rounded once. The lines' `total_lkr` share it
-//! out by the largest remainder method (see [`allocate`]), so they sum to it exactly. Each tax is converted at its
+//! the money settled: `total_lkr` is the sum of the lines' base totals, rounded once. A reversed line and its reversal
+//! print as exact mirrors (see [`mirrored`]); the other lines' `total_lkr` share the total out by the largest
+//! remainder method (see [`allocate`]), so they sum to it exactly. Each tax is converted at its
 //! line's rate to base minor units, summed per tax and rate, and rounded once; only on-bill taxes are printed, since
 //! an absorbed tax is not part of the bill. `net_lkr` is `total_lkr` less the printed taxes, so it takes the rounding
 //! difference and the printed figures always add up. Reversals are printed as negative lines, so the corrections stay
@@ -340,7 +341,13 @@ fn figures(lines: &[LineWithTaxes], sequences: &HashMap<String, i32>) -> Result<
         |value: i128| i64::try_from(value).map_err(|_| FolioError::Invalid("the invoice total is too large".into()));
     let base_exponent = fx::exponent(INVOICE_CURRENCY);
     let unit = 10_i128.pow(base_exponent);
-    let (line_rupees, total) = allocate(lines.iter().map(|entry| i128::from(entry.line.base_total)), unit);
+    let line_rupees = mirrored(lines, unit);
+    let rest = lines.iter().zip(&line_rupees).filter(|(_, paired)| paired.is_none());
+    let (shares, total) = allocate(rest.map(|(entry, _)| i128::from(entry.line.base_total)), unit);
+    let mut shares = shares.into_iter();
+    // `allocate` returns one share per unpaired line, in line order.
+    let line_rupees: Vec<i128> =
+        line_rupees.into_iter().map(|paired| paired.or_else(|| shares.next()).unwrap_or_default()).collect();
     let printed = lines
         .iter()
         .zip(line_rupees)
@@ -375,6 +382,23 @@ fn figures(lines: &[LineWithTaxes], sequences: &HashMap<String, i32>) -> Result<
         .collect::<Result<Vec<_>, FolioError>>()?;
     let tax_total: i128 = taxes.iter().map(|tax| i128::from(tax.amount_lkr)).sum();
     Ok(Figures { lines: printed, taxes, net_lkr: fit(total - tax_total)?, total_lkr: fit(total)? })
+}
+
+/// The whole rupees of each line that is a reversal, or the original of one, both on this folio (a reversal, or the
+/// source side of a transfer): the original prints its base total rounded half up and the reversal exactly its
+/// negation, so a pair always mirrors. A pair sums to zero in base, so leaving it out of [`allocate`] leaves the
+/// total unchanged. `None` for every other line.
+fn mirrored(lines: &[LineWithTaxes], unit: i128) -> Vec<Option<i128>> {
+    let index: HashMap<Uuid, usize> = lines.iter().enumerate().map(|(i, entry)| (entry.line.id, i)).collect();
+    let mut paired = vec![None; lines.len()];
+    for (reversal, entry) in lines.iter().enumerate() {
+        if let Some(&original) = entry.line.reverses.as_ref().and_then(|id| index.get(id)) {
+            let rupees = round_half_up(i128::from(lines[original].line.base_total), unit);
+            paired[original] = Some(rupees);
+            paired[reversal] = Some(-rupees);
+        }
+    }
+    paired
 }
 
 /// Whole units of `minors` (in units of `unit` minor units) that sum exactly to their rounded total, by the largest

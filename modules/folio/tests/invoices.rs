@@ -532,3 +532,32 @@ async fn the_series_continues_past_six_digits(_: PgPoolOptions, opts: PgConnectO
 
     assert_eq!(invoice.serial, format!("GAL-{}-1000000", hotel.business_date.year()));
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_reversed_line_and_its_reversal_print_as_exact_mirrors(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let stay = hotel.book(None).await;
+    let folio = stay.guests[0];
+    let inclusive =
+        |unit_net| folio::NewCharge { inclusive: true, ..hotel.charge(Source::Manual, "room", unit_net, "LKR") };
+    // 5,176.25 and its reversal leave remainders of 25 and 75. Three lines with larger remainders would take every
+    // spare rupee from a shared allocation and print the pair as 5,176 / -5,177.
+    let wrong = hotel.post(folio, inclusive(517_625)).await.unwrap();
+    let mut tx = hotel.tx().await;
+    folio::reverse(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, folio, wrong.id, "Wrong rate")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    for unit_net in [100_076, 100_080, 100_090] {
+        hotel.post(folio, inclusive(unit_net)).await.unwrap();
+    }
+    hotel.pay(folio, 300_246, "LKR").await;
+
+    let issued = data(&hotel.issue(folio).await.unwrap());
+
+    let lines: Vec<i64> = issued.lines.iter().map(|l| l.total_lkr).collect();
+    assert_eq!(lines, [5_176, -5_176, 1_000, 1_001, 1_001]);
+    assert_eq!(issued.total_lkr, 3_002);
+    let taxes: i64 = issued.taxes.iter().map(|t| t.amount_lkr).sum();
+    assert_eq!(issued.net_lkr + taxes, issued.total_lkr);
+}
