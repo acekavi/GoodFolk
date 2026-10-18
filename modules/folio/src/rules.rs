@@ -59,6 +59,19 @@ fn into_rule(row: RuleRow) -> Result<tax::Rule, sqlx::Error> {
     })
 }
 
+/// When a rule applies, as the API documents [`tax::Condition`] (the `tax` crate stays free of API types): always,
+/// only for a VAT-registered property, only for stays on plans sold to residents (or non-residents), or only for
+/// charges in one of `currencies`. A schema only; the same JSON deserializes as a `tax::Condition`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[schema(as = TaxCondition)]
+pub enum TaxConditionSchema {
+    Always,
+    VatRegistered,
+    Residency { resident: bool },
+    PaymentCurrency { currencies: Vec<String> },
+}
+
 /// A stored rule, with its id and version, as the settings screens show it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct TaxRuleRow {
@@ -80,7 +93,7 @@ pub struct TaxRuleRow {
     pub presentation: tax::Presentation,
     /// `{"type": "always"}`, `{"type": "vat_registered"}`, `{"type": "residency", "resident": true}` or
     /// `{"type": "payment_currency", "currencies": ["USD"]}`.
-    #[schema(value_type = Object)]
+    #[schema(value_type = TaxConditionSchema)]
     pub condition: tax::Condition,
     pub effective_from: Date,
     /// The first day the rule no longer applies; `null` while open-ended.
@@ -278,7 +291,9 @@ async fn locked_rule(tx: &mut Tx, property: Uuid, id: Uuid, expected_version: i3
 }
 
 /// Changes the rule `id` of `property` at `expected_version` (`NotFound`, `VersionMismatch`), checked as
-/// [`create_tax_rule`] checks a new rule. Lines already posted keep the taxes they were posted with. Audited as
+/// [`create_tax_rule`] checks a new rule. Lines already posted keep the taxes they were posted with. A rule in force
+/// (starting on or before the business date) may change only its name and, to a day after the business date or to
+/// open-ended, its end (`Conflict`, "… End it and add a new rule"). Audited as
 /// `tax_rule.updated` with the rule before and after.
 #[allow(clippy::too_many_arguments)]
 pub async fn update_tax_rule(
@@ -306,6 +321,12 @@ pub async fn update_tax_rule(
         effective_to: changes.effective_to.unwrap_or(before.effective_to),
     };
     check_rule(&after)?;
+    let today = business_date(tx, property).await?;
+    if before.effective_from <= today && !in_force_change(&before, &after, today) {
+        return Err(FolioError::Conflict(
+            "The rule is in force: only its name and a later end can change. End it and add a new rule".into(),
+        ));
+    }
     let rate_bp = i32::try_from(after.rate_bp).map_err(|_| FolioError::Invalid("the rate is too large".into()))?;
     let row: RuleRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "update tax_rule set name = $2, kind = $3, rate_bp = $4, applies_to = $5, base = $6, sequence = $7,
@@ -330,6 +351,17 @@ pub async fn update_tax_rule(
     let data = serde_json::json!({ "before": before, "after": after });
     audit(tx, tenant, user, "tax_rule.updated", "tax_rule", id, data).await?;
     Ok(into_row(row)?)
+}
+
+/// Whether `after` changes the rule `before`, in force by `today`, only as lines already posted allow: its name, and
+/// its end when both the old and the new end are after `today` (or open-ended), so the days up to `today` keep the
+/// rule exactly as their lines were taxed with it.
+fn in_force_change(before: &tax::Rule, after: &tax::Rule, today: Date) -> bool {
+    let later = |end: Option<Date>| end.is_none_or(|end| end > today);
+    let same_terms =
+        tax::Rule { name: before.name.clone(), effective_to: before.effective_to, ..after.clone() } == *before;
+    same_terms
+        && (after.effective_to == before.effective_to || (later(before.effective_to) && later(after.effective_to)))
 }
 
 /// Ends the rule `id` of `property` at `expected_version` (`NotFound`, `VersionMismatch`) on the property's business
@@ -446,4 +478,28 @@ pub async fn apply_preset(
         removed: count(removed.len()),
         rules: list_tax_rules(tx, property).await?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TaxConditionSchema;
+
+    /// The documented shape is the one `tax::Condition` reads and writes, variant for variant.
+    #[test]
+    fn the_condition_schema_is_the_tax_crates_json() {
+        let pairs = [
+            (TaxConditionSchema::Always, tax::Condition::Always),
+            (TaxConditionSchema::VatRegistered, tax::Condition::VatRegistered),
+            (TaxConditionSchema::Residency { resident: true }, tax::Condition::Residency { resident: true }),
+            (
+                TaxConditionSchema::PaymentCurrency { currencies: vec!["USD".into()] },
+                tax::Condition::PaymentCurrency { currencies: vec!["USD".into()] },
+            ),
+        ];
+        for (schema, condition) in pairs {
+            let json = serde_json::to_value(&schema).unwrap();
+            assert_eq!(json, serde_json::to_value(&condition).unwrap());
+            assert_eq!(serde_json::from_value::<tax::Condition>(json).unwrap(), condition);
+        }
+    }
 }

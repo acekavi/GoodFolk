@@ -406,7 +406,8 @@ pub(crate) async fn pay_pos_bill(
 /// and the refund that empties the payment takes exactly the base left, so a payment and its refunds always net to
 /// zero in the base currency too. No rate is looked up.
 ///
-/// `NotFound` unless the payment is on a folio of the property. A named `from_folio` other than the payment's own
+/// `NotFound` unless the payment is on a folio of the property, and unless `from_folio` is one of the property's
+/// folios. A named `from_folio` other than the payment's own
 /// must be its reservation's deposit folio or one of its stays' guest folios (`Invalid`): a deposit that moved to a
 /// stay is refunded from that stay's folio. Both folios are locked first, in ascending id order, so concurrent refunds
 /// run one at a time. `from_folio` must be open (`Conflict`); the payment's refunds together never exceed it, and
@@ -449,6 +450,16 @@ pub async fn refund(
         _ => {}
     }
     let target = from_folio.unwrap_or(paid_on);
+    // Another property's folio is not found, before any rule about which of this property's folios may refund.
+    let in_property: bool =
+        sqlx::query_scalar("select exists (select 1 from folio where id = $1 and property_id = $2)")
+            .bind(target)
+            .bind(property)
+            .fetch_one(&mut **tx)
+            .await?;
+    if !in_property {
+        return Err(FolioError::NotFound("folio"));
+    }
     if target != paid_on && !same_reservation(tx, property, paid_on, target).await? {
         return Err(FolioError::Invalid(
             "refund from the payment's reservation: its deposit folio or one of its stays' folios".into(),

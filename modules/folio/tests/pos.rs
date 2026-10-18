@@ -2,8 +2,8 @@ mod common;
 
 use common::Hotel;
 use folio::{
-    FolioError, FolioQuery, LineWithTaxes, Method, NewOutlet, OutletChanges, OutletRow, PaymentRow, PosBillIn,
-    PosBillRow, PosItem, PosOutcome, PosTarget, Source,
+    FolioError, FolioQuery, LineWithTaxes, Method, NewOutlet, OutletChanges, PaymentRow, PosBillIn, PosBillRow,
+    PosItem, PosOutcome, PosTarget, Source,
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use uuid::Uuid;
@@ -53,14 +53,6 @@ const WITH_SC: [(&str, i64, i64); 4] =
     [("SC", 1_000_000, 100_000), ("TDL", 1_000_000, 10_000), ("SSCL", 1_110_000, 27_750), ("VAT", 1_137_750, 204_795)];
 
 impl Hotel {
-    async fn outlet(&self, code: &str, name: &str, service_charge: bool) -> OutletRow {
-        let mut tx = self.tx().await;
-        let input = NewOutlet { code: code.into(), name: name.into(), service_charge };
-        let outlet = folio::create_outlet(&mut tx, self.tenant, Some(self.user), self.property, input).await.unwrap();
-        tx.commit().await.unwrap();
-        outlet
-    }
-
     /// `post_pos_bill` in the hotel's property, in its own transaction, committed if it succeeds.
     async fn pos(&self, bill: PosBillIn) -> Result<PosOutcome, FolioError> {
         let mut tx = self.tx().await;
@@ -108,7 +100,7 @@ async fn a_bill_to_a_room_posts_its_items_taxed_with_service_charge(_: PgPoolOpt
     assert_eq!(taxes(misc), vec![("TDL", 1_000, 10), ("SSCL", 1_010, 25), ("VAT", 1_035, 186)]);
     assert_eq!(misc.line.total, 1_221);
 
-    let audited = hotel.audited("pos.bill_posted").await;
+    let audited = hotel.audited("pos_bill.posted").await;
     assert_eq!(audited.len(), 1);
     assert_eq!(audited[0].0, bill.id);
     assert_eq!(audited[0].1["outlet"], "BAR");
@@ -160,7 +152,7 @@ async fn a_replay_returns_the_original_and_a_changed_replay_conflicts(_: PgPoolO
 
     assert_eq!(again, PosOutcome::Replayed(first.clone()));
     assert_eq!(hotel.folio_lines(stay.guests[0]).await.len(), 1, "a replay posts nothing");
-    assert_eq!(hotel.audited("pos.bill_posted").await.len(), 1);
+    assert_eq!(hotel.audited("pos_bill.posted").await.len(), 1);
 
     let changed = PosBillIn { items: vec![item("Tea", 3, 300, None)], ..request.clone() };
     match hotel.pos(changed).await {
@@ -239,7 +231,7 @@ async fn a_settled_bill_records_a_payment_on_no_folio_and_keeps_its_lines(_: PgP
     assert_eq!(payment.folio_id, None);
     assert_eq!((payment.method.as_str(), payment.amount, payment.base_amount), ("cash", 1_343_766, 1_343_766));
     assert_eq!(payment.business_date, hotel.business_date);
-    let audited = hotel.audited("pos.bill_posted").await;
+    let audited = hotel.audited("pos_bill.posted").await;
     assert_eq!((audited[0].1["target"].as_str(), audited[0].1["total"].as_i64()), (Some("settled"), Some(1_343_766)));
 
     let usd =
@@ -335,6 +327,12 @@ async fn a_bill_is_checked_before_it_is_posted(_: PgPoolOptions, opts: PgConnect
     assert!(hotel.pos(bill("BAR", "B-200", vec![tea(); 200], cash())).await.is_ok());
     invalid(hotel.pos(bill("BAR", "", vec![tea()], cash())).await);
     invalid(hotel.pos(bill("BAR", &"9".repeat(51), vec![tea()], cash())).await);
+    for padded in [" B-7", "B-7 ", "B-7\t"] {
+        assert_eq!(
+            invalid(hotel.pos(bill("BAR", padded, vec![tea()], cash())).await),
+            "a bill number has no spaces before or after it"
+        );
+    }
     invalid(hotel.pos(PosBillIn { currency: "JPY".into(), ..bill("BAR", "B-2", vec![tea()], cash()) }).await);
     invalid(hotel.pos(bill("BAR", "B-3", vec![item("Tea", 1, 300, Some("pos:SPA"))], cash())).await);
     invalid(hotel.pos(bill("BAR", "B-4", vec![item(" ", 1, 300, None)], cash())).await);
@@ -414,6 +412,26 @@ async fn outlets_are_created_updated_and_listed_with_unique_codes(_: PgPoolOptio
     let audited = hotel.audited("outlet.updated").await;
     assert_eq!(
         audited,
-        vec![(bar.id, serde_json::json!({ "name": "Lobby Bar", "service_charge": false, "active": false }))]
+        vec![(
+            bar.id,
+            serde_json::json!({
+                "name": "Lobby Bar",
+                "service_charge": false,
+                "active": false,
+                "previous": { "name": "Pool Bar", "service_charge": true, "active": true },
+            })
+        )]
     );
+
+    // Changes that change nothing are refused, and nothing is audited.
+    for changes in [
+        OutletChanges::default(),
+        OutletChanges { name: Some("Lobby Bar ".into()), service_charge: Some(false), active: Some(false) },
+    ] {
+        let mut tx = hotel.tx().await;
+        let result =
+            folio::update_outlet(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, bar.id, 2, changes).await;
+        assert_eq!(invalid(result), "Nothing to change");
+    }
+    assert_eq!(hotel.audited("outlet.updated").await.len(), 1);
 }

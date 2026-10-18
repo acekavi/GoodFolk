@@ -258,7 +258,8 @@ pub async fn tax_settings(tx: &mut Tx, property: Uuid) -> Result<TaxSettings, Pr
 
 /// Applies `changes` to the tax settings of `property` if it is still at `expected_version` (`NotFound`,
 /// `VersionMismatch`), and bumps its version. Accepted currencies are deduplicated, keep their order and must include
-/// the base currency (`Invalid`). Audited as `property.tax_settings_updated` with the values before and after.
+/// the base currency (`Invalid`); a currency in which an open folio of the property still holds a balance can't be
+/// removed (`Invalid`), or that money could never be paid or refunded. Audited as `property.tax_settings_updated` with the values before and after.
 pub async fn update_tax_settings(
     tx: &mut Tx,
     tenant: TenantId,
@@ -295,6 +296,32 @@ pub async fn update_tax_settings(
         }
         None => before.accepted_currencies.clone(),
     };
+    let removed: Vec<String> =
+        before.accepted_currencies.iter().filter(|currency| !accepted.contains(currency)).cloned().collect();
+    if !removed.is_empty() {
+        let held: Vec<String> = sqlx::query_scalar(
+            "select currency from (
+               select l.currency::text as currency, l.folio_id, l.total as amount from folio_line l
+               join folio f on f.id = l.folio_id
+               where f.property_id = $1 and f.status = 'open' and l.currency::text = any($2)
+               union all
+               select p.currency::text, p.folio_id, -p.amount from payment p
+               join folio f on f.id = p.folio_id
+               where f.property_id = $1 and f.status = 'open' and p.currency::text = any($2)) as entries
+             group by currency, folio_id
+             having sum(amount) <> 0
+             order by currency",
+        )
+        .bind(property)
+        .bind(&removed)
+        .fetch_all(&mut **tx)
+        .await?;
+        if let Some(currency) = held.first() {
+            return Err(PropertyError::Invalid(format!(
+                "an open folio still holds a {currency} balance; settle it before {currency} stops being accepted"
+            )));
+        }
+    }
     let after = TaxSettings {
         vat_registered: changes.vat_registered.unwrap_or(before.vat_registered),
         tin: changes.tin.unwrap_or_else(|| before.tin.clone()),

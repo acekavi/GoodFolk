@@ -132,7 +132,9 @@ pub(crate) fn check_charge(charge: &NewCharge) -> Result<String, FolioError> {
 /// <CUR> on <YYYY-MM-DD>"). Queues `folio:<id>`; a `manual` charge is audited as `folio.charge_posted`.
 ///
 /// A `manual` charge is a supply staff post: its quantity is at least 1 and its unit price at least 0 (`Invalid`).
-/// Credits are never posted this way; a correction is a reversal.
+/// Credits are never posted this way; a correction is a reversal. A charge in an outlet's category (`pos:<OUTLET>`)
+/// needs that outlet to exist in the property and be active (`Invalid`), and is taxed as its bills are: without the
+/// service charge when the outlet's is off.
 pub async fn post_charge(
     tx: &mut Tx,
     tenant: TenantId,
@@ -155,7 +157,28 @@ pub async fn post_charge(
         (FolioKind::Guest, Some(stay)) => stay_residency(tx, stay).await?,
         _ => None,
     };
-    post_locked(tx, tenant, user, &locked, charge, description, Posting { resident, ..Posting::default() }).await
+    let exclude_service_charge = match charge.category.strip_prefix("pos:") {
+        Some(code) => !outlet_service_charge(tx, property, code).await?,
+        None => false,
+    };
+    let posting = Posting { resident, exclude_service_charge, ..Posting::default() };
+    post_locked(tx, tenant, user, &locked, charge, description, posting).await
+}
+
+/// Whether the active outlet `code` of `property` charges the service charge; `Invalid` when the property has no such
+/// outlet, or it is not active. Held `for share` while the charge posts, as a POS bill holds its outlet.
+async fn outlet_service_charge(tx: &mut Tx, property: Uuid, code: &str) -> Result<bool, FolioError> {
+    let outlet: Option<(bool, bool)> =
+        sqlx::query_as("select service_charge, active from outlet where property_id = $1 and code = $2 for share")
+            .bind(property)
+            .bind(code)
+            .fetch_optional(&mut **tx)
+            .await?;
+    match outlet {
+        Some((service_charge, true)) => Ok(service_charge),
+        Some((_, false)) => Err(FolioError::Invalid(format!("the outlet {code} is not active"))),
+        None => Err(FolioError::Invalid(format!("the property has no outlet {code}"))),
+    }
 }
 
 /// `Invalid` unless `charge` is a supply: a quantity of at least 1 and a unit price of at least 0. Staff charges and POS

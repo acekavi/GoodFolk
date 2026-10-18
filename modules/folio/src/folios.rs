@@ -108,6 +108,9 @@ pub struct FolioView {
     pub truncated: bool,
 }
 
+/// SQLSTATE `numeric_value_out_of_range`: a balance summed past a bigint.
+const NUMERIC_OUT_OF_RANGE: &str = "22003";
+
 /// The most lines, and the most payments, [`folios_for`] reads of one folio: the newest.
 pub const MAX_FOLIO_ROWS: i64 = 500;
 
@@ -313,7 +316,8 @@ async fn read(tx: &mut Tx, query: FolioQuery, cap: Option<i64>) -> Result<Vec<Fo
     let lines: Vec<LineRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select l.* from unnest($1::uuid[]) as f(id)
          cross join lateral (select {LINE_COLUMNS} from folio_line where folio_id = f.id
-                             order by posted_at desc, id desc limit $2) as l"
+                             order by posted_at desc, id desc limit $2) as l
+         order by l.folio_id, l.posted_at desc, l.id desc"
     )))
     .bind(&detailed)
     .bind(limit)
@@ -331,7 +335,8 @@ async fn read(tx: &mut Tx, query: FolioQuery, cap: Option<i64>) -> Result<Vec<Fo
     let payments: Vec<PaymentRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select p.* from unnest($1::uuid[]) as f(id)
          cross join lateral (select {PAYMENT_COLUMNS} from payment where folio_id = f.id
-                             order by id desc limit $2) as p"
+                             order by id desc limit $2) as p
+         order by p.folio_id, p.id desc"
     )))
     .bind(&detailed)
     .bind(limit)
@@ -348,7 +353,15 @@ async fn read(tx: &mut Tx, query: FolioQuery, cap: Option<i64>) -> Result<Vec<Fo
     )
     .bind(&ids)
     .fetch_all(&mut **tx)
-    .await?;
+    .await
+    .map_err(|err| {
+        // A sum past the range of a bigint: no folio holds that much money, but say so rather than fail.
+        if err.as_database_error().and_then(|db_err| db_err.code()).as_deref() == Some(NUMERIC_OUT_OF_RANGE) {
+            FolioError::Invalid("the balance is too large".into())
+        } else {
+            err.into()
+        }
+    })?;
 
     let mut taxes_by_line: HashMap<Uuid, Vec<LineTax>> = HashMap::new();
     for tax in taxes {

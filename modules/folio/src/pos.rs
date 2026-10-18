@@ -189,7 +189,8 @@ pub async fn create_outlet(
 }
 
 /// Changes the outlet `id` of `property` (`NotFound` otherwise) at `expected_version` (`VersionMismatch` otherwise).
-/// A deactivated outlet keeps its past bills and takes no new ones. Audited as `outlet.updated`.
+/// A deactivated outlet keeps its past bills and takes no new ones. Changes that leave every field as it is are
+/// `Invalid` ("Nothing to change"). Audited as `outlet.updated`, with the values before under `previous`.
 pub async fn update_outlet(
     tx: &mut Tx,
     tenant: TenantId,
@@ -211,6 +212,12 @@ pub async fn update_outlet(
     if current.version != expected_version {
         return Err(FolioError::VersionMismatch("outlet"));
     }
+    let unchanged = name.is_none_or(|name| name == current.name)
+        && changes.service_charge.is_none_or(|on| on == current.service_charge)
+        && changes.active.is_none_or(|active| active == current.active);
+    if unchanged {
+        return Err(FolioError::Invalid("Nothing to change".into()));
+    }
     let updated: OutletRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "update outlet set name = coalesce($2, name), service_charge = coalesce($3, service_charge),
                 active = coalesce($4, active), version = version + 1
@@ -227,6 +234,11 @@ pub async fn update_outlet(
         "name": updated.name,
         "service_charge": updated.service_charge,
         "active": updated.active,
+        "previous": {
+            "name": current.name,
+            "service_charge": current.service_charge,
+            "active": current.active,
+        },
     });
     audit(tx, tenant, user, "outlet.updated", "outlet", id, data).await?;
     Ok(updated)
@@ -277,7 +289,12 @@ struct Posted {
 /// `Conflict`. Concurrent identical posts post one bill: the `pos_bill` row is inserted before anything is posted, so
 /// the second waits on the first and then replays it.
 ///
-/// A new bill needs 1 to 200 items and a bill number of 1 to 50 characters, an active outlet and a currency the
+/// The hash is over the body as sent, so a bill that named no business date replays as the bill first posted, on the
+/// business date it resolved to then, even if the property's business date has moved on since: the replay is
+/// recognised by its body, never re-dated. A bill naming its date hashes that date.
+///
+/// A new bill needs 1 to 200 items and a bill number of 1 to 50 characters with no surrounding spaces, an active
+/// outlet (held `for share` while the bill posts) and a currency the
 /// property accepts (each `Invalid`); an outlet or stay of another property is `NotFound`. An item's category is the
 /// outlet's `pos:<OUTLET>` unless it names `misc`. The business date is the bill's, or the property's when it names
 /// none, and must be within the 7 days up to the property's (`Invalid`). Each item has a quantity of at least 1 and
@@ -292,7 +309,7 @@ struct Posted {
 ///   total (more than 0) on no folio, at the rate of the business date (`Conflict` when none is in force). The
 ///   method is never `Account` (`Invalid`), and card details never hold a card number (`Invalid`).
 ///
-/// Audited as `pos.bill_posted` with the outlet, bill number, total, currency and target kind. The caller checks
+/// Audited as `pos_bill.posted` with the outlet, bill number, total, currency and target kind. The caller checks
 /// `PosPost`.
 pub async fn post_pos_bill(
     tx: &mut Tx,
@@ -307,8 +324,12 @@ pub async fn post_pos_bill(
     if bill.bill_no.trim().is_empty() || bill.bill_no.chars().count() > MAX_BILL_NO {
         return Err(FolioError::Invalid(format!("a bill number has 1 to {MAX_BILL_NO} characters")));
     }
+    if bill.bill_no.trim() != bill.bill_no {
+        return Err(FolioError::Invalid("a bill number has no spaces before or after it".into()));
+    }
+    // Shared, so the outlet can't be deactivated or lose its service charge while the bill posts.
     let outlet: Outlet = sqlx::query_as(
-        "select id, code, name, service_charge, active from outlet where property_id = $1 and code = $2",
+        "select id, code, name, service_charge, active from outlet where property_id = $1 and code = $2 for share",
     )
     .bind(property)
     .bind(&bill.outlet)
@@ -441,7 +462,7 @@ pub async fn post_pos_bill(
         }
     };
     data["total"] = total.into();
-    audit(tx, tenant, user, "pos.bill_posted", "pos_bill", posted.id, data).await?;
+    audit(tx, tenant, user, "pos_bill.posted", "pos_bill", posted.id, data).await?;
     Ok(PosOutcome::Posted(posted))
 }
 

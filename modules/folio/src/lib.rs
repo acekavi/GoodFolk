@@ -82,8 +82,8 @@ pub use posting::{
 };
 pub use routing::{DEFAULT_ROUTING, follow_account_change, post_for_stay, routing, set_routing};
 pub use rules::{
-    PresetApplied, TaxRuleChanges, TaxRuleRow, apply_preset, create_tax_rule, end_tax_rule, list_tax_rules, load_rules,
-    update_tax_rule,
+    PresetApplied, TaxConditionSchema, TaxRuleChanges, TaxRuleRow, apply_preset, create_tax_rule, end_tax_rule,
+    list_tax_rules, load_rules, update_tax_rule,
 };
 pub use words::lkr_in_words;
 

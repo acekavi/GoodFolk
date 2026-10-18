@@ -65,6 +65,7 @@ async fn a_restaurant_charge_stores_the_golden_components(_: PgPoolOptions, opts
     let hotel = Hotel::new(opts).await;
     hotel.set_vat_registered(true).await;
     let stay = hotel.book(None).await;
+    hotel.outlet("REST", "Restaurant", true).await;
 
     let line = hotel.post(stay.guests[0], hotel.charge(Source::Manual, "pos:REST", 1_000_000, "LKR")).await.unwrap();
 
@@ -176,6 +177,7 @@ async fn a_reversal_nets_to_zero_including_taxes(_: PgPoolOptions, opts: PgConne
     hotel.rate("USD", Decimal::new(3005, 1)).await;
     let stay = hotel.book(None).await;
     let folio = stay.guests[0];
+    hotel.outlet("BAR", "Bar", true).await;
     let line = hotel.post(folio, hotel.charge(Source::Manual, "pos:BAR", 12_345, "USD")).await.unwrap();
 
     let reversal = reverse(&hotel, folio, line.id).await.unwrap();
@@ -223,6 +225,7 @@ async fn a_transfer_moves_the_exact_amount_and_links_both_lines(_: PgPoolOptions
     let hotel = Hotel::new(opts).await;
     hotel.set_vat_registered(true).await;
     let (from, to) = (hotel.book(None).await, hotel.book(None).await);
+    hotel.outlet("BAR", "Bar", true).await;
     let line = hotel.post(from.guests[0], hotel.charge(Source::Manual, "pos:BAR", 4_321, "LKR")).await.unwrap();
 
     let (reversal, moved) = transfer(&hotel, line.id, to.guests[0]).await.unwrap();
@@ -343,6 +346,7 @@ async fn folios_for_reads_three_folios_in_one_statement_per_kind(_: PgPoolOption
     let booking = hotel.book_in(hotel.property, 2, None, None).await;
     let unrelated = hotel.book(None).await;
     let first = hotel.post(booking.guests[0], hotel.charge(Source::Manual, "misc", 100, "LKR")).await.unwrap();
+    hotel.outlet("BAR", "Bar", true).await;
     let second = hotel.post(booking.guests[0], hotel.charge(Source::Manual, "pos:BAR", 200, "USD")).await.unwrap();
     let third = hotel.post(booking.guests[1], hotel.charge(Source::Manual, "laundry", 300, "LKR")).await.unwrap();
     hotel.post(unrelated.guests[0], hotel.charge(Source::Manual, "misc", 400, "LKR")).await.unwrap();
@@ -551,5 +555,100 @@ async fn opposing_concurrent_transfers_do_not_deadlock(_: PgPoolOptions, opts: P
     assert_eq!(
         two_view.balances,
         vec![Balance { currency: "LKR".into(), amount: on_one.total, base_amount: on_one.base_total }]
+    );
+}
+
+/// `count` untaxed LKR lines of `total` each on `folio`, written straight in.
+async fn insert_lines(hotel: &Hotel, folio: Uuid, count: i64, total: i64) {
+    let mut tx = hotel.tx().await;
+    sqlx::query(
+        "insert into folio_line (id, tenant_id, folio_id, source, category, description, quantity, net, total,
+                                 currency, base_total, rate, rate_date, business_date)
+         select gen_random_uuid(), $1, $2, 'manual', 'misc', 'Item ' || n, 1, $4, $4, 'LKR', $4, 1, $5, $5
+         from generate_series(1, $3) as n",
+    )
+    .bind(hotel.tenant.0)
+    .bind(folio)
+    .bind(count)
+    .bind(total)
+    .bind(hotel.business_date)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_folio_reads_its_newest_500_lines_and_says_when_it_has_more(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let [full, over] = [hotel.book(None).await.guests[0], hotel.book(None).await.guests[0]];
+    insert_lines(&hotel, full, folio::MAX_FOLIO_ROWS, 100).await;
+    insert_lines(&hotel, over, folio::MAX_FOLIO_ROWS + 1, 100).await;
+
+    for (folio, truncated) in [(full, false), (over, true)] {
+        let query = folio::FolioQuery::Folio { property: hotel.property, folio };
+        let view = folio::folios_for(&mut hotel.tx().await, query).await.unwrap().pop().unwrap();
+        assert_eq!((view.lines.len(), view.truncated), (500, truncated));
+        let total = 100 * (if truncated { 501 } else { 500 });
+        assert_eq!(view.balances[0].amount, total, "balances cover every line");
+        assert!(
+            view.lines
+                .windows(2)
+                .all(|pair| (pair[0].line.posted_at, pair[0].line.id) <= (pair[1].line.posted_at, pair[1].line.id))
+        );
+    }
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_balance_past_the_largest_amount_is_invalid_not_an_error(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let folio = hotel.book(None).await.guests[0];
+    insert_lines(&hotel, folio, 2, i64::MAX / 2 + 1).await;
+
+    let query = folio::FolioQuery::Folio { property: hotel.property, folio };
+    let result = folio::folios_for(&mut hotel.tx().await, query).await;
+
+    assert!(
+        matches!(&result, Err(FolioError::Invalid(message)) if message == "the balance is too large"),
+        "{result:?}"
+    );
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_charge_in_an_outlets_category_follows_the_outlet(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let folio = hotel.book(None).await.guests[0];
+    hotel.outlet("BAR", "Bar", true).await;
+    let spa = hotel.outlet("SPA", "Spa", false).await;
+
+    let bar = hotel.post(folio, hotel.charge(Source::Manual, "pos:BAR", 10_000, "LKR")).await.unwrap();
+    let massage = hotel.post(folio, hotel.charge(Source::Manual, "pos:SPA", 10_000, "LKR")).await.unwrap();
+    let codes = |line: &LineRow| {
+        let line = line.id;
+        let hotel = &hotel;
+        async move {
+            sqlx::query_scalar::<_, String>("select code from folio_line_tax where line_id = $1 order by code")
+                .bind(line)
+                .fetch_all(&mut *hotel.tx().await)
+                .await
+                .unwrap()
+        }
+    };
+    assert!(codes(&bar).await.contains(&"SC".to_owned()), "the bar charges its service charge");
+    assert!(!codes(&massage).await.contains(&"SC".to_owned()), "the spa's is off");
+
+    assert_eq!(
+        invalid(hotel.post(folio, hotel.charge(Source::Manual, "pos:GYM", 100, "LKR")).await),
+        "the property has no outlet GYM"
+    );
+    let mut tx = hotel.tx().await;
+    let off = folio::OutletChanges { active: Some(false), ..folio::OutletChanges::default() };
+    folio::update_outlet(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, spa.id, spa.version, off)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        invalid(hotel.post(folio, hotel.charge(Source::Manual, "pos:SPA", 100, "LKR")).await),
+        "the outlet SPA is not active"
     );
 }

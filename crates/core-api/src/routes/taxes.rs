@@ -62,7 +62,7 @@ pub struct CreateTaxRuleRequest {
     /// `{"type": "always"}` (the default), `{"type": "vat_registered"}`, `{"type": "residency", "resident": true}`
     /// or `{"type": "payment_currency", "currencies": ["USD"]}`.
     #[serde(default = "always")]
-    #[schema(value_type = Object)]
+    #[schema(value_type = folio::TaxConditionSchema)]
     #[garde(skip)]
     pub condition: tax::Condition,
     #[garde(skip)]
@@ -91,7 +91,7 @@ pub struct UpdateTaxRuleRequest {
     #[schema(value_type = Option<String>)]
     #[garde(skip)]
     pub presentation: Option<tax::Presentation>,
-    #[schema(value_type = Option<Object>)]
+    #[schema(value_type = Option<folio::TaxConditionSchema>)]
     #[garde(skip)]
     pub condition: Option<tax::Condition>,
     #[garde(skip)]

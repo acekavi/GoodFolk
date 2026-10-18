@@ -243,6 +243,7 @@ use utoipa::OpenApi;
         folio::PosLine,
         folio::PosBillRow,
         folio::TaxRuleRow,
+        folio::TaxConditionSchema,
         folio::PresetApplied,
         property::TaxSettings,
     ))

@@ -728,3 +728,69 @@ async fn an_invoiced_account_folio_gives_way_to_a_fresh_one(_: PgPoolOptions, op
     hotel.credit(invoice.id, "Wrong rate").await.unwrap();
     assert_eq!(account_folios(&hotel, acme).await, vec![(first, FolioStatus::Open), (second, FolioStatus::Invoiced)]);
 }
+
+/// The README's folio walkthrough (steps 5 to 12), with the real posting, tax and invoice code: the figures it quotes
+/// are the ones this computes.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_readme_walkthrough_figures_are_what_the_code_computes(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    hotel.set_vat_registered(true).await;
+    let mut tx = hotel.tx().await;
+    sqlx::query("update property set tin = '123456789-7000' where id = $1")
+        .bind(hotel.property)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    hotel.rate("USD", Decimal::new(300, 0)).await;
+    hotel.outlet("BAR", "Bar", true).await;
+    let acme = hotel.account().await;
+    let booking = hotel.book(Some(acme)).await;
+    let room = booking.guests[0];
+
+    // 5. A deposit of LKR 5,000.00, moved to the stay at check-in.
+    hotel.pay(booking.deposit, 500_000, "LKR").await;
+    hotel.mark_checked_in(booking.rooms[0]).await;
+    let mut tx = hotel.tx().await;
+    folio::move_deposit(&mut tx, hotel.tenant, None, hotel.property, booking.id, booking.rooms[0]).await.unwrap();
+    tx.commit().await.unwrap();
+    // 6. The night: USD 100.00 net, USD 122.17 in all, LKR 36,651.00 at 300.
+    let night = hotel.post(room, hotel.charge(Source::Room, "room", 10_000, "USD")).await.unwrap();
+    assert_eq!((night.net, night.total, night.base_total), (10_000, 12_217, 3_665_100));
+    // 7. The minibar: LKR 12,215.95.
+    let minibar = hotel.post(room, hotel.charge(Source::Manual, "misc", 1_000_000, "LKR")).await.unwrap();
+    assert_eq!(minibar.total, 1_221_595);
+    // 8. The bar bill, in the golden figures: LKR 13,425.45.
+    let sandwich = hotel.post(room, hotel.charge(Source::Manual, "pos:BAR", 1_000_000, "LKR")).await.unwrap();
+    assert_eq!(sandwich.total, 1_342_545);
+    // 9 and 10. USD 130.00, then 7.83 back: USD settled.
+    let usd = hotel.pay(room, 13_000, "USD").await;
+    let mut tx = hotel.tx().await;
+    folio::refund(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, usd, 783, "Overpaid", None).await.unwrap();
+    tx.commit().await.unwrap();
+    let mistake = hotel.post(room, hotel.charge(Source::Manual, "misc", 10_000, "LKR")).await.unwrap();
+    let mut tx = hotel.tx().await;
+    folio::reverse(&mut tx, hotel.tenant, None, hotel.property, room, mistake.id, "Entered twice").await.unwrap();
+    // 11. The bar bill moves to the account.
+    let account_folio = folio::ensure_account_folio(&mut tx, hotel.tenant, hotel.property, acme).await.unwrap();
+    folio::transfer(&mut tx, hotel.tenant, None, hotel.property, room, sandwich.id, account_folio, "Company pays")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    // 12. LKR 7,215.95 owed: the minibar less the deposit.
+    let query = FolioQuery::Folio { property: hotel.property, folio: room };
+    let view = folio::folios_for(&mut hotel.tx().await, query).await.unwrap().pop().unwrap();
+    let owed: Vec<(String, i64)> = view.balances.iter().map(|b| (b.currency.clone(), b.amount)).collect();
+    assert_eq!(owed, vec![("LKR".to_owned(), 721_595), ("USD".to_owned(), 0)]);
+    hotel.pay(room, 721_595, "LKR").await;
+
+    let invoice = hotel.issue(room).await.unwrap();
+
+    let printed = data(&invoice);
+    assert_eq!(printed.title, "TAX INVOICE");
+    assert_eq!((invoice.total_lkr, printed.total_lkr), (48_867, 48_867));
+    assert_eq!(printed.total_words, "Forty-Eight Thousand Eight Hundred Sixty-Seven Rupees Only");
+    assert_eq!(printed.lines.iter().map(|line| line.total_lkr).sum::<i64>(), 48_867);
+    let night_line = printed.lines.iter().find(|line| line.currency == "USD").unwrap();
+    assert_eq!((night_line.total, night_line.total_lkr), (12_217, 36_651));
+}
