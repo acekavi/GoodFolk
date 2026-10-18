@@ -190,16 +190,17 @@ export function money(minor: number, currency: string): string {
 
 /**
  * What a person typed, as minor units of `currency`, by exact digit arithmetic: `1,234.50` USD is `123450`.
- * `null` for anything that is not a non-negative amount with at most the currency's decimals.
+ * Commas are accepted only as thousands separators, so `12,50` is refused rather than read as `1250`. `null` for
+ * anything that is not a non-negative amount with at most the currency's decimals. Zero is returned as `0`:
+ * callers that need more than zero (payments, refunds) refuse it themselves.
  */
 export function parseAmount(text: string, currency: string): number | null {
-	const cleaned = text.trim().replaceAll(',', '');
 	const digits = exponent(currency);
-	const match = /^(\d+)(?:\.(\d*))?$/.exec(cleaned);
+	const match = /^(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d*))?$/.exec(text.trim());
 	if (!match) return null;
 	const fraction = match[2] ?? '';
 	if (fraction.length > digits) return null;
-	const minor = Number(match[1] + fraction.padEnd(digits, '0'));
+	const minor = Number(match[1].replaceAll(',', '') + fraction.padEnd(digits, '0'));
 	return Number.isSafeInteger(minor) ? minor : null;
 }
 

@@ -112,10 +112,27 @@ describe('money', () => {
 		expect(parseAmount('1500', 'JPY')).toBe(1500);
 		expect(parseAmount('1.005', 'KWD')).toBe(1005);
 		expect(parseAmount('0', 'USD')).toBe(0);
+		expect(parseAmount('12,345,678', 'USD')).toBe(1234567800);
+		expect(parseAmount('90,071,992,547,409.91', 'USD')).toBe(9007199254740991);
 	});
 
 	it('refuses what is not an amount in the currency', () => {
-		for (const text of ['', 'abc', '-5', '1.234', '1e3', '.5', '1.2.3', '9007199254740993']) {
+		for (const text of [
+			'',
+			'abc',
+			'-5',
+			'1.234',
+			'1e3',
+			'.5',
+			'1.2.3',
+			'9007199254740993',
+			'90,071,992,547,409.92',
+			'12,50',
+			'1,2,3',
+			',5',
+			'1,23.45',
+			'1234,567'
+		]) {
 			expect(parseAmount(text, 'USD'), text).toBeNull();
 		}
 		expect(parseAmount('1.5', 'JPY')).toBeNull();
