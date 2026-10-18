@@ -104,11 +104,11 @@ pub struct PosItemRequest {
     /// 1 to 200 characters once trimmed.
     #[garde(length(chars, min = 1, max = 200))]
     pub description: String,
-    /// 1 to 9999 either way.
-    #[garde(skip)]
+    /// 1 to 9999.
+    #[garde(range(min = 1, max = 9999))]
     pub quantity: i32,
-    /// Before taxes, in minor units of the bill's currency.
-    #[garde(skip)]
+    /// Before taxes, in minor units of the bill's currency; at least 0.
+    #[garde(range(min = 0))]
     pub unit_net: i64,
     /// `misc`, or the outlet's own `pos:<OUTLET>` (the default when left out).
     #[garde(skip)]
@@ -140,7 +140,7 @@ pub struct PosBillRequest {
     /// 1 to 50 characters; with the outlet it names the bill, so posting it again changes nothing.
     #[garde(length(chars, min = 1, max = 50))]
     pub bill_no: String,
-    /// The property's business date when left out.
+    /// The property's business date when left out; at most 7 days before it, and never after it.
     #[garde(skip)]
     pub business_date: Option<Date>,
     /// One of the property's accepted currencies.

@@ -333,7 +333,9 @@ async fn a_charge_to_account_credits_the_stay_and_charges_the_account_untaxed(
 
     // The undo: the account's line moves back to the stay.
     let mut tx = hotel.tx().await;
-    folio::transfer(&mut tx, hotel.tenant, None, hotel.property, line.line.id, guest, "Guest pays").await.unwrap();
+    folio::transfer(&mut tx, hotel.tenant, None, hotel.property, line.line.folio_id, line.line.id, guest, "Guest pays")
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(
         hotel.view(account.folio.id).await.balances,

@@ -17,7 +17,7 @@
 //! difference and the printed figures always add up. Reversals are printed as negative lines, so the corrections stay
 //! visible.
 
-use crate::folios::{FolioKind, FolioQuery, FolioStatus, LineWithTaxes, PaymentRow, folios_for, lock_folios};
+use crate::folios::{FolioKind, FolioStatus, LineWithTaxes, PaymentRow, complete_folio, lock_folios};
 use crate::lines::violates;
 use crate::words::lkr_in_words;
 use crate::{FolioError, audit, folio_key, notify, reason};
@@ -159,8 +159,7 @@ pub async fn issue_invoice(
     if issuer.base_currency != INVOICE_CURRENCY {
         return Err(FolioError::Invalid("Invoices are issued in LKR".into()));
     }
-    let view =
-        folios_for(tx, FolioQuery::Folio { property, folio }).await?.pop().ok_or(FolioError::NotFound("folio"))?;
+    let view = complete_folio(tx, property, folio).await?;
     if view.balances.iter().any(|balance| balance.amount != 0) {
         return Err(FolioError::Conflict("The folio must be settled before it is invoiced".into()));
     }

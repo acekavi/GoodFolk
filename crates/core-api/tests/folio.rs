@@ -481,20 +481,31 @@ async fn tax_rules_are_checked_as_a_set_and_the_preset_applies(_: PgPoolOptions,
     assert_eq!(ended.body["effective_to"], hotel.day(0));
     assert_eq!(hotel.audited("tax_rule.ended").await, 1);
 
+    let future = post(&app, &hotel.owner, &rules, rule("TDL", 3)).await;
+    assert_eq!(future.status, StatusCode::CREATED, "{:?}", future.body);
+
     let applied = post(&app, &hotel.owner, &format!("{rules}/apply-preset"), json!({})).await;
     assert_eq!(applied.status, StatusCode::OK, "{:?}", applied.body);
-    assert_eq!(applied.body["ended"], 4, "the four preset rules in force end today");
-    assert_eq!(applied.body["effective_from"], hotel.day(0));
+    assert_eq!(applied.body["effective_from"], hotel.day(1), "the preset starts tomorrow");
+    assert_eq!(applied.body["ended"], 4, "the four preset rules in force end tomorrow");
+    assert_eq!(applied.body["removed"], 1, "the rule starting later was never in force");
     let query = "query ($p: UUID!) { taxRules(propertyId: $p) { code effectiveFrom effectiveTo } }";
     let read = graphql(&app, &hotel.owner, query, json!({"p": hotel.id})).await;
-    let open: Vec<&str> = read["data"]["taxRules"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|rule| rule["effectiveTo"].is_null())
-        .map(|rule| rule["code"].as_str().unwrap())
-        .collect();
+    let rows = read["data"]["taxRules"].as_array().unwrap();
+    let open: Vec<&str> =
+        rows.iter().filter(|rule| rule["effectiveTo"].is_null()).map(|rule| rule["code"].as_str().unwrap()).collect();
     assert_eq!(open, ["SC", "TDL", "SSCL", "VAT"]);
+    assert!(rows.iter().filter(|rule| rule["effectiveTo"].is_null()).all(|rule| rule["effectiveFrom"] == hotel.day(1)));
+    assert_eq!(rows.iter().filter(|rule| rule["effectiveTo"] == hotel.day(1)).count(), 4);
+    let audit: Value = sqlx::query_scalar("select data from audit_log where action = 'tax_rule.preset_applied'")
+        .fetch_one(&hotel.superuser)
+        .await
+        .unwrap();
+    assert_eq!(audit["removed"][0]["id"], future.body["id"], "the removed rule is recorded in full: {audit}");
+    assert_eq!(audit["removed"][0]["rate_bp"], 25);
+    let previous: Vec<&Value> =
+        audit["ended"].as_array().unwrap().iter().map(|e| &e["previous_effective_to"]).collect();
+    assert_eq!(previous, [&Value::Null; 4], "each ended rule's previous end: {audit}");
     assert_eq!(hotel.audited("tax_rule.preset_applied").await, 1);
 
     let settings = versioned(
@@ -570,9 +581,12 @@ async fn a_reservations_folios_are_read_at_once_and_charges_are_live(_: PgPoolOp
     assert!(categories(deposit).is_empty());
     assert_eq!(methods(guest), ["transfer"]);
     assert_eq!(categories(guest), ["misc"], "the minibar stays with the guest");
+    assert_eq!(ledger["accountId"], json!(account));
+    assert_eq!(ledger["lines"], json!([]), "a reservation reads its account's ledger without lines");
+    let by_account = graphql(&app, &hotel.owner, FOLIOS, json!({"p": hotel.id, "a": account})).await;
+    let ledger = &by_account["data"]["folios"][0];
     assert!(methods(ledger).is_empty());
     assert_eq!(categories(ledger), ["room"], "the room night is routed to the account");
-    assert_eq!(ledger["accountId"], json!(account));
 
     let housekeeper = app.staff(&hotel.superuser, &hotel.owner, "hk@example.com", "housekeeping").await;
     let refused = graphql(&app, &housekeeper, FOLIOS, json!({"p": hotel.id, "r": reservation})).await;
@@ -618,4 +632,261 @@ async fn the_exchange_rate_import_runs_under_its_advisory_lock(_: PgPoolOptions,
     holder.close().await.unwrap();
     let report = core_api::tasks::fx_import_once(&app.pool, &opts, &source, today).await.unwrap();
     assert!(report.is_some(), "the lock is free again");
+}
+
+/// Staff never post a credit: a negative quantity or unit price, as a charge or a POS item, is 422.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn staff_charges_and_pos_items_are_never_credits(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "owner@example.com", "GAL").await;
+    let front_desk = app.staff(&hotel.superuser, &hotel.owner, "fd@example.com", "front_desk").await;
+    let (_, stay) = hotel.book(&app, None).await;
+    hotel.check_in(&app, stay).await;
+    let folio = uuid(&hotel.stay_folio(&app, &hotel.owner, stay).await["id"]);
+    let charges = format!("{}/folios/{folio}/charges", hotel.path);
+    for (quantity, unit_net) in [(-1, 1_000), (0, 1_000), (1, -1_000), (10_000, 1)] {
+        let charge = json!({"category": "misc", "description": "Refund?", "quantity": quantity, "unit_net": unit_net,
+                            "currency": "LKR"});
+        let refused = post(&app, &front_desk, &charges, charge).await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{quantity} × {unit_net}: {:?}", refused.body);
+    }
+    let free = json!({"category": "misc", "description": "Welcome drink", "unit_net": 0, "currency": "LKR"});
+    assert_eq!(post(&app, &front_desk, &charges, free).await.status, StatusCode::CREATED);
+
+    // The module refuses them too, whoever calls it.
+    let mut tx = db::begin(&app.pool, db::Scope::tenant(db::TenantId(tenant(&hotel).await))).await.unwrap();
+    let charge = folio::NewCharge {
+        source: folio::Source::Manual,
+        category: "misc".into(),
+        description: "Credit".into(),
+        quantity: -1,
+        unit_net: 1_000,
+        currency: "LKR".into(),
+        business_date: hotel.business_date,
+        posting_key: None,
+        inclusive: false,
+    };
+    let refused = folio::post_charge(&mut tx, db::TenantId(tenant(&hotel).await), None, hotel.id, folio, charge).await;
+    assert!(matches!(refused, Err(folio::FolioError::Invalid(_))), "{refused:?}");
+    drop(tx);
+
+    assert_eq!(
+        post(&app, &hotel.owner, &format!("{}/outlets", hotel.path), json!({"code": "BAR", "name": "Bar"}))
+            .await
+            .status,
+        StatusCode::CREATED
+    );
+    let bill = |quantity: i64, unit_net: i64, business_date: Option<String>| {
+        json!({"outlet": "BAR", "bill_no": Uuid::now_v7().to_string(), "currency": "LKR",
+               "business_date": business_date,
+               "items": [{"description": "Tea", "quantity": quantity, "unit_net": unit_net}],
+               "target": {"reservation_room": stay}})
+    };
+    for (quantity, unit_net) in [(-2, 500), (0, 500), (1, -500)] {
+        let refused =
+            post(&app, &hotel.owner, &format!("{}/pos-bills", hotel.path), bill(quantity, unit_net, None)).await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{quantity} × {unit_net}: {:?}", refused.body);
+    }
+    for (offset, status) in
+        [(1, StatusCode::UNPROCESSABLE_ENTITY), (-8, StatusCode::UNPROCESSABLE_ENTITY), (-7, StatusCode::CREATED)]
+    {
+        let posted =
+            post(&app, &hotel.owner, &format!("{}/pos-bills", hotel.path), bill(1, 500, Some(hotel.day(offset)))).await;
+        assert_eq!(posted.status, status, "business date {offset}: {:?}", posted.body);
+    }
+}
+
+async fn tenant(hotel: &Hotel) -> Uuid {
+    sqlx::query_scalar("select tenant_id from property where id = $1")
+        .bind(hotel.id)
+        .fetch_one(&hotel.superuser)
+        .await
+        .unwrap()
+}
+
+/// An account folio is read by account with its newest 500 lines and a flag, and through a reservation with its
+/// balances only; the balance covers every line either way.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn folio_reads_are_bounded(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "owner@example.com", "GAL").await;
+    let account = json!({"kind": "company", "name": "Acme Travel", "currency": "LKR"});
+    let account = uuid(&post(&app, &hotel.owner, &format!("{}/accounts", hotel.path), account).await.body["id"]);
+    let (reservation, _) = hotel.book(&app, Some(account)).await;
+    let ledger = Uuid::now_v7();
+    sqlx::query(
+        "insert into folio (id, tenant_id, property_id, kind, account_id)
+         select $1, tenant_id, id, 'account', $3 from property where id = $2",
+    )
+    .bind(ledger)
+    .bind(hotel.id)
+    .bind(account)
+    .execute(&hotel.superuser)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into folio_line (id, tenant_id, folio_id, source, category, description, quantity, net, total, currency,
+                                 base_total, rate, rate_date, business_date, posted_at)
+         select gen_random_uuid(), f.tenant_id, f.id, 'manual', 'misc', 'Charge ' || n, 1, 100, 100, 'LKR', 100, 1,
+                p.business_date, p.business_date, now() - make_interval(secs => 600 - n)
+         from folio f join property p on p.id = f.property_id, generate_series(1, 600) as n
+         where f.id = $1",
+    )
+    .bind(ledger)
+    .execute(&hotel.superuser)
+    .await
+    .unwrap();
+
+    let read = graphql(&app, &hotel.owner, FOLIOS_FLAGS, json!({"p": hotel.id, "a": account})).await;
+    let folio = &read["data"]["folios"][0];
+    assert_eq!(folio["truncated"], true, "{read:?}");
+    assert_eq!(folio["linesOmitted"], false);
+    let lines = folio["lines"].as_array().unwrap();
+    assert_eq!(lines.len(), 500);
+    assert_eq!(
+        (lines[0]["description"].as_str(), lines[499]["description"].as_str()),
+        (Some("Charge 101"), Some("Charge 600"))
+    );
+    assert_eq!(folio["balances"], json!([{"currency": "LKR", "amount": 60_000, "baseAmount": 60_000}]));
+
+    let read = graphql(&app, &hotel.owner, FOLIOS_FLAGS, json!({"p": hotel.id, "r": reservation})).await;
+    let folios = read["data"]["folios"].as_array().unwrap();
+    let ledger_read = folios.iter().find(|f| f["kind"] == "ACCOUNT").expect("the account folio");
+    assert_eq!(ledger_read["linesOmitted"], true);
+    assert_eq!(ledger_read["lines"], json!([]));
+    assert_eq!(ledger_read["payments"], json!([]));
+    assert_eq!(ledger_read["balances"][0]["amount"], 60_000);
+    assert!(
+        folios.iter().filter(|f| f["kind"] != "ACCOUNT").all(|f| f["linesOmitted"] == false && f["truncated"] == false)
+    );
+}
+
+const FOLIOS_FLAGS: &str = "query ($p: UUID!, $r: UUID, $a: UUID) {
+    folios(propertyId: $p, reservationId: $r, accountId: $a) {
+        kind linesOmitted truncated lines { description } payments { id } balances { currency amount baseAmount }
+    }
+}";
+
+/// Another property of the same tenant: its ids sent through this property's paths are not found.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn another_propertys_ids_are_not_found_through_this_ones_paths(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let b = Hotel::new(&app, opts, "owner@example.com", "GAL").await;
+    let property = json!({"code": "KDY", "name": "Kandy", "timezone": "Asia/Colombo", "base_currency": "LKR"});
+    let a = uuid(&post(&app, &b.owner, "/api/v1/properties", property).await.body["id"]);
+    let a_path = format!("/api/v1/properties/{a}");
+
+    let (_, stay) = b.book(&app, None).await;
+    b.check_in(&app, stay).await;
+    let folio = uuid(&b.stay_folio(&app, &b.owner, stay).await["id"]);
+    let charge = json!({"category": "misc", "description": "Laundry", "unit_net": 1_000, "currency": "LKR"});
+    let line = post(&app, &b.owner, &format!("{}/folios/{folio}/charges", b.path), charge.clone()).await.body;
+    let cash = json!({"method": "cash", "amount": line["total"], "currency": "LKR"});
+    let line = uuid(&line["id"]);
+    let payment =
+        uuid(&post(&app, &b.owner, &format!("{}/folios/{folio}/payments", b.path), cash.clone()).await.body["id"]);
+    let invoice = post(&app, &b.owner, &format!("{}/folios/{folio}/invoice", b.path), json!({})).await;
+    assert_eq!(invoice.status, StatusCode::CREATED, "{:?}", invoice.body);
+    let invoice = uuid(&invoice.body["id"]);
+    let outlet = post(&app, &b.owner, &format!("{}/outlets", b.path), json!({"code": "BAR", "name": "Bar"})).await;
+    let outlet = uuid(&outlet.body["id"]);
+    let rule =
+        graphql(&app, &b.owner, "query ($p: UUID!) { taxRules(propertyId: $p) { id } }", json!({"p": b.id})).await;
+    let rule = uuid(&rule["data"]["taxRules"][0]["id"]);
+    // A folio of property A, so a `to_folio` or `from_folio` of B is the only thing wrong.
+    let guest = json!({"first_name": "Ana", "last_name": "Fernando", "residency": "resident"});
+    assert_eq!(post(&app, &b.owner, &format!("{a_path}/guests"), guest).await.status, StatusCode::CREATED);
+    assert_eq!(
+        post(&app, &b.owner, &format!("{a_path}/outlets"), json!({"code": "BAR", "name": "Bar"})).await.status,
+        StatusCode::CREATED
+    );
+
+    let cases = [
+        (format!("{a_path}/folios/{folio}/charges"), charge),
+        (format!("{a_path}/folios/{folio}/payments"), cash),
+        (format!("{a_path}/folios/{folio}/lines/{line}/reversal"), json!({"reason": "x"})),
+        (format!("{a_path}/folios/{folio}/lines/{line}/transfer"), json!({"to_folio": folio, "reason": "x"})),
+        (format!("{a_path}/payments/{payment}/refunds"), json!({"amount": 100, "reason": "x"})),
+        (format!("{a_path}/payments/{payment}/refunds"), json!({"amount": 100, "reason": "x", "from_folio": folio})),
+        (format!("{a_path}/folios/{folio}/invoice"), json!({})),
+        (format!("{a_path}/invoices/{invoice}/credit-note"), json!({"reason": "x"})),
+        (
+            format!("{a_path}/pos-bills"),
+            json!({"outlet": "BAR", "bill_no": "1", "currency": "LKR",
+                   "items": [{"description": "Tea", "quantity": 1, "unit_net": 100}],
+                   "target": {"reservation_room": stay}}),
+        ),
+    ];
+    for (path, body) in cases {
+        let response = post(&app, &b.owner, &path, body).await;
+        assert_eq!(response.status, StatusCode::NOT_FOUND, "{path}: {:?}", response.body);
+    }
+    let link = app.send(Method::GET, &format!("{a_path}/invoices/{invoice}/link"), Some(&b.owner), None).await;
+    assert_eq!(link.status, StatusCode::NOT_FOUND);
+    for (method, path, body) in [
+        (Method::PATCH, format!("{a_path}/outlets/{outlet}"), Some(json!({"name": "Pub"}))),
+        (Method::PATCH, format!("{a_path}/tax-rules/{rule}"), Some(json!({"name": "Levy"}))),
+        (Method::DELETE, format!("{a_path}/tax-rules/{rule}"), None),
+    ] {
+        let response = versioned(&app, method, &b.owner, &path, 1, body).await;
+        assert_eq!(response.status, StatusCode::NOT_FOUND, "{path}: {:?}", response.body);
+    }
+    let routing = app
+        .send(
+            Method::PUT,
+            &format!("{a_path}/reservations/{stay}/routing"),
+            Some(&b.owner),
+            Some(json!({"categories": []})),
+        )
+        .await;
+    assert_eq!(routing.status, StatusCode::NOT_FOUND);
+    let read = graphql(&app, &b.owner, FOLIOS, json!({"p": a, "rr": stay})).await;
+    assert_eq!(read["data"]["folios"], json!([]));
+}
+
+/// Folio and exchange-rate keys reach only streams of users who may view the property's folios.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn money_keys_reach_only_folio_viewers(_: PgPoolOptions, opts: PgConnectOptions) {
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "owner@example.com", "GAL").await;
+    let housekeeper = app.staff(&hotel.superuser, &hotel.owner, "hk@example.com", "housekeeping").await;
+    let open = |cookie: String| {
+        let router = app.router.clone();
+        async move {
+            let request = axum::http::Request::builder()
+                .uri("/api/v1/events")
+                .header(axum::http::header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap();
+            let mut body = router.oneshot(request).await.unwrap().into_body();
+            let ready = tokio::time::timeout(StdDuration::from_secs(1), body.frame()).await.unwrap().unwrap().unwrap();
+            assert_eq!(ready.into_data().unwrap(), "event: ready\ndata: {}\n\n");
+            body
+        }
+    };
+    let mut owners = open(hotel.owner.clone()).await;
+    let mut housekeepers = open(housekeeper).await;
+    let tenant = db::TenantId(tenant(&hotel).await);
+    let event =
+        |keys: Vec<String>| LiveEvent::Invalidate(db::Event { tenant_id: tenant, property_id: Some(hotel.id), keys });
+    let money = format!("folio:{}", Uuid::now_v7());
+    app.state.events.send(event(vec![money.clone(), format!("fx:{}", hotel.id)])).unwrap();
+    app.state.events.send(event(vec![money.clone(), "rooms:x".into()])).unwrap();
+
+    assert!(next(&mut owners).await.contains(&money));
+    assert!(next(&mut owners).await.contains("rooms:x"));
+    let heard = next(&mut housekeepers).await;
+    assert!(heard.contains("rooms:x") && !heard.contains("folio:"), "only the other key: {heard}");
+    let silent = tokio::time::timeout(StdDuration::from_millis(300), housekeepers.frame()).await;
+    assert!(silent.is_err(), "an event of money keys only is not sent at all");
+}
+
+/// The next frame of an event stream, as text.
+async fn next(body: &mut axum::body::Body) -> String {
+    use http_body_util::BodyExt;
+    let frame = tokio::time::timeout(StdDuration::from_secs(2), body.frame()).await.unwrap().unwrap().unwrap();
+    String::from_utf8(frame.into_data().unwrap().to_vec()).unwrap()
 }

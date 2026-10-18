@@ -57,12 +57,12 @@ pub struct PostChargeRequest {
     /// 1 to 200 characters once trimmed.
     #[garde(length(chars, min = 1, max = 200))]
     pub description: String,
-    /// 1 to 9999 either way; 1 when left out.
+    /// 1 to 9999; 1 when left out. A charge is never a credit: correct a line by reversing it.
     #[serde(default = "one")]
-    #[garde(skip)]
+    #[garde(range(min = 1, max = 9999))]
     pub quantity: i32,
-    /// Before taxes, in minor units of `currency`.
-    #[garde(skip)]
+    /// Before taxes, in minor units of `currency`; at least 0.
+    #[garde(range(min = 0))]
     pub unit_net: i64,
     /// One of the property's accepted currencies.
     #[garde(pattern(r"^[A-Z]{3}$"))]
@@ -166,14 +166,9 @@ pub async fn transfer(
     validate(&body)?;
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
     let (reversal, moved) =
-        folio::transfer(&mut tx, ctx.tenant, Some(ctx.user), property, line, body.to_folio, &body.reason)
+        folio::transfer(&mut tx, ctx.tenant, Some(ctx.user), property, folio, line, body.to_folio, &body.reason)
             .await
             .map_err(folio_error)?;
-    // The line is found by its id alone; one on another folio than the path names is not this folio's line, and
-    // dropping the transaction undoes the transfer.
-    if reversal.folio_id != folio {
-        return Err(ApiError::not_found("line not found"));
-    }
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(TransferredLine { reversal, moved })))
 }

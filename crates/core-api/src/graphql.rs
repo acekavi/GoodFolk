@@ -1416,12 +1416,16 @@ pub struct FolioNode {
     pub created_at: OffsetDateTime,
     /// Moves when the folio is invoiced or reopened.
     pub version: i32,
-    /// Oldest first.
+    /// Oldest first: at most the newest 500 (see `truncated`); empty when `linesOmitted`.
     pub lines: Vec<FolioLineNode>,
-    /// Oldest first.
+    /// Oldest first: at most the newest 500 (see `truncated`); empty when `linesOmitted`.
     pub payments: Vec<PaymentNode>,
-    /// One per currency the folio has lines or payments in, by currency code.
+    /// One per currency the folio has lines or payments in, by currency code, over all of them, whatever was read.
     pub balances: Vec<BalanceNode>,
+    /// The lines and payments were left out: an account folio read through a reservation. Read it by `accountId`.
+    pub lines_omitted: bool,
+    /// The folio has more than 500 lines or payments; only the newest 500 of each are here.
+    pub truncated: bool,
     /// Oldest first.
     pub invoices: Vec<InvoiceNode>,
 }
@@ -1448,6 +1452,8 @@ impl TryFrom<folio::FolioView> for FolioNode {
                 .map(|b| BalanceNode { currency: b.currency, amount: b.amount, base_amount: b.base_amount })
                 .collect(),
             invoices: Vec::new(),
+            lines_omitted: view.lines_omitted,
+            truncated: view.truncated,
         })
     }
 }
@@ -2320,8 +2326,11 @@ impl Query {
     /// The folios of one reservation, stay or account in the property; name exactly one of `reservationId`,
     /// `reservationRoomId` and `accountId`. A reservation's are its deposit folio, each stay's guest folio and its
     /// account's folio, in that order. The account folio is the account's whole city ledger in the property, charges
-    /// from every reservation billed to it included, as any staff member with `FolioView` may see. Lines (with their
-    /// taxes), payments and invoices of every folio are read at once, whatever the number of folios.
+    /// from every reservation billed to it included, as any staff member with `FolioView` may see; read through a
+    /// reservation it comes with its balances and invoices but no lines or payments (`linesOmitted`), which a read by
+    /// `accountId` gives. Every folio gives at most its newest 500 lines and newest 500 payments (`truncated` when it
+    /// has more); balances always cover all of them. Lines (with their taxes), payments, balances and invoices of
+    /// every folio are read at once, whatever the number of folios.
     async fn folios(
         &self,
         ctx: &Context<'_>,

@@ -57,8 +57,8 @@ mod rules;
 mod words;
 
 pub use folios::{
-    Balance, FolioKind, FolioQuery, FolioRow, FolioStatus, FolioView, LineTax, LineWithTaxes, PaymentRow,
-    ensure_account_folio, ensure_deposit_folio, ensure_guest_folio, folios_for,
+    Balance, FolioKind, FolioQuery, FolioRow, FolioStatus, FolioView, LineTax, LineWithTaxes, MAX_FOLIO_ROWS,
+    PaymentRow, ensure_account_folio, ensure_deposit_folio, ensure_guest_folio, folios_for,
 };
 pub use invoices::{
     INVOICE_RENDER_TOPIC, InvoiceRow, InvoiceSummary, credit_note, invoice_link_key, invoice_summaries, issue_invoice,

@@ -4186,7 +4186,7 @@
         "tags": [
           "crate::routes::taxes"
         ],
-        "summary": "Replaces the property's tax rules with the Sri Lanka preset from its business date (the tourism development levy\nat 0.5% when `tdl_small_turnover` is set): every rule in force before that day ends on it, and any rule starting\non or after it is removed. Lines already posted keep their taxes. Audited.",
+        "summary": "Replaces the property's tax rules with the Sri Lanka preset from the day after its business date (the tourism\ndevelopment levy at 0.5% when `tdl_small_turnover` is set): every rule in force on that day ends on it, and any\nrule starting after the business date (never yet in force) is removed. Lines already posted keep their taxes.\nAudited with each ended rule's previous end and every removed rule.",
         "operationId": "apply_tax_preset",
         "parameters": [
           {
@@ -5595,14 +5595,14 @@
             "items": {
               "type": "string"
             },
-            "description": "`*`, `room`, `meal_plan`, `laundry`, `misc`, `fee`, `pos:*` or `pos:<OUTLET>`; 1 to 10."
+            "description": "`*`, `room`, `meal_plan`, `laundry`, `misc`, `fee`, `pos:*` or `pos:<OUTLET>`; 1 to 20."
           },
           "base": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "`net` and the codes of rules with a lower `sequence`; 1 to 10."
+            "description": "`net` and the codes of rules with a lower `sequence`; 1 to 20."
           },
           "code": {
             "type": "string",
@@ -6620,7 +6620,7 @@
               "null"
             ],
             "format": "date",
-            "description": "The property's business date when left out."
+            "description": "The property's business date when left out; at most 7 days before it, and never after it."
           },
           "currency": {
             "type": "string",
@@ -6715,12 +6715,12 @@
           "quantity": {
             "type": "integer",
             "format": "int32",
-            "description": "1 to 9999 either way."
+            "description": "1 to 9999."
           },
           "unit_net": {
             "type": "integer",
             "format": "int64",
-            "description": "Before taxes, in minor units of the bill's currency."
+            "description": "Before taxes, in minor units of the bill's currency; at least 0."
           }
         }
       },
@@ -6860,12 +6860,12 @@
           "quantity": {
             "type": "integer",
             "format": "int32",
-            "description": "1 to 9999 either way; 1 when left out."
+            "description": "1 to 9999; 1 when left out. A charge is never a credit: correct a line by reversing it."
           },
           "unit_net": {
             "type": "integer",
             "format": "int64",
-            "description": "Before taxes, in minor units of `currency`."
+            "description": "Before taxes, in minor units of `currency`; at least 0."
           }
         }
       },
@@ -6940,18 +6940,18 @@
           "effective_from": {
             "type": "string",
             "format": "date",
-            "description": "The day the preset takes effect: the property's business date."
+            "description": "The day the preset takes effect: the day after the property's business date, so no line already posted for\nthe business date is taxed differently from the rest of that day's."
           },
           "ended": {
             "type": "integer",
             "format": "int32",
-            "description": "Rules in force before that day, now ended on it.",
+            "description": "Rules in force on that day, now ended on it.",
             "minimum": 0
           },
           "removed": {
             "type": "integer",
             "format": "int32",
-            "description": "Rules that would have started on or after that day, removed: once the preset takes over they would apply to\nno day at all.",
+            "description": "Rules that would have started after the business date, removed: they had never been in force, and once the\npreset takes over they would apply to no day at all.",
             "minimum": 0
           },
           "rules": {
@@ -7827,7 +7827,7 @@
         "properties": {
           "rate": {
             "type": "string",
-            "description": "Base currency per one unit of the currency, as a decimal string such as `\"301.25\"`: positive, with at most 6\ndecimals and 12 digits before them."
+            "description": "Base currency per one unit of the currency, as a decimal string such as `\"301.25\"` (at most 20 characters, no\nexponent or `_`): positive, with at most 6 decimals and 12 digits before them."
           }
         }
       },

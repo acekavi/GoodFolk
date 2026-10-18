@@ -39,8 +39,14 @@ async fn reverse(hotel: &Hotel, folio: Uuid, line: Uuid) -> Result<LineRow, Foli
 
 async fn transfer(hotel: &Hotel, line: Uuid, to: Uuid) -> Result<(LineRow, LineRow), FolioError> {
     let mut tx = hotel.tx().await;
+    // The line's own folio, or none for a line that does not exist (the transfer then finds no line).
+    let from: Uuid = sqlx::query_scalar("select folio_id from folio_line where id = $1")
+        .bind(line)
+        .fetch_optional(&mut *tx)
+        .await?
+        .unwrap_or_else(Uuid::nil);
     let moved =
-        folio::transfer(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, line, to, "Wrong room").await?;
+        folio::transfer(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, from, line, to, "Wrong room").await?;
     tx.commit().await.unwrap();
     Ok(moved)
 }
@@ -152,10 +158,13 @@ async fn malformed_charges_are_invalid(_: PgPoolOptions, opts: PgConnectOptions)
         NewCharge { quantity: -10_000, ..charge.clone() },
         NewCharge { unit_net: 10_000_000_000_001, ..charge.clone() },
         NewCharge { unit_net: -10_000_000_000_001, ..charge.clone() },
+        // A manual charge is never a credit: a correction is a reversal.
+        NewCharge { quantity: -1, ..charge.clone() },
+        NewCharge { unit_net: -1, ..charge.clone() },
     ] {
         invalid(hotel.post(stay.guests[0], bad).await);
     }
-    let largest = NewCharge { quantity: -9_999, unit_net: 10_000_000_000_000, ..charge.clone() };
+    let largest = NewCharge { quantity: 9_999, unit_net: 10_000_000_000_000, ..charge.clone() };
     hotel.post(stay.guests[0], largest).await.expect("the bounds themselves are allowed");
     assert!(matches!(hotel.post(Uuid::now_v7(), charge).await, Err(FolioError::NotFound("folio"))));
 }
@@ -362,7 +371,7 @@ async fn folios_for_reads_three_folios_in_one_statement_per_kind(_: PgPoolOption
             .unwrap()
     };
 
-    assert_eq!(statements.load(Ordering::SeqCst), 4, "folios, lines, taxes and payments: one statement each");
+    assert_eq!(statements.load(Ordering::SeqCst), 5, "folios, lines, taxes, payments and balances: one statement each");
     let shape: Vec<_> = views
         .iter()
         .map(|view| {
@@ -514,11 +523,14 @@ async fn opposing_concurrent_transfers_do_not_deadlock(_: PgPoolOptions, opts: P
     let on_two = hotel.post(g2, hotel.charge(Source::Manual, "misc", 200, "LKR")).await.unwrap();
 
     let mut first = hotel.tx().await;
-    folio::transfer(&mut first, hotel.tenant, Some(hotel.user), hotel.property, on_one.id, g2, "Swap").await.unwrap();
+    folio::transfer(&mut first, hotel.tenant, Some(hotel.user), hotel.property, on_one.folio_id, on_one.id, g2, "Swap")
+        .await
+        .unwrap();
     let (pool, tenant, user, property) = (hotel.pool.clone(), hotel.tenant, hotel.user, hotel.property);
     let second = tokio::spawn(async move {
         let mut tx = db::begin(&pool, db::Scope::tenant(tenant)).await.unwrap();
-        let moved = folio::transfer(&mut tx, tenant, Some(user), property, on_two.id, g1, "Swap").await;
+        let moved =
+            folio::transfer(&mut tx, tenant, Some(user), property, on_two.folio_id, on_two.id, g1, "Swap").await;
         if moved.is_ok() {
             tx.commit().await.unwrap();
         }

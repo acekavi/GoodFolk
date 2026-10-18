@@ -103,7 +103,8 @@ pub async fn sweep_once(
 /// transaction of their own, so a dropped one leaves nothing half-written). Only one instance imports at a time: an
 /// import runs under the session advisory lock `hashtext('fx_import')`, taken on a connection of its own to `lock`
 /// (a direct connection, as for the sweep). An instance that finds the lock taken counts that import as run, since
-/// another instance is running it; an import that could not run is tried again at the next tick. The day imported is
+/// another instance is running it; an import that could not run, or that left a property alerted (a rate missing or
+/// stale), is tried again at the next tick. The day imported is
 /// today in `Asia/Colombo`, as the database's clock has it.
 pub async fn run_fx_imports(
     pool: PgPool,
@@ -136,7 +137,9 @@ pub async fn run_fx_imports(
         match imported {
             Ok(report) => {
                 started = true;
-                if now.time() >= FX_DUE_AT {
+                // An import that left a property alerted is tried again at the next tick, as the day goes on.
+                let complete = report.as_ref().is_none_or(|report| report.alerted == 0);
+                if complete && now.time() >= FX_DUE_AT {
                     done_for = Some(now.date());
                 }
                 match report {

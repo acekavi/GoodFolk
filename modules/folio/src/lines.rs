@@ -130,6 +130,9 @@ pub(crate) fn check_charge(charge: &NewCharge) -> Result<String, FolioError> {
 /// folios returns that line and posts nothing. Otherwise the folio must be open (`Conflict`), the currency one the
 /// property accepts (`Invalid`), and a rate for it must exist on the business date (`Conflict`, "No exchange rate for
 /// <CUR> on <YYYY-MM-DD>"). Queues `folio:<id>`; a `manual` charge is audited as `folio.charge_posted`.
+///
+/// A `manual` charge is a supply staff post: its quantity is at least 1 and its unit price at least 0 (`Invalid`).
+/// Credits are never posted this way; a correction is a reversal.
 pub async fn post_charge(
     tx: &mut Tx,
     tenant: TenantId,
@@ -139,6 +142,9 @@ pub async fn post_charge(
     charge: NewCharge,
 ) -> Result<LineRow, FolioError> {
     let description = check_charge(&charge)?;
+    if charge.source == Source::Manual {
+        check_positive(&charge)?;
+    }
     let locked = lock_folios(tx, property, &[folio]).await?.pop().ok_or(FolioError::NotFound("folio"))?;
     if let Some(key) = &charge.posting_key
         && let Some(line) = line_by_key(tx, property, key).await?
@@ -150,6 +156,18 @@ pub async fn post_charge(
         _ => None,
     };
     post_locked(tx, tenant, user, &locked, charge, description, Posting { resident, ..Posting::default() }).await
+}
+
+/// `Invalid` unless `charge` is a supply: a quantity of at least 1 and a unit price of at least 0. Staff charges and POS
+/// items are; a credit is a reversal.
+pub(crate) fn check_positive(charge: &NewCharge) -> Result<(), FolioError> {
+    if charge.quantity < 1 || charge.unit_net < 0 {
+        return Err(FolioError::Invalid(
+            "a charge has a quantity of at least 1 and a unit price of at least 0; correct a line by reversing it"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 /// The line posted under `key` on any of `property`'s folios, if there is one.
@@ -394,32 +412,39 @@ pub async fn reverse(
     Ok(reversal)
 }
 
-/// Moves `from_line` to `to_folio`: a reversal on its folio and an identical line on the target, sharing a
-/// `transfer_id`, both on the property's business date with `reason`.
+/// Moves `from_line` of `from_folio` to `to_folio`: a reversal on its folio and an identical line on the target,
+/// sharing a `transfer_id`, both on the property's business date with `reason`.
 ///
-/// Locks both folios in ascending id order. Both must be in `property` (`NotFound` otherwise) and open
+/// `NotFound` unless the line is on `from_folio`, checked before anything is written. Locks both folios in ascending
+/// id order. Both must be in `property` (`NotFound` otherwise) and open
 /// (`Conflict`). A guest folio exchanges lines with its reservation's deposit folio, its reservation's account folio,
 /// and any other stay's guest folio in the property (`Invalid` otherwise). The line must be neither a reversal
 /// (`Invalid`) nor already reversed or transferred (`Conflict`). Audited as `folio.line_transferred`; queues both
 /// folios' keys. Returns the reversal and the new line.
+#[allow(clippy::too_many_arguments)]
 pub async fn transfer(
     tx: &mut Tx,
     tenant: TenantId,
     user: Option<UserId>,
     property: Uuid,
+    from_folio: Uuid,
     from_line: Uuid,
     to_folio: Uuid,
     reason_text: &str,
 ) -> Result<(LineRow, LineRow), FolioError> {
     let reason = reason(reason_text)?;
-    let from_folio: Uuid = sqlx::query_scalar(
-        "select l.folio_id from folio_line l join folio f on f.id = l.folio_id where l.id = $1 and f.property_id = $2",
+    let on_folio: bool = sqlx::query_scalar(
+        "select exists (select 1 from folio_line l join folio f on f.id = l.folio_id
+                        where l.id = $1 and l.folio_id = $2 and f.property_id = $3)",
     )
     .bind(from_line)
+    .bind(from_folio)
     .bind(property)
-    .fetch_optional(&mut **tx)
-    .await?
-    .ok_or(FolioError::NotFound("line"))?;
+    .fetch_one(&mut **tx)
+    .await?;
+    if !on_folio {
+        return Err(FolioError::NotFound("line"));
+    }
     if from_folio == to_folio {
         return Err(FolioError::Invalid("the line is already on that folio".into()));
     }

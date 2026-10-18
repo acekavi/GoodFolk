@@ -45,11 +45,11 @@ pub struct CreateTaxRuleRequest {
     /// Basis points, 0 to 10000: 1000 is 10%.
     #[garde(range(max = 10_000))]
     pub rate_bp: u32,
-    /// `*`, `room`, `meal_plan`, `laundry`, `misc`, `fee`, `pos:*` or `pos:<OUTLET>`; 1 to 10.
-    #[garde(length(min = 1, max = 10))]
+    /// `*`, `room`, `meal_plan`, `laundry`, `misc`, `fee`, `pos:*` or `pos:<OUTLET>`; 1 to 20.
+    #[garde(length(min = 1, max = 20), inner(length(max = 32)))]
     pub applies_to: Vec<String>,
-    /// `net` and the codes of rules with a lower `sequence`; 1 to 10.
-    #[garde(length(min = 1, max = 10))]
+    /// `net` and the codes of rules with a lower `sequence`; 1 to 20.
+    #[garde(length(min = 1, max = 20), inner(length(max = 32)))]
     pub base: Vec<String>,
     /// Rules are calculated in ascending sequence.
     #[garde(skip)]
@@ -82,9 +82,9 @@ pub struct UpdateTaxRuleRequest {
     pub kind: Option<tax::Kind>,
     #[garde(inner(range(max = 10_000)))]
     pub rate_bp: Option<u32>,
-    #[garde(inner(length(min = 1, max = 10)))]
+    #[garde(inner(length(min = 1, max = 20), inner(length(max = 32))))]
     pub applies_to: Option<Vec<String>>,
-    #[garde(inner(length(min = 1, max = 10)))]
+    #[garde(inner(length(min = 1, max = 20), inner(length(max = 32))))]
     pub base: Option<Vec<String>>,
     #[garde(skip)]
     pub sequence: Option<i32>,
@@ -206,9 +206,10 @@ pub async fn end_rule(
     Ok(Versioned::ok(ended.version, ended))
 }
 
-/// Replaces the property's tax rules with the Sri Lanka preset from its business date (the tourism development levy
-/// at 0.5% when `tdl_small_turnover` is set): every rule in force before that day ends on it, and any rule starting
-/// on or after it is removed. Lines already posted keep their taxes. Audited.
+/// Replaces the property's tax rules with the Sri Lanka preset from the day after its business date (the tourism
+/// development levy at 0.5% when `tdl_small_turnover` is set): every rule in force on that day ends on it, and any
+/// rule starting after the business date (never yet in force) is removed. Lines already posted keep their taxes.
+/// Audited with each ended rule's previous end and every removed rule.
 #[utoipa::path(post, operation_id = "apply_tax_preset", path = "/api/v1/properties/{property}/tax-rules/apply-preset",
     params(("property" = Uuid, Path), ("Idempotency-Key" = String, Header)),
     responses((status = 200, body = PresetApplied), (status = 403), (status = 404), (status = 422)))]

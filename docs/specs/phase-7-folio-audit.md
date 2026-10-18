@@ -141,7 +141,7 @@ Linen and guest laundry ([laundry.md](laundry.md)) follow 7a.
   - routing (`PUT …/reservations/{id}/routing`);
   - `POST …/folio/post-charges` and `POST …/pos-bills`;
   - invoice and credit note issuing, and their links;
-  - tax rules (CRUD and "apply preset"), outlets, property tax settings, `fx-rates`.
+  - tax rules (CRUD, where delete ends a rule, and "apply preset", which takes effect the day after the business date), outlets, property tax settings, `fx-rates`.
 - **GraphQL.**
   - `folios(propertyId, reservationId | reservationRoomId | accountId)`: lines with taxes, payments, balances per currency, status, invoices.
   - `taxRules`, `outlets`, `fxRates(propertyId, from, to)`, `fxAlert`.

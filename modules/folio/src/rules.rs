@@ -18,7 +18,7 @@ use uuid::Uuid;
 const MAX_RULE_NAME: usize = 100;
 
 /// The most categories a rule applies to, and the most parts of its base.
-const MAX_RULE_PARTS: usize = 10;
+const MAX_RULE_PARTS: usize = 20;
 
 #[derive(sqlx::FromRow)]
 struct RuleRow {
@@ -373,21 +373,23 @@ pub async fn end_tax_rule(
 /// What [`apply_preset`] did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct PresetApplied {
-    /// The day the preset takes effect: the property's business date.
+    /// The day the preset takes effect: the day after the property's business date, so no line already posted for
+    /// the business date is taxed differently from the rest of that day's.
     pub effective_from: Date,
-    /// Rules in force before that day, now ended on it.
+    /// Rules in force on that day, now ended on it.
     pub ended: u32,
-    /// Rules that would have started on or after that day, removed: once the preset takes over they would apply to
-    /// no day at all.
+    /// Rules that would have started after the business date, removed: they had never been in force, and once the
+    /// preset takes over they would apply to no day at all.
     pub removed: u32,
     /// The property's rules now, as [`list_tax_rules`] returns them.
     pub rules: Vec<TaxRuleRow>,
 }
 
 /// Replaces `property`'s rules with the Sri Lanka preset (`tax::sri_lanka_preset`, with the property's
-/// `tdl_small_turnover`) from its business date: every rule in force before that day ends on it, and every rule
-/// starting on or after it is removed. Lines already posted keep their taxes. `NotFound` if the property is not in
-/// the tenant. Audited as `tax_rule.preset_applied` on the property. The caller checks `TaxSettingsManage`.
+/// `tdl_small_turnover`) from the day after its business date: every rule in force on that day ends on it, and every
+/// rule starting after the business date (never yet in force) is removed. Lines already posted keep their taxes.
+/// `NotFound` if the property is not in the tenant. Audited as `tax_rule.preset_applied` on the property, with each
+/// ended rule's previous `effective_to` and every removed rule in full. The caller checks `TaxSettingsManage`.
 pub async fn apply_preset(
     tx: &mut Tx,
     tenant: TenantId,
@@ -400,40 +402,48 @@ pub async fn apply_preset(
             .bind(property)
             .fetch_one(&mut **tx)
             .await?;
-    let ended = sqlx::query(
-        "update tax_rule set effective_to = $2, version = version + 1
-         where property_id = $1 and effective_from < $2 and (effective_to is null or effective_to > $2)",
+    let from =
+        today.next_day().ok_or_else(|| FolioError::Invalid("the business date is the last day there is".into()))?;
+    let ended: Vec<(Uuid, String, Option<Date>)> = sqlx::query_as(
+        "update tax_rule r set effective_to = $2, version = r.version + 1
+         from tax_rule before
+         where before.id = r.id and r.property_id = $1 and r.effective_from < $2
+           and (r.effective_to is null or r.effective_to > $2)
+         returning r.id, r.code, before.effective_to",
     )
     .bind(property)
-    .bind(today)
-    .execute(&mut **tx)
-    .await?
-    .rows_affected();
-    let removed = sqlx::query("delete from tax_rule where property_id = $1 and effective_from >= $2")
-        .bind(property)
-        .bind(today)
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
+    .bind(from)
+    .fetch_all(&mut **tx)
+    .await?;
+    let removed: Vec<RuleRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "delete from tax_rule where property_id = $1 and effective_from >= $2 returning {RULE_COLUMNS}"
+    )))
+    .bind(property)
+    .bind(from)
+    .fetch_all(&mut **tx)
+    .await?;
+    let removed: Vec<TaxRuleRow> = removed.into_iter().map(into_row).collect::<Result<_, _>>()?;
     for mut rule in tax::sri_lanka_preset(small_turnover) {
-        rule.effective_from = today;
+        rule.effective_from = from;
         insert_rule(tx, tenant, property, &rule).await?;
     }
     check_set(tx, property).await?;
-    let count = |n: u64| u32::try_from(n).unwrap_or(u32::MAX);
-    let applied = PresetApplied {
-        effective_from: today,
-        ended: count(ended),
-        removed: count(removed),
-        rules: list_tax_rules(tx, property).await?,
-    };
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
     let data = serde_json::json!({
         "preset": "sri_lanka",
-        "effective_from": today,
+        "effective_from": from,
         "tdl_small_turnover": small_turnover,
-        "ended": applied.ended,
-        "removed": applied.removed,
+        "ended": ended
+            .iter()
+            .map(|(id, code, previous)| serde_json::json!({ "id": id, "code": code, "previous_effective_to": previous }))
+            .collect::<Vec<_>>(),
+        "removed": removed,
     });
     audit(tx, tenant, user, "tax_rule.preset_applied", "property", property, data).await?;
-    Ok(applied)
+    Ok(PresetApplied {
+        effective_from: from,
+        ended: count(ended.len()),
+        removed: count(removed.len()),
+        rules: list_tax_rules(tx, property).await?,
+    })
 }

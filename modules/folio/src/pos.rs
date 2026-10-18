@@ -1,7 +1,9 @@
 //! Outlets and POS bills: a bill posted once per outlet and bill number, either to an in-house stay's folios or
 //! settled at the outlet with its own payment.
 
-use crate::lines::{MAX_DESCRIPTION, NewCharge, business_date, check_charge, kind_str, presentation_str, violates};
+use crate::lines::{
+    MAX_DESCRIPTION, NewCharge, business_date, check_charge, check_positive, kind_str, presentation_str, violates,
+};
 use crate::payments::{Method, pay_pos_bill};
 use crate::routing::post_routed;
 use crate::rules::without_service_charge;
@@ -18,6 +20,9 @@ const MAX_ITEMS: usize = 200;
 
 /// The longest bill number, in characters.
 const MAX_BILL_NO: usize = 50;
+
+/// How many days before the property's business date a bill's own business date may be.
+const MAX_BILL_AGE_DAYS: i64 = 7;
 
 /// The longest outlet name, in characters.
 const MAX_OUTLET_NAME: usize = 100;
@@ -275,7 +280,9 @@ struct Posted {
 /// A new bill needs 1 to 200 items and a bill number of 1 to 50 characters, an active outlet and a currency the
 /// property accepts (each `Invalid`); an outlet or stay of another property is `NotFound`. An item's category is the
 /// outlet's `pos:<OUTLET>` unless it names `misc`. The business date is the bill's, or the property's when it names
-/// none. Items are taxed with the property's rules, without the service charge when the outlet's is off.
+/// none, and must be within the 7 days up to the property's (`Invalid`). Each item has a quantity of at least 1 and
+/// a unit price of at least 0 (`Invalid`). Items are taxed with the property's rules, without the service charge when
+/// the outlet's is off.
 ///
 /// - **To a stay** ([`PosTarget::Stay`]), which must be checked in (`Invalid`, "Room is not in house"; its row is
 ///   held `for share` so it can't check out meanwhile): each item posts through the stay's routing as a `pos` line
@@ -326,6 +333,12 @@ pub async fn post_pos_bill(
         return Err(FolioError::Invalid(format!("{} is not a currency this property accepts", bill.currency)));
     }
     let business_date = bill.business_date.unwrap_or(today);
+    if business_date > today || business_date < today - time::Duration::days(MAX_BILL_AGE_DAYS) {
+        return Err(FolioError::Invalid(format!(
+            "a bill's business date is from {} to {today}",
+            today - time::Duration::days(MAX_BILL_AGE_DAYS)
+        )));
+    }
     let id = Uuid::now_v7();
     let charges = bill
         .items
@@ -489,6 +502,7 @@ fn charge(
         inclusive: false,
     };
     check_charge(&charge)?;
+    check_positive(&charge)?;
     Ok(charge)
 }
 

@@ -6,7 +6,7 @@ use crate::lines::{LINE_COLUMNS, LineRow};
 use db::{TenantId, Tx};
 use rust_decimal::Decimal;
 use serde::{Serialize, Serializer};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
@@ -96,11 +96,20 @@ pub struct Balance {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct FolioView {
     pub folio: FolioRow,
+    /// Oldest first: the newest [`MAX_FOLIO_ROWS`] when `truncated`, none when `lines_omitted`.
     pub lines: Vec<LineWithTaxes>,
+    /// Oldest first: the newest [`MAX_FOLIO_ROWS`] when `truncated`, none when `lines_omitted`.
     pub payments: Vec<PaymentRow>,
-    /// One per currency the folio has lines or payments in, by currency code.
+    /// One per currency the folio has lines or payments in, by currency code, over all of them.
     pub balances: Vec<Balance>,
+    /// The folio's lines and payments were left out: an account folio read through a reservation.
+    pub lines_omitted: bool,
+    /// The folio has more lines or payments than were read.
+    pub truncated: bool,
 }
+
+/// The most lines, and the most payments, [`folios_for`] reads of one folio: the newest.
+pub const MAX_FOLIO_ROWS: i64 = 500;
 
 /// Which folios of a property to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,9 +247,23 @@ async fn ensure(
     }
 }
 
-/// The folios `query` names, each with its lines (and their taxes), payments and balances. Four statements whatever
-/// the number of folios: the folios, then every line, every tax and every payment of all of them at once.
+/// The folios `query` names, each with its lines (and their taxes), payments and balances. Five statements whatever
+/// the number of folios: the folios, then the lines, taxes, payments and balances of all of them at once.
+///
+/// Bounded for reading: each folio gives its newest [`MAX_FOLIO_ROWS`] lines and newest [`MAX_FOLIO_ROWS`] payments,
+/// with `truncated` set when it has more. A [`FolioQuery::Reservation`] reads its account's folio (the account's whole
+/// city ledger) with its balances but no lines or payments (`lines_omitted`): read it by account for those. Balances
+/// always cover every line and payment.
 pub async fn folios_for(tx: &mut Tx, query: FolioQuery) -> Result<Vec<FolioView>, FolioError> {
+    read(tx, query, Some(MAX_FOLIO_ROWS)).await
+}
+
+/// One folio of the property with every line and payment, unbounded: what an invoice is issued from.
+pub(crate) async fn complete_folio(tx: &mut Tx, property: Uuid, folio: Uuid) -> Result<FolioView, FolioError> {
+    read(tx, FolioQuery::Folio { property, folio }, None).await?.pop().ok_or(FolioError::NotFound("folio"))
+}
+
+async fn read(tx: &mut Tx, query: FolioQuery, cap: Option<i64>) -> Result<Vec<FolioView>, FolioError> {
     let (filter, property, target) = match query {
         FolioQuery::Reservation { property, reservation } => (
             "f.id in (
@@ -272,25 +295,48 @@ pub async fn folios_for(tx: &mut Tx, query: FolioQuery) -> Result<Vec<FolioView>
         return Ok(Vec::new());
     }
     let ids: Vec<Uuid> = folios.iter().map(|folio| folio.id).collect();
+    let omitted =
+        |folio: &FolioRow| matches!(query, FolioQuery::Reservation { .. }) && folio.kind == FolioKind::Account;
+    let detailed: Vec<Uuid> = folios.iter().filter(|folio| !omitted(folio)).map(|folio| folio.id).collect();
+    // One more than the cap, newest first, so a folio holding more is seen to be truncated. `limit null` is no limit.
+    let limit = cap.map(|cap| cap + 1);
 
     let lines: Vec<LineRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select {LINE_COLUMNS} from folio_line where folio_id = any($1) order by posted_at, id"
+        "select l.* from unnest($1::uuid[]) as f(id)
+         cross join lateral (select {LINE_COLUMNS} from folio_line where folio_id = f.id
+                             order by posted_at desc, id desc limit $2) as l"
     )))
-    .bind(&ids)
+    .bind(&detailed)
+    .bind(limit)
     .fetch_all(&mut **tx)
     .await?;
+    let line_ids: Vec<Uuid> = lines.iter().map(|line| line.id).collect();
     let taxes: Vec<LineTax> = sqlx::query_as(
-        "select t.line_id, t.code, t.name, t.kind, t.rate_bp, t.base, t.amount, t.presentation
-         from folio_line_tax t join folio_line l on l.id = t.line_id
-         where l.folio_id = any($1)
-         order by t.line_id, t.code",
+        "select line_id, code, name, kind, rate_bp, base, amount, presentation
+         from folio_line_tax where line_id = any($1)
+         order by line_id, code",
     )
-    .bind(&ids)
+    .bind(&line_ids)
     .fetch_all(&mut **tx)
     .await?;
     let payments: Vec<PaymentRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select {PAYMENT_COLUMNS} from payment where folio_id = any($1) order by id"
+        "select p.* from unnest($1::uuid[]) as f(id)
+         cross join lateral (select {PAYMENT_COLUMNS} from payment where folio_id = f.id
+                             order by id desc limit $2) as p"
     )))
+    .bind(&detailed)
+    .bind(limit)
+    .fetch_all(&mut **tx)
+    .await?;
+    let sums: Vec<(Uuid, String, i64, i64)> = sqlx::query_as(
+        "select folio_id, currency, sum(amount)::bigint, sum(base)::bigint
+         from (select folio_id, currency::text as currency, total as amount, base_total as base
+               from folio_line where folio_id = any($1)
+               union all
+               select folio_id, currency::text, -amount, -base_amount from payment where folio_id = any($1)) as entries
+         group by folio_id, currency
+         order by folio_id, currency",
+    )
     .bind(&ids)
     .fetch_all(&mut **tx)
     .await?;
@@ -310,35 +356,30 @@ pub async fn folios_for(tx: &mut Tx, query: FolioQuery) -> Result<Vec<FolioView>
             payments_by_folio.entry(folio).or_default().push(payment);
         }
     }
+    let mut balances_by_folio: HashMap<Uuid, Vec<Balance>> = HashMap::new();
+    for (folio, currency, amount, base_amount) in sums {
+        balances_by_folio.entry(folio).or_default().push(Balance { currency, amount, base_amount });
+    }
 
-    folios
+    Ok(folios
         .into_iter()
         .map(|folio| {
-            let lines = lines_by_folio.remove(&folio.id).unwrap_or_default();
-            let payments = payments_by_folio.remove(&folio.id).unwrap_or_default();
-            let balances = balances(&lines, &payments)?;
-            Ok(FolioView { folio, lines, payments, balances })
+            let lines_omitted = omitted(&folio);
+            let (lines, lines_cut) = newest_first(lines_by_folio.remove(&folio.id).unwrap_or_default(), cap);
+            let (payments, payments_cut) = newest_first(payments_by_folio.remove(&folio.id).unwrap_or_default(), cap);
+            let balances = balances_by_folio.remove(&folio.id).unwrap_or_default();
+            FolioView { folio, lines, payments, balances, lines_omitted, truncated: lines_cut || payments_cut }
         })
-        .collect()
+        .collect())
 }
 
-/// Charges less payments per currency, by currency code.
-fn balances(lines: &[LineWithTaxes], payments: &[PaymentRow]) -> Result<Vec<Balance>, FolioError> {
-    let mut sums: BTreeMap<&str, (i128, i128)> = BTreeMap::new();
-    for line in lines {
-        let sum = sums.entry(line.line.currency.as_str()).or_default();
-        sum.0 += i128::from(line.line.total);
-        sum.1 += i128::from(line.line.base_total);
+/// `rows`, read newest first and up to one past `cap`, oldest first and within `cap`, and whether any were cut.
+fn newest_first<T>(mut rows: Vec<T>, cap: Option<i64>) -> (Vec<T>, bool) {
+    let cap = cap.and_then(|cap| usize::try_from(cap).ok());
+    let cut = cap.is_some_and(|cap| rows.len() > cap);
+    if let Some(cap) = cap {
+        rows.truncate(cap);
     }
-    for payment in payments {
-        let sum = sums.entry(payment.currency.as_str()).or_default();
-        sum.0 -= i128::from(payment.amount);
-        sum.1 -= i128::from(payment.base_amount);
-    }
-    let fit = |value: i128| i64::try_from(value).map_err(|_| FolioError::Invalid("the balance is too large".into()));
-    sums.into_iter()
-        .map(|(currency, (amount, base))| {
-            Ok(Balance { currency: currency.to_owned(), amount: fit(amount)?, base_amount: fit(base)? })
-        })
-        .collect()
+    rows.reverse();
+    (rows, cut)
 }
