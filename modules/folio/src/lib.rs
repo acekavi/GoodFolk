@@ -31,8 +31,10 @@
 //! already checked in by then, the deposit is stranded on the deposit folio: it stays refundable there, and staff can
 //! move it on.
 //!
-//! A line on the folio of an account the reservation is no longer billed to can't be transferred back to the stay;
-//! reverse it and post a manual charge instead.
+//! A charge to account is undone by moving its account line back to the folio whose payment charged it, which is
+//! always allowed: whatever that folio's kind, and even once the reservation is cancelled or billed to another
+//! account. Any other line on the folio of an account the reservation is no longer billed to can't be transferred
+//! to the stay; reverse it and post a manual charge instead.
 //!
 //! A POS bill ([`post_pos_bill`]) is posted once per outlet and bill number: a replay of the same body returns the
 //! bill first posted, and a different body under that number is a `Conflict`. A bill to an in-house stay posts each

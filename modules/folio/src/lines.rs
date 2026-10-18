@@ -418,7 +418,9 @@ pub async fn reverse(
 /// `NotFound` unless the line is on `from_folio`, checked before anything is written. Locks both folios in ascending
 /// id order. Both must be in `property` (`NotFound` otherwise) and open
 /// (`Conflict`). A guest folio exchanges lines with its reservation's deposit folio, its reservation's account folio,
-/// and any other stay's guest folio in the property (`Invalid` otherwise). The line must be neither a reversal
+/// and any other stay's guest folio in the property (`Invalid` otherwise). The account's line of a charge to account
+/// always moves back to the folio whose payment charged it, even a deposit folio, or after the reservation's account
+/// has changed or the reservation was cancelled. The line must be neither a reversal
 /// (`Invalid`) nor already reversed or transferred (`Conflict`). Audited as `folio.line_transferred`; queues both
 /// folios' keys. Returns the reversal and the new line.
 #[allow(clippy::too_many_arguments)]
@@ -451,16 +453,16 @@ pub async fn transfer(
     let locked = lock_folios(tx, property, &[from_folio, to_folio]).await?;
     let source = locked.iter().find(|folio| folio.id == from_folio).ok_or(FolioError::NotFound("line"))?;
     let target = locked.iter().find(|folio| folio.id == to_folio).ok_or(FolioError::NotFound("folio"))?;
-    if !may_transfer(tx, source, target).await? {
-        return Err(FolioError::Invalid(
-            "a stay's line moves only to its reservation's deposit or account folio, or to another stay's folio".into(),
-        ));
-    }
     let original: LineRow =
         sqlx::query_as(sqlx::AssertSqlSafe(format!("select {LINE_COLUMNS} from folio_line where id = $1")))
             .bind(from_line)
             .fetch_one(&mut **tx)
             .await?;
+    if !moves_back_to_payer(tx, &original, to_folio).await? && !may_transfer(tx, source, target).await? {
+        return Err(FolioError::Invalid(
+            "a stay's line moves only to its reservation's deposit or account folio, or to another stay's folio".into(),
+        ));
+    }
     check_reversible(tx, &original).await?;
     check_open(source)?;
     check_open(target)?;
@@ -499,6 +501,22 @@ async fn check_reversible(tx: &mut Tx, line: &LineRow) -> Result<(), FolioError>
         return Err(FolioError::Conflict("the line has already been reversed or moved".into()));
     }
     Ok(())
+}
+
+/// Whether `line` is the account's line of a charge to account and `to_folio` the folio whose payment charged it:
+/// the undo of a charge to account, allowed whatever that folio's kind and whatever account the reservation is
+/// billed to now.
+async fn moves_back_to_payer(tx: &mut Tx, line: &LineRow, to_folio: Uuid) -> Result<bool, sqlx::Error> {
+    let Some(transfer_id) = line.transfer_id else {
+        return Ok(false);
+    };
+    sqlx::query_scalar(
+        "select exists (select 1 from payment where transfer_id = $1 and method = 'account' and folio_id = $2)",
+    )
+    .bind(transfer_id)
+    .bind(to_folio)
+    .fetch_one(&mut **tx)
+    .await
 }
 
 /// Whether a line may move between the folios `a` and `b` (in either direction), which are in one property.

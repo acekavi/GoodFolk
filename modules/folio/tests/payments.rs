@@ -348,6 +348,102 @@ async fn a_charge_to_account_credits_the_stay_and_charges_the_account_untaxed(
     );
 }
 
+/// The account's line of the charge to account `paid`.
+async fn account_line(hotel: &Hotel, paid: &PaymentRow) -> folio::LineRow {
+    let account_folio: Uuid =
+        sqlx::query_scalar("select folio_id from folio_line where transfer_id = $1 and folio_id <> $2")
+            .bind(paid.transfer_id)
+            .bind(paid.folio_id)
+            .fetch_one(&mut *hotel.tx().await)
+            .await
+            .unwrap();
+    hotel.view(account_folio).await.lines.pop().expect("the account's line").line
+}
+
+/// Moves `line` to `to_folio`, committed if it succeeds.
+async fn move_line(hotel: &Hotel, line: &folio::LineRow, to_folio: Uuid) -> Result<(), FolioError> {
+    let mut tx = hotel.tx().await;
+    folio::transfer(
+        &mut tx,
+        hotel.tenant,
+        None,
+        hotel.property,
+        line.folio_id,
+        line.id,
+        to_folio,
+        "Charged by mistake",
+    )
+    .await?;
+    tx.commit().await.unwrap();
+    Ok(())
+}
+
+fn settled(view: &FolioView) -> bool {
+    view.balances.iter().all(|balance| balance.amount == 0 && balance.base_amount == 0)
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_deposit_charged_to_account_moves_back_after_the_reservation_is_cancelled(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts).await;
+    let acme = hotel.account().await;
+    let booking = hotel.book(Some(acme)).await;
+    let paid = hotel.pay(booking.deposit, Method::Account, 7_500, "LKR", None).await.unwrap();
+    let line = account_line(&hotel, &paid).await;
+    let mut tx = hotel.tx().await;
+    sqlx::query(
+        "update reservation_room set status = 'cancelled', cancelled_at = now(), cancellation_penalty = 0
+             where reservation_id = $1",
+    )
+    .bind(booking.id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    move_line(&hotel, &line, booking.deposit).await.unwrap();
+
+    assert!(settled(&hotel.view(booking.deposit).await), "the deposit folio nets to zero");
+    assert!(settled(&hotel.view(line.folio_id).await), "the account folio nets to zero");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_charge_to_account_moves_back_after_the_reservation_changes_account(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts).await;
+    let (acme, globex) = (hotel.account().await, hotel.account().await);
+    let booking = hotel.book(Some(acme)).await;
+    let guest = booking.guests[0];
+    let spa = hotel.post(guest, hotel.charge(Source::Manual, "misc", 10_000, "LKR")).await.unwrap();
+    let paid = hotel.pay(guest, Method::Account, spa.total, "LKR", None).await.unwrap();
+    let line = account_line(&hotel, &paid).await;
+    let mut tx = hotel.tx().await;
+    sqlx::query("update reservation set account_id = $2 where id = $1")
+        .bind(booking.id)
+        .bind(globex)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    move_line(&hotel, &line, guest).await.unwrap();
+
+    assert!(settled(&hotel.view(line.folio_id).await), "Acme's folio nets to zero");
+    assert_eq!(
+        hotel.view(guest).await.balances,
+        vec![Balance { currency: "LKR".into(), amount: spa.total, base_amount: spa.base_total }],
+        "the stay owes the spa again"
+    );
+    // Only back to the folio that paid: Acme's line can't go to the reservation's deposit folio.
+    let other = hotel.post(line.folio_id, hotel.charge(Source::Manual, "misc", 100, "LKR")).await.unwrap();
+    let refused = move_line(&hotel, &other, guest).await;
+    assert!(matches!(refused, Err(FolioError::Invalid(_))), "{refused:?}");
+}
+
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn only_a_reservation_billed_to_an_account_charges_it(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;
