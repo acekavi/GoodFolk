@@ -106,6 +106,50 @@ pub async fn rate_for(tx: &mut Tx, property: Uuid, currency: &str, on: Date) -> 
     Ok(row.map(|(rate, date, source_date)| Rate { rate, date, source_date }))
 }
 
+/// One stored rate, as the exchange-rate settings list it.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct RateRow {
+    pub date: Date,
+    pub currency: String,
+    /// Base currency per one unit of `currency`.
+    pub rate: Decimal,
+    /// `cbsl` or `manual`.
+    pub source: String,
+    pub source_date: Date,
+    /// Who overrode it, for a manual rate.
+    pub set_by: Option<Uuid>,
+    pub set_at: time::OffsetDateTime,
+}
+
+/// The property's stored rates dated in `[from, to)`, by date then currency.
+pub async fn list_rates(tx: &mut Tx, property: Uuid, from: Date, to: Date) -> Result<Vec<RateRow>, sqlx::Error> {
+    sqlx::query_as(
+        "select date, currency::text as currency, rate_to_base as rate, source, source_date, set_by, set_at
+         from fx_rate where property_id = $1 and date >= $2 and date < $3
+         order by date, currency",
+    )
+    .bind(property)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&mut **tx)
+    .await
+}
+
+/// Why the last import left the property without complete, current rates.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct Alert {
+    pub message: String,
+    pub raised_at: time::OffsetDateTime,
+}
+
+/// The property's exchange-rate alert, until an import brings every rate it needs.
+pub async fn alert(tx: &mut Tx, property: Uuid) -> Result<Option<Alert>, sqlx::Error> {
+    sqlx::query_as("select message, raised_at from fx_alert where property_id = $1")
+        .bind(property)
+        .fetch_optional(&mut **tx)
+        .await
+}
+
 /// Overrides the rate of `currency` for `date`, for a staff member who knows better than the bank. Replaces an
 /// imported or earlier manual rate for that day, and a later import does not undo it. Audited as `fx.overridden`.
 pub async fn set_manual(

@@ -58,6 +58,8 @@ export default defineConfig({
 				MEDIA_SVC_URL: `http://localhost:${MEDIA_PORT}`,
 				PUSH_ENDPOINT_MEDIA_PROCESS: `http://localhost:${MEDIA_PORT}/work`,
 				PUSH_ENDPOINT_INVOICE_RENDER: `http://localhost:${MEDIA_PORT}/render`,
+				// Never fetch from the Central Bank in tests: the suite seeds its own exchange rates.
+				FX_IMPORT: 'off',
 				RUST_LOG: 'warn'
 			},
 			reuseExistingServer: !process.env.CI,

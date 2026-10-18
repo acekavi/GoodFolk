@@ -280,7 +280,7 @@ pub async fn create_reservation(
 
     if input.account_id.is_some() {
         let routed = folio::DEFAULT_ROUTING.map(String::from);
-        folio::set_routing(tx, tenant, Some(actor), id, &routed).await?;
+        folio::set_routing(tx, tenant, Some(actor), property, id, &routed).await?;
     }
 
     let assigned: serde_json::Map<String, serde_json::Value> =

@@ -45,12 +45,13 @@ impl Changes for UpdatePropertyRequest {
     }
 }
 
-fn property_error(err: PropertyError) -> ApiError {
+pub(crate) fn property_error(err: PropertyError) -> ApiError {
     match err {
         PropertyError::CodeTaken => ApiError::conflict(err.to_string()),
         PropertyError::UnknownTimezone => ApiError::unprocessable(err.to_string()),
         PropertyError::NotFound => ApiError::not_found(err.to_string()),
         PropertyError::VersionMismatch => ApiError::precondition_failed(err.to_string()),
+        PropertyError::Invalid(message) => ApiError::unprocessable(message),
         PropertyError::Database(db_err) => db_err.into(),
     }
 }

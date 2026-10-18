@@ -21,13 +21,14 @@ struct Stay {
 }
 
 /// Routes `categories` of the reservation's stays to its account's folio, replacing its rules; an empty list routes
-/// nothing. Each category must be one a line can carry (`Invalid`), and a reservation without an account can route
-/// nothing (`Invalid`). Locks the reservation row, which every reservation-room command takes last. Audited as
-/// `reservation.routing_set`; queues the reservation's key.
+/// nothing. The reservation must be in `property` (`NotFound`). Each category must be one a line can carry
+/// (`Invalid`), and a reservation without an account can route nothing (`Invalid`). Locks the reservation row, which
+/// every reservation-room command takes last. Audited as `reservation.routing_set`; queues the reservation's key.
 pub async fn set_routing(
     tx: &mut Tx,
     tenant: TenantId,
     user: Option<UserId>,
+    property: Uuid,
     reservation: Uuid,
     categories: &[String],
 ) -> Result<(), FolioError> {
@@ -35,9 +36,10 @@ pub async fn set_routing(
         check_category(category)?;
     }
     let categories: Vec<&str> = categories.iter().map(String::as_str).collect::<BTreeSet<_>>().into_iter().collect();
-    let (property, account): (Uuid, Option<Uuid>) =
-        sqlx::query_as("select property_id, account_id from reservation where id = $1 for update")
+    let account: Option<Uuid> =
+        sqlx::query_scalar("select account_id from reservation where id = $1 and property_id = $2 for update")
             .bind(reservation)
+            .bind(property)
             .fetch_optional(&mut **tx)
             .await?
             .ok_or(FolioError::NotFound("reservation"))?;

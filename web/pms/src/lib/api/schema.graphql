@@ -39,6 +39,15 @@ type AccountRefNode {
 	kind: AccountKind!
 }
 
+"""
+What a folio holds in one currency: charges less payments, and the same in the base currency.
+"""
+type BalanceNode {
+	currency: String!
+	amount: Int!
+	baseAmount: Int!
+}
+
 type BedNode {
 	kind: String!
 	count: Int!
@@ -173,6 +182,109 @@ enum DocumentKind {
 }
 
 """
+Whose charges a folio holds: one stay's, an account's (the city ledger) or a reservation's deposits.
+"""
+enum FolioKind {
+	GUEST
+	ACCOUNT
+	DEPOSIT
+}
+
+"""
+A charge on a folio. Lines never change: a correction is a reversal (`reverses`) or a transfer (`transferId`).
+Amounts are minor units of `currency`; `baseTotal` is in the property's base currency at `rate`.
+"""
+type FolioLineNode {
+	id: UUID!
+	source: LineSource!
+	category: String!
+	description: String!
+	quantity: Int!
+	"""
+	Before taxes.
+	"""
+	net: Int!
+	"""
+	Net plus the on-bill taxes.
+	"""
+	total: Int!
+	currency: String!
+	baseTotal: Int!
+	"""
+	Base currency per one unit of `currency`, as a decimal string.
+	"""
+	rate: String!
+	"""
+	The date the rate was published.
+	"""
+	rateDate: Date!
+	businessDate: Date!
+	postingKey: String
+	"""
+	The line this one reverses.
+	"""
+	reverses: UUID
+	reason: String
+	"""
+	Shared by the two lines of a transfer, and by a charge to account's line and payment.
+	"""
+	transferId: UUID
+	postedBy: UUID
+	postedAt: DateTime!
+	"""
+	By code.
+	"""
+	taxes: [LineTaxNode!]!
+}
+
+type FolioNode {
+	id: UUID!
+	kind: FolioKind!
+	status: FolioStatus!
+	"""
+	A guest folio's stay.
+	"""
+	reservationRoomId: UUID
+	"""
+	A deposit folio's reservation.
+	"""
+	reservationId: UUID
+	"""
+	An account folio's account.
+	"""
+	accountId: UUID
+	createdAt: DateTime!
+	"""
+	Moves when the folio is invoiced or reopened.
+	"""
+	version: Int!
+	"""
+	Oldest first.
+	"""
+	lines: [FolioLineNode!]!
+	"""
+	Oldest first.
+	"""
+	payments: [PaymentNode!]!
+	"""
+	One per currency the folio has lines or payments in, by currency code.
+	"""
+	balances: [BalanceNode!]!
+	"""
+	Oldest first.
+	"""
+	invoices: [InvoiceNode!]!
+}
+
+"""
+An invoiced folio takes no lines or payments until a credit note reopens it.
+"""
+enum FolioStatus {
+	OPEN
+	INVOICED
+}
+
+"""
 A room a stay could be assigned.
 """
 type FreeRoomNode {
@@ -182,6 +294,39 @@ type FreeRoomNode {
 	The housekeeping section's name.
 	"""
 	section: String
+}
+
+"""
+Why the last exchange-rate import left the property without complete, current rates; shown until one does.
+"""
+type FxAlertNode {
+	message: String!
+	raisedAt: DateTime!
+}
+
+"""
+A stored exchange rate: base currency per one unit of `currency`, in force from `date` until the next one.
+"""
+type FxRateNode {
+	date: Date!
+	currency: String!
+	"""
+	A decimal string, such as `"301.250000"`.
+	"""
+	rate: String!
+	"""
+	`cbsl` (the Central Bank's TT selling rate) or `manual`.
+	"""
+	source: String!
+	"""
+	The day the source published it: earlier than `date` over a weekend or holiday.
+	"""
+	sourceDate: Date!
+	"""
+	Who set a manual rate.
+	"""
+	setBy: UUID
+	setAt: DateTime!
 }
 
 """
@@ -267,6 +412,31 @@ type InventoryDayNode {
 	sellable: Int!
 }
 
+enum InvoiceKind {
+	INVOICE
+	CREDIT_NOTE
+}
+
+"""
+An invoice or credit note. Its PDF is reached only through the audited REST link, once `pdfReady`.
+"""
+type InvoiceNode {
+	id: UUID!
+	kind: InvoiceKind!
+	serial: String!
+	"""
+	Whole rupees; negative for a credit note.
+	"""
+	totalLkr: Int!
+	issuedAt: DateTime!
+	issuedBy: UUID
+	"""
+	The invoice a credit note credits.
+	"""
+	credits: UUID
+	pdfReady: Boolean!
+}
+
 """
 How urgent a room issue is.
 """
@@ -288,6 +458,34 @@ enum IssueStatus {
 A scalar that can represent any JSON value.
 """
 scalar JSON
+
+"""
+What posted a line.
+"""
+enum LineSource {
+	ROOM
+	MEAL_PLAN
+	LAUNDRY
+	POS
+	MANUAL
+	CANCELLATION_FEE
+	NO_SHOW_FEE
+	ADJUSTMENT
+}
+
+"""
+One tax, levy or service charge of a line, as calculated when it was posted. Amounts are minor units of the
+line's currency.
+"""
+type LineTaxNode {
+	code: String!
+	name: String!
+	kind: TaxKind!
+	rateBp: Int!
+	base: Int!
+	amount: Int!
+	presentation: TaxPresentation!
+}
 
 enum MealPlan {
 	RO
@@ -376,12 +574,58 @@ type OfferNode {
 	nights: [QuoteNightNode!]!
 }
 
+"""
+A POS outlet. Its bills' category is `pos:<code>`.
+"""
+type OutletNode {
+	id: UUID!
+	code: String!
+	name: String!
+	"""
+	Whether the property's service charge applies to the outlet's bills.
+	"""
+	serviceCharge: Boolean!
+	active: Boolean!
+	version: Int!
+}
+
 type PageInfo {
 	"""
 	Pass as `after` for the next page; `null` on an empty page.
 	"""
 	endCursor: String
 	hasNextPage: Boolean!
+}
+
+"""
+A payment on a folio: positive when taken, negative for a refund (`refundOf`). Amounts are minor units of
+`currency`; `baseAmount` is in the property's base currency.
+"""
+type PaymentNode {
+	id: UUID!
+	"""
+	`cash`, `card_terminal`, `bank_transfer`, `account` or `transfer` (a credit moving between two folios).
+	"""
+	method: String!
+	amount: Int!
+	currency: String!
+	baseAmount: Int!
+	"""
+	Base currency per one unit of `currency`, as a decimal string.
+	"""
+	rate: String!
+	rateDate: Date!
+	"""
+	A card's `approval`, `brand` and `last4`, a bank transfer's `reference`, a refund's `reason`, or a transfer's
+	`to_folio` / `from_folio`.
+	"""
+	details: JSON!
+	evidence: String
+	refundOf: UUID
+	businessDate: Date!
+	transferId: UUID
+	takenBy: UUID
+	takenAt: DateTime!
 }
 
 enum PenaltyKind {
@@ -573,6 +817,36 @@ type Query {
 	the property. Links to the files come only from the audited REST call.
 	"""
 	guestDocuments(propertyId: UUID!, guestId: UUID!): [GuestDocumentNode!]!
+	"""
+	The folios of one reservation, stay or account in the property; name exactly one of `reservationId`,
+	`reservationRoomId` and `accountId`. A reservation's are its deposit folio, each stay's guest folio and its
+	account's folio, in that order. The account folio is the account's whole city ledger in the property, charges
+	from every reservation billed to it included, as any staff member with `FolioView` may see. Lines (with their
+	taxes), payments and invoices of every folio are read at once, whatever the number of folios.
+	"""
+	folios(propertyId: UUID!, reservationId: UUID, reservationRoomId: UUID, accountId: UUID): [FolioNode!]!
+	"""
+	The property's tax rules, ended or not, in calculation order then by start date.
+	"""
+	taxRules(propertyId: UUID!): [TaxRuleNode!]!
+	"""
+	The property's POS outlets, active or not, by code.
+	"""
+	outlets(propertyId: UUID!): [OutletNode!]!
+	"""
+	The property's stored exchange rates dated in `[from, to)` (1 to 366 days), by date then currency. A rate is
+	in force from its date until the next one.
+	"""
+	fxRates(propertyId: UUID!, from: Date!, to: Date!): [FxRateNode!]!
+	"""
+	Why the last exchange-rate import left the property without complete, current rates; `null` when all is well.
+	"""
+	fxAlert(propertyId: UUID!): FxAlertNode
+	"""
+	The property's tax settings: VAT registration, TIN, the small-turnover levy band, the invoice name and
+	address, and the accepted currencies.
+	"""
+	propertyTaxSettings(propertyId: UUID!): TaxSettingsNode!
 }
 
 type QuoteNightNode {
@@ -1020,6 +1294,78 @@ type TapeWindowNode {
 	By room, then start.
 	"""
 	blocks: [TapeBlockNode!]!
+}
+
+enum TaxKind {
+	TAX
+	LEVY
+	SERVICE_CHARGE
+}
+
+"""
+`ON_BILL` taxes are added to the line's total; `ABSORBED` ones are calculated but borne by the property.
+"""
+enum TaxPresentation {
+	ON_BILL
+	ABSORBED
+}
+
+"""
+A tax, levy or service charge of the property, in force over `[effectiveFrom, effectiveTo)`.
+"""
+type TaxRuleNode {
+	id: UUID!
+	code: String!
+	name: String!
+	kind: TaxKind!
+	"""
+	Basis points: 1000 is 10%.
+	"""
+	rateBp: Int!
+	"""
+	`*`, `room`, `meal_plan`, `laundry`, `misc`, `fee`, `pos:*` or `pos:<OUTLET>`.
+	"""
+	appliesTo: [String!]!
+	"""
+	`net` and the codes of rules calculated earlier.
+	"""
+	base: [String!]!
+	sequence: Int!
+	presentation: TaxPresentation!
+	"""
+	`{"type": "always"}`, `{"type": "vat_registered"}`, `{"type": "residency", "resident": true}` or
+	`{"type": "payment_currency", "currencies": ["USD"]}`.
+	"""
+	condition: JSON!
+	effectiveFrom: Date!
+	"""
+	The first day the rule no longer applies; `null` while open-ended.
+	"""
+	effectiveTo: Date
+	version: Int!
+}
+
+"""
+What the property's invoices and taxes depend on.
+"""
+type TaxSettingsNode {
+	vatRegistered: Boolean!
+	tin: String
+	"""
+	The tourism development levy's small-turnover band, used when the preset is applied.
+	"""
+	tdlSmallTurnover: Boolean!
+	"""
+	The supplier's name on invoices; the property's name when `null`.
+	"""
+	legalName: String
+	address: String
+	baseCurrency: String!
+	acceptedCurrencies: [String!]!
+	"""
+	The property's version: send it as `If-Match` when updating.
+	"""
+	version: Int!
 }
 
 type TotalNode {

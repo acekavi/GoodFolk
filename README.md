@@ -327,6 +327,7 @@ The API (`core-api serve`) reads:
 | `GUEST_ID_KEY_ID` | Name stored with each encrypted ID number: 1–16 letters, digits, `_` or `-` (default `k1`). |
 | `GUEST_ID_RETIRED_KEYS` | Optional, for rotation: `id1:base64,id2:base64`, one or more retired keys that can still open ID numbers sealed under them, even though `GUEST_ID_KEY`/`GUEST_ID_KEY_ID` no longer seals with them. To rotate, add the current key here under its existing id, set `GUEST_ID_KEY`/`GUEST_ID_KEY_ID` to a new key and id, and restart; re-encrypting already-stored numbers under the new key is not automatic. |
 | `APP_ENV` | `production` sets `Secure` cookies, disables GraphQL introspection and requires `DATABASE_LISTEN_URL`. |
+| `FX_IMPORT` | `on` (default) or `off`: whether `serve` imports the Central Bank's exchange rates, once at start-up and then daily from 10:30 `Asia/Colombo` (checking hourly, under an advisory lock so one instance imports). An operations switch, allowed in production too: with `off`, rates are set by hand (`PUT …/fx-rates/{date}/{currency}`). The end-to-end suite sets `off`. |
 
 `core-api migrate` reads `DATABASE_OWNER_URL` (the schema owner) instead.
 

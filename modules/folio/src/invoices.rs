@@ -22,7 +22,9 @@ use crate::lines::violates;
 use crate::words::lkr_in_words;
 use crate::{FolioError, audit, folio_key, notify, reason};
 use db::{TenantId, Tx, UserId};
-use media_types::{InvoiceData, InvoiceKind, InvoiceLine, InvoicePayment, InvoiceTax, Purchaser, Supplier};
+use media_types::{
+    InvoiceData, InvoiceKind, InvoiceLine, InvoicePayment, InvoiceRenderJob, InvoiceTax, Purchaser, Supplier,
+};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use time::{Date, OffsetDateTime};
@@ -62,6 +64,53 @@ pub struct InvoiceRow {
 
 const INVOICE_COLUMNS: &str =
     "id, property_id, folio_id, kind, serial, credits, reason, data, total_lkr, pdf_key, issued_by, issued_at";
+
+/// What staff see of an invoice or credit note: never its data snapshot or its PDF's object key, which only the
+/// audited link reaches.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow, Serialize, utoipa::ToSchema)]
+pub struct InvoiceSummary {
+    pub id: Uuid,
+    pub folio_id: Uuid,
+    #[sqlx(try_from = "String")]
+    #[schema(value_type = String)]
+    pub kind: InvoiceKind,
+    pub serial: String,
+    /// In whole rupees; negative for a credit note.
+    pub total_lkr: i64,
+    pub issued_at: OffsetDateTime,
+    pub issued_by: Option<Uuid>,
+    /// The invoice a credit note credits.
+    pub credits: Option<Uuid>,
+    /// Whether the PDF has been rendered, so its link can be fetched.
+    pub pdf_ready: bool,
+}
+
+impl From<InvoiceRow> for InvoiceSummary {
+    fn from(row: InvoiceRow) -> Self {
+        Self {
+            id: row.id,
+            folio_id: row.folio_id,
+            kind: row.kind,
+            serial: row.serial,
+            total_lkr: row.total_lkr,
+            issued_at: row.issued_at,
+            issued_by: row.issued_by,
+            credits: row.credits,
+            pdf_ready: row.pdf_key.is_some(),
+        }
+    }
+}
+
+/// The invoices and credit notes of `folios`, oldest first, in one statement.
+pub async fn invoice_summaries(tx: &mut Tx, folios: &[Uuid]) -> Result<Vec<InvoiceSummary>, sqlx::Error> {
+    sqlx::query_as(
+        "select id, folio_id, kind, serial, total_lkr, issued_at, issued_by, credits, pdf_key is not null as pdf_ready
+         from invoice where folio_id = any($1) order by issued_at, id",
+    )
+    .bind(folios)
+    .fetch_all(&mut **tx)
+    .await
+}
 
 /// What an invoice prints of its property.
 #[derive(sqlx::FromRow)]
@@ -153,7 +202,7 @@ pub async fn issue_invoice(
     set_status(tx, folio, FolioStatus::Invoiced).await?;
     let audit_data = serde_json::json!({ "serial": invoice.serial, "folio": folio, "total_lkr": invoice.total_lkr });
     audit(tx, tenant, user, "invoice.issued", "invoice", invoice.id, audit_data).await?;
-    finish(tx, tenant, &invoice, &data).await?;
+    finish(tx, tenant, &invoice, data).await?;
     Ok(invoice)
 }
 
@@ -211,7 +260,7 @@ pub async fn credit_note(
         "total_lkr": note.total_lkr,
     });
     audit(tx, tenant, user, "invoice.credited", "invoice", invoice, audit_data).await?;
-    finish(tx, tenant, &note, &data).await?;
+    finish(tx, tenant, &note, data).await?;
     Ok(note)
 }
 
@@ -521,8 +570,9 @@ async fn set_status(tx: &mut Tx, folio: Uuid, status: FolioStatus) -> Result<(),
 }
 
 /// Queues the render job of `invoice` and its folio's change event.
-async fn finish(tx: &mut Tx, tenant: TenantId, invoice: &InvoiceRow, data: &InvoiceData) -> Result<(), FolioError> {
-    let payload = serde_json::json!({ "tenant_id": tenant.0, "invoice_id": invoice.id, "data": data });
+async fn finish(tx: &mut Tx, tenant: TenantId, invoice: &InvoiceRow, data: InvoiceData) -> Result<(), FolioError> {
+    let job = InvoiceRenderJob { tenant_id: tenant.0, invoice_id: invoice.id, data };
+    let payload = serde_json::to_value(&job).map_err(|err| FolioError::Invalid(err.to_string()))?;
     events::enqueue(tx, INVOICE_RENDER_TOPIC, &payload).await?;
     notify(tx, tenant, invoice.property_id, vec![folio_key(invoice.folio_id)]).await?;
     Ok(())

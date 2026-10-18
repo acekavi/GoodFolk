@@ -42,7 +42,8 @@ async fn serve() -> anyhow::Result<()> {
         Box::pin(async move { media_auth.header().await.map_err(|e| ::events::BusError::Retryable(e.to_string())) })
     });
     let bus = ::events::bus_from_env(&[::media::PROCESS_TOPIC, ::folio::INVOICE_RENDER_TOPIC], Some(push_auth))?;
-    let sweep_lock: PgConnectOptions =
+    // The sweep's and the import's advisory locks are session locks, so each is taken on a direct connection.
+    let lock_connect: PgConnectOptions =
         config.database_listen_url.parse().context("DATABASE_LISTEN_URL is not a connection string")?;
     // One direct connection, kept open, used only for LISTEN (and to reconnect it).
     let listen_pool = PgPoolOptions::new()
@@ -56,14 +57,29 @@ async fn serve() -> anyhow::Result<()> {
 
     let shutdown = CancellationToken::new();
     let relay = tokio::spawn(::events::run_relay(pool.clone(), bus, outbox_wake, shutdown.clone()));
-    let sweeps = tokio::spawn(tasks::run_sweeps(pool, sweep_lock, storage, shutdown.clone()));
+    let fx_imports = if config.fx_import {
+        let source = Arc::new(fx::Cbsl::new()?);
+        Some(tokio::spawn(tasks::run_fx_imports(pool.clone(), lock_connect.clone(), source, shutdown.clone())))
+    } else {
+        tracing::warn!("FX_IMPORT=off: exchange rates are not imported; set them by hand");
+        None
+    };
+    let sweeps = tokio::spawn(tasks::run_sweeps(pool, lock_connect, storage, shutdown.clone()));
 
     let tcp = tokio::net::TcpListener::bind(config.bind_addr).await?;
     tracing::info!(addr = %config.bind_addr, "listening");
     let served =
         axum::serve(core_api::without_nagle(tcp), router(state)).with_graceful_shutdown(shutdown_signal()).await;
     shutdown.cancel();
-    if tokio::time::timeout(TASKS_GRACE, async { tokio::join!(relay, sweeps) }).await.is_err() {
+    let stopped = async {
+        let fx_imports = async {
+            if let Some(task) = fx_imports {
+                let _ = task.await;
+            }
+        };
+        tokio::join!(relay, sweeps, fx_imports)
+    };
+    if tokio::time::timeout(TASKS_GRACE, stopped).await.is_err() {
         tracing::warn!("background tasks did not stop in time");
     }
     served?;

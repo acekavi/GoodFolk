@@ -233,7 +233,7 @@ impl Hotel {
     pub async fn route(&self, reservation: Uuid, categories: &[&str]) -> Result<(), FolioError> {
         let categories: Vec<String> = categories.iter().map(|category| (*category).to_owned()).collect();
         let mut tx = self.tx().await;
-        folio::set_routing(&mut tx, self.tenant, Some(self.user), reservation, &categories).await?;
+        folio::set_routing(&mut tx, self.tenant, Some(self.user), self.property, reservation, &categories).await?;
         tx.commit().await.unwrap();
         Ok(())
     }

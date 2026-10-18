@@ -42,6 +42,9 @@
 //! freezes the folio: every money path refuses an invoiced folio until a credit note ([`credit_note`]) reopens it.
 //! Each queues an `invoice-render` job carrying its [`media_types::InvoiceData`] snapshot; media-svc renders the PDF,
 //! whose key arrives through [`set_invoice_pdf`].
+//!
+//! A property's tax rules change through [`create_tax_rule`], [`update_tax_rule`], [`end_tax_rule`] and
+//! [`apply_preset`], each checked against the whole resulting rule set with `tax::validate`.
 
 mod folios;
 mod invoices;
@@ -57,7 +60,10 @@ pub use folios::{
     Balance, FolioKind, FolioQuery, FolioRow, FolioStatus, FolioView, LineTax, LineWithTaxes, PaymentRow,
     ensure_account_folio, ensure_deposit_folio, ensure_guest_folio, folios_for,
 };
-pub use invoices::{INVOICE_RENDER_TOPIC, InvoiceRow, credit_note, invoice_link_key, issue_invoice, set_invoice_pdf};
+pub use invoices::{
+    INVOICE_RENDER_TOPIC, InvoiceRow, InvoiceSummary, credit_note, invoice_link_key, invoice_summaries, issue_invoice,
+    set_invoice_pdf,
+};
 pub use lines::{LineRow, NewCharge, post_charge, reverse, transfer};
 pub use payments::{Method, move_deposit, post_cancellation_fee, refund, take_payment, undo_deposit_move};
 pub use pos::{
@@ -66,7 +72,10 @@ pub use pos::{
 };
 pub use posting::{PostReport, post_business_date_charges, post_unposted_nights, reverse_released_nights};
 pub use routing::{DEFAULT_ROUTING, follow_account_change, post_for_stay, set_routing};
-pub use rules::load_rules;
+pub use rules::{
+    PresetApplied, TaxRuleChanges, TaxRuleRow, apply_preset, create_tax_rule, end_tax_rule, list_tax_rules, load_rules,
+    update_tax_rule,
+};
 pub use words::lkr_in_words;
 
 use db::{Event, TenantId, Tx, UserId};
