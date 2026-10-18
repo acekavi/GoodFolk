@@ -93,7 +93,8 @@ async fn definer_functions_search_pg_temp_last(pool: PgPool) {
 }
 
 /// Money rows are append-only (`migrations/0020_folio.sql`): the application role holds no update or delete on a line,
-/// a line's taxes or a payment, and may change an invoice only by recording where its PDF is stored.
+/// a line's taxes or a payment, and may change an invoice only by recording where its PDF is stored. A folio changes
+/// only its status and version, and is never deleted (`0029`).
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn the_app_role_cannot_rewrite_money_rows(_: PgPoolOptions, opts: PgConnectOptions) {
     let pool = app_pool(opts, 1).await;
@@ -146,6 +147,11 @@ async fn the_app_role_cannot_rewrite_money_rows(_: PgPoolOptions, opts: PgConnec
     .await
     .unwrap();
     assert_eq!(folio_updatable, ["status", "version"]);
+    let folio_deletable: bool = sqlx::query_scalar("select has_table_privilege('goodfolk_app', 'folio', 'DELETE')")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(!folio_deletable, "goodfolk_app can delete a folio");
     for table in ["folio_line", "folio_line_tax", "payment"] {
         let columns: i64 = sqlx::query_scalar(
             "select count(*) from pg_attribute a
