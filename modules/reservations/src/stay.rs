@@ -19,6 +19,12 @@ pub struct CheckInOverride {
 /// The longest override reason.
 pub const MAX_OVERRIDE_REASON: usize = 500;
 
+/// The reason on the reversal of a night an early check-out releases.
+const NIGHT_RELEASED: &str = "Night released at early check-out";
+
+/// The reason on the reversal of the night posted for a stay whose check-in is undone.
+const CHECK_IN_UNDONE: &str = "Check-in undone";
+
 /// A room after [`check_in`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct CheckedIn {
@@ -194,8 +200,10 @@ pub async fn check_in(
 /// `checked_in_at` and `checked_in_business_date` and puts the room back to the condition it had before the
 /// check-in (`clean` for a stay checked in before that was recorded), locking its condition after this row;
 /// bumps both versions, audits `reservation_room.check_in_undone` (with the restored condition) and notifies as
-/// [`check_in`] does, plus the housekeeping board. A deposit the check-in moved to this stay goes back to the
-/// deposit folio ([`folio::undo_deposit_move`]).
+/// [`check_in`] does, plus the housekeeping board. The lines already posted for the check-in date's night are
+/// reversed ("Check-in undone", [`folio::reverse_released_nights`]; one on an invoiced folio is a `Conflict`), then a
+/// deposit the check-in moved to this stay goes back to the deposit folio ([`folio::undo_deposit_move`]). The stay's
+/// folios are locked together first ([`folio::lock_stay_folios`]), after the room's condition.
 pub async fn undo_check_in(
     tx: &mut Tx,
     tenant: TenantId,
@@ -245,6 +253,11 @@ pub async fn undo_check_in(
     .fetch_one(&mut **tx)
     .await?;
     // After this row and the room's condition, before the reservation: the folios sit between them in the lock order.
+    // The night the check-in posted (tonight's, if charges were posted) is reversed first, so the stay's credit, and
+    // with it the deposit moved back, is whole again.
+    let tonight = [today];
+    folio::lock_stay_folios(tx, tenant, property, id, &tonight).await?;
+    folio::reverse_released_nights(tx, tenant, Some(actor), property, id, &tonight, CHECK_IN_UNDONE).await?;
     folio::undo_deposit_move(tx, tenant, Some(actor), property, id).await?;
     sqlx::query("update reservation set version = version + 1 where id = $1")
         .bind(reservation_id)
@@ -275,8 +288,8 @@ pub async fn undo_check_in(
 /// this resolves).
 ///
 /// Then every night the stay keeps before `min(check-out, business date + 1)` whose charges are not yet posted is
-/// posted ([`folio::post_unposted_nights`], locking the stay's folios after the inventory days), so no night is
-/// missed; that needs a rate for the stay's currency on each such night (`Conflict`). The lines already posted for
+/// posted ([`folio::post_unposted_nights`]), so no night is missed, having first locked every folio it and the
+/// reversals below touch, together and in id order, after the inventory days ([`folio::lock_stay_folios`]); that needs a rate for the stay's currency on each such night (`Conflict`). The lines already posted for
 /// the released nights are reversed ([`folio::reverse_released_nights`]); one on an invoiced folio is a `Conflict`.
 ///
 /// Sets the room's condition to `dirty` (locking `room_condition` after this row, bumping its version), bumps
@@ -341,10 +354,12 @@ pub async fn check_out(
     // Every night stayed and not yet posted, the business date's own included (the night audit has not posted it
     // yet): after the released nights are gone, before the stay is marked checked out, and after the inventory days
     // in the lock order.
+    // Every folio either touches is locked first, at once, in id order.
     let before = new_check_out.min(today + Duration::days(1));
+    folio::lock_stay_folios(tx, tenant, property, id, &released_nights).await?;
     folio::post_unposted_nights(tx, tenant, Some(actor), id, before).await?;
     if !released_nights.is_empty() {
-        folio::reverse_released_nights(tx, tenant, Some(actor), property, id, &released_nights).await?;
+        folio::reverse_released_nights(tx, tenant, Some(actor), property, id, &released_nights, NIGHT_RELEASED).await?;
     }
 
     let (version, checked_out_at): (i32, OffsetDateTime) = sqlx::query_as(

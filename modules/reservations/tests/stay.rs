@@ -1072,6 +1072,38 @@ async fn undoing_the_first_check_in_returns_the_deposit_for_the_next_one(_: PgPo
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn undoing_a_check_in_reverses_tonights_posted_night_and_returns_the_whole_deposit(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let (hotel, plans) = Hotel::for_booking(opts, 2).await;
+    let (booked, deposit, guests) = two_stays(&hotel, &plans).await;
+    let first = &booked.rooms[0];
+    pay(&hotel, deposit, 5_000).await;
+    let checked_in = hotel.try_check_in(first.id, first.version).await.unwrap();
+    let report =
+        folio::post_business_date_charges(&hotel.pool, hotel.tenant, Some(hotel.user), hotel.property, hotel.day(0))
+            .await
+            .unwrap();
+    assert_eq!((report.stays, report.failures.len()), (1, 0), "tonight's night is posted");
+
+    hotel.try_undo_check_in(first.id, checked_in.version).await.unwrap();
+
+    let lines: Vec<(i64, Option<String>)> =
+        sqlx::query_as("select total, reason from folio_line where folio_id = $1 order by id")
+            .bind(guests[0])
+            .fetch_all(&mut *hotel.tx().await)
+            .await
+            .unwrap();
+    assert_eq!(lines.len(), 2, "tonight's room line and its reversal");
+    assert_eq!(lines[0].0 + lines[1].0, 0);
+    assert_eq!(lines[1].1.as_deref(), Some("Check-in undone"));
+    assert_eq!(balances(&hotel, deposit).await.0, vec![("USD".into(), -5_000)], "the whole deposit is back");
+    let guest_balances = balances(&hotel, guests[0]).await.0;
+    assert!(guest_balances.iter().all(|(_, amount)| *amount == 0), "{guest_balances:?}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn an_undone_then_cancelled_stay_leaves_its_fee_and_deposit_on_the_deposit_folio(
     _: PgPoolOptions,
     opts: PgConnectOptions,

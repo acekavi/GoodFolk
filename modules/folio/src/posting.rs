@@ -2,6 +2,7 @@
 //! every night still unposted. Each charge carries its posting key (`room:<stay>:<date>`, `meal_plan:<stay>:<date>`),
 //! so a night is charged once however often it is posted.
 
+use crate::folios::{ensure_account_folio, ensure_deposit_folio, ensure_guest_folio, lock_folios};
 use crate::lines::{NewCharge, line_by_key};
 use crate::{FolioError, Source, audit, post_for_stay, reverse};
 use db::{Scope, TenantId, Tx, UserId};
@@ -174,28 +175,60 @@ pub async fn post_unposted_nights(
     Ok(counts.lines)
 }
 
-/// The reason on the reversal of a night an early check-out releases.
-const RELEASED_NIGHT: &str = "Night released at early check-out";
-
-/// Reverses the `room` and `meal_plan` lines already posted for `reservation_room`'s `dates`, the nights an early
-/// check-out releases, with the reason "Night released at early check-out", and returns how many it reversed. Lines
-/// are found in `property` by their posting keys; one already reversed (or moved) is left alone. Each reversal is
-/// [`reverse`]'s, on the property's business date, so a line on an invoiced folio is a `Conflict`. Folios are locked
-/// in ascending id order. Check-out calls it, holding the stay's row, after the release and before marking the stay
-/// checked out.
-pub async fn reverse_released_nights(
+/// Locks, once and in ascending id order, every folio that checking `reservation_room` out, or undoing its
+/// check-in, may post to or reverse on: the stay's guest folio, its reservation's deposit folio, the open folio of the
+/// account its routing sends `room` or `meal_plan` to, and the folios holding the lines posted under the stay's room
+/// and meal-plan keys for `dates`. The later postings and reversals then lock nothing new, so a routing change that
+/// has spread the stay's lines over several folios can't deadlock them (`40P01`) against a transfer or another
+/// stay's posting, which lock in the same order. `NotFound` unless the stay is in `property`.
+pub async fn lock_stay_folios(
     tx: &mut Tx,
     tenant: TenantId,
-    user: Option<UserId>,
     property: Uuid,
     reservation_room: Uuid,
     dates: &[Date],
-) -> Result<u32, FolioError> {
+) -> Result<(), FolioError> {
+    let routed: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
+        "select rr.reservation_id,
+                (select rule.account_id from routing_rule rule
+                 where rule.reservation_id = r.id and rule.account_id = r.account_id
+                   and rule.category in ('room', 'meal_plan')
+                 limit 1)
+         from reservation_room rr join reservation r on r.id = rr.reservation_id
+         where rr.id = $1 and rr.property_id = $2",
+    )
+    .bind(reservation_room)
+    .bind(property)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let (reservation, account) = routed.ok_or(FolioError::NotFound("reservation room"))?;
+    let mut ids = vec![
+        ensure_guest_folio(tx, tenant, property, reservation_room).await?,
+        ensure_deposit_folio(tx, tenant, property, reservation).await?,
+    ];
+    if let Some(account) = account {
+        ids.push(ensure_account_folio(tx, tenant, property, account).await?);
+    }
+    ids.extend(posted_lines(tx, property, reservation_room, dates).await?.into_iter().map(|(folio, _)| folio));
+    ids.sort();
+    ids.dedup();
+    lock_folios(tx, property, &ids).await?;
+    Ok(())
+}
+
+/// `(folio, line)` of the `room` and `meal_plan` lines posted for `reservation_room`'s `dates` and not yet reversed
+/// or moved, found in `property` by their posting keys, by folio then line.
+async fn posted_lines(
+    tx: &mut Tx,
+    property: Uuid,
+    reservation_room: Uuid,
+    dates: &[Date],
+) -> Result<Vec<(Uuid, Uuid)>, sqlx::Error> {
     let keys: Vec<String> = dates
         .iter()
         .flat_map(|date| [format!("room:{reservation_room}:{date}"), format!("meal_plan:{reservation_room}:{date}")])
         .collect();
-    let lines: Vec<(Uuid, Uuid)> = sqlx::query_as(
+    sqlx::query_as(
         "select l.folio_id, l.id from folio_line l join folio f on f.id = l.folio_id
          where f.property_id = $1 and l.posting_key = any($2)
            and not exists (select 1 from folio_line r where r.reverses = l.id)
@@ -204,9 +237,31 @@ pub async fn reverse_released_nights(
     .bind(property)
     .bind(&keys)
     .fetch_all(&mut **tx)
-    .await?;
+    .await
+}
+
+/// Reverses the `room` and `meal_plan` lines already posted for `reservation_room`'s `dates` with `reason`, and
+/// returns how many it reversed: the nights an early check-out releases ("Night released at early check-out"), or
+/// the night of a check-in being undone ("Check-in undone"). Lines are found in `property` by their posting keys;
+/// one already reversed (or moved) is left alone. Each reversal is [`reverse`]'s, on the property's business date,
+/// so a line on an invoiced folio is a `Conflict`. Their folios are locked first, together, in ascending id order;
+/// a caller that also posts locks them all before with [`lock_stay_folios`]. Check-out calls it, holding the stay's
+/// row, after the release and before marking the stay checked out; undoing a check-in, before the deposit moves back.
+pub async fn reverse_released_nights(
+    tx: &mut Tx,
+    tenant: TenantId,
+    user: Option<UserId>,
+    property: Uuid,
+    reservation_room: Uuid,
+    dates: &[Date],
+    reason: &str,
+) -> Result<u32, FolioError> {
+    let lines = posted_lines(tx, property, reservation_room, dates).await?;
+    let mut folios: Vec<Uuid> = lines.iter().map(|(folio, _)| *folio).collect();
+    folios.dedup();
+    lock_folios(tx, property, &folios).await?;
     for (folio, line) in &lines {
-        reverse(tx, tenant, user, property, *folio, *line, RELEASED_NIGHT).await?;
+        reverse(tx, tenant, user, property, *folio, *line, reason).await?;
     }
     Ok(u32::try_from(lines.len()).unwrap_or(u32::MAX))
 }

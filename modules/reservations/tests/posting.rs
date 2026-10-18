@@ -405,3 +405,43 @@ async fn a_released_night_on_an_invoiced_folio_refuses_the_check_out(_: PgPoolOp
 
     assert!(matches!(refused, Err(reservations::ReservationsError::Conflict(_))), "{refused:?}");
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_stay_longer_than_31_nights_is_posted_for_a_date_past_its_31st(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = hotel(opts, 1).await;
+    let stay = hotel.checked_in(None, vec![hotel.stay(&plans.bar, MealPlan::Ro, 0, 35)]).await.rooms[0].id;
+    // Arrived 33 days before the date: outside the short-stay arrival range, found by the long-stay branch.
+    hotel.move_business_date(33).await;
+
+    let report = hotel.post(hotel.day(33)).await;
+
+    assert_eq!((report.stays, report.lines, report.failures.len()), (1, 1, 0));
+    assert_eq!(hotel.keys().await, vec![room_key(stay, hotel.day(33))]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_early_check_out_reverses_a_released_night_routed_to_the_account(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = hotel(opts, 1).await;
+    let account = hotel.account(new_account("Acme")).await;
+    let booked = hotel.checked_in(Some(account.id), vec![hotel.stay(&plans.bar, MealPlan::Bb, 0, 3)]).await;
+    let stay = booked.rooms[0].id;
+    hotel.post(hotel.day(0)).await;
+    hotel.move_business_date(1).await;
+    hotel.post(hotel.day(1)).await;
+    // The routing changes mid-stay: the stay's lines are now spread over folios the check-out did not post to.
+    let mut tx = hotel.tx().await;
+    folio::set_routing(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, booked.id, &[]).await.unwrap();
+    tx.commit().await.unwrap();
+
+    hotel.check_out(stay).await;
+
+    let tonight = [room_key(stay, hotel.day(1)), meal_key(stay, hotel.day(1))];
+    assert_eq!(net_of(&hotel, &tonight).await, (4, 0), "tonight's account lines and their reversals net to zero");
+    let reversed_on: Vec<String> = sqlx::query_scalar(
+        "select f.kind from folio_line l join folio f on f.id = l.folio_id where l.reverses is not null order by l.id",
+    )
+    .fetch_all(&mut *hotel.tx().await)
+    .await
+    .unwrap();
+    assert_eq!(reversed_on, vec!["account".to_owned(); 2], "reversed where they were posted");
+}
