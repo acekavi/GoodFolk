@@ -636,10 +636,12 @@ async fn a_refund_comes_only_from_a_folio_of_the_payment_s_reservation(_: PgPool
     let account_folio = folio::ensure_account_folio(&mut tx, hotel.tenant, hotel.property, acme).await.unwrap();
     tx.commit().await.unwrap();
 
-    for from in [other.guests[0], other.deposit, account_folio, Uuid::now_v7()] {
+    for from in [other.guests[0], other.deposit, account_folio] {
         let message = invalid(hotel.refund_from(hotel.property, paid.id, 100, Some(from)).await);
         assert_eq!(message, "refund from the payment's reservation: its deposit folio or one of its stays' folios");
     }
+    // A folio the property doesn't have is not found, as any folio of another property is.
+    not_found(hotel.refund_from(hotel.property, paid.id, 100, Some(Uuid::now_v7())).await);
     assert!(hotel.refund_from(hotel.property, paid.id, 100, Some(booking.deposit)).await.is_ok());
 }
 
