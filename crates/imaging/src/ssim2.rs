@@ -234,17 +234,17 @@ fn linear_of(img: &RgbaImage) -> Option<Linear> {
         .into_par_iter()
         .map(|band| {
             let rows = BAND_ROWS.min(height - band * BAND_ROWS);
-            let pixels = &raw[band * BAND_ROWS * width * 4..][..rows * width * 4];
-            if pixels.chunks_exact(4).all(|p| p[3] == u8::MAX) {
+            let (pixels, _) = raw[band * BAND_ROWS * width * 4..][..rows * width * 4].as_chunks::<4>();
+            if pixels.iter().all(|p| p[3] == u8::MAX) {
                 return Some(
                     pixels
-                        .chunks_exact(4)
+                        .iter()
                         .map(|p| [levels[p[0] as usize], levels[p[1] as usize], levels[p[2] as usize]])
                         .collect(),
                 );
             }
             let data: Vec<[f32; 3]> = pixels
-                .chunks_exact(4)
+                .iter()
                 .map(|p| {
                     let alpha = f32::from(p[3]) / 255.0;
                     let mix = |c: u8| (f32::from(c) * alpha + BACKDROP * (1.0 - alpha)) / 255.0;

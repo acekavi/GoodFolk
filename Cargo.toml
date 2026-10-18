@@ -4,7 +4,7 @@ members = ["crates/*", "modules/*"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.97"
+rust-version = "1.99"
 publish = false
 
 [workspace.dependencies]
@@ -33,7 +33,7 @@ async-trait = "0.1"
 argon2 = "0.6"
 async-graphql = { version = "7.2", default-features = false, features = ["uuid", "time"] }
 async-graphql-axum = "7.2"
-avif-decode = { version = "1.0.2", default-features = false }
+avif-decode = { version = "3", default-features = false }
 axum = { version = "0.8", features = ["macros"] }
 axum-extra = { version = "0.12", features = ["cookie"] }
 base64 = "0.23"
