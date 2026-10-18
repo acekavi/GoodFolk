@@ -59,9 +59,9 @@ fn into_rule(row: RuleRow) -> Result<tax::Rule, sqlx::Error> {
     })
 }
 
-/// When a rule applies, as the API documents [`tax::Condition`] (the `tax` crate stays free of API types): always,
-/// only for a VAT-registered property, only for stays on plans sold to residents (or non-residents), or only for
-/// charges in one of `currencies`. A schema only; the same JSON deserializes as a `tax::Condition`.
+/// When a rule applies: always, only for a VAT-registered property, only for stays on plans sold to residents (or
+/// non-residents), or only for charges in one of `currencies`.
+// The API's schema of `tax::Condition`, which stays free of API types; the same JSON deserializes as one (tested).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[schema(as = TaxCondition)]

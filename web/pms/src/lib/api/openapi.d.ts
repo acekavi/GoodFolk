@@ -1840,7 +1840,7 @@ export interface components {
              * @description `{"type": "always"}` (the default), `{"type": "vat_registered"}`, `{"type": "residency", "resident": true}`
              *     or `{"type": "payment_currency", "currencies": ["USD"]}`.
              */
-            condition?: Record<string, never>;
+            condition?: components["schemas"]["TaxCondition"];
             /** Format: date */
             effective_from: string;
             /**
@@ -2834,6 +2834,25 @@ export interface components {
             evidence?: string | null;
             method: components["schemas"]["PaymentMethod"];
         };
+        /**
+         * @description When a rule applies: always, only for a VAT-registered property, only for stays on plans sold to residents (or
+         *     non-residents), or only for charges in one of `currencies`.
+         */
+        TaxCondition: {
+            /** @enum {string} */
+            type: "always";
+        } | {
+            /** @enum {string} */
+            type: "vat_registered";
+        } | {
+            resident: boolean;
+            /** @enum {string} */
+            type: "residency";
+        } | {
+            currencies: string[];
+            /** @enum {string} */
+            type: "payment_currency";
+        };
         /** @description A stored rule, with its id and version, as the settings screens show it. */
         TaxRuleRow: {
             /** @description `*`, a category (`room`, `meal_plan`, `laundry`, `misc`, `fee`), `pos:*` or one outlet (`pos:BAR`). */
@@ -2845,7 +2864,7 @@ export interface components {
              * @description `{"type": "always"}`, `{"type": "vat_registered"}`, `{"type": "residency", "resident": true}` or
              *     `{"type": "payment_currency", "currencies": ["USD"]}`.
              */
-            condition: Record<string, never>;
+            condition: components["schemas"]["TaxCondition"];
             /** Format: date */
             effective_from: string;
             /**
@@ -3066,7 +3085,7 @@ export interface components {
         UpdateTaxRuleRequest: {
             applies_to?: string[] | null;
             base?: string[] | null;
-            condition?: Record<string, never> | null;
+            condition?: components["schemas"]["TaxCondition"] | null;
             /** Format: date */
             effective_from?: string | null;
             /** Format: date */

@@ -171,9 +171,7 @@
 			base: form.base,
 			sequence: form.sequence,
 			presentation: form.presentation,
-			// The API schema has the condition as an untyped JSON object, which the generated types read as
-			// `Record<string, never>`; its shape is `RuleCondition`, as the server documents it.
-			condition: condition() as unknown as Record<string, never>,
+			condition: condition(),
 			effective_from: form.from,
 			effective_to: form.to || null
 		};

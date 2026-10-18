@@ -828,10 +828,11 @@ type Query {
 	"""
 	The folios of one reservation, stay or account in the property; name exactly one of `reservationId`,
 	`reservationRoomId` and `accountId`. A reservation's are its deposit folio, each stay's guest folio and its
-	account's folio, in that order. The account folio is the account's whole city ledger in the property, charges
-	from every reservation billed to it included, as any staff member with `FolioView` may see; read through a
-	reservation it comes with its balances and invoices but no lines or payments (`linesOmitted`), which a read by
-	`accountId` gives. Every folio gives at most its newest 500 lines and newest 500 payments (`truncated` when it
+	account's current folio (the open one, else the newest), in that order. An account folio is the account's
+	city ledger in the property, charges from every reservation billed to it included, as any staff member with
+	`FolioView` may see; once invoiced, the account's next charge opens a fresh one. Read through a reservation it
+	comes with its balances and invoices but no lines or payments (`linesOmitted`); a read by `accountId` gives
+	every folio of the account, the open one first, then the invoiced ones newest first, each with its lines. Every folio gives at most its newest 500 lines and newest 500 payments (`truncated` when it
 	has more); balances always cover all of them. Lines (with their taxes), payments, balances and invoices of
 	every folio are read at once, whatever the number of folios.
 	"""

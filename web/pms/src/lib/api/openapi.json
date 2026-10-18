@@ -5609,7 +5609,7 @@
             "description": "1 to 16 upper-case letters, digits and `_`, starting with a letter, such as `VAT`."
           },
           "condition": {
-            "type": "object",
+            "$ref": "#/components/schemas/TaxCondition",
             "description": "`{\"type\": \"always\"}` (the default), `{\"type\": \"vat_registered\"}`, `{\"type\": \"residency\", \"resident\": true}`\nor `{\"type\": \"payment_currency\", \"currencies\": [\"USD\"]}`."
           },
           "effective_from": {
@@ -8059,6 +8059,78 @@
           }
         }
       },
+      "TaxCondition": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "always"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "vat_registered"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "resident",
+              "type"
+            ],
+            "properties": {
+              "resident": {
+                "type": "boolean"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "residency"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "currencies",
+              "type"
+            ],
+            "properties": {
+              "currencies": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "payment_currency"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "When a rule applies: always, only for a VAT-registered property, only for stays on plans sold to residents (or\nnon-residents), or only for charges in one of `currencies`."
+      },
       "TaxRuleRow": {
         "type": "object",
         "description": "A stored rule, with its id and version, as the settings screens show it.",
@@ -8095,7 +8167,7 @@
             "type": "string"
           },
           "condition": {
-            "type": "object",
+            "$ref": "#/components/schemas/TaxCondition",
             "description": "`{\"type\": \"always\"}`, `{\"type\": \"vat_registered\"}`, `{\"type\": \"residency\", \"resident\": true}` or\n`{\"type\": \"payment_currency\", \"currencies\": [\"USD\"]}`."
           },
           "effective_from": {
@@ -8844,9 +8916,13 @@
             }
           },
           "condition": {
-            "type": [
-              "object",
-              "null"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TaxCondition"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "effective_from": {
