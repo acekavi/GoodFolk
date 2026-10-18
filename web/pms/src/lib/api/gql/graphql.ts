@@ -184,6 +184,11 @@ export type Source =
   | 'IBE'
   | 'PHONE';
 
+export type TaxKind =
+  | 'LEVY'
+  | 'SERVICE_CHARGE'
+  | 'TAX';
+
 /** `ON_BILL` taxes are added to the line's total; `ABSORBED` ones are calculated but borne by the property. */
 export type TaxPresentation =
   | 'ABSORBED'
@@ -215,7 +220,8 @@ export type AccountsQuery = { accounts: Array<{ id: string, kind: AccountKind, n
 
 export type FoliosQueryVariables = Exact<{
   propertyId: string;
-  reservationId: string;
+  reservationId?: string | null | undefined;
+  accountId?: string | null | undefined;
 }>;
 
 
@@ -412,6 +418,36 @@ export type RoomsQueryVariables = Exact<{
 
 export type RoomsQuery = { rooms: Array<{ id: string, roomTypeId: string, number: string, floor: string | null, sectionId: string | null, active: boolean, sortOrder: number, version: number }>, sections: Array<{ id: string, name: string, version: number }>, blockReasons: Array<{ id: string, code: string, label: string, defaultKind: BlockKind, active: boolean }> };
 
+export type TaxSettingsQueryVariables = Exact<{
+  propertyId: string;
+}>;
+
+
+export type TaxSettingsQuery = { propertyTaxSettings: { vatRegistered: boolean, tin: string | null, tdlSmallTurnover: boolean, legalName: string | null, address: string | null, baseCurrency: string, acceptedCurrencies: Array<string>, version: number }, taxRules: Array<{ id: string, code: string, name: string, kind: TaxKind, rateBp: number, appliesTo: Array<string>, base: Array<string>, sequence: number, presentation: TaxPresentation, condition: unknown, effectiveFrom: string, effectiveTo: string | null, version: number }>, outlets: Array<{ code: string, name: string, active: boolean }> };
+
+export type OutletsQueryVariables = Exact<{
+  propertyId: string;
+}>;
+
+
+export type OutletsQuery = { outlets: Array<{ id: string, code: string, name: string, serviceCharge: boolean, active: boolean, version: number }> };
+
+export type ExchangeRatesQueryVariables = Exact<{
+  propertyId: string;
+  from: string;
+  to: string;
+}>;
+
+
+export type ExchangeRatesQuery = { fxRates: Array<{ date: string, currency: string, rate: string, source: string, sourceDate: string }>, fxAlert: { message: string, raisedAt: string } | null, propertyTaxSettings: { baseCurrency: string, acceptedCurrencies: Array<string> } };
+
+export type FxAlertQueryVariables = Exact<{
+  propertyId: string;
+}>;
+
+
+export type FxAlertQuery = { fxAlert: { message: string, raisedAt: string } | null };
+
 export type TapeWindowQueryVariables = Exact<{
   property: string;
   rooms: Array<string> | string;
@@ -474,8 +510,12 @@ export const AccountsDocument = new TypedDocumentString(`
 }
     `, {"hash":"sha256:0991236e571c94b801691aefc5b9a85c0c1372010a662f1ee98f155b11a7e2d8"}) as unknown as TypedDocumentString<AccountsQuery, AccountsQueryVariables>;
 export const FoliosDocument = new TypedDocumentString(`
-    query Folios($propertyId: UUID!, $reservationId: UUID!) {
-  folios(propertyId: $propertyId, reservationId: $reservationId) {
+    query Folios($propertyId: UUID!, $reservationId: UUID, $accountId: UUID) {
+  folios(
+    propertyId: $propertyId
+    reservationId: $reservationId
+    accountId: $accountId
+  ) {
     id
     kind
     status
@@ -537,7 +577,7 @@ export const FoliosDocument = new TypedDocumentString(`
     }
   }
 }
-    `, {"hash":"sha256:b4dca78ec04443ff22b67c167d7bd9df447497b803190dac1288ee89e05630a0"}) as unknown as TypedDocumentString<FoliosQuery, FoliosQueryVariables>;
+    `, {"hash":"sha256:7e81d69bc01abf8a3fd16a06bcf45876ea126245231d096ad4d8e22fc45dfe30"}) as unknown as TypedDocumentString<FoliosQuery, FoliosQueryVariables>;
 export const FolioContextDocument = new TypedDocumentString(`
     query FolioContext($propertyId: UUID!) {
   propertyTaxSettings(propertyId: $propertyId) {
@@ -1069,6 +1109,79 @@ export const RoomsDocument = new TypedDocumentString(`
   }
 }
     `, {"hash":"sha256:c0abb0a62c7991a6c1c5d92b40c5daccafac9290699b81d370c6c2f0a5ce0ca6"}) as unknown as TypedDocumentString<RoomsQuery, RoomsQueryVariables>;
+export const TaxSettingsDocument = new TypedDocumentString(`
+    query TaxSettings($propertyId: UUID!) {
+  propertyTaxSettings(propertyId: $propertyId) {
+    vatRegistered
+    tin
+    tdlSmallTurnover
+    legalName
+    address
+    baseCurrency
+    acceptedCurrencies
+    version
+  }
+  taxRules(propertyId: $propertyId) {
+    id
+    code
+    name
+    kind
+    rateBp
+    appliesTo
+    base
+    sequence
+    presentation
+    condition
+    effectiveFrom
+    effectiveTo
+    version
+  }
+  outlets(propertyId: $propertyId) {
+    code
+    name
+    active
+  }
+}
+    `, {"hash":"sha256:44d85f5c6c2b63a1f43b46030699c0d233c251fd28ef2506ac81411d0178d1ef"}) as unknown as TypedDocumentString<TaxSettingsQuery, TaxSettingsQueryVariables>;
+export const OutletsDocument = new TypedDocumentString(`
+    query Outlets($propertyId: UUID!) {
+  outlets(propertyId: $propertyId) {
+    id
+    code
+    name
+    serviceCharge
+    active
+    version
+  }
+}
+    `, {"hash":"sha256:1a3fff7da8b5e4c157994174167fd7d89bf1a31ccb0562ff1de5dfc734ff53be"}) as unknown as TypedDocumentString<OutletsQuery, OutletsQueryVariables>;
+export const ExchangeRatesDocument = new TypedDocumentString(`
+    query ExchangeRates($propertyId: UUID!, $from: Date!, $to: Date!) {
+  fxRates(propertyId: $propertyId, from: $from, to: $to) {
+    date
+    currency
+    rate
+    source
+    sourceDate
+  }
+  fxAlert(propertyId: $propertyId) {
+    message
+    raisedAt
+  }
+  propertyTaxSettings(propertyId: $propertyId) {
+    baseCurrency
+    acceptedCurrencies
+  }
+}
+    `, {"hash":"sha256:1b704639f40a4b7613bc546b9fd557d9faffad6239639225955663dfcbc60789"}) as unknown as TypedDocumentString<ExchangeRatesQuery, ExchangeRatesQueryVariables>;
+export const FxAlertDocument = new TypedDocumentString(`
+    query FxAlert($propertyId: UUID!) {
+  fxAlert(propertyId: $propertyId) {
+    message
+    raisedAt
+  }
+}
+    `, {"hash":"sha256:fb04468ca356a863385a69bf76a4bc4d950f5effbe3b207fbd28086e145ef9b9"}) as unknown as TypedDocumentString<FxAlertQuery, FxAlertQueryVariables>;
 export const TapeWindowDocument = new TypedDocumentString(`
     query TapeWindow($property: UUID!, $rooms: [UUID!]!, $from: Date!, $to: Date!) {
   tapeWindow(propertyId: $property, roomIds: $rooms, from: $from, to: $to) {

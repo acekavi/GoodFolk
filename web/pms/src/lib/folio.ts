@@ -6,8 +6,8 @@ import { rest, unwrap } from './api/rest';
 import { reservationKey } from './reservations';
 
 export const FoliosDocument = graphql(`
-	query Folios($propertyId: UUID!, $reservationId: UUID!) {
-		folios(propertyId: $propertyId, reservationId: $reservationId) {
+	query Folios($propertyId: UUID!, $reservationId: UUID, $accountId: UUID) {
+		folios(propertyId: $propertyId, reservationId: $reservationId, accountId: $accountId) {
 			id
 			kind
 			status
@@ -109,6 +109,11 @@ export function foliosKey(propertyId: string, reservationId: string, accountId: 
 	return ['folios', propertyId, reservationId, accountId] as const;
 }
 
+/** An account's folio (its city ledger) in the property; refetched on its `folio:<id>` event like a reservation's. */
+export function accountFoliosKey(propertyId: string, accountId: string) {
+	return ['folios', propertyId, 'account', accountId] as const;
+}
+
 /** The prefix of every folios key: of the property's, or of every property's. */
 export function allFoliosKey(propertyId?: string) {
 	return propertyId ? (['folios', propertyId] as const) : (['folios'] as const);
@@ -130,6 +135,15 @@ export async function fetchFolios(
 	signal?: AbortSignal
 ): Promise<Folio[]> {
 	return (await query(FoliosDocument, { propertyId, reservationId }, signal)).folios;
+}
+
+/** The account's folio in the property, with its newest 500 lines and payments: empty until it has one. */
+export async function fetchAccountFolios(
+	propertyId: string,
+	accountId: string,
+	signal?: AbortSignal
+): Promise<Folio[]> {
+	return (await query(FoliosDocument, { propertyId, accountId }, signal)).folios;
 }
 
 export async function fetchFolioContext(
