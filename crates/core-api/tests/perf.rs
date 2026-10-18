@@ -1513,9 +1513,23 @@ async fn invoice_pdf_ready_under_2s(_: PgPoolOptions, opts: PgConnectOptions) {
         for _ in 0..5 {
             assert_eq!(stay.charge(app, folio).await.status, StatusCode::CREATED);
         }
-        let due = stay.folios(app).await["data"]["folios"][0]["balances"][0]["amount"].as_i64().unwrap();
-        let payment = json!({"method": "cash", "amount": due, "currency": "LKR"});
-        post(app, &stay.owner, &format!("{}/folios/{folio}/payments", stay.path), payment).await;
+        // The stay is checked in: tonight's night is posted before it can be invoiced.
+        let key = Uuid::now_v7().to_string();
+        let posted = app
+            .send_with(
+                Method::POST,
+                &format!("{}/folio/post-charges", stay.path),
+                Some(&stay.owner),
+                Some(json!({})),
+                &[("x-goodfolk-csrf", "1"), ("idempotency-key", &key)],
+            )
+            .await;
+        assert_eq!(posted.status, StatusCode::OK, "{:?}", posted.body);
+        let balances = stay.folios(app).await["data"]["folios"][0]["balances"].clone();
+        for balance in balances.as_array().unwrap() {
+            let payment = json!({"method": "cash", "amount": balance["amount"], "currency": balance["currency"]});
+            post(app, &stay.owner, &format!("{}/folios/{folio}/payments", stay.path), payment).await;
+        }
 
         let issued = media::post(app, &stay.owner, &format!("{}/folios/{folio}/invoice", stay.path), json!({})).await;
         let started = Instant::now();
