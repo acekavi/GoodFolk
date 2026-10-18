@@ -289,8 +289,9 @@ pub async fn undo_check_in(
 ///
 /// Then every night the stay keeps before `min(check-out, business date + 1)` whose charges are not yet posted is
 /// posted ([`folio::post_unposted_nights`]), so no night is missed, having first locked every folio it and the
-/// reversals below touch, together and in id order, after the inventory days ([`folio::lock_stay_folios`]); that needs a rate for the stay's currency on each such night (`Conflict`). The lines already posted for
-/// the released nights are reversed ([`folio::reverse_released_nights`]); one on an invoiced folio is a `Conflict`.
+/// reversals below touch, together and in id order, after the inventory days ([`folio::lock_stay_folios`]); that needs
+/// a rate for the stay's currency on each such night (`Conflict`). The lines already posted for the released nights are
+/// reversed ([`folio::reverse_released_nights`]); one on an invoiced folio is a `Conflict`.
 ///
 /// Sets the room's condition to `dirty` (locking `room_condition` after this row, bumping its version), bumps
 /// both versions, audits `reservation_room.checked_out` (recording the released nights, if any, and the

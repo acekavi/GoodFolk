@@ -178,9 +178,10 @@ pub async fn post_unposted_nights(
 /// Locks, once and in ascending id order, every folio that checking `reservation_room` out, or undoing its
 /// check-in, may post to or reverse on: the stay's guest folio, its reservation's deposit folio, the open folio (if
 /// it has one; none is opened here) of the account its routing sends `room` or `meal_plan` to, and the folios holding
-/// the lines posted under the stay's room and meal-plan keys for `dates`. The later postings and reversals then lock nothing new, so a routing change that
-/// has spread the stay's lines over several folios can't deadlock them (`40P01`) against a transfer or another
-/// stay's posting, which lock in the same order. `NotFound` unless the stay is in `property`.
+/// the lines posted under the stay's room and meal-plan keys for `dates`. The later postings and reversals then lock
+/// nothing new, so a routing change that has spread the stay's lines over several folios can't deadlock them
+/// (`40P01`) against a transfer or another stay's posting, which lock in the same order. `NotFound` unless the stay
+/// is in `property`.
 pub async fn lock_stay_folios(
     tx: &mut Tx,
     tenant: TenantId,

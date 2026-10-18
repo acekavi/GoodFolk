@@ -259,7 +259,8 @@ pub async fn tax_settings(tx: &mut Tx, property: Uuid) -> Result<TaxSettings, Pr
 /// Applies `changes` to the tax settings of `property` if it is still at `expected_version` (`NotFound`,
 /// `VersionMismatch`), and bumps its version. Accepted currencies are deduplicated, keep their order and must include
 /// the base currency (`Invalid`); a currency in which an open folio of the property still holds a balance can't be
-/// removed (`Invalid`), or that money could never be paid or refunded. Audited as `property.tax_settings_updated` with the values before and after.
+/// removed (`Invalid`), or that money could never be paid or refunded. Audited as `property.tax_settings_updated` with
+/// the values before and after.
 pub async fn update_tax_settings(
     tx: &mut Tx,
     tenant: TenantId,
