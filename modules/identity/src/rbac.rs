@@ -155,19 +155,19 @@ pub enum Permission {
     MediaManage,
     /// Upload, view (through an audited signed link) and delete guests' ID documents.
     GuestDocumentsManage,
-    /// See folios, their lines, payments and invoices.
+    /// Folios, lines, payments, invoices.
     FolioView,
-    /// Post charges, take payments and refunds, and transfer lines.
+    /// Charges, payments.
     FolioPost,
-    /// Reverse lines, post adjustments, waive fees and override a folio's charges.
+    /// Reversals, transfers, refunds, routing, credit notes, posting tonight's charges.
     FolioAdjust,
-    /// Issue invoices and credit notes.
+    /// Issue invoices, invoice links.
     InvoiceIssue,
-    /// Change a property's tax rules, outlets and tax identity.
+    /// Tax rules, outlets, property tax settings.
     TaxSettingsManage,
-    /// Set an exchange rate by hand.
+    /// Manual exchange rates.
     FxOverride,
-    /// Post a point-of-sale bill to a folio.
+    /// POS bills.
     PosPost,
 }
 
