@@ -17,6 +17,11 @@
 //!   applied) in under 5 s from `complete` returning, at the median of five runs. These two run against an
 //!   in-process media-svc and RustFS (`deploy/dev/rustfs.sh start`), and the second runs media-svc's worker binary,
 //!   so build it first: `cargo build --release -p media-svc`.
+//! - Phase 7a: posting a manual charge with the Sri Lanka taxes in under 30 ms at p95 (200 samples); the night
+//!   audit's `post_business_date_charges` for 200 rooms at 80% occupancy (160 checked-in stays with priced nights and
+//!   meal plans, each posted in its own transaction) in under 3 s at the median of 3; `folios` for a stay folio of 200
+//!   taxed lines in under 30 ms at p95; an invoice's PDF ready (`pdf_key` set) in under 2 s from the issue response,
+//!   at the median of 5, which also needs `cargo build --release -p media-svc`.
 //!
 //! Ignored by default because debug builds are several times slower. Run them in release mode, one at a time:
 //!
@@ -1176,4 +1181,365 @@ async fn photo_12mp_ready_under_5s(_: PgPoolOptions, opts: PgConnectOptions) {
     let median = runs[PHOTO_RUNS / 2];
     println!("12 MP JPEG to ready (every gallery rendition and the archive), median of {PHOTO_RUNS}: {median:?}");
     assert!(median < Duration::from_secs(5), "median {median:?} is over the 5 s gate");
+}
+
+/// A property with 1 deluxe room sold on a LKR plan, one checked-in stay with its guest folio, and its owner: the
+/// folio the Phase 7a gates post to and read.
+struct StayFolio {
+    owner: String,
+    property: Uuid,
+    path: String,
+    stay: Uuid,
+}
+
+impl StayFolio {
+    async fn new(app: &TestApp, email: &str, code: &str) -> Self {
+        let owner = app.signup_owner(email, "Lagoon Hotels").await;
+        let property = json!({"code": code, "name": code, "timezone": "Asia/Colombo", "base_currency": "LKR"});
+        let property = post(app, &owner, "/api/v1/properties", property).await.body;
+        let id = uuid(&property["id"]);
+        let path = format!("/api/v1/properties/{id}");
+        let business_date = time::Date::parse(property["business_date"].as_str().unwrap(), &Iso8601::DEFAULT).unwrap();
+        let deluxe = json!({"code": "DLX", "name": "Deluxe", "base_occupancy": 2, "max_adults": 2,
+                            "max_children": 1, "max_occupancy": 3});
+        let deluxe = post(app, &owner, &format!("{path}/room-types"), deluxe).await.body["id"].clone();
+        let range = json!({"room_type_id": deluxe, "first": 101, "last": 101});
+        post(app, &owner, &format!("{path}/rooms/bulk"), range).await;
+        let bar = json!({"code": "BAR", "name": "Best available", "kind": "standard", "segment": "IBE",
+                         "currency": "LKR", "room_type_ids": [deluxe]});
+        let bar = post(app, &owner, &format!("{path}/rate-plans"), bar).await.body["id"].clone();
+        let prices: Vec<Value> = (0..3)
+            .map(|day| {
+                let date = (business_date + time::Duration::days(day)).to_string();
+                json!({"room_type_id": deluxe, "date": date, "occupancy": 2, "amount": 2_500_000})
+            })
+            .collect();
+        let priced = app
+            .send(
+                Method::PUT,
+                &format!("{path}/rate-plans/{}/prices", bar.as_str().unwrap()),
+                Some(&owner),
+                Some(json!({"prices": prices})),
+            )
+            .await;
+        assert_eq!(priced.status, StatusCode::NO_CONTENT, "{:?}", priced.body);
+        let guest = json!({"first_name": "Ada", "last_name": "Silva", "residency": "non_resident"});
+        let guest = post(app, &owner, &format!("{path}/guests"), guest).await.body;
+        let booking = json!({"booker_guest_id": guest["id"], "source": "front_desk",
+            "rooms": [{"room_type_id": deluxe, "rate_plan_id": bar, "meal_plan": "RO",
+                       "check_in": business_date.to_string(),
+                       "check_out": (business_date + time::Duration::days(2)).to_string(), "adults": 2}]});
+        let booked = post(app, &owner, &format!("{path}/reservations"), booking).await;
+        let stay = uuid(&booked.body["rooms"][0]["id"]);
+        let checked_in = app
+            .send_with(
+                Method::POST,
+                &format!("{path}/reservation-rooms/{stay}/check-in"),
+                Some(&owner),
+                None,
+                &[("x-goodfolk-csrf", "1"), ("if-match", "\"1\"")],
+            )
+            .await;
+        assert_eq!(checked_in.status, StatusCode::OK, "{:?}", checked_in.body);
+        Self { owner, property: id, path, stay }
+    }
+
+    async fn folios(&self, app: &TestApp) -> Value {
+        let response = app
+            .send(
+                Method::POST,
+                "/graphql",
+                Some(&self.owner),
+                Some(json!({"query": FOLIOS_READ, "variables": {"p": self.property, "rr": self.stay}})),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::OK, "{:?}", response.body);
+        assert!(response.body["errors"].is_null(), "{:?}", response.body);
+        response.body
+    }
+
+    /// The stay's guest folio.
+    async fn folio(&self, app: &TestApp) -> Uuid {
+        uuid(&self.folios(app).await["data"]["folios"][0]["id"])
+    }
+
+    /// A manual charge of 10,000.00 LKR, taxed by the preset, under a fresh idempotency key.
+    async fn charge(&self, app: &TestApp, folio: Uuid) -> TestResponse {
+        let charge = json!({"category": "misc", "description": "Airport transfer", "unit_net": 1_000_000,
+                            "currency": "LKR"});
+        let key = Uuid::now_v7().to_string();
+        app.send_with(
+            Method::POST,
+            &format!("{}/folios/{folio}/charges", self.path),
+            Some(&self.owner),
+            Some(charge),
+            &[("x-goodfolk-csrf", "1"), ("idempotency-key", &key)],
+        )
+        .await
+    }
+}
+
+const FOLIOS_READ: &str = "query ($p: UUID!, $rr: UUID) {
+    folios(propertyId: $p, reservationRoomId: $rr) {
+        id kind status version reservationRoomId reservationId accountId
+        lines { id source category description quantity net total currency baseTotal rate businessDate reverses
+                taxes { code kind rateBp base amount presentation } }
+        payments { id method amount currency baseAmount refundOf transferId }
+        balances { currency amount baseAmount }
+        invoices { id kind serial totalLkr pdfReady credits }
+    }
+}";
+
+/// Requests timed after the warm-up ones.
+const FOLIO_WARMUP: usize = 20;
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn posting_a_taxed_charge_p95_under_30ms(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    let stay = StayFolio::new(&app, "owner@example.com", "GAL").await;
+    let folio = stay.folio(&app).await;
+
+    let mut samples: Vec<Duration> = Vec::with_capacity(SAMPLES);
+    for round in 0..SAMPLES + FOLIO_WARMUP {
+        let started = Instant::now();
+        let response = stay.charge(&app, folio).await;
+        let elapsed = started.elapsed();
+        assert_eq!(response.status, StatusCode::CREATED, "{:?}", response.body);
+        assert!(response.body["total"].as_i64() > response.body["net"].as_i64(), "taxed: {:?}", response.body);
+        if round >= FOLIO_WARMUP {
+            samples.push(elapsed);
+        }
+    }
+
+    samples.sort();
+    let p50 = samples[SAMPLES / 2];
+    let p95 = samples[p95_index(SAMPLES)];
+    println!("POST folios/{{id}}/charges with the Sri Lanka taxes, {SAMPLES} samples: p50 {p50:?}, p95 {p95:?}");
+    assert!(p95 < Duration::from_millis(30), "p95 {p95:?} is over the 30 ms gate");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn folios_with_200_lines_p95_under_30ms(_: PgPoolOptions, opts: PgConnectOptions) {
+    const LINES: usize = 200;
+    let app = TestApp::new(opts).await;
+    let stay = StayFolio::new(&app, "owner@example.com", "GAL").await;
+    let folio = stay.folio(&app).await;
+    for _ in 0..LINES {
+        assert_eq!(stay.charge(&app, folio).await.status, StatusCode::CREATED);
+    }
+
+    let mut samples: Vec<Duration> = Vec::with_capacity(SAMPLES);
+    for round in 0..SAMPLES + FOLIO_WARMUP {
+        let started = Instant::now();
+        let read = stay.folios(&app).await;
+        let elapsed = started.elapsed();
+        let lines = read["data"]["folios"][0]["lines"].as_array().map(Vec::len);
+        assert_eq!(lines, Some(LINES), "{read:?}");
+        assert!(!read["data"]["folios"][0]["lines"][0]["taxes"].as_array().unwrap().is_empty(), "{read:?}");
+        if round >= FOLIO_WARMUP {
+            samples.push(elapsed);
+        }
+    }
+
+    samples.sort();
+    let p50 = samples[SAMPLES / 2];
+    let p95 = samples[p95_index(SAMPLES)];
+    println!("folios, a stay folio of {LINES} taxed lines, {SAMPLES} samples: p50 {p50:?}, p95 {p95:?}");
+    assert!(p95 < Duration::from_millis(30), "p95 {p95:?} is over the 30 ms gate");
+}
+
+const NIGHT_RUNS: usize = 3;
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn business_date_posting_for_200_rooms_under_3s(_: PgPoolOptions, opts: PgConnectOptions) {
+    const STAYS: usize = 160;
+    const MEAL_PLANS: [&str; 3] = ["RO", "BB", "HB"];
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    let (path, day0, types) = property_with_room_types(&app, &owner).await;
+    let property = Uuid::parse_str(path.trim_start_matches("/api/v1/properties/")).unwrap();
+    let tenant: Uuid = sqlx::query_scalar("select tenant_id from property where id = $1")
+        .bind(property)
+        .fetch_one(&superuser)
+        .await
+        .unwrap();
+    let type_ids: Vec<Uuid> = types.iter().map(uuid).collect();
+    let standard = json!({"code": "STD", "name": "Standard", "kind": "standard", "segment": "IBE",
+                          "currency": "LKR", "room_type_ids": types});
+    let rate_plan = uuid(&post(&app, &owner, &format!("{path}/rate-plans"), standard).await.body["id"]);
+
+    let rooms: Vec<Uuid> = (0..ROOMS).map(|_| Uuid::now_v7()).collect();
+    let numbers: Vec<String> = (0..ROOMS).map(|index| (1001 + index).to_string()).collect();
+    let room_types: Vec<Uuid> = (0..ROOMS as usize).map(|index| type_ids[index % type_ids.len()]).collect();
+    let sort_orders: Vec<i32> = (0..ROOMS).map(|index| i32::try_from(index).unwrap()).collect();
+    sqlx::query(
+        "insert into room (id, tenant_id, property_id, room_type_id, number, sort_order)
+         select r.id, $1, $2, r.room_type_id, r.number, r.sort_order
+         from unnest($3::uuid[], $4::uuid[], $5::text[], $6::int[]) as r (id, room_type_id, number, sort_order)",
+    )
+    .bind(tenant)
+    .bind(property)
+    .bind(&rooms)
+    .bind(&room_types)
+    .bind(&numbers)
+    .bind(&sort_orders)
+    .execute(&superuser)
+    .await
+    .unwrap();
+
+    // 160 of the 200 rooms hold a checked-in stay of 5 nights from the business date.
+    let guest_ids: Vec<Uuid> = (0..STAYS).map(|_| Uuid::now_v7()).collect();
+    let guest_names: Vec<String> = (0..STAYS).map(|index| format!("Guest{index}")).collect();
+    sqlx::query(
+        "insert into guest (id, tenant_id, first_name, last_name, residency)
+         select g.id, $1, 'Ana', g.name, 'non_resident' from unnest($2::uuid[], $3::text[]) as g (id, name)",
+    )
+    .bind(tenant)
+    .bind(&guest_ids)
+    .bind(&guest_names)
+    .execute(&superuser)
+    .await
+    .unwrap();
+    let reservation_ids: Vec<Uuid> = (0..STAYS).map(|_| Uuid::now_v7()).collect();
+    let stay_ids: Vec<Uuid> = (0..STAYS).map(|_| Uuid::now_v7()).collect();
+    let confirmations: Vec<String> = (0..STAYS).map(|index| format!("NIGHT-{index:06}")).collect();
+    sqlx::query(
+        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id)
+         select r.id, $1, $2, r.confirmation_no, 'front_desk', r.booker_guest_id
+         from unnest($3::uuid[], $4::text[], $5::uuid[]) as r (id, confirmation_no, booker_guest_id)",
+    )
+    .bind(tenant)
+    .bind(property)
+    .bind(&reservation_ids)
+    .bind(&confirmations)
+    .bind(&guest_ids)
+    .execute(&superuser)
+    .await
+    .unwrap();
+    let meal_plans: Vec<&str> = (0..STAYS).map(|index| MEAL_PLANS[index % MEAL_PLANS.len()]).collect();
+    sqlx::query(
+        "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, room_id, stay, adults,
+                                        children, rate_plan_id, meal_plan, status, primary_guest_id, currency,
+                                        checked_in_at, checked_in_business_date)
+         select c.id, $1, $2, c.reservation_id, c.room_type_id, c.room_id, daterange($3, $3 + 5, '[)'), 2, 0, $4,
+                c.meal_plan, 'checked_in', c.guest_id, 'LKR', now(), $3
+         from unnest($5::uuid[], $6::uuid[], $7::uuid[], $8::uuid[], $9::text[], $10::uuid[])
+              as c (id, reservation_id, room_type_id, room_id, meal_plan, guest_id)",
+    )
+    .bind(tenant)
+    .bind(property)
+    .bind(day0)
+    .bind(rate_plan)
+    .bind(&stay_ids)
+    .bind(&reservation_ids)
+    .bind(&room_types[..STAYS])
+    .bind(&rooms[..STAYS])
+    .bind(&meal_plans)
+    .bind(&guest_ids)
+    .execute(&superuser)
+    .await
+    .unwrap();
+    // A priced night for each run's date.
+    let mut night_stays = Vec::new();
+    let mut night_dates = Vec::new();
+    let mut meal_amounts = Vec::new();
+    for (index, stay) in stay_ids.iter().enumerate() {
+        let meal: i64 = match meal_plans[index] {
+            "BB" => 150_000,
+            "HB" => 300_000,
+            _ => 0,
+        };
+        for night in 0..NIGHT_RUNS {
+            night_stays.push(*stay);
+            night_dates.push(day0 + time::Duration::days(i64::try_from(night).unwrap()));
+            meal_amounts.push(meal);
+        }
+    }
+    sqlx::query(
+        "insert into reservation_night (tenant_id, property_id, reservation_room_id, date, room_amount,
+                                         meal_amount, currency)
+         select $1, $2, n.stay, n.date, 2500000, n.meal_amount, 'LKR'
+         from unnest($3::uuid[], $4::date[], $5::bigint[]) as n (stay, date, meal_amount)",
+    )
+    .bind(tenant)
+    .bind(property)
+    .bind(&night_stays)
+    .bind(&night_dates)
+    .bind(&meal_amounts)
+    .execute(&superuser)
+    .await
+    .unwrap();
+    sqlx::query("analyze").execute(&superuser).await.unwrap();
+
+    let mut runs: Vec<Duration> = Vec::with_capacity(NIGHT_RUNS);
+    for run in 0..NIGHT_RUNS {
+        // Each run posts a new night, so no stay is skipped by its posting key.
+        let date = day0 + time::Duration::days(i64::try_from(run).unwrap());
+        let started = Instant::now();
+        let report =
+            folio::post_business_date_charges(&app.pool, db::TenantId(tenant), None, property, date).await.unwrap();
+        let elapsed = started.elapsed();
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        assert_eq!(report.stays as usize, STAYS);
+        assert_eq!(report.skipped_existing, 0);
+        println!("post_business_date_charges, {STAYS} stays of {ROOMS} rooms, night {}: {elapsed:?}", run + 1);
+        runs.push(elapsed);
+    }
+
+    runs.sort();
+    let median = runs[NIGHT_RUNS / 2];
+    println!("post_business_date_charges, {STAYS} stays of {ROOMS} rooms, median of {NIGHT_RUNS}: {median:?}");
+    assert!(median < Duration::from_secs(3), "median {median:?} is over the 3 s gate");
+}
+
+const INVOICE_RUNS: usize = 5;
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode after `cargo build --release -p media-svc` (see the module docs)"]
+async fn invoice_pdf_ready_under_2s(_: PgPoolOptions, opts: PgConnectOptions) {
+    let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
+    let stack = media::stack(opts).await;
+    let app = &stack.app;
+
+    let mut runs: Vec<Duration> = Vec::with_capacity(INVOICE_RUNS);
+    for run in 0..INVOICE_RUNS {
+        // Each run in its own property, so its serials and folio are its own.
+        let stay = StayFolio::new(app, &format!("owner{run}@example.com"), &format!("GAL{run}")).await;
+        let folio = stay.folio(app).await;
+        for _ in 0..5 {
+            assert_eq!(stay.charge(app, folio).await.status, StatusCode::CREATED);
+        }
+        let due = stay.folios(app).await["data"]["folios"][0]["balances"][0]["amount"].as_i64().unwrap();
+        let payment = json!({"method": "cash", "amount": due, "currency": "LKR"});
+        post(app, &stay.owner, &format!("{}/folios/{folio}/payments", stay.path), payment).await;
+
+        let issued = media::post(app, &stay.owner, &format!("{}/folios/{folio}/invoice", stay.path), json!({})).await;
+        let started = Instant::now();
+        assert_eq!(issued.status, StatusCode::CREATED, "{:?}", issued.body);
+        let invoice = uuid(&issued.body["id"]);
+        loop {
+            let key: Option<String> = sqlx::query_scalar("select pdf_key from invoice where id = $1")
+                .bind(invoice)
+                .fetch_one(&superuser)
+                .await
+                .unwrap();
+            if key.is_some() {
+                break;
+            }
+            assert!(started.elapsed() < Duration::from_secs(60), "run {run}: the PDF was not ready in 60 s");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let elapsed = started.elapsed();
+        println!("invoice PDF, run {}: ready {elapsed:?} after the issue returned", run + 1);
+        runs.push(elapsed);
+    }
+
+    runs.sort();
+    let median = runs[INVOICE_RUNS / 2];
+    println!("invoice issue to pdf_key set, median of {INVOICE_RUNS}: {median:?}");
+    assert!(median < Duration::from_secs(2), "median {median:?} is over the 2 s gate");
 }
