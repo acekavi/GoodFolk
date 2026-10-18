@@ -10,7 +10,7 @@ Multi-tenant, cloud-hosted hotel property management system.
 | Path | Contents |
 |---|---|
 | `crates/core-api` | axum HTTP API (REST commands, GraphQL reads, server-sent events) |
-| `crates/media-svc` | The media service: verifies uploads over gRPC and makes the archive and renditions in worker subprocesses (no database) |
+| `crates/media-svc` | The media service: verifies uploads over gRPC, makes the archive and renditions in worker subprocesses, and renders invoice PDFs with Typst (no database) |
 | `crates/imaging` | The image pipeline: decode, upright, sRGB, resize, AVIF and WebP, the JPEG XL archive, the SSIMULACRA2 quality gate |
 | `crates/storage` | S3 operations (presigned multipart, signed GET, put/get/head/delete) and the dev bucket setup |
 | `crates/events` | The transactional outbox, its relay and the event bus (`PushBus`, `PubSubBus`) |
@@ -18,7 +18,7 @@ Multi-tenant, cloud-hosted hotel property management system.
 | `crates/proto`, `crates/media-types` | The media gRPC contract (compiled with `protox`, no `protoc`), and the job and result types core-api and media-svc share |
 | `crates/db` | Postgres pool, migrations, tenant-scoped transactions, change events |
 | `crates/domain` | Pure business rules with no I/O of their own, shared by callers instead of re-derived (the reservation-room state machine) |
-| `modules/*` | Domain modules (`identity`, `property`, `rooms`, `rates`, `reservations`, `housekeeping`, …) |
+| `modules/*` | Domain modules (`identity`, `property`, `rooms`, `rates`, `reservations`, `housekeeping`, `folio`, `tax`, `fx`, …) |
 | `migrations/` | SQL migrations, applied by `core-api migrate` |
 | `web/pms` | SvelteKit staff app (single-page), and the installable housekeeper app under `/hk` |
 
@@ -107,6 +107,10 @@ Run by hand, because shared CI machines make timings noisy, and one at a time (`
 # POST .../media/uploads, including the gRPC call to media-svc: p95 under 50 ms
 # a 12 MP JPEG is ready in under 5 s from complete (all renditions and the archive); this one runs the release
 # media-svc, so build it first: cargo build --release -p media-svc
+# POST .../folios/{id}/charges with the Sri Lanka taxes: p95 under 30 ms
+# post_business_date_charges for 200 rooms at about 80% occupancy (160 stays, each in its own transaction): under 3 s
+# folios for a stay folio of 200 taxed lines: p95 under 30 ms
+# an invoice's PDF is ready (pdf_key set) in under 2 s from the issue response; this one runs the release media-svc too
 DATABASE_URL=$DATABASE_OWNER_URL cargo test --release -p core-api --test perf -- --ignored --nocapture --test-threads=1
 
 # the month grid for the same property renders in under 60 ms and scrolls at 60 fps (see End-to-end tests;
@@ -123,7 +127,7 @@ cd web/pms && E2E_PERF=1 E2E_DATABASE_URL=... bun run test:e2e --grep @perf
 
 ### End-to-end tests
 
-Playwright (`web/pms/tests/e2e`) drives the production build against a real API and Postgres. It starts them itself: the API on port 18080 (`cargo run -p core-api`), `media-svc` on port 8090 (`cargo run -p media-svc`) and `vite preview` on port 4173. It cannot start RustFS: run that first (see Media services) with the buckets created, and the suite stops at once if nothing answers on :9000. Give it a migrated database of its own, so test accounts never land in your development data:
+Playwright (`web/pms/tests/e2e`) drives the production build against a real API and Postgres. It starts them itself: the API on port 18080 (`cargo run -p core-api`, with `FX_IMPORT=off`, so the tests never fetch the Central Bank's page and each test property is given its own exchange rates), `media-svc` on port 8090 (`cargo run -p media-svc`; it renders the invoice PDFs) and `vite preview` on port 4173. It cannot start RustFS: run that first (see Media services) with the buckets created, and the suite stops at once if nothing answers on :9000. Give it a migrated database of its own, so test accounts never land in your development data:
 
 ```sh
 # once: create and migrate a database for the tests (psql, or any Postgres client)
@@ -313,6 +317,76 @@ This script reuses the hotel from [Trying housekeeping by hand](#trying-housekee
     The archive is about 20 % smaller than the JPEG. A PNG or WebP becomes a lossless JPEG XL of its pixels instead (`djxl archive.jxl out.png`), a guest PDF is kept as `archive.pdf`, and a JPEG cjxl cannot transcode (CMYK, for one) is kept as uploaded in `archive.jpg`. The delivered AVIF and WebP files carry no EXIF at all (no location), though the archive keeps every byte.
 13. The sweep. Once a day core-api cleans up after the media engine, under an advisory lock so that only one instance does it: guest documents more than a year old whose guest has no stay in the last 365 days or later (audited as `guest_document.deleted`), assets nothing links to after 24 hours (the photos you removed in step 5) with their files, uploads left `uploading` for 24 hours, assets `processing` for more than an hour (marked `failed`, `Processing timed out`), and outbox and receiver-dedupe rows after 7 and 30 days. There is no command or endpoint to run it by hand: it starts when core-api starts (it logs `media sweep done` with the counts, at the default `info` level) and then every 24 hours, checking hourly. So restarting core-api runs it, but everything it deletes is a day or a year old; nothing you did in this script is old enough yet, and the sweep is covered by its tests (`modules/media/tests/sweep.rs`) rather than by hand. To see it remove something, backdate a removed photo's `media_asset.created_at` by two days in the database, then restart core-api and read that log line.
 
+### Trying folios by hand
+
+This script reuses the hotel from [Trying housekeeping by hand](#trying-housekeeping-by-hand) (property `HKP`, `BAR` at `100.00` a night in USD, the in-house `HKP-000002`, the owner `owner@example.com` and the housekeeper `mala@example.com`), and needs the media services from Development, because media-svc renders the invoice PDFs and core-api refuses to start without `PUSH_ENDPOINT_INVOICE_RENDER`. Use a second browser profile or private window for the housekeeper. The business date does not roll before Phase 7b's night audit, so everything happens on one day.
+
+1. Start the services and apply the migrations (through `0026`), as the schema owner. The migration gives the existing property the Sri Lanka tax rules and the default accepted currencies (`LKR`, `USD`, `EUR`, `GBP`):
+
+   ```sh
+   docker compose up -d postgres              # or your own Postgres on :5432
+   deploy/dev/rustfs.sh start
+   cargo run -p storage --example ensure-buckets
+   cargo run -p core-api -- migrate
+   cargo run -p core-api              # http://localhost:8080
+   cargo run -p media-svc             # http://localhost:8090
+   cd web/pms && bun run dev          # http://localhost:5173
+   ```
+
+   (Each in its own shell with the exports from Development.) core-api imports exchange rates as it starts; step 4 looks at the result. To keep the rates entirely in your own hands, start core-api with `FX_IMPORT=off`.
+2. Tax settings. Sign in as `owner@example.com`, open **Taxes** under **Settings:** in the property nav and, under **Tax settings**, tick **VAT-registered**, set **TIN** to `123456789-7000`, **Legal name** to `HKP Hotels (Pvt) Ltd` and **Address** to `12 Galle Road, Colombo 3`, then **Save settings** (`Saved.`). Only the owner can change them; anyone else who may see folios gets the page read-only. Under **Tax rules** the table `Rules from 2026-01-01` holds the preset: `SC` 10% (on `pos:*` only), `TDL` 1%, `SSCL` 2.5% and `VAT` 18%, with `VAT`'s condition `vat_registered`, which the tick you just made satisfies. Every charge below is taxed with these rules on its business date.
+3. Outlets. Open **Outlets** and under **Add an outlet** give Code `BAR`, Name `Bar`, service charge ticked, **Add outlet**. The code can never change; the name can (**Edit BAR**).
+4. Exchange rates. Open **Exchange rates**. With a network, the start-up import has put today's Central Bank TT selling rate in the `USD` table, with source `cbsl`. Without one (or if the bank changed its page) the page and every other owner and manager page carry a banner `Exchange rates: …`, and a USD charge is refused with `409` `No exchange rate for USD on <date>` until a rate exists. Either way, set one by hand so the figures below are checkable: **Set a rate** with today's date, currency `USD`, rate `300`, **Set rate** (`… is now 300`). A manual rate replaces the imported one for that day, and a later import does not undo it. Only the owner and managers (`FxOverride`) can.
+5. A deposit. On **Reservations**, **New reservation**: today, 3 nights, 2 adults, non-resident, the `BAR · Room only` offer for `DLX` (`USD 300.00`), a new guest, no account, **Create reservation** (`HKP-000003` if you followed the scripts above). In the modal open **Folios**: there is a **Deposit** tab and a **Room 101** tab (the room it was given). On **Deposit** click **Take payment**, leave Method `Cash`, Amount `5,000`, currency `LKR`, **Take payment**: the balance reads `LKR -5,000.00 in credit`. Now **Check in** (room `101` may still be `Dirty` after the housekeeping script, which refuses it: set it `Clean` on **Housekeeping** first). Reopen **Folios**: **Deposit** reads `settled` and its payment is `Moved`, and **Room 101** now holds the credit, `LKR -5,000.00 in credit`. The deposit moved to the stay at its first check-in, as a pair of `Moved` payments that carry the same base amounts.
+6. Tonight's charges. On **Reservations**, click **Post tonight's charges** and accept the prompt: `Charges for <date>: 2 lines posted for 2 stays; 0 already posted.` (one stay for each checked-in reservation; `HKP-000002` is the other). Click it again: `0 lines posted for 2 stays; 2 already posted.` A night is posted once, because its line carries a posting key (`room:<stay>:<date>`). Back on **Room 101**, the room night is one line, `USD 122.17` in all: `USD 100.00` net plus `1.00` TDL, `2.53` SSCL (2.5% of 101.00 is 2.525, rounded half up) and `18.64` VAT (18% of 103.53), with no service charge, which the preset charges only on outlets. Balances reads `USD 122.17 (LKR 36,651.00)` and the LKR credit. If a stay has no rate for its currency it is listed under `could not be posted` and the others still post.
+7. A manual charge. On **Room 101**, **Post charge**: Category `Miscellaneous`, Description `Minibar`, Quantity `1`, Unit price before taxes `10,000`, Currency `LKR`, **Post charge**. Click **Taxes** on its line and check it against the cascade in [ARCHITECTURE.md §7.6.2](docs/ARCHITECTURE.md) (order A, without the service charge, since `misc` is not an outlet): Net `LKR 10,000.00`, Tourism development levy 1% `100.00`, Social security contribution levy 2.5% `252.50` (of 10,100.00), Value added tax 18% `1,863.45` (of 10,352.50), and `12,215.95` on the line. Charges are never negative: a mistake is corrected by reversing the line (step 10).
+8. A POS bill. The POS contract is REST only, so use `curl` (the owner may post bills, as may a manager or a POS service user added with `add-staff`; the front desk may not). Sign in once and find the ids (the development owner is a superuser, so this needs no tenant):
+
+   ```sh
+   API=http://localhost:8080
+   curl -s -c /tmp/gf-jar -H 'x-goodfolk-csrf: 1' -H 'content-type: application/json' \
+     -d '{"email":"owner@example.com","password":"<the owner password>"}' $API/api/v1/auth/login
+   export DATABASE_OWNER_URL=postgres://goodfolk_owner:goodfolk_owner_dev@localhost:5432/goodfolk
+   eval "$(bun -e 'const sql = new Bun.SQL(process.env.DATABASE_OWNER_URL); const [r] = await sql`select rr.property_id, rr.id from reservation_room rr join reservation r on r.id = rr.reservation_id where r.confirmation_no = ${"HKP-000003"}`; console.log(`PROPERTY=${r.property_id} STAY=${r.id}`); await sql.close()')"
+   ```
+
+   Then post a Rs. 10,000.00 bar bill to the stay (amounts are minor units: `1000000`). Every money create needs an `Idempotency-Key` of 8 to 200 characters:
+
+   ```sh
+   bill() { curl -s -w '\n%{http_code}\n' -b /tmp/gf-jar -H 'x-goodfolk-csrf: 1' -H 'content-type: application/json' \
+     -H "Idempotency-Key: $1" -d "$2" $API/api/v1/properties/$PROPERTY/pos-bills; }
+   B1='{"outlet":"BAR","bill_no":"B-1","currency":"LKR","items":[{"description":"Club sandwich","quantity":1,"unit_net":1000000}],"target":{"reservation_room":"'$STAY'"}}'
+   B1X='{"outlet":"BAR","bill_no":"B-1","currency":"LKR","items":[{"description":"Club sandwich","quantity":1,"unit_net":900000}],"target":{"reservation_room":"'$STAY'"}}'
+   bill pos-key-0001 "$B1"        # 201: the bill, with its id
+   bill pos-key-0001 "$B1"        # 201 again: the stored first response, replayed
+   bill pos-key-0002 "$B1"        # 200: a new key, but the bill (outlet BAR, number B-1) is already posted; same id, nothing posted
+   bill pos-key-0003 "$B1X"       # 409: a different bill under the same number
+   ```
+
+   On **Room 101** there is one `Club sandwich` line, `Bar (POS)`. Its taxes are the worked example of ARCHITECTURE §7.6.2: Net `10,000.00`, Service charge 10% `1,000.00`, TDL `100.00`, SSCL `277.50`, VAT `2,047.95`, `13,425.45` in all. A bill settled at the outlet instead (`"target":{"settled":{"method":"cash"}}`) is recorded with its payment and attached to no folio; it shows in the audit rows (step 14), not in any folio.
+9. A USD payment. On **Room 101**, **Take payment**: Method `Cash`, Amount `130`, currency `USD`, **Take payment**. The USD balance is now `-7.83` in credit: `130.00` less the `122.17` owed. The payment is stored in USD with its LKR equivalent at the rate on the business date, and an optional **Evidence** note (a bank encashment receipt, say) can be attached. A card terminal payment asks for the approval code, last four digits and brand, and refuses anything that looks like a card number.
+10. Corrections. **Refund**: choose the `Cash USD 130.00` payment, Amount `7.83`, **From folio** `Room 101`, Reason `Overpaid`, **Refund**. The payment table gains a negative `Cash` row and USD reads `settled`; a refund is a negative payment in the same currency and method, at the original rate, and all of a payment's refunds can never exceed it. Then **Post charge** `Mistaken charge`, `Miscellaneous`, `100` LKR, and on its line **Reverse** (`Why reverse Mistaken charge?` → `Entered twice`, **Reverse line**): the line is tagged `Reversed` and an equal negative line with negated taxes sits under it. Lines and payments are never edited or deleted (the app's database role has no grant to), so these are the only corrections, and a line can be reversed once.
+11. Routing, an account and a transfer. Reopen the modal and set **Billed account** to `Acme Corp` (add it on **Accounts** if the earlier script did not: kind `Company`, currency `USD`). A reservation billed at booking would route `Room` and `Meal plan` to the account by default; this one was not, so click **Routing**, tick `Bar (POS)`, **Save routing**. Only charges posted from now on follow it. Post another bill, which now lands on the account's folio, not the room's:
+
+    ```sh
+    bill pos-key-0004 '{"outlet":"BAR","bill_no":"B-2","currency":"LKR","items":[{"description":"Iced tea","quantity":2,"unit_net":25000}],"target":{"reservation_room":"'$STAY'"}}'
+    ```
+
+    The **Folios** tab now has an `Account · Acme Corp` tab (`This company's ledger is shared`) with the `Iced tea` line, and **Accounts** has a **Folio of Acme Corp** button for the same ledger. The account folio is the city ledger, one per account and property, created by its first charge. Back on **Room 101**, **Transfer** on the `Club sandwich` line: To folio `Account · Acme Corp`, Reason `Company pays the bar`, **Transfer line**. The room's line is now `Reversed` and the account's carries `Moved from another folio`; both have the same `transfer_id` and were written in one transaction. A transfer stays inside the reservation's own folios (its deposit, its account, its stays) and the same property.
+12. Settle and invoice. **Room 101** now owes `LKR 7,215.95`: the minibar's `12,215.95` less the deposit's `5,000.00`. **Take payment** that amount in `LKR` cash, until Balances reads `settled` in both currencies. Before that **Issue invoice** is disabled with `Settle the balance first: …`. Click it: the serial `HKP-<year>-000001` appears with `Preparing PDF…`, which turns into **View invoice** by itself within a couple of seconds (media-svc renders the PDF with Typst and core-api is told over `/internal/events`), and the folio reads `Invoiced: it takes no charges or payments until a credit note reopens it`. **View invoice** opens the PDF from a link that lasts 5 minutes. It reads `TAX INVOICE` (the property is VAT-registered; otherwise `INVOICE`), `HKP Hotels (Pvt) Ltd` with its address and TIN, the serial, the supply period, every line and each on-bill tax with its rate, and **every value in whole rupees**: the USD room night in LKR with `USD 122.17` shown beside it for reference, the reversed line and its reversal as an exact mirrored pair, the total (`LKR 48,867` here: the lines' LKR equivalents sum to 48,866.95, rounded once) and the amount in words, `Forty-Eight Thousand Eight Hundred Sixty-Seven Rupees Only`. The lines' whole-rupee figures are shared out so they add up to the total exactly. A VAT-registered property with no TIN cannot issue (`Set the property's TIN before issuing a tax invoice`), and the refusal consumes no number.
+13. A credit note. On the invoice, **Credit note**, reason `Wrong purchaser`, **Issue credit note**: `CN-HKP-<year>-000001` is listed, its PDF shows the invoice's figures as negatives (`Minus … Rupees Only`), and the folio is open again. Click **Issue invoice** again: the next serial, `HKP-<year>-000002`. Serials are gapless per property, a failed issue gives its number back, and an invoice can be credited once. The invoice series does not restart with the year.
+14. The audit. Every money command writes an audit row. There is no `psql` here; Bun's built-in client does the same:
+
+    ```sh
+    bun -e 'const sql = new Bun.SQL(process.env.DATABASE_OWNER_URL); console.table(await sql`select at, action, entity_id from audit_log where action ~ ${"^(folio|invoice|pos|outlet|fx|tax_rule|property.tax|reservation.routing)"} order by at desc limit 40`); await sql.close()'
+    ```
+
+    You should see, newest first, `invoice.issued`, `invoice.credited`, `invoice.viewed` (one for each **View invoice**), `folio.line_transferred`, `reservation.routing_set`, `pos.bill_posted` (one row for each bill posted, none for the replays), `folio.refunded`, `folio.line_reversed`, `folio.payment_taken`, `folio.charge_posted`, `folio.business_date_posted`, `folio.deposit_moved`, `fx.overridden`, `outlet.created` and `property.tax_settings_updated`. As in the media script, the development owner is a superuser, so row-level security does not hide other tenants' rows.
+15. Early check-out. Open `HKP-000003` and **Check out…**: `Checking out today releases 2 nights (<tomorrow>, <the day after>).` **Check out**: `Checked out. Released 2 nights …`, and room `101` is `Dirty` again. Check-out first posts any night stayed that is not posted yet (none here: step 6 posted tonight), then reverses the lines already posted for the nights it releases, with the reason `Night released at early check-out`. **That reversal cannot be seen by hand**: only the business date's own charges can be posted, the business date cannot move before Phase 7b, and the released nights are all later than it, so none is posted yet. It is covered by `an_early_check_out_reverses_tonights_posted_charges` in `modules/reservations/tests/posting.rs`, which moves the business date in the test. A release that would reverse a line on an invoiced folio is refused (`a_released_night_on_an_invoiced_folio_refuses_the_check_out`), so credit the invoice first.
+16. A housekeeper. In the other profile sign in as `mala@example.com` and open `http://localhost:5173/p/<property>/reservations/<reservation id>` (the address of the modal): the reservation and its history show, but there is no **Folios** tab, and the page never asks for folios. Only `FolioView` (owner, manager, front desk, accountant) opens them; a housekeeper's `curl` to a folio command answers `403`. The folios of other roles are covered by the permission matrix in [api-conventions.md](docs/design/api-conventions.md).
+
+Not exercised here: the Central Bank import's daily 10:30 run (see [Exchange rates](#exchange-rates)), refunding a POS bill settled at an outlet (not supported: it is attached to no folio), cancellation fees (cancel a room with a penalty policy and the fee posts to the **Deposit** folio, once per room), and gateway payments (Phase 7c).
+
 ### Configuration
 
 The API (`core-api serve`) reads:
@@ -330,6 +404,12 @@ The API (`core-api serve`) reads:
 | `FX_IMPORT` | `on` (default) or `off`: whether `serve` imports the Central Bank's exchange rates, once at start-up and then daily from 10:30 `Asia/Colombo` (checking hourly, under an advisory lock so one instance imports). An operations switch, allowed in production too: with `off`, rates are set by hand (`PUT …/fx-rates/{date}/{currency}`). The end-to-end suite sets `off`. |
 
 `core-api migrate` reads `DATABASE_OWNER_URL` (the schema owner) instead.
+
+#### Exchange rates
+
+Charges and payments in a foreign currency are converted to the property's base currency (LKR) at the latest rate dated on or before their business date, so each property needs a USD rate (and one for each other accepted currency) before it can post one; without it the posting is refused with `409` `No exchange rate for USD on <date>`. core-api's rate task (`FX_IMPORT`, on by default) runs once when `serve` starts and then every day from 10:30 `Asia/Colombo`, checking hourly. It fetches the Central Bank of Sri Lanka's telegraphic transfer (TT) selling rate for each accepted currency of every property whose base currency is LKR, from the bank's published `exrates_resultstt.php` form, which has no official API, and stores it under today with the date the bank published it (`source_date`: a weekend or holiday keeps the last working day's rate and says so). Only one core-api instance imports at a time (an advisory lock). The bank publishes nine currencies (`AUD`, `CAD`, `CHF`, `CNY`, `EUR`, `GBP`, `JPY`, `SGD`, `USD`); any other accepted currency, and a property whose base is not LKR, gets no import and needs its rates entered by hand.
+
+If the page cannot be reached, its layout has changed, a currency is missing or the newest rate is more than five days old, core-api logs an error and sets an alert for the property, which owners and managers see as a banner until a later complete import clears it. A rate is never stored without the date the bank really published it, so an old one cannot pass as today's. Owners and managers set a rate for any date by hand on **Exchange rates** (or `PUT /api/v1/properties/{property}/fx-rates/{date}/{currency}` with `{"rate": "301.25"}`); that is audited as `fx.overridden`, replaces the imported rate for the day, and is not undone by a later import. The end-to-end suite starts core-api with `FX_IMPORT=off` and gives each test property its own rates. Phase 7b moves the task to `jobs-svc` and locks each day's rates at the night audit.
 
 #### Media engine (core-api and media-svc)
 
