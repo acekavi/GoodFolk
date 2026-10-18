@@ -192,3 +192,30 @@ async fn a_key_used_in_another_property_is_a_conflict_not_a_second_line(_: PgPoo
     assert_eq!(message, "the posting key is used in another property");
     assert!(hotel.lines_on(&[here.guests[0]]).await.is_empty());
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn routing_reads_the_rules_its_account_follows(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let (acme, globex) = (hotel.account().await, hotel.account().await);
+    let (billed, unbilled) = (hotel.book(Some(acme)).await, hotel.book(None).await);
+    let hotel = &hotel;
+    let read = |reservation: Uuid| async move {
+        let mut tx = hotel.tx().await;
+        folio::routing(&mut tx, hotel.property, reservation).await
+    };
+
+    assert_eq!(read(unbilled.id).await.unwrap(), Vec::<String>::new());
+    hotel.route(billed.id, &["room", "pos:BAR", "laundry"]).await.unwrap();
+    assert_eq!(read(billed.id).await.unwrap(), vec!["laundry", "pos:BAR", "room"]);
+
+    let mut tx = hotel.tx().await;
+    sqlx::query("update reservation set account_id = $2 where id = $1")
+        .bind(billed.id)
+        .bind(globex)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(read(billed.id).await.unwrap(), Vec::<String>::new(), "a former account's rules route nothing");
+    assert!(matches!(read(Uuid::now_v7()).await, Err(FolioError::NotFound("reservation"))));
+}

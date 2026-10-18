@@ -837,6 +837,11 @@ type Query {
 	"""
 	folios(propertyId: UUID!, reservationId: UUID, reservationRoomId: UUID, accountId: UUID): [FolioNode!]!
 	"""
+	The categories of the reservation's stays that its account pays (its routing), sorted; empty when it has no
+	account or routes nothing. Charges of every other category go to the stays' guest folios.
+	"""
+	routing(propertyId: UUID!, reservationId: UUID!): [String!]!
+	"""
 	The property's tax rules, ended or not, in calculation order then by start date.
 	"""
 	taxRules(propertyId: UUID!): [TaxRuleNode!]!

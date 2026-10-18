@@ -153,3 +153,20 @@ dialog {
 	background: var(--bg);
 	color: var(--text);
 }
+
+/* The folio forms, over the reservation modal; full width on a phone. */
+dialog.folio-dialog {
+	width: min(28rem, calc(100vw - 2rem));
+	max-height: calc(100vh - 2rem);
+	overflow: auto;
+}
+
+dialog.folio-dialog::backdrop {
+	background: rgb(0 0 0 / 0.4);
+}
+
+.form .amount {
+	display: grid;
+	grid-template-columns: 1fr auto;
+	gap: var(--space);
+}

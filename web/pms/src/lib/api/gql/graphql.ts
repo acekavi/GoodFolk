@@ -24,6 +24,17 @@ export type DocumentKind =
   | 'OTHER'
   | 'PASSPORT';
 
+/** Whose charges a folio holds: one stay's, an account's (the city ledger) or a reservation's deposits. */
+export type FolioKind =
+  | 'ACCOUNT'
+  | 'DEPOSIT'
+  | 'GUEST';
+
+/** An invoiced folio takes no lines or payments until a credit note reopens it. */
+export type FolioStatus =
+  | 'INVOICED'
+  | 'OPEN';
+
 export type IdDocType =
   | 'DRIVING_LICENCE'
   | 'NIC'
@@ -33,6 +44,10 @@ export type IdDocType =
 export type ImageFormat =
   | 'AVIF'
   | 'WEBP';
+
+export type InvoiceKind =
+  | 'CREDIT_NOTE'
+  | 'INVOICE';
 
 /** How urgent a room issue is. */
 export type IssueSeverity =
@@ -44,6 +59,17 @@ export type IssueSeverity =
 export type IssueStatus =
   | 'OPEN'
   | 'RESOLVED';
+
+/** What posted a line. */
+export type LineSource =
+  | 'ADJUSTMENT'
+  | 'CANCELLATION_FEE'
+  | 'LAUNDRY'
+  | 'MANUAL'
+  | 'MEAL_PLAN'
+  | 'NO_SHOW_FEE'
+  | 'POS'
+  | 'ROOM';
 
 export type MealPlan =
   | 'BB'
@@ -158,6 +184,11 @@ export type Source =
   | 'IBE'
   | 'PHONE';
 
+/** `ON_BILL` taxes are added to the line's total; `ABSORBED` ones are calculated but borne by the property. */
+export type TaxPresentation =
+  | 'ABSORBED'
+  | 'ON_BILL';
+
 export type ViolationKind =
   | 'CLOSED'
   | 'CLOSED_TO_ARRIVAL'
@@ -181,6 +212,29 @@ export type AccountsQueryVariables = Exact<{
 
 
 export type AccountsQuery = { accounts: Array<{ id: string, kind: AccountKind, name: string, creditLimit: number | null, currency: string, active: boolean, version: number, contact: { email: string | null, phone: string | null, address: string | null, contactName: string | null } }> };
+
+export type FoliosQueryVariables = Exact<{
+  propertyId: string;
+  reservationId: string;
+}>;
+
+
+export type FoliosQuery = { folios: Array<{ id: string, kind: FolioKind, status: FolioStatus, reservationRoomId: string | null, reservationId: string | null, accountId: string | null, version: number, linesOmitted: boolean, truncated: boolean, lines: Array<{ id: string, source: LineSource, category: string, description: string, quantity: number, net: number, total: number, currency: string, baseTotal: number, businessDate: string, reverses: string | null, reason: string | null, transferId: string | null, postedAt: string, taxes: Array<{ code: string, name: string, rateBp: number, amount: number, presentation: TaxPresentation }> }>, payments: Array<{ id: string, method: string, amount: number, currency: string, baseAmount: number, details: unknown, evidence: string | null, refundOf: string | null, businessDate: string, transferId: string | null, takenAt: string }>, balances: Array<{ currency: string, amount: number, baseAmount: number }>, invoices: Array<{ id: string, kind: InvoiceKind, serial: string, totalLkr: number, issuedAt: string, credits: string | null, pdfReady: boolean }> }> };
+
+export type FolioContextQueryVariables = Exact<{
+  propertyId: string;
+}>;
+
+
+export type FolioContextQuery = { propertyTaxSettings: { baseCurrency: string, acceptedCurrencies: Array<string> }, outlets: Array<{ code: string, name: string, active: boolean }> };
+
+export type RoutingQueryVariables = Exact<{
+  propertyId: string;
+  reservationId: string;
+}>;
+
+
+export type RoutingQuery = { routing: Array<string> };
 
 export type GuestDocumentsQueryVariables = Exact<{
   propertyId: string;
@@ -419,6 +473,89 @@ export const AccountsDocument = new TypedDocumentString(`
   }
 }
     `, {"hash":"sha256:0991236e571c94b801691aefc5b9a85c0c1372010a662f1ee98f155b11a7e2d8"}) as unknown as TypedDocumentString<AccountsQuery, AccountsQueryVariables>;
+export const FoliosDocument = new TypedDocumentString(`
+    query Folios($propertyId: UUID!, $reservationId: UUID!) {
+  folios(propertyId: $propertyId, reservationId: $reservationId) {
+    id
+    kind
+    status
+    reservationRoomId
+    reservationId
+    accountId
+    version
+    linesOmitted
+    truncated
+    lines {
+      id
+      source
+      category
+      description
+      quantity
+      net
+      total
+      currency
+      baseTotal
+      businessDate
+      reverses
+      reason
+      transferId
+      postedAt
+      taxes {
+        code
+        name
+        rateBp
+        amount
+        presentation
+      }
+    }
+    payments {
+      id
+      method
+      amount
+      currency
+      baseAmount
+      details
+      evidence
+      refundOf
+      businessDate
+      transferId
+      takenAt
+    }
+    balances {
+      currency
+      amount
+      baseAmount
+    }
+    invoices {
+      id
+      kind
+      serial
+      totalLkr
+      issuedAt
+      credits
+      pdfReady
+    }
+  }
+}
+    `, {"hash":"sha256:b4dca78ec04443ff22b67c167d7bd9df447497b803190dac1288ee89e05630a0"}) as unknown as TypedDocumentString<FoliosQuery, FoliosQueryVariables>;
+export const FolioContextDocument = new TypedDocumentString(`
+    query FolioContext($propertyId: UUID!) {
+  propertyTaxSettings(propertyId: $propertyId) {
+    baseCurrency
+    acceptedCurrencies
+  }
+  outlets(propertyId: $propertyId) {
+    code
+    name
+    active
+  }
+}
+    `, {"hash":"sha256:599dd5320b801b195ded860016a66bc359b295fa4d42aae2125c0c35647bce54"}) as unknown as TypedDocumentString<FolioContextQuery, FolioContextQueryVariables>;
+export const RoutingDocument = new TypedDocumentString(`
+    query Routing($propertyId: UUID!, $reservationId: UUID!) {
+  routing(propertyId: $propertyId, reservationId: $reservationId)
+}
+    `, {"hash":"sha256:7a387f46ad872697cd13ef07b4a15fc159b3e3dc107858f565214dd36066e72f"}) as unknown as TypedDocumentString<RoutingQuery, RoutingQueryVariables>;
 export const GuestDocumentsDocument = new TypedDocumentString(`
     query GuestDocuments($propertyId: UUID!, $guestId: UUID!) {
   guestDocuments(propertyId: $propertyId, guestId: $guestId) {

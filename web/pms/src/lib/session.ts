@@ -40,7 +40,21 @@ const ACTIONS = {
 	/** Upload, reorder, caption and remove gallery photos; mirrors `MediaManage`. */
 	mediaManage: ['owner', 'manager'],
 	/** Upload, view and delete guests' ID documents; mirrors `GuestDocumentsManage`. */
-	guestDocumentsManage: ['owner', 'manager', 'front_desk']
+	guestDocumentsManage: ['owner', 'manager', 'front_desk'],
+	/** Folios, lines, payments and invoices; mirrors `FolioView`. */
+	folioView: ['owner', 'manager', 'front_desk', 'accountant'],
+	/** Charges and payments; mirrors `FolioPost`. */
+	folioPost: ['owner', 'manager', 'front_desk'],
+	/** Reversals, transfers, refunds, routing, credit notes and tonight's charges; mirrors `FolioAdjust`. */
+	folioAdjust: ['owner', 'manager'],
+	/** Issue invoices and open their PDFs; mirrors `InvoiceIssue`. */
+	invoiceIssue: ['owner', 'manager', 'front_desk', 'accountant'],
+	/** Tax rules, outlets and the property's tax settings; mirrors `TaxSettingsManage`. */
+	taxSettingsManage: ['owner'],
+	/** Manual exchange rates; mirrors `FxOverride`. */
+	fxOverride: ['owner', 'manager'],
+	/** POS bills; mirrors `PosPost`. */
+	posPost: ['owner', 'manager']
 } satisfies Record<string, Role[]>;
 
 /** UI hint only; the API enforces permissions. A grant counts tenant-wide or for `propertyId`. */

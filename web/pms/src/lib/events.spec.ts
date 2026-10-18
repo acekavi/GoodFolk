@@ -1,6 +1,7 @@
 import { QueryClient } from '@tanstack/svelte-query';
 import { describe, expect, it, vi } from 'vitest';
 import { applyEvent } from './events';
+import { foliosKey } from './folio';
 import { addDays } from './inventory';
 import { tapeKey, tileStartFor, unassignedKey } from './tape';
 
@@ -105,5 +106,18 @@ describe('applyEvent', () => {
 
 			expect(invalidated(client, key)).toBe(true);
 		});
+	});
+
+	it('refetches the folios of every reservation holding the folio of a folio event', () => {
+		const client = new QueryClient();
+		const holding = foliosKey('p1', 'r1', null);
+		const other = foliosKey('p1', 'r2', 'a1');
+		client.setQueryData(holding, [{ id: 'f1' }, { id: 'f2' }]);
+		client.setQueryData(other, [{ id: 'f3' }]);
+
+		applyEvent(client, 'invalidate', '["folio:f2"]');
+
+		expect(client.getQueryState(holding)?.isInvalidated).toBe(true);
+		expect(client.getQueryState(other)?.isInvalidated).toBe(false);
 	});
 });

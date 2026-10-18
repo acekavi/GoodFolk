@@ -120,4 +120,35 @@ describe('can', () => {
 			expect(can(grant(role), 'guestDocumentsManage', 'p1')).toBe(false);
 		}
 	});
+
+	it('mirrors the folio permissions exactly', () => {
+		const roles = [
+			'owner',
+			'manager',
+			'front_desk',
+			'accountant',
+			'housekeeping',
+			'hk_supervisor'
+		] as const;
+		const expected = {
+			folioView: ['owner', 'manager', 'front_desk', 'accountant'],
+			folioPost: ['owner', 'manager', 'front_desk'],
+			folioAdjust: ['owner', 'manager'],
+			invoiceIssue: ['owner', 'manager', 'front_desk', 'accountant'],
+			taxSettingsManage: ['owner'],
+			fxOverride: ['owner', 'manager'],
+			posPost: ['owner', 'manager']
+		} as const;
+		for (const [action, allowed] of Object.entries(expected)) {
+			for (const role of roles) {
+				expect(
+					can(profile([{ role }]), action as keyof typeof expected, 'p1'),
+					`${role} ${action}`
+				).toBe((allowed as readonly string[]).includes(role));
+			}
+		}
+		expect(can(profile([{ role: 'front_desk', property_id: 'p2' }]), 'folioView', 'p1')).toBe(
+			false
+		);
+	});
 });

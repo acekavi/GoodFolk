@@ -71,7 +71,7 @@ pub use pos::{
     create_outlet, list_outlets, post_pos_bill, update_outlet,
 };
 pub use posting::{PostReport, post_business_date_charges, post_unposted_nights, reverse_released_nights};
-pub use routing::{DEFAULT_ROUTING, follow_account_change, post_for_stay, set_routing};
+pub use routing::{DEFAULT_ROUTING, follow_account_change, post_for_stay, routing, set_routing};
 pub use rules::{
     PresetApplied, TaxRuleChanges, TaxRuleRow, apply_preset, create_tax_rule, end_tax_rule, list_tax_rules, load_rules,
     update_tax_rule,

@@ -890,3 +890,39 @@ async fn next(body: &mut axum::body::Body) -> String {
     let frame = tokio::time::timeout(StdDuration::from_secs(2), body.frame()).await.unwrap().unwrap().unwrap();
     String::from_utf8(frame.into_data().unwrap().to_vec()).unwrap()
 }
+
+/// A reservation's routing reads back as its account pays it, to folio viewers only.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_reservations_routing_is_read_by_folio_viewers(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "owner@example.com", "GAL").await;
+    let account = json!({"kind": "company", "name": "Acme Travel", "currency": "USD"});
+    let account = uuid(&post(&app, &hotel.owner, &format!("{}/accounts", hotel.path), account).await.body["id"]);
+    let (reservation, _) = hotel.book(&app, Some(account)).await;
+    let query = "query ($p: UUID!, $r: UUID!) { routing(propertyId: $p, reservationId: $r) }";
+    let vars = json!({"p": hotel.id, "r": reservation});
+
+    let read = graphql(&app, &hotel.owner, query, vars.clone()).await;
+    assert_eq!(read["data"]["routing"], json!(["meal_plan", "room"]), "{read:?}");
+    let path = format!("{}/reservations/{reservation}/routing", hotel.path);
+    let routed = app
+        .send_with(
+            Method::PUT,
+            &path,
+            Some(&hotel.owner),
+            Some(json!({"categories": ["room", "laundry"]})),
+            &[("x-goodfolk-csrf", "1")],
+        )
+        .await;
+    assert_eq!(routed.status, StatusCode::NO_CONTENT, "{:?}", routed.body);
+    let read = graphql(&app, &hotel.owner, query, vars.clone()).await;
+    assert_eq!(read["data"]["routing"], json!(["laundry", "room"]));
+
+    let accountant = app.staff(&hotel.superuser, &hotel.owner, "acc@example.com", "accountant").await;
+    assert_eq!(graphql(&app, &accountant, query, vars.clone()).await["data"]["routing"], json!(["laundry", "room"]));
+    let housekeeper = app.staff(&hotel.superuser, &hotel.owner, "hk@example.com", "housekeeping").await;
+    let refused = graphql(&app, &housekeeper, query, vars).await;
+    assert!(refused["errors"][0]["message"].as_str().unwrap().contains("permission"), "{refused:?}");
+    let missing = graphql(&app, &hotel.owner, query, json!({"p": hotel.id, "r": Uuid::now_v7()})).await;
+    assert!(!missing["errors"].as_array().unwrap().is_empty(), "{missing:?}");
+}

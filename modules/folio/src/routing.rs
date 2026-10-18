@@ -66,6 +66,24 @@ pub async fn set_routing(
     Ok(())
 }
 
+/// The categories of the reservation's stays that its account pays, sorted: the rules [`post_for_stay`] follows,
+/// so a rule naming a former account is left out. The reservation must be in `property` (`NotFound`).
+pub async fn routing(tx: &mut Tx, property: Uuid, reservation: Uuid) -> Result<Vec<String>, FolioError> {
+    sqlx::query_scalar(
+        "select coalesce(array_agg(rule.category order by rule.category)
+                             filter (where rule.category is not null), '{}')
+         from reservation r
+         left join routing_rule rule on rule.reservation_id = r.id and rule.account_id = r.account_id
+         where r.id = $1 and r.property_id = $2
+         group by r.id",
+    )
+    .bind(reservation)
+    .bind(property)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or(FolioError::NotFound("reservation"))
+}
+
 /// Follows a change of the reservation's account: re-points its routing rules, with the same categories, to
 /// `account`, or deletes them when `account` is `None`. Returns the categories affected, sorted. Neither locks nor
 /// audits: the caller holds the `reservation` row lock and audits the change as part of the reservation update.

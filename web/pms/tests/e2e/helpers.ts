@@ -29,13 +29,47 @@ export async function signUp(page: Page): Promise<{ email: string }> {
 	return { email };
 }
 
-/** Creates a property and waits for its page. */
+/**
+ * Creates a property and waits for its page, then gives it exchange rates (see `seedRates`), as every
+ * foreign-currency posting, cancellation and check-out needs one.
+ */
 export async function createProperty(page: Page, code: string): Promise<void> {
 	await page.getByRole('link', { name: 'Add a property' }).click();
 	await page.getByLabel('Code').fill(code);
 	await page.getByLabel('Name').fill(`Hotel ${code}`);
 	await page.getByRole('button', { name: 'Create property' }).click();
 	await expect(page.getByRole('heading', { name: `Hotel ${code}` })).toBeVisible();
+	await seedRates(page, page.url().split('/p/')[1]);
+}
+
+/** LKR per one unit, for the suite's own rates: the Central Bank is never asked in tests. */
+export const E2E_RATES = { USD: '300', EUR: '330', GBP: '390' } as const;
+
+/**
+ * Stores `E2E_RATES` for the property, dated a year before today so that they are in force on any business date
+ * a test reaches, as the schema owner (`E2E_OWNER_URL`) in the tenant's scope. Rates are per property, so this
+ * runs as each property is made rather than once in global setup.
+ */
+export async function seedRates(page: Page, propertyId: string): Promise<void> {
+	const me = await page.request.get('/api/v1/me');
+	expect(me.status(), await me.text()).toBe(200);
+	const tenant: string = (await me.json()).current_tenant;
+	runAsOwner(
+		`
+		const sql = new Bun.SQL(process.env.URL);
+		const rates = JSON.parse(process.env.RATES);
+		await sql.begin(async (tx) => {
+			await tx\`select set_config('app.tenant_id', \${process.env.TENANT}, true)\`;
+			for (const [currency, rate] of Object.entries(rates)) {
+				await tx\`insert into fx_rate (tenant_id, property_id, date, currency, rate_to_base, source, source_date)
+					values (\${process.env.TENANT}, \${process.env.PROPERTY}, current_date - 365, \${currency},
+						\${rate}::numeric, 'manual', current_date - 365)\`;
+			}
+		});
+		await sql.close();
+	`,
+		{ TENANT: tenant, PROPERTY: propertyId, RATES: JSON.stringify(E2E_RATES) }
+	);
 }
 
 /** Adds a room type on the Room types page, with an overbooking allowance of 0 unless given. */

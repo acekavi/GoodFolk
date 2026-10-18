@@ -2368,6 +2368,20 @@ impl Query {
         Ok(nodes)
     }
 
+    /// The categories of the reservation's stays that its account pays (its routing), sorted; empty when it has no
+    /// account or routes nothing. Charges of every other category go to the stays' guest folios.
+    async fn routing(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        reservation_id: Uuid,
+    ) -> async_graphql::Result<Vec<String>> {
+        let mut tx = scoped(ctx, Permission::FolioView, property_id).await?;
+        let categories = folio::routing(&mut tx, property_id, reservation_id).await.map_err(folio_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(categories)
+    }
+
     /// The property's tax rules, ended or not, in calculation order then by start date.
     async fn tax_rules(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<TaxRuleNode>> {
         let mut tx = scoped(ctx, Permission::FolioView, property_id).await?;
