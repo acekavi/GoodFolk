@@ -445,3 +445,50 @@ async fn an_early_check_out_reverses_a_released_night_routed_to_the_account(_: P
     .unwrap();
     assert_eq!(reversed_on, vec!["account".to_owned(); 2], "reversed where they were posted");
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_checked_in_stay_is_invoiced_only_once_its_nights_are_posted(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = hotel(opts, 1).await;
+    let stay = hotel.checked_in(None, vec![hotel.stay(&plans.bar, MealPlan::Ro, 0, 2)]).await.rooms[0].id;
+    let mut tx = hotel.tx().await;
+    let guest = folio::ensure_guest_folio(&mut tx, hotel.tenant, hotel.property, stay).await.unwrap();
+    tx.commit().await.unwrap();
+    let issue = || async {
+        let mut tx = hotel.tx().await;
+        let issued = folio::issue_invoice(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, guest).await;
+        tx.commit().await.unwrap();
+        issued
+    };
+
+    let refused = issue().await;
+    assert!(
+        matches!(&refused, Err(folio::FolioError::Conflict(message))
+            if message == "Post the stay's nights first: post tonight's charges or check out"),
+        "{refused:?}"
+    );
+
+    hotel.post(hotel.day(0)).await;
+    let query = folio::FolioQuery::Folio { property: hotel.property, folio: guest };
+    let view = folio::folios_for(&mut hotel.tx().await, query).await.unwrap().pop().unwrap();
+    let mut tx = hotel.tx().await;
+    for balance in view.balances {
+        let method = folio::Method::Cash;
+        folio::take_payment(
+            &mut tx,
+            hotel.tenant,
+            None,
+            hotel.property,
+            guest,
+            method,
+            balance.amount,
+            &balance.currency,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    let invoice = issue().await.unwrap();
+    assert_eq!(invoice.folio_id, guest, "tonight posted, the stay so far is invoiced");
+}

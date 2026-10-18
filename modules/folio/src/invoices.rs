@@ -144,7 +144,9 @@ async fn issuer(tx: &mut Tx, property: Uuid) -> Result<Issuer, FolioError> {
 /// "The folio must be settled before it is invoiced") and at least one line (`Conflict`, "Nothing to invoice"), in a
 /// property whose base currency is LKR (`Invalid`). A VAT-registered property needs its TIN set (`Conflict`). An
 /// invoice prints at most 2000 lines, 500 payments and 50 taxes, what media-svc renders (`Conflict`, "The folio has
-/// too many lines to invoice at once (at most 2000)"). Every refusal comes before the serial is taken.
+/// too many lines to invoice at once (at most 2000)"). A checked-in stay's guest folio needs the room charge of every
+/// night before `min(departure, business date + 1)` posted (`Conflict`, "Post the stay's nights first: post
+/// tonight's charges or check out"), so no night stayed is left off. Every refusal comes before the serial is taken.
 ///
 /// Locks the folio (`NotFound` unless it is in `property`), then takes the next `invoice` serial, snapshots the
 /// invoice data, marks the folio invoiced, audits `invoice.issued`, queues the `invoice-render` job and queues
@@ -163,6 +165,11 @@ pub async fn issue_invoice(
     let issuer = issuer(tx, property).await?;
     if issuer.base_currency != INVOICE_CURRENCY {
         return Err(FolioError::Invalid("Invoices are issued in LKR".into()));
+    }
+    if let Some(stay) = locked.reservation_room_id.filter(|_| locked.kind == FolioKind::Guest)
+        && unposted_nights(tx, stay, issuer.business_date).await?
+    {
+        return Err(FolioError::Conflict("Post the stay's nights first: post tonight's charges or check out".into()));
     }
     let view = complete_folio(tx, property, folio).await?;
     if view.balances.iter().any(|balance| balance.amount != 0) {
@@ -356,6 +363,24 @@ fn check_render_limits(lines: usize, payments: usize, taxes: usize) -> Result<()
         Some(refused) => Err(refused),
         None => Ok(()),
     }
+}
+
+/// Whether the stay `reservation_room`, if checked in, has a night before `min(departure, business_date + 1)` whose
+/// room charge (`room:<stay>:<date>`) is not posted on any folio: its invoice would leave out nights already stayed.
+async fn unposted_nights(tx: &mut Tx, reservation_room: Uuid, business_date: Date) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "select exists (
+           select 1 from reservation_room rr
+           join reservation_night n on n.reservation_room_id = rr.id
+           where rr.id = $1 and rr.status = 'checked_in' and n.date < least(upper(rr.stay), $2 + 1)
+             and not exists (select 1 from folio_line l join folio f on f.id = l.folio_id
+                             where f.property_id = rr.property_id
+                               and l.posting_key = 'room:' || rr.id || ':' || to_char(n.date, 'YYYY-MM-DD')))",
+    )
+    .bind(reservation_room)
+    .bind(business_date)
+    .fetch_one(&mut **tx)
+    .await
 }
 
 /// Whether another folio of `folio`'s account is open in its property: the account's current ledger, opened after
