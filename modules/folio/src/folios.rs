@@ -114,11 +114,12 @@ pub const MAX_FOLIO_ROWS: i64 = 500;
 /// Which folios of a property to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FolioQuery {
-    /// The reservation's deposit folio, each of its stays' guest folios, and its account's folio, in that order.
+    /// The reservation's deposit folio, each of its stays' guest folios, and its account's current folio (the open
+    /// one, else the newest), in that order.
     Reservation { property: Uuid, reservation: Uuid },
     /// One stay's guest folio.
     ReservationRoom { property: Uuid, reservation_room: Uuid },
-    /// An account's folio in the property.
+    /// Every folio of an account in the property: the open one first, then the invoiced ones, newest first.
     Account { property: Uuid, account: Uuid },
     /// One folio.
     Folio { property: Uuid, folio: Uuid },
@@ -176,7 +177,9 @@ pub async fn ensure_deposit_folio(
     ensure(tx, tenant, property, FolioKind::Deposit, reservation).await
 }
 
-/// The folio of `account` in the property, created on first use. `NotFound` if the account is not in this tenant.
+/// The open folio of `account` in the property, created when it has none: on first use, and again after its open
+/// folio is invoiced, so the account's next charges start a fresh ledger. `NotFound` if the account is not in this
+/// tenant.
 pub async fn ensure_account_folio(
     tx: &mut Tx,
     tenant: TenantId,
@@ -211,7 +214,7 @@ async fn ensure(
         ),
         FolioKind::Account => (
             "account_id",
-            "select id from folio where kind = 'account' and account_id = $1 and property_id = $2",
+            "select id from folio where kind = 'account' and account_id = $1 and property_id = $2 and status = 'open'",
             "select exists (select 1 from account where id = $1)
                     and exists (select 1 from property where id = $2)",
             "account",
@@ -228,7 +231,7 @@ async fn ensure(
     let conflict = match kind {
         FolioKind::Guest => "(reservation_room_id) where kind = 'guest'",
         FolioKind::Deposit => "(reservation_id) where kind = 'deposit'",
-        FolioKind::Account => "(property_id, account_id) where kind = 'account'",
+        FolioKind::Account => "(property_id, account_id) where kind = 'account' and status = 'open'",
     };
     let inserted: Option<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "insert into folio (id, tenant_id, property_id, kind, {column}) values ($1, $2, $3, $4, $5)
@@ -251,9 +254,9 @@ async fn ensure(
 /// the number of folios: the folios, then the lines, taxes, payments and balances of all of them at once.
 ///
 /// Bounded for reading: each folio gives its newest [`MAX_FOLIO_ROWS`] lines and newest [`MAX_FOLIO_ROWS`] payments,
-/// with `truncated` set when it has more. A [`FolioQuery::Reservation`] reads its account's folio (the account's whole
-/// city ledger) with its balances but no lines or payments (`lines_omitted`): read it by account for those. Balances
-/// always cover every line and payment.
+/// with `truncated` set when it has more. A [`FolioQuery::Reservation`] reads its account's current folio (the
+/// account's whole city ledger) with its balances but no lines or payments (`lines_omitted`): read it by account for
+/// those. Balances always cover every line and payment.
 pub async fn folios_for(tx: &mut Tx, query: FolioQuery) -> Result<Vec<FolioView>, FolioError> {
     read(tx, query, Some(MAX_FOLIO_ROWS)).await
 }
@@ -272,8 +275,10 @@ async fn read(tx: &mut Tx, query: FolioQuery, cap: Option<i64>) -> Result<Vec<Fo
                select g.id from folio g join reservation_room rr on rr.id = g.reservation_room_id
                where g.kind = 'guest' and rr.reservation_id = $2 and rr.property_id = $1
                union all
-               select a.id from folio a join reservation r on r.account_id = a.account_id
-               where a.kind = 'account' and a.property_id = $1 and r.id = $2 and r.property_id = $1)",
+               (select a.id from folio a join reservation r on r.account_id = a.account_id
+                where a.kind = 'account' and a.property_id = $1 and r.id = $2 and r.property_id = $1
+                order by a.status = 'open' desc, a.created_at desc, a.id desc
+                limit 1))",
             property,
             reservation,
         ),
@@ -285,7 +290,11 @@ async fn read(tx: &mut Tx, query: FolioQuery, cap: Option<i64>) -> Result<Vec<Fo
     };
     let folios: Vec<FolioRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select {FOLIO_COLUMNS} from folio f where f.property_id = $1 and {filter}
-         order by case f.kind when 'deposit' then 0 when 'guest' then 1 else 2 end, f.created_at, f.id"
+         order by case f.kind when 'deposit' then 0 when 'guest' then 1 else 2 end,
+                  f.status <> 'open',
+                  case when f.kind = 'account' then f.created_at end desc,
+                  case when f.kind = 'account' then f.id end desc,
+                  f.created_at, f.id"
     )))
     .bind(property)
     .bind(target)

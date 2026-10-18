@@ -275,9 +275,9 @@ async fn an_oversized_job_is_refused_for_good() {
     let payment = tax_invoice().payments[0].clone();
     let tax = tax_invoice().taxes[0].clone();
     let oversized = [
-        InvoiceData { lines: vec![line; render::MAX_LINES + 1], ..tax_invoice() },
-        InvoiceData { payments: vec![payment; render::MAX_PAYMENTS + 1], ..tax_invoice() },
-        InvoiceData { taxes: vec![tax; render::MAX_TAXES + 1], ..tax_invoice() },
+        InvoiceData { lines: vec![line; media_types::MAX_INVOICE_LINES + 1], ..tax_invoice() },
+        InvoiceData { payments: vec![payment; media_types::MAX_INVOICE_PAYMENTS + 1], ..tax_invoice() },
+        InvoiceData { taxes: vec![tax; media_types::MAX_INVOICE_TAXES + 1], ..tax_invoice() },
     ];
     for data in oversized {
         let job = InvoiceRenderJob { data, ..job() };
@@ -287,14 +287,18 @@ async fn an_oversized_job_is_refused_for_good() {
     }
     assert!(server.bus.sent.lock().unwrap().is_empty());
 
-    // At the limits, it renders.
+    // At the limits, it renders, even with every description at its longest in four-byte characters: a body over
+    // axum's default limit of 2 MiB.
+    let longest = InvoiceLine { description: "\u{1D11E}".repeat(200), ..tax_invoice().lines[0].clone() };
     let at_limits = InvoiceData {
-        lines: vec![tax_invoice().lines[0].clone(); render::MAX_LINES],
-        payments: vec![tax_invoice().payments[0].clone(); render::MAX_PAYMENTS],
-        taxes: vec![tax_invoice().taxes[0].clone(); render::MAX_TAXES],
+        lines: vec![longest; media_types::MAX_INVOICE_LINES],
+        payments: vec![tax_invoice().payments[0].clone(); media_types::MAX_INVOICE_PAYMENTS],
+        taxes: vec![tax_invoice().taxes[0].clone(); media_types::MAX_INVOICE_TAXES],
         ..tax_invoice()
     };
     let job = InvoiceRenderJob { data: at_limits, ..job() };
-    assert_eq!(post_render(&server, push(&job), Some(&bearer())).await, 200);
+    let body = push(&job);
+    assert!(body.len() > 2 * 1024 * 1024 && body.len() < render::MAX_RENDER_BODY, "{} bytes", body.len());
+    assert_eq!(post_render(&server, body, Some(&bearer())).await, 200);
     server.storage.delete(Bucket::Private, &invoice_pdf_key(job.tenant_id, job.invoice_id)).await.unwrap();
 }

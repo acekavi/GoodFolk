@@ -564,3 +564,167 @@ async fn a_reversed_line_and_its_reversal_print_as_exact_mirrors(_: PgPoolOption
     let taxes: i64 = issued.taxes.iter().map(|t| t.amount_lkr).sum();
     assert_eq!(issued.net_lkr + taxes, issued.total_lkr);
 }
+
+impl Hotel {
+    /// `count` untaxed LKR lines of `total` each on `folio`, written straight in: a folio of many lines, fast.
+    async fn many_lines(&self, folio: Uuid, count: i64, total: i64) {
+        let mut tx = self.tx().await;
+        sqlx::query(
+            "insert into folio_line (id, tenant_id, folio_id, source, category, description, quantity, net, total,
+                                     currency, base_total, rate, rate_date, business_date)
+             select gen_random_uuid(), $1, $2, 'manual', 'misc', 'Item ' || n, 1, $4, $4, 'LKR', $4, 1, $5, $5
+             from generate_series(1, $3) as n",
+        )
+        .bind(self.tenant.0)
+        .bind(folio)
+        .bind(count)
+        .bind(total)
+        .bind(self.business_date)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    /// `count` cash payments of `amount` LKR on `folio`, written straight in.
+    async fn many_payments(&self, folio: Uuid, count: i64, amount: i64) {
+        let mut tx = self.tx().await;
+        sqlx::query(
+            "insert into payment (id, tenant_id, folio_id, method, amount, currency, base_amount, rate, rate_date,
+                                  business_date)
+             select gen_random_uuid(), $1, $2, 'cash', $4, 'LKR', $4, 1, $5, $5 from generate_series(1, $3)",
+        )
+        .bind(self.tenant.0)
+        .bind(folio)
+        .bind(count)
+        .bind(amount)
+        .bind(self.business_date)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    /// The property's `invoice` counter, 0 before the first serial.
+    async fn invoice_counter(&self) -> i64 {
+        sqlx::query_scalar(
+            "select coalesce((select value from property_counter where property_id = $1 and name = 'invoice'), 0)",
+        )
+        .bind(self.property)
+        .fetch_one(&mut *self.tx().await)
+        .await
+        .unwrap()
+    }
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_folio_beyond_what_media_svc_renders_is_refused_before_its_serial(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let lines = hotel.book(None).await.guests[0];
+    let max_lines = i64::try_from(media_types::MAX_INVOICE_LINES).unwrap();
+    hotel.many_lines(lines, max_lines + 1, 100).await;
+    hotel.pay(lines, (max_lines + 1) * 100, "LKR").await;
+    let payments = hotel.book(None).await.guests[0];
+    let max_payments = i64::try_from(media_types::MAX_INVOICE_PAYMENTS).unwrap();
+    hotel.many_lines(payments, 1, (max_payments + 1) * 100).await;
+    hotel.many_payments(payments, max_payments + 1, 100).await;
+
+    assert_eq!(conflict(hotel.issue(lines).await), "The folio has too many lines to invoice at once (at most 2000)");
+    assert_eq!(
+        conflict(hotel.issue(payments).await),
+        "The folio has too many payments to invoice at once (at most 500)"
+    );
+    assert_eq!(hotel.invoice_counter().await, 0, "no serial was taken");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_folio_at_the_render_limits_is_invoiced(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let folio = hotel.book(None).await.guests[0];
+    let max_lines = i64::try_from(media_types::MAX_INVOICE_LINES).unwrap();
+    let max_payments = i64::try_from(media_types::MAX_INVOICE_PAYMENTS).unwrap();
+    hotel.many_lines(folio, max_lines, max_payments).await;
+    hotel.many_payments(folio, max_payments, max_lines).await;
+
+    let invoice = hotel.issue(folio).await.unwrap();
+
+    let printed = data(&invoice);
+    assert_eq!((printed.lines.len(), printed.payments.len()), (2000, 500));
+    assert_eq!(hotel.invoice_counter().await, 1);
+}
+
+/// The account's folios as `folios(accountId)` reads them: `(id, status)`, open first, then newest first.
+async fn account_folios(hotel: &Hotel, account: Uuid) -> Vec<(Uuid, FolioStatus)> {
+    let query = FolioQuery::Account { property: hotel.property, account };
+    folio::folios_for(&mut hotel.tx().await, query)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|view| (view.folio.id, view.folio.status))
+        .collect()
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_invoiced_account_folio_gives_way_to_a_fresh_one(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let acme = hotel.account().await;
+    let booking = hotel.book(Some(acme)).await;
+    let stay = booking.rooms[0];
+    hotel.route(booking.id, &["room"]).await.unwrap();
+    let first_night = hotel.post_for_stay(stay, hotel.charge(Source::Room, "room", 10_000, "LKR")).await.unwrap();
+    let first = first_night.folio_id;
+    hotel.pay(first, first_night.total, "LKR").await;
+    let invoice = hotel.issue(first).await.unwrap();
+
+    // The next routed night opens a fresh account folio.
+    let second_night = hotel.post_for_stay(stay, hotel.charge(Source::Room, "room", 10_000, "LKR")).await.unwrap();
+    let second = second_night.folio_id;
+    assert_ne!(second, first);
+    // A charge to account goes to the open one too.
+    let spa = hotel.post(booking.guests[0], hotel.charge(Source::Manual, "misc", 5_000, "LKR")).await.unwrap();
+    let mut tx = hotel.tx().await;
+    let method = Method::Account;
+    let paid = folio::take_payment(
+        &mut tx,
+        hotel.tenant,
+        None,
+        hotel.property,
+        booking.guests[0],
+        method,
+        spa.total,
+        "LKR",
+        None,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let charged_on: Uuid =
+        sqlx::query_scalar("select folio_id from folio_line where transfer_id = $1 and folio_id <> $2")
+            .bind(paid.transfer_id)
+            .bind(booking.guests[0])
+            .fetch_one(&mut *hotel.tx().await)
+            .await
+            .unwrap();
+    assert_eq!(charged_on, second);
+    let mut tx = hotel.tx().await;
+    assert_eq!(folio::ensure_account_folio(&mut tx, hotel.tenant, hotel.property, acme).await.unwrap(), second);
+    drop(tx);
+
+    // Both are read, the open one first.
+    assert_eq!(account_folios(&hotel, acme).await, vec![(second, FolioStatus::Open), (first, FolioStatus::Invoiced)]);
+    let query = FolioQuery::Reservation { property: hotel.property, reservation: booking.id };
+    let read = folio::folios_for(&mut hotel.tx().await, query).await.unwrap();
+    let accounts: Vec<Uuid> =
+        read.iter().filter(|view| view.folio.kind == folio::FolioKind::Account).map(|view| view.folio.id).collect();
+    assert_eq!(accounts, vec![second], "a reservation shows the account's current folio");
+
+    // Crediting the first invoice would reopen a second ledger: refused while the fresh one is open.
+    assert_eq!(
+        conflict(hotel.credit(invoice.id, "Wrong rate").await),
+        "The account has a newer open folio: settle and invoice it first, then issue the credit note"
+    );
+    hotel.pay(second, second_night.total + spa.total, "LKR").await;
+    hotel.issue(second).await.unwrap();
+    hotel.credit(invoice.id, "Wrong rate").await.unwrap();
+    assert_eq!(account_folios(&hotel, acme).await, vec![(first, FolioStatus::Open), (second, FolioStatus::Invoiced)]);
+}

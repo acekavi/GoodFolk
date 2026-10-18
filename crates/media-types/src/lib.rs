@@ -151,6 +151,15 @@ impl TryFrom<String> for InvoiceKind {
     }
 }
 
+/// The most lines an invoice may print. media-svc refuses a larger render job for good (400), so no push can hold a
+/// render slot or the memory of a huge layout, and the folio module refuses to issue such an invoice, before its
+/// serial is taken.
+pub const MAX_INVOICE_LINES: usize = 2000;
+/// The most payments an invoice may print, refused as [`MAX_INVOICE_LINES`] is.
+pub const MAX_INVOICE_PAYMENTS: usize = 500;
+/// The most taxes an invoice may print, refused as [`MAX_INVOICE_LINES`] is.
+pub const MAX_INVOICE_TAXES: usize = 50;
+
 /// Everything printed on an invoice or credit note, as it was when the document was issued. Every `_lkr` figure is
 /// whole rupees; `total` and `amount` are minor units of their `currency`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

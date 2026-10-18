@@ -13,7 +13,9 @@ use axum::body::Bytes as Body;
 use axum::extract::State;
 use axum::http::StatusCode;
 use events::PushEnvelope;
-use media_types::{InvoiceData, InvoiceRenderJob, MediaResult};
+use media_types::{
+    InvoiceData, InvoiceRenderJob, MAX_INVOICE_LINES, MAX_INVOICE_PAYMENTS, MAX_INVOICE_TAXES, MediaResult,
+};
 use storage::{Bucket, invoice_pdf_key};
 use tokio::sync::Semaphore;
 use typst::diag::{FileError, FileResult, SourceDiagnostic};
@@ -31,11 +33,9 @@ use crate::work::publish;
 
 /// Renders at once; more wait for a permit.
 pub(crate) const CONCURRENT_RENDERS: usize = 2;
-/// The most lines, payments and taxes a job may carry. Larger is refused for good (400), so no push can hold a
-/// render slot or the memory of a huge layout.
-pub const MAX_LINES: usize = 2000;
-pub const MAX_PAYMENTS: usize = 500;
-pub const MAX_TAXES: usize = 50;
+/// The largest `/render` body: a push of an invoice at every limit ([`MAX_INVOICE_LINES`] lines of 200 four-byte
+/// characters, base64-encoded in the envelope) is about 3 MiB.
+pub const MAX_RENDER_BODY: usize = 8 * 1024 * 1024;
 /// Compilations a memoised result survives unused before it is evicted, so the cache does not grow with every
 /// invoice while the template's own parse stays warm.
 const CACHE_AGE: usize = 10;
@@ -90,11 +90,11 @@ async fn handle(state: &RenderState, tenant_id: Uuid, invoice_id: Uuid, data: In
 
 /// What of `data` is over its limit, if anything.
 fn oversized(data: &InvoiceData) -> Option<&'static str> {
-    if data.lines.len() > MAX_LINES {
+    if data.lines.len() > MAX_INVOICE_LINES {
         Some("lines")
-    } else if data.payments.len() > MAX_PAYMENTS {
+    } else if data.payments.len() > MAX_INVOICE_PAYMENTS {
         Some("payments")
-    } else if data.taxes.len() > MAX_TAXES {
+    } else if data.taxes.len() > MAX_INVOICE_TAXES {
         Some("taxes")
     } else {
         None

@@ -2,7 +2,7 @@
 //! every night still unposted. Each charge carries its posting key (`room:<stay>:<date>`, `meal_plan:<stay>:<date>`),
 //! so a night is charged once however often it is posted.
 
-use crate::folios::{ensure_account_folio, ensure_deposit_folio, ensure_guest_folio, lock_folios};
+use crate::folios::{ensure_deposit_folio, ensure_guest_folio, lock_folios};
 use crate::lines::{NewCharge, line_by_key};
 use crate::{FolioError, Source, audit, post_for_stay, reverse};
 use db::{Scope, TenantId, Tx, UserId};
@@ -176,9 +176,9 @@ pub async fn post_unposted_nights(
 }
 
 /// Locks, once and in ascending id order, every folio that checking `reservation_room` out, or undoing its
-/// check-in, may post to or reverse on: the stay's guest folio, its reservation's deposit folio, the open folio of the
-/// account its routing sends `room` or `meal_plan` to, and the folios holding the lines posted under the stay's room
-/// and meal-plan keys for `dates`. The later postings and reversals then lock nothing new, so a routing change that
+/// check-in, may post to or reverse on: the stay's guest folio, its reservation's deposit folio, the open folio (if
+/// it has one; none is opened here) of the account its routing sends `room` or `meal_plan` to, and the folios holding
+/// the lines posted under the stay's room and meal-plan keys for `dates`. The later postings and reversals then lock nothing new, so a routing change that
 /// has spread the stay's lines over several folios can't deadlock them (`40P01`) against a transfer or another
 /// stay's posting, which lock in the same order. `NotFound` unless the stay is in `property`.
 pub async fn lock_stay_folios(
@@ -190,7 +190,9 @@ pub async fn lock_stay_folios(
 ) -> Result<(), FolioError> {
     let routed: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
         "select rr.reservation_id,
-                (select rule.account_id from routing_rule rule
+                (select a.id from routing_rule rule
+                 join folio a on a.kind = 'account' and a.account_id = rule.account_id and a.property_id = $2
+                                 and a.status = 'open'
                  where rule.reservation_id = r.id and rule.account_id = r.account_id
                    and rule.category in ('room', 'meal_plan')
                  limit 1)
@@ -201,14 +203,12 @@ pub async fn lock_stay_folios(
     .bind(property)
     .fetch_optional(&mut **tx)
     .await?;
-    let (reservation, account) = routed.ok_or(FolioError::NotFound("reservation room"))?;
+    let (reservation, account_folio) = routed.ok_or(FolioError::NotFound("reservation room"))?;
     let mut ids = vec![
         ensure_guest_folio(tx, tenant, property, reservation_room).await?,
         ensure_deposit_folio(tx, tenant, property, reservation).await?,
     ];
-    if let Some(account) = account {
-        ids.push(ensure_account_folio(tx, tenant, property, account).await?);
-    }
+    ids.extend(account_folio);
     ids.extend(posted_lines(tx, property, reservation_room, dates).await?.into_iter().map(|(folio, _)| folio));
     ids.sort();
     ids.dedup();

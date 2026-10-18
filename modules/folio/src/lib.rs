@@ -43,6 +43,10 @@
 //!
 //! An invoice ([`issue_invoice`]) is issued on a settled folio in whole LKR under a gapless per-property serial, and
 //! freezes the folio: every money path refuses an invoiced folio until a credit note ([`credit_note`]) reopens it.
+//! An account holds one open folio per property: once it is invoiced, the account's next charge (routed or charged
+//! to account) opens a fresh one ([`ensure_account_folio`]), and the account is read as all of its folios. A credit
+//! note on an invoiced account folio is refused while a newer one is open, so the account never has two open
+//! ledgers.
 //! Each queues an `invoice-render` job carrying its [`media_types::InvoiceData`] snapshot; media-svc renders the PDF,
 //! whose key arrives through [`set_invoice_pdf`].
 //!

@@ -17,13 +17,14 @@
 //! difference and the printed figures always add up. Reversals are printed as negative lines, so the corrections stay
 //! visible.
 
-use crate::folios::{FolioKind, FolioStatus, LineWithTaxes, PaymentRow, complete_folio, lock_folios};
+use crate::folios::{FolioKind, FolioStatus, LineWithTaxes, Locked, PaymentRow, complete_folio, lock_folios};
 use crate::lines::violates;
 use crate::words::lkr_in_words;
 use crate::{FolioError, audit, folio_key, notify, reason};
 use db::{TenantId, Tx, UserId};
 use media_types::{
-    InvoiceData, InvoiceKind, InvoiceLine, InvoicePayment, InvoiceRenderJob, InvoiceTax, Purchaser, Supplier,
+    InvoiceData, InvoiceKind, InvoiceLine, InvoicePayment, InvoiceRenderJob, InvoiceTax, MAX_INVOICE_LINES,
+    MAX_INVOICE_PAYMENTS, MAX_INVOICE_TAXES, Purchaser, Supplier,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
@@ -32,6 +33,9 @@ use uuid::Uuid;
 
 /// The outbox topic media-svc renders invoice PDFs from.
 pub const INVOICE_RENDER_TOPIC: &str = "invoice-render";
+
+/// The index that keeps an account to one open folio per property.
+const ACCOUNT_FOLIO_INDEX: &str = "folio_account_idx";
 
 /// The index that lets an invoice be credited once.
 const CREDITED_ONCE_INDEX: &str = "invoice_credited_once_idx";
@@ -138,8 +142,9 @@ async fn issuer(tx: &mut Tx, property: Uuid) -> Result<Issuer, FolioError> {
 
 /// Issues the invoice of `folio`, which must be open (`Conflict`), have a zero balance in every currency (`Conflict`,
 /// "The folio must be settled before it is invoiced") and at least one line (`Conflict`, "Nothing to invoice"), in a
-/// property whose base currency is LKR (`Invalid`). A VAT-registered property needs its TIN set (`Conflict`). Every
-/// refusal comes before the serial is taken.
+/// property whose base currency is LKR (`Invalid`). A VAT-registered property needs its TIN set (`Conflict`). An
+/// invoice prints at most 2000 lines, 500 payments and 50 taxes, what media-svc renders (`Conflict`, "The folio has
+/// too many lines to invoice at once (at most 2000)"). Every refusal comes before the serial is taken.
 ///
 /// Locks the folio (`NotFound` unless it is in `property`), then takes the next `invoice` serial, snapshots the
 /// invoice data, marks the folio invoiced, audits `invoice.issued`, queues the `invoice-render` job and queues
@@ -174,10 +179,11 @@ pub async fn issue_invoice(
     }
     let purchaser = purchaser(tx, locked.kind, folio).await?;
     let sequences = tax_sequences(tx, property).await?;
+    let figures = figures(&view.lines, &sequences)?;
+    check_render_limits(figures.lines.len(), view.payments.len(), figures.taxes.len())?;
 
     let number = next_number(tx, tenant, property, "invoice").await?;
     let serial = format!("{}-{:04}-{number:06}", issuer.code, issuer.business_date.year());
-    let figures = figures(&view.lines, &sequences)?;
     let data = InvoiceData {
         kind: InvoiceKind::Invoice,
         supplier: Supplier { legal_name: issuer.legal_name, address: issuer.address, tin: issuer.tin },
@@ -208,6 +214,11 @@ pub async fn issue_invoice(
 /// Issues a credit note for `invoice` with `reason` (1 to 500 characters): the invoice's figures negated under the
 /// next `credit_note` serial. Reopens the folio for new lines, so a new invoice can be issued as usual.
 ///
+/// An account holds one open folio per property, and its next charge after an invoice opens a fresh one. Reopening
+/// an invoiced account folio while that fresh one is open would give the account two ledgers, so the credit note is
+/// then refused (`Conflict`, "The account has a newer open folio: settle and invoice it first, then issue the credit
+/// note"); once that folio is invoiced too, the credit note reopens the old one as usual.
+///
 /// Locks the invoice's folio. `NotFound` unless the invoice is in `property`; `Invalid` for a credit note; `Conflict`
 /// for an invoice already credited. Audits `invoice.credited` on the invoice, queues the `invoice-render` job for the
 /// credit note and queues `folio:<id>`.
@@ -226,7 +237,7 @@ pub async fn credit_note(
         .fetch_optional(&mut **tx)
         .await?
         .ok_or(FolioError::NotFound("invoice"))?;
-    lock_folios(tx, property, &[folio]).await?.pop().ok_or(FolioError::NotFound("invoice"))?;
+    let locked = lock_folios(tx, property, &[folio]).await?.pop().ok_or(FolioError::NotFound("invoice"))?;
     let original: InvoiceRow =
         sqlx::query_as(sqlx::AssertSqlSafe(format!("select {INVOICE_COLUMNS} from invoice where id = $1")))
             .bind(invoice)
@@ -242,6 +253,9 @@ pub async fn credit_note(
     if credited {
         return Err(already_credited());
     }
+    if locked.kind == FolioKind::Account && newer_account_folio(tx, &locked).await? {
+        return Err(newer_account_folio_open());
+    }
     let original_data: InvoiceData = serde_json::from_value(original.data.clone())
         .map_err(|err| FolioError::Conflict(format!("the invoice's data can't be read: {err}")))?;
     let issuer = issuer(tx, property).await?;
@@ -250,7 +264,10 @@ pub async fn credit_note(
     let serial = format!("CN-{}-{:04}-{number:06}", issuer.code, issuer.business_date.year());
     let data = negated(original_data, serial, issuer.business_date, reason);
     let note = insert(tx, tenant, user, property, folio, &data, Some((invoice, reason))).await?;
-    set_status(tx, folio, FolioStatus::Open).await?;
+    // A fresh account folio opened since the check (it commits first and holds the index) is refused the same way.
+    set_status(tx, folio, FolioStatus::Open)
+        .await
+        .map_err(|err| if violates(&err, ACCOUNT_FOLIO_INDEX) { newer_account_folio_open() } else { err.into() })?;
     let audit_data = serde_json::json!({
         "serial": original.serial,
         "credit_note": note.id,
@@ -322,6 +339,43 @@ fn owned_key(tenant: TenantId, invoice: Uuid, key: &str) -> bool {
     } else {
         false
     }
+}
+
+/// `Conflict` when an invoice of `lines` lines, `payments` payments and `taxes` taxes is more than media-svc renders
+/// ([`MAX_INVOICE_LINES`], [`MAX_INVOICE_PAYMENTS`], [`MAX_INVOICE_TAXES`]): it would be issued and never rendered.
+fn check_render_limits(lines: usize, payments: usize, taxes: usize) -> Result<(), FolioError> {
+    let over = |count: usize, limit: usize, what: &str| {
+        (count > limit).then(|| {
+            FolioError::Conflict(format!("The folio has too many {what} to invoice at once (at most {limit})"))
+        })
+    };
+    match over(lines, MAX_INVOICE_LINES, "lines")
+        .or_else(|| over(payments, MAX_INVOICE_PAYMENTS, "payments"))
+        .or_else(|| over(taxes, MAX_INVOICE_TAXES, "taxes"))
+    {
+        Some(refused) => Err(refused),
+        None => Ok(()),
+    }
+}
+
+/// Whether another folio of `folio`'s account is open in its property: the account's current ledger, opened after
+/// `folio` was invoiced.
+async fn newer_account_folio(tx: &mut Tx, folio: &Locked) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "select exists (select 1 from folio where kind = 'account' and account_id = $1 and property_id = $2
+                        and status = 'open' and id <> $3)",
+    )
+    .bind(folio.account_id)
+    .bind(folio.property_id)
+    .bind(folio.id)
+    .fetch_one(&mut **tx)
+    .await
+}
+
+fn newer_account_folio_open() -> FolioError {
+    FolioError::Conflict(
+        "The account has a newer open folio: settle and invoice it first, then issue the credit note".into(),
+    )
 }
 
 fn already_credited() -> FolioError {
@@ -579,7 +633,8 @@ async fn finish(tx: &mut Tx, tenant: TenantId, invoice: &InvoiceRow, data: Invoi
 
 #[cfg(test)]
 mod tests {
-    use super::{allocate, owned_key, round_half_up};
+    use super::{allocate, check_render_limits, owned_key, round_half_up};
+    use crate::FolioError;
     use db::TenantId;
     use uuid::Uuid;
 
@@ -602,6 +657,21 @@ mod tests {
         // Equal remainders go to the earlier line.
         assert_eq!(allocate([150, 150, 150].into_iter(), 100), (vec![2, 2, 1], 5));
         assert_eq!(allocate(std::iter::empty(), 100), (vec![], 0));
+    }
+
+    #[test]
+    fn an_invoice_is_refused_past_any_render_limit() {
+        assert!(check_render_limits(2000, 500, 50).is_ok());
+        for (counts, message) in [
+            ((2001, 0, 0), "The folio has too many lines to invoice at once (at most 2000)"),
+            ((0, 501, 0), "The folio has too many payments to invoice at once (at most 500)"),
+            ((0, 0, 51), "The folio has too many taxes to invoice at once (at most 50)"),
+        ] {
+            match check_render_limits(counts.0, counts.1, counts.2) {
+                Err(FolioError::Conflict(refused)) => assert_eq!(refused, message),
+                other => panic!("{counts:?}: {other:?}"),
+            }
+        }
     }
 
     #[test]

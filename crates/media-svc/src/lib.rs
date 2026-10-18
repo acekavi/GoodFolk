@@ -62,7 +62,13 @@ pub fn router(svc: MediaSvc, verifier: Arc<Verifier>) -> axum::Router {
         .add_service(health)
         .into_axum_router()
         .route("/work", post(work::work).with_state(work::WorkState { svc, rayon_threads }).layer(auth.clone()))
-        .route("/render", post(render::render).with_state(renders).layer(auth))
+        .route(
+            "/render",
+            post(render::render)
+                .with_state(renders)
+                .layer::<_, std::convert::Infallible>(axum::extract::DefaultBodyLimit::max(render::MAX_RENDER_BODY))
+                .layer(auth),
+        )
         .route("/healthz", get(|| async { "ok" }))
 }
 
