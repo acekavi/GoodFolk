@@ -2654,6 +2654,7 @@ dependencies = [
  "moxcms",
  "ravif",
  "rayon",
+ "rustix",
  "ssimulacra2",
  "thiserror",
  "webp",

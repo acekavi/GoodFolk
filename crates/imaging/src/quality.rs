@@ -52,6 +52,50 @@ fn to8(v: u16) -> u8 {
     u8::try_from((u32::from(v) + 128) / 257).unwrap_or(u8::MAX)
 }
 
+/// Runs `f` with the calling thread pinned to the CPU it is on, then restores its affinity.
+///
+/// avif-decode starts rav1d with one decoder thread per CPU the calling thread may use (`available_parallelism`) and
+/// offers no way to ask for fewer, while the quality search decodes its probes in parallel: on 16 CPUs that is
+/// dozens of decoder threads at once, whose stacks and allocator arenas take the worker past its address-space cap
+/// (`RLIMIT_AS`), so a thread spawn or an allocation fails. Pinned to one CPU, rav1d decodes on the calling thread and
+/// spawns none; the probes stay parallel through rayon, each on its own CPU.
+#[cfg(target_os = "linux")]
+fn on_one_cpu<T>(f: impl FnOnce() -> T) -> T {
+    use rustix::thread::{CpuSet, sched_getaffinity, sched_getcpu, sched_setaffinity};
+
+    /// Puts the thread's affinity back, also if `f` panics.
+    struct Restore(CpuSet);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // Failing to widen the affinity again only leaves this thread on one CPU.
+            let _ = sched_setaffinity(None, &self.0);
+        }
+    }
+
+    let Ok(allowed) = sched_getaffinity(None) else {
+        return f();
+    };
+    let current = sched_getcpu();
+    let Some(cpu) = (current < CpuSet::MAX_CPU && allowed.is_set(current))
+        .then_some(current)
+        .or_else(|| (0..CpuSet::MAX_CPU).find(|&cpu| allowed.is_set(cpu)))
+    else {
+        return f();
+    };
+    let mut one = CpuSet::new();
+    one.set(cpu);
+    if sched_setaffinity(None, &one).is_err() {
+        return f();
+    }
+    let _restore = Restore(allowed);
+    f()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn on_one_cpu<T>(f: impl FnOnce() -> T) -> T {
+    f()
+}
+
 fn decode_back(bytes: &[u8], format: Format) -> Result<RgbaImage, ImagingError> {
     let fail = |e: String| ImagingError::Encode(format!("{} output does not decode: {e}", format.as_str()));
     match format {
@@ -60,7 +104,8 @@ fn decode_back(bytes: &[u8], format: Format) -> Result<RgbaImage, ImagingError> 
             .map_err(|e| fail(e.to_string())),
         Format::Avif => {
             use avif_decode::Image;
-            let decoded = avif_decode::Decoder::from_avif(bytes).and_then(avif_decode::Decoder::to_image);
+            let decoded =
+                on_one_cpu(|| avif_decode::Decoder::from_avif(bytes).and_then(avif_decode::Decoder::to_image));
             let (width, height, pixels): (usize, usize, Vec<u8>) = match decoded.map_err(|e| fail(e.to_string()))? {
                 Image::Rgb8(img) => {
                     (img.width(), img.height(), img.pixels().flat_map(|p| [p.r, p.g, p.b, 255]).collect())
@@ -175,5 +220,21 @@ pub(crate) fn climb(
             return Ok(last);
         }
         quality = (last.quality + BUMP).min(QUALITY_CEILING);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::on_one_cpu;
+
+    /// avif-decode sizes rav1d by `available_parallelism`: inside `on_one_cpu` it is 1, so no decoder thread is
+    /// spawned, and the thread's own parallelism is back afterwards.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_decode_back_sees_one_cpu_and_the_thread_gets_its_cpus_back() {
+        let before = std::thread::available_parallelism().unwrap();
+        let inside = on_one_cpu(|| std::thread::available_parallelism().unwrap().get());
+        assert_eq!(inside, 1);
+        assert_eq!(std::thread::available_parallelism().unwrap(), before);
     }
 }
