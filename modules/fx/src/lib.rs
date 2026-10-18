@@ -152,6 +152,8 @@ pub async fn alert(tx: &mut Tx, property: Uuid) -> Result<Option<Alert>, sqlx::E
 
 /// Overrides the rate of `currency` for `date`, for a staff member who knows better than the bank. Replaces an
 /// imported or earlier manual rate for that day, and a later import does not undo it. Audited as `fx.overridden`.
+/// Clears the property's `fx_alert` once every accepted currency other than the base has a rate dated today in the
+/// property's time zone, as a complete import would.
 pub async fn set_manual(
     tx: &mut Tx,
     tenant: TenantId,
@@ -214,6 +216,21 @@ pub async fn set_manual(
         "rate": rate.to_string(),
         "previous": previous.map(|p| p.normalize().to_string()),
     }))
+    .execute(&mut **tx)
+    .await?;
+    // The import's alert is about today's rates: once every accepted currency but the base has one dated today (at
+    // the property), nothing is missing any more.
+    sqlx::query(
+        "delete from fx_alert a using property p
+         where a.property_id = $1 and p.id = $1
+           and not exists (
+             select 1 from unnest(p.accepted_currencies) as c(currency)
+             where c.currency <> p.base_currency
+               and not exists (select 1 from fx_rate r
+                               where r.property_id = $1 and r.currency = c.currency
+                                 and r.date = (now() at time zone p.timezone)::date))",
+    )
+    .bind(property)
     .execute(&mut **tx)
     .await?;
     db::notify(tx, &Event { tenant_id: tenant, property_id: Some(property), keys: vec![fx_key(property)] }).await?;

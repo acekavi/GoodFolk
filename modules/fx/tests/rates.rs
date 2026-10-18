@@ -252,3 +252,31 @@ async fn a_stale_rate_is_stored_but_alerts(_: PgPoolOptions, opts: PgConnectOpti
     assert_eq!(h.alert().await.unwrap(), "Central Bank rate for USD is from 2026-10-09");
     assert_eq!(h.stored("USD").await.len(), 1);
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn manual_rates_for_every_currency_today_clear_the_alert(_: PgPoolOptions, opts: PgConnectOptions) {
+    let h = Hotel::new(opts).await;
+    let today: Date = sqlx::query_scalar("select (now() at time zone timezone)::date from property where id = $1")
+        .bind(h.property)
+        .fetch_one(&mut *h.tx().await)
+        .await
+        .unwrap();
+    import(&h.pool, &Fake { rates: vec![], fail: true, calls: AtomicUsize::new(0) }, today).await;
+    assert!(h.alert().await.is_some());
+
+    let set = |currency: &'static str, date: Date| {
+        let h = &h;
+        async move {
+            let mut tx = h.tx().await;
+            set_manual(&mut tx, h.tenant, h.user, h.property, date, currency, dec("300")).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+    };
+    set("USD", today).await;
+    set("EUR", today).await;
+    set("GBP", today.previous_day().unwrap()).await;
+    assert!(h.alert().await.is_some(), "GBP has no rate dated today yet");
+
+    set("GBP", today).await;
+    assert_eq!(h.alert().await, None, "every accepted currency has today's rate");
+}
