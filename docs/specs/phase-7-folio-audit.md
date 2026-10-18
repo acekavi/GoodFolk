@@ -25,7 +25,7 @@ Linen and guest laundry ([laundry.md](laundry.md)) follow 7a.
 
 - **Kinds:**
   - `guest`: one per reservation room, created with it.
-  - `account`: one per account and property, created on first use. This is the city ledger.
+  - `account`: one open per account and property, created on first use. This is the city ledger. Once it is invoiced, the account's next charge (routed or charged to account) opens a fresh one; the account's folios are read open first, then the invoiced ones, newest first.
   - `deposit`: one per reservation, created with it.
 - **Status.** A folio is `open` or `invoiced`. An invoiced folio takes no lines until a credit note reopens it.
 - **Balances.** A folio holds lines in any accepted currency. Its balance is per currency, with the base equivalent alongside.
@@ -113,7 +113,7 @@ Linen and guest laundry ([laundry.md](laundry.md)) follow 7a.
   - the payment methods.
 
   The layout is a Typst template, so the IRD specification can be followed when published without code changes.
-- **Credit notes.** `POST …/invoices/{id}/credit-note` (`FolioAdjust`, with a reason) takes `property_counter('credit_note')`, renders likewise and reopens the folio. A new invoice is then issued as usual.
+- **Credit notes.** `POST …/invoices/{id}/credit-note` (`FolioAdjust`, with a reason) takes `property_counter('credit_note')`, renders likewise and reopens the folio. A new invoice is then issued as usual. An account keeps one open folio, so a credit note on an invoiced account folio is refused (`409`, "The account has a newer open folio: settle and invoice it first, then issue the credit note") while a fresher folio of that account is open; once that one is invoiced too, the credit note reopens the old folio.
 - **Links.** `GET …/invoices/{id}/link` gives a 5-minute link and is audited.
 
 ## Exchange rates
