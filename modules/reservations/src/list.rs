@@ -236,11 +236,7 @@ pub async fn list_reservation_rooms(
          limit $8"
     );
     let confirmation = text.map(str::to_uppercase);
-    // Not a cached statement: every filter is optional (`$n is null or ...`), so only a plan made for the values
-    // bound can use `reservation_room_arrival_idx`. A cached statement goes over to Postgres' generic plan after
-    // five runs whenever that plan is estimated cheaper, and the generic plan scans the property's every room.
     let query = sqlx::query(sqlx::AssertSqlSafe(sql))
-        .persistent(false)
         .bind(property)
         .bind(filter.arrival_from)
         .bind(filter.arrival_to)
@@ -269,9 +265,7 @@ pub async fn list_reservation_rooms(
 
     let total_count = if request.count {
         let sql = format!("select count(*) from {rooms} where {matches}");
-        // Planned for the values bound, as the page is.
         let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
-            .persistent(false)
             .bind(property)
             .bind(filter.arrival_from)
             .bind(filter.arrival_to)
