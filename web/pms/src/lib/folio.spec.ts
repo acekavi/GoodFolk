@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	accountFolioLabels,
 	balanceText,
 	canCorrect,
 	categories,
@@ -8,6 +9,7 @@ import {
 	formatAmount,
 	invoiceBlocker,
 	isSettled,
+	isSuperseded,
 	money,
 	parseAmount,
 	paymentDetails,
@@ -179,6 +181,17 @@ describe('issuing an invoice', () => {
 		);
 	});
 
+	it("says an invoiced account folio gives way to the account's newer open one", () => {
+		const invoiced = folio('a1', { kind: 'ACCOUNT', accountId: 'acme', status: 'INVOICED' });
+		const current = folio('a2', { kind: 'ACCOUNT', accountId: 'acme' });
+		const other = folio('b1', { kind: 'ACCOUNT', accountId: 'globex' });
+		expect(isSuperseded(invoiced, [current, invoiced])).toBe(true);
+		expect(invoiceBlocker(invoiced, [current, invoiced])).toMatch(/newer open folio/);
+		expect(isSuperseded(invoiced, [invoiced, other])).toBe(false);
+		expect(invoiceBlocker(invoiced, [invoiced])).toMatch(/A credit note on its invoice reopens it/);
+		expect(isSuperseded(current, [current, invoiced])).toBe(false);
+	});
+
 	it('offers a credit note for invoices not yet credited', () => {
 		const invoice = {
 			id: 'i1',
@@ -288,6 +301,44 @@ describe('folio labels', () => {
 			'Room 101',
 			'DLX · unassigned',
 			'DLX · unassigned 2',
+			'Account · Acme'
+		]);
+	});
+});
+
+describe('account folio labels', () => {
+	it('name the open ledger by the account and each invoiced one by its latest invoice', () => {
+		const invoice = {
+			id: 'i1',
+			kind: 'INVOICE' as const,
+			serial: 'GAL-2026-000001',
+			totalLkr: 100,
+			issuedAt: '2026-10-18T10:00:00Z',
+			credits: null,
+			pdfReady: true
+		};
+		const note = {
+			...invoice,
+			id: 'c1',
+			kind: 'CREDIT_NOTE' as const,
+			serial: 'CN-GAL-2026-000001',
+			issuedAt: '2026-10-18T11:00:00Z',
+			credits: 'i1'
+		};
+		const again = {
+			...invoice,
+			id: 'i2',
+			serial: 'GAL-2026-000002',
+			issuedAt: '2026-10-18T12:00:00Z'
+		};
+		const folios = [
+			folio('open', { kind: 'ACCOUNT', invoices: [] }),
+			folio('old', { kind: 'ACCOUNT', status: 'INVOICED', invoices: [again, note, invoice] }),
+			folio('bare', { kind: 'ACCOUNT', status: 'INVOICED' })
+		];
+		expect([...accountFolioLabels(folios, 'Acme').values()]).toEqual([
+			'Account · Acme',
+			'Account · Acme · GAL-2026-000002',
 			'Account · Acme'
 		]);
 	});

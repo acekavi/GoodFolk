@@ -1,6 +1,6 @@
 <!--
-	Moves a line to another folio of the reservation: the line, then the folio it goes to, then why. The line
-	is reversed here and posted again there, both kept.
+	Moves a line to another open folio read with it (the reservation's, or the account's): the line, then the
+	folio it goes to, then why. The line is reversed here and posted again there, both kept.
 -->
 <script lang="ts">
 	import { useQueryClient } from '@tanstack/svelte-query';
@@ -12,7 +12,7 @@
 		propertyId: string;
 		/** The folio the line is on. */
 		folio: Folio;
-		/** Every folio of the reservation; the open ones but this are offered as targets. */
+		/** Every folio read with this one; the open ones but this are offered as targets. */
 		folios: readonly Folio[];
 		labels: ReadonlyMap<string, string>;
 		/** The line chosen when the dialog opens. */
@@ -85,7 +85,7 @@
 	<form class="form" onsubmit={submit}>
 		<h2 id="transfer-title">Transfer a line · {labels.get(folio.id)}</h2>
 		{#if targets.length === 0}
-			<p>This reservation has no other open folio to move a line to.</p>
+			<p>There is no other open folio to move a line to.</p>
 			<div class="actions">
 				<button type="button" class="secondary" onclick={() => (open = false)}>Close</button>
 			</div>

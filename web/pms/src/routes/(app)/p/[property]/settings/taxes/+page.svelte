@@ -55,15 +55,25 @@
 		};
 	}
 
-	let draft = $state<ReturnType<typeof draftOf> | null>(null);
-	let draftVersion = -1;
-	// The form shows the stored settings whenever a new version of them arrives.
+	type Draft = ReturnType<typeof draftOf>;
+	let draft = $state<Draft | null>(null);
+	/** The stored settings the draft was taken from, and their version, which its save sends as `If-Match`. */
+	let stored: Draft | null = null;
+	let draftVersion = $state(-1);
+	// A new version of the stored settings replaces the form only while the form still holds what was stored (or
+	// when `draftVersion` is reset to -1): an edit in progress is kept, and saving it against the version it was
+	// taken from is refused (412) if someone else changed the settings meanwhile.
 	$effect(() => {
 		const current = settings.data?.propertyTaxSettings;
-		if (current && current.version !== draftVersion) {
-			draftVersion = current.version;
-			draft = draftOf(current);
-		}
+		if (!current || current.version === draftVersion) return;
+		const dirty =
+			draftVersion !== -1 &&
+			!!draft &&
+			JSON.stringify($state.snapshot(draft)) !== JSON.stringify(stored);
+		if (dirty) return;
+		draftVersion = current.version;
+		stored = draftOf(current);
+		draft = draftOf(current);
 	});
 
 	const pending = new Pending();
@@ -84,8 +94,7 @@
 
 	async function saveSettings(event: SubmitEvent) {
 		event.preventDefault();
-		const current = settings.data?.propertyTaxSettings;
-		if (!draft || !current) return;
+		if (!draft || draftVersion === -1) return;
 		settingsError = '';
 		settingsSaved = false;
 		const body = {
@@ -100,12 +109,14 @@
 			await pending.run('settings', async () =>
 				unwrap(
 					await rest.PATCH('/api/v1/properties/{property}/tax-settings', {
-						params: { path: { property: propertyId }, header: ifMatch(current.version) },
+						params: { path: { property: propertyId }, header: ifMatch(draftVersion) },
 						body
 					})
 				)
 			);
 			settingsSaved = true;
+			// The form holds what was saved, so it takes the saved settings' new version when it arrives.
+			stored = $state.snapshot(draft);
 		} catch (err) {
 			if (err instanceof ApiError && err.status === 412) {
 				// Show the latest settings rather than let a stale save overwrite someone else's change.
@@ -352,7 +363,11 @@
 			outlets={settings.data.outlets}
 			{businessDate}
 			bind:open={ruleOpen}
-			onchange={() => void refresh()}
+			onchange={(message) => {
+				rulesError = message ?? '';
+				rulesNote = '';
+				void refresh();
+			}}
 		/>
 	{/if}
 {:else}

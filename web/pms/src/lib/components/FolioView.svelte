@@ -1,5 +1,5 @@
 <!--
-	One folio of the reservation: its balances per currency with their base equivalents, its lines (each opens
+	One folio, of a reservation or of an account: its balances per currency with their base equivalents, its lines (each opens
 	to its taxes), payments and invoices, and the actions each permission allows. Lines never change: a mistake
 	is reversed (with a reason) or moved to another folio. An invoice's PDF opens through a fresh, audited link
 	each time, in a new tab, or as a link here when the browser blocks the tab; it is never kept.
@@ -17,6 +17,7 @@
 		folioActions,
 		invoiceBlocker,
 		invoiceLink,
+		isSuperseded,
 		methodLabel,
 		money,
 		paymentDetails,
@@ -38,7 +39,8 @@
 	interface Props {
 		propertyId: string;
 		folio: Folio;
-		/** Every folio of the reservation, for transfers, refunds and naming the other side of a move. */
+		/** Every folio read with it (the reservation's, or the account's), for transfers, refunds and naming the
+		 * other side of a move. */
 		folios: readonly Folio[];
 		labels: ReadonlyMap<string, string>;
 		baseCurrency: string;
@@ -69,7 +71,8 @@
 
 	const label = $derived(labels.get(folio.id) ?? 'Folio');
 	const actions = $derived(folioActions(folio, can));
-	const blocker = $derived(invoiceBlocker(folio));
+	const superseded = $derived(isSuperseded(folio, folios));
+	const blocker = $derived(invoiceBlocker(folio, folios));
 	const reversed = $derived(reversedLines(folio.lines));
 	const descriptions = $derived(new Map(folio.lines.map((line) => [line.id, line.description])));
 	const creditable = $derived(uncredited(folio));
@@ -217,7 +220,12 @@
 </script>
 
 <section class="folio" aria-label="Folio {label}">
-	{#if folio.status === 'INVOICED'}
+	{#if superseded}
+		<p class="hint">
+			Invoiced: the account's charges go to its newer open folio. A credit note here waits until
+			that one is invoiced too.
+		</p>
+	{:else if folio.status === 'INVOICED'}
 		<p class="hint">Invoiced: it takes no charges or payments until a credit note reopens it.</p>
 	{/if}
 	{#if folio.linesOmitted}

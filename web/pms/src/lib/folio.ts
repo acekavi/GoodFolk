@@ -209,8 +209,28 @@ export function isSettled(folio: Folio): boolean {
 	return folio.balances.every((balance) => balance.amount === 0);
 }
 
-/** Why the folio cannot be invoiced now, or `null` when it can. */
-export function invoiceBlocker(folio: Folio): string | null {
+/**
+ * An invoiced account folio that a newer open folio of the same account has replaced: its account's charges go
+ * there now, and the server refuses a credit note on it until that folio is invoiced too.
+ */
+export function isSuperseded(folio: Folio, folios: readonly Folio[]): boolean {
+	return (
+		folio.kind === 'ACCOUNT' &&
+		folio.status === 'INVOICED' &&
+		folios.some(
+			(other) =>
+				other.id !== folio.id &&
+				other.kind === 'ACCOUNT' &&
+				other.status === 'OPEN' &&
+				other.accountId === folio.accountId
+		)
+	);
+}
+
+/** Why the folio cannot be invoiced now, or `null` when it can. `folios` are those read with it. */
+export function invoiceBlocker(folio: Folio, folios: readonly Folio[] = []): string | null {
+	if (isSuperseded(folio, folios))
+		return 'Already invoiced. The account has a newer open folio, which takes its charges now.';
 	if (folio.status === 'INVOICED')
 		return 'Already invoiced. A credit note on its invoice reopens it.';
 	if (folio.linesOmitted) return 'Open the account to invoice its ledger.';
@@ -262,6 +282,32 @@ export function folioLabels(
 		else if (folio.kind === 'ACCOUNT')
 			labels.set(folio.id, accountName ? `Account · ${accountName}` : 'Account');
 		else labels.set(folio.id, stays.get(folio.reservationRoomId ?? '') ?? 'Stay');
+	}
+	return labels;
+}
+
+/**
+ * The tab names of an account's folios: the open one (its current ledger) by the account's name, and each invoiced
+ * one by the serial of its latest invoice, or by its account's name when it has none.
+ */
+export function accountFolioLabels(
+	folios: readonly Folio[],
+	accountName: string
+): Map<string, string> {
+	const labels = new Map<string, string>();
+	for (const folio of folios) {
+		const latest = folio.invoices
+			.filter((invoice) => invoice.kind === 'INVOICE')
+			.reduce<Invoice | null>(
+				(last, invoice) => (!last || invoice.issuedAt > last.issuedAt ? invoice : last),
+				null
+			);
+		labels.set(
+			folio.id,
+			folio.status === 'INVOICED' && latest
+				? `Account · ${accountName} · ${latest.serial}`
+				: `Account · ${accountName}`
+		);
 	}
 	return labels;
 }
