@@ -41,7 +41,7 @@ Linen and guest laundry ([laundry.md](laundry.md)) follow 7a.
 - **Append-only.** The app role has no `update` or `delete` grant on lines, their taxes or payments.
 - **Reversal.** An equal negative line with `reverses = <line>` and a reason (1–500 characters). It carries its own negative tax lines, mirroring the original's. A line can be reversed once, and a reversal can't itself be reversed.
 - **Transfer.** A reversal on the source folio plus an identical line on the target folio, linked by `transfer_id`, in one transaction. Both folios must be open, and in the same property for guest and account folios.
-- **Posting key.** System postings carry a `posting_key` that is unique per folio: `room:<reservation_room>:<date>`, `meal_plan:<reservation_room>:<date>`, `pos:<pos_bill>`, `cancellation:<reservation_room>`. A repeat is a no-op that returns the existing line.
+- **Posting key.** System postings carry a `posting_key` that is unique per tenant: `room:<reservation_room>:<date>`, `meal_plan:<reservation_room>:<date>`, `pos:<pos_bill>:<n>` (the bill's `n`th item), `cancellation:<reservation_room>`. A repeat is a no-op that returns the existing line, wherever routing sent it.
 
 ## Routing
 
@@ -71,7 +71,8 @@ Linen and guest laundry ([laundry.md](laundry.md)) follow 7a.
   - SSCL 2.5%; its base is net + SC + TDL;
   - VAT 18% only when `vat_registered`; its base is net + SC + TDL + SSCL;
   - order A, everything on the bill.
-- **Property settings.** `vat_registered`, `tin`, `tdl_small_turnover`, `legal_name` and `address` (for invoices).
+- **Rules in force.** A rule whose `effective_from` is on or before the business date has taxed lines already, so only its name and a later end can change (`409`, "…End it and add a new rule"). To change its rate or anything else, end it and add a new rule.
+- **Property settings.** `vat_registered`, `tin`, `tdl_small_turnover`, `legal_name` and `address` (for invoices), and `accepted_currencies`. A currency that an open folio of the property still holds a non-zero balance in can't be removed (`422`).
 
 ## Payments
 
@@ -90,11 +91,15 @@ Linen and guest laundry ([laundry.md](laundry.md)) follow 7a.
 - **Taxes.** GoodFolk taxes each item with the outlet's rules (category `pos:<outlet>`).
 - **Posting.** A bill posted to a stay creates one line per item, routed as usual, with posting key `pos:<bill>:<n>`. A bill settled directly is recorded with its payment, attached to no folio, so the audit still counts the revenue.
 - **Outlets** are a property setting: `code` (`^[A-Z0-9]{1,10}$`), name, `service_charge` (on or off), active.
-- **Permission.** A POS calls with a user that has the new `PosPost` permission (owner, manager, or a POS service user created by `add-staff`). The gRPC `PostPosBill` waits until a POS service exists.
+- **Permission.** A POS calls with a user that has the new `PosPost` permission (owner, manager). For now that is a manager-role user set aside for the POS; Phase 8 adds a dedicated POS role. The gRPC `PostPosBill` waits until a POS service exists.
 
 ## Invoices and credit notes
 
-- **Issuing.** `POST …/folios/{id}/invoice` (`InvoiceIssue`) works only when the folio's balance is zero in every currency and the folio has at least one line. In one transaction it:
+- **Issuing.** `POST …/folios/{id}/invoice` (`InvoiceIssue`) works only when the folio's balance is zero in every currency and the folio has at least one line. It is also refused (`409`, before any serial is taken):
+  - for a guest folio of a checked-in stay with a night before `min(departure, business date + 1)` not yet posted: "Post the stay's nights first: post tonight's charges or check out";
+  - for a folio past the render limits, at most 2000 lines, 500 payments and 50 taxes: "The folio has too many lines to invoice at once (at most 2000)".
+
+  In one transaction it:
   1. takes `property_counter('invoice')`;
   2. snapshots the invoice data;
   3. sets the folio `invoiced`;
@@ -150,7 +155,7 @@ Linen and guest laundry ([laundry.md](laundry.md)) follow 7a.
 ## UI
 
 - **Reservation modal: Folios tab.** One tab per folio (deposit, each room's guest folio, the account folio). Each shows lines with expandable taxes, payments, per-currency balances with LKR, and the actions Post charge, Take payment, Refund, Reverse, Transfer, Routing, Issue invoice and View invoice.
-- **Accounts page.** Each account's folio per property.
+- **Accounts page.** Each account's folios per property: the open one first and shown, then the invoiced ones, newest first, each with its invoices.
 - **Settings.**
   - **Taxes:** property tax settings, rules with effective dates, apply preset.
   - **Outlets.**
