@@ -174,6 +174,20 @@ test('an invoice is issued, its PDF is ready live and opens, and a credit note r
 	await expect(payment).toBeHidden();
 	await expect(issue).toBeEnabled();
 
+	// A checked-in stay is invoiced only once tonight is posted: the refusal shows on the folio.
+	await issue.click();
+	await expect(folio.getByRole('alert')).toContainText("Post the stay's nights first");
+	const tonight = await page.request.post(`${owner.path}/folio/post-charges`, {
+		headers: { 'x-goodfolk-csrf': '1', 'Idempotency-Key': crypto.randomUUID() }
+	});
+	expect(tonight.status(), await tonight.text()).toBe(200);
+	await expect(folio.getByRole('table', { name: 'Lines of Room 101' })).toContainText('Room');
+	await expect(issue).toBeDisabled();
+	await folio.getByRole('button', { name: 'Take payment' }).click();
+	await payment.getByRole('button', { name: 'Take payment' }).click();
+	await expect(payment).toBeHidden();
+	await expect(issue).toBeEnabled();
+
 	// A mark on the window shows the page is never reloaded on the way to a ready PDF.
 	await page.evaluate(() => Object.assign(window, { unreloaded: true }));
 	await issue.click();
@@ -341,6 +355,77 @@ test('routing sends the room charge to the account folio, which the reservation 
 		'Room'
 	);
 	await expect(ledger.getByRole('list', { name: 'Balances' })).toContainText('due');
+});
+
+test('an invoiced account folio gives way to a fresh one: the next routed night goes there, and both are listed', async ({
+	page
+}) => {
+	const owner = await hotel(page, 'ACF');
+	const year = owner.businessDate.slice(0, 4);
+	const account = await post(page.request, `${owner.path}/accounts`, {
+		kind: 'company',
+		name: 'Acme Corp',
+		currency: 'USD'
+	});
+	// A reservation billed to an account routes its room charges there from the start.
+	await bookStay(page, owner, { account: account.id });
+	page.on('dialog', (dialog) => void dialog.accept());
+	await page.goto(`/p/${owner.propertyId}/reservations`);
+	const postTonight = page.getByRole('button', { name: "Post tonight's charges" });
+	const posted = page.getByRole('status', { name: "Tonight's charges" });
+	await postTonight.click();
+	await expect(posted).toContainText('1 line posted for 1 stay');
+
+	// The account settles and invoices its ledger.
+	await page.goto(`/p/${owner.propertyId}/accounts`);
+	await page.getByRole('button', { name: 'Folio of Acme Corp' }).click();
+	const first = page.getByRole('region', { name: 'Folio Account · Acme Corp' });
+	await first.getByRole('button', { name: 'Take payment' }).click();
+	const payment = page.getByRole('dialog', { name: /Take a payment/ });
+	await payment.getByRole('button', { name: 'Take payment' }).click();
+	await expect(payment).toBeHidden();
+	const serial = `ACF-${year}-000001`;
+	await first.getByRole('button', { name: 'Issue invoice' }).click();
+	await expect(
+		first.getByRole('list', { name: 'Invoices of Account · Acme Corp' }).getByText(serial, {
+			exact: true
+		})
+	).toBeVisible();
+	await expect(first).toContainText('Invoiced: it takes no charges');
+
+	// The next stay billed to it posts its night to a new open folio, not the invoiced one.
+	await bookStay(page, owner, { account: account.id });
+	await page.goto(`/p/${owner.propertyId}/reservations`);
+	await postTonight.click();
+	await expect(posted).toContainText('1 line posted for 2 stays; 1 already posted.');
+
+	await page.goto(`/p/${owner.propertyId}/accounts`);
+	await page.getByRole('button', { name: 'Folio of Acme Corp' }).click();
+	const tabs = page.getByRole('tablist', { name: 'Folios of Acme Corp' });
+	const open = tabs.getByRole('tab', { name: 'Account · Acme Corp · open', exact: true });
+	const invoiced = tabs.getByRole('tab', { name: `Account · Acme Corp · ${serial}`, exact: true });
+	await expect(tabs.getByRole('tab')).toHaveCount(2);
+	await expect(tabs.getByRole('tab').first()).toHaveText('Account · Acme Corp · open');
+	await expect(open).toHaveAttribute('aria-selected', 'true');
+	const current = page.getByRole('region', { name: 'Folio Account · Acme Corp' });
+	await expect(current.getByRole('table', { name: 'Lines of Account · Acme Corp' })).toContainText(
+		'Room'
+	);
+	await expect(current.getByRole('list', { name: 'Balances' })).toContainText('due');
+	await expect(current.getByRole('button', { name: 'Issue invoice' })).toBeDisabled();
+
+	// The invoiced folio keeps its invoice, and its credit note waits for the open one.
+	await invoiced.click();
+	const past = page.getByRole('region', { name: `Folio Account · Acme Corp · ${serial}` });
+	await expect(
+		past.getByRole('list', { name: `Invoices of Account · Acme Corp · ${serial}` })
+	).toContainText(serial);
+	await expect(past).toContainText("the account's charges go to its newer open folio");
+	await past.getByRole('button', { name: `Credit note for ${serial}` }).click();
+	await past.getByLabel(`Why credit ${serial}?`).fill('Wrong purchaser');
+	await past.getByRole('button', { name: 'Issue credit note' }).click();
+	await expect(past.getByRole('alert')).toContainText('The account has a newer open folio');
+	await expect(past).not.toContainText(`CN-${serial}`);
 });
 
 test('the Sri Lanka preset starts tomorrow, outlet codes are fixed, a rate is overridden, and only managers see the exchange-rate alert', async ({
