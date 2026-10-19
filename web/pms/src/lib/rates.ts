@@ -2,6 +2,7 @@ import { graphql } from './api/gql';
 import type { RateGridQuery, RatePlansQuery } from './api/gql/graphql';
 import { query } from './api/graphql';
 import { addDays, monthDays } from './inventory';
+import { exponent } from './money';
 
 export const RatePlansDocument = graphql(`
 	query RatePlans($propertyId: UUID!) {
@@ -171,15 +172,9 @@ export async function fetchRateMonth(
 		.rateGrid;
 }
 
-/** Digits after the decimal point in `currency` (2 for USD and LKR, 0 for JPY). */
-function minorDigits(currency: string): number {
-	return new Intl.NumberFormat('en', { style: 'currency', currency }).resolvedOptions()
-		.maximumFractionDigits!;
-}
-
 /** Minor units as a plain number in `currency`, e.g. `15050` USD as `150.50`. */
 export function formatMoney(amount: number, currency: string): string {
-	const digits = minorDigits(currency);
+	const digits = exponent(currency);
 	return new Intl.NumberFormat('en', {
 		minimumFractionDigits: digits,
 		maximumFractionDigits: digits
@@ -190,7 +185,7 @@ export function formatMoney(amount: number, currency: string): string {
 export function parseMoney(text: string, currency: string): number | null {
 	const cleaned = text.replaceAll(',', '').trim();
 	if (!/^\d+(\.\d*)?$/.test(cleaned)) return null;
-	const digits = minorDigits(currency);
+	const digits = exponent(currency);
 	const [whole, fraction = ''] = cleaned.split('.');
 	const kept = fraction.padEnd(digits, '0').slice(0, digits);
 	const roundUp = fraction.length > digits && Number(fraction[digits]) >= 5;

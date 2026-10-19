@@ -3,7 +3,6 @@ import {
 	balanceText,
 	canCorrect,
 	categories,
-	exponent,
 	folioActions,
 	folioLabels,
 	formatAmount,
@@ -82,13 +81,6 @@ function folio(id: string, extra: Partial<Folio> = {}): Folio {
 const ALL = { post: true, adjust: true, invoice: true };
 
 describe('money', () => {
-	it("uses each currency's exponent", () => {
-		expect(exponent('USD')).toBe(2);
-		expect(exponent('LKR')).toBe(2);
-		expect(exponent('JPY')).toBe(0);
-		for (const currency of ['KWD', 'BHD', 'OMR']) expect(exponent(currency)).toBe(3);
-	});
-
 	it('formats minor units with separators and a leading minus', () => {
 		expect(formatAmount(123450, 'USD')).toBe('1,234.50');
 		expect(formatAmount(-123450, 'USD')).toBe('-1,234.50');

@@ -3,6 +3,7 @@ import { graphql } from './api/gql';
 import type { FolioContextQuery, FoliosQuery } from './api/gql/graphql';
 import { query } from './api/graphql';
 import { rest, unwrap } from './api/rest';
+import { exponent } from './money';
 import { reservationKey } from './reservations';
 
 export const FoliosDocument = graphql(`
@@ -159,33 +160,6 @@ export async function fetchRouting(
 	signal?: AbortSignal
 ): Promise<string[]> {
 	return (await query(RoutingDocument, { propertyId, reservationId }, signal)).routing;
-}
-
-/** ISO 4217 minor units, as the server's `fx::exponent`: 0, 3 for thousandths, else 2. */
-export function exponent(currency: string): number {
-	if (
-		[
-			'BIF',
-			'CLP',
-			'DJF',
-			'GNF',
-			'ISK',
-			'JPY',
-			'KMF',
-			'KRW',
-			'PYG',
-			'RWF',
-			'UGX',
-			'VND',
-			'VUV',
-			'XAF',
-			'XOF',
-			'XPF'
-		].includes(currency)
-	)
-		return 0;
-	if (['BHD', 'IQD', 'JOD', 'KWD', 'LYD', 'OMR', 'TND'].includes(currency)) return 3;
-	return 2;
 }
 
 /** Minor units as digits in `currency`, with thousands separators and a leading minus: `-123450` USD is `-1,234.50`. */
