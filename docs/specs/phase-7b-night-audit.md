@@ -37,7 +37,10 @@ One GraphQL query, `nightAudit(propertyId)`, returns five lists for the property
    A tentative room offers only Delay arrival and Cancel.
 2. **Departures not checked out.** Stays that are `checked_in` with `upper(stay) = D`, with their folio balances. Actions:
    - **Check out**: the existing command.
-   - **Extend a night**: the existing `modify_room`, with check-out D+1 and `keep_price` at the last night's price. A refusal shows the server's reason.
+   - **Extend a night**: `reservations::extend_stay`.
+     - It adds night D+1 at the stay's last night's room and meal amounts, with no quote or rate restrictions.
+     - The new night must be sellable and the room free (`409` otherwise, with the server's reason).
+     - `modify_room` is not used, because it quotes added nights afresh.
 3. **POS bills of D**, grouped by outlet. Each bill shows its number, its total, and either the stay it posted to (with the room number) or "settled at the outlet", with a total per outlet. A bill posted to a stay that has since checked out with a non-zero balance is highlighted.
 4. **Booking bills.**
    - **Preview of tonight's room and meal-plan lines** per in-house stay. It is computed by a dry run of the code `post_business_date_charges` uses, so it skips keys already posted, and it flags a stay that would fail (for example, for a missing rate).
@@ -59,7 +62,7 @@ Each step runs in one transaction, which also inserts the step's `audit_run_step
 
      If an extension is refused, the step fails.
 1. **`post_charges`**: `folio::post_business_date_charges(D)`. Any stay that fails **fails the run**, and the step's report lists the stays. A rerun posts only what is missing, thanks to the posting keys.
-2. **`lock_fx`.** For every accepted non-base currency with a rate in effect on D, this writes that rate as an `fx_rate` row dated D, if there is none. From then on, `fx::set_manual` and the import refuse any date before the property's business date (`409`, "That day is closed").
+2. **`lock_fx`.** For every accepted non-base currency with a rate in effect on D, this writes that rate as an `fx_rate` row dated D, if there is none. From then on, `fx::set_manual` refuses any date before the property's business date (`409`, "That day is closed"), and the import skips such a property for that date without raising an alert.
 3. **`snapshot_stats`** and 4. **`advance_business_date`** commit together, in one transaction holding `property` `FOR UPDATE`. That transaction:
    - checks `business_date = D`;
    - takes the statistics for D;
@@ -79,7 +82,7 @@ Each step runs in one transaction, which also inserts the step's `audit_run_step
 
 ## Locking: carried over from Phase 1
 
-Every writer that reads the business date reads `property` `FOR SHARE`, as its **first** lock. That covers the inventory counters, reservation commands, folio postings, POS bills and housekeeping. The property row therefore heads the lock order in [api-conventions.md](../design/api-conventions.md).
+Every writer that reads the business date reads `property` `FOR SHARE`. That covers the inventory counters, reservation commands, folio postings, POS bills, housekeeping and exchange-rate overrides. `rooms::extend_window` takes that share lock **before** inserting counter rows. The roll holds `FOR UPDATE` and waits on no row a writer could hold, since a writer inserts counter rows only after its share lock. So a writer that already holds other rows can safely take the share lock mid-transaction. [api-conventions.md](../design/api-conventions.md) records the rule.
 
 The roll takes `FOR UPDATE`, so it waits for writers in flight and holds new ones back only for the snapshot transaction. `rooms::extend_window` runs under the same `FOR UPDATE` lock in the roll and in the daily job.
 
@@ -105,7 +108,7 @@ It connects as the application role and enters each tenant through `db::begin`. 
 
 | Job | Due | Notes |
 |---|---|---|
-| Auto close | the property's local time is past `audit_time` on the day after its business date, and D has no completed run | `mode = auto` |
+| Auto close | the property's local time is past the audit moment of D: D at `audit_time` when it is 12:00 or later, D + 1 at `audit_time` when it is earlier (default 03:00) | `mode = auto`; D has no completed run |
 | Resume | a `running` run whose lock is free | crash recovery |
 | Exchange-rate import | 10:30 `Asia/Colombo` daily, and at start-up | moved from core-api, with `FX_IMPORT=on\|off` |
 | Media sweep | daily | moved from core-api |
@@ -128,7 +131,8 @@ These are taken in the snapshot transaction for D, as base-currency (LKR) figure
   - `rooms_sold`: stays with D as a night, in house at the close;
   - `complimentary_rooms`: sold nights with a zero room amount, included in sold;
   - `occupancy_bp = rooms_sold × 10000 / rooms_available`.
-- **Counts:** `adults`, `children`, `arrivals`, `departures`, `no_shows`, `cancellations` (cancelled on D) and `walk_ins` (created and checked in on D).
+- **Counts:** `adults`, `children`, `arrivals`, `departures`, `no_shows`, `cancellations` (cancelled on D) and `walk_ins` (booked and checked in on D).
+  - Two new columns, both backfilled from their timestamps in the property's time zone, make "on D" exact: `reservation.booked_business_date` and `reservation_room.cancelled_business_date`.
 - **Revenue, net of tax:** `room_revenue`, `meal_plan_revenue`, `pos_revenue`, `fee_revenue` (cancellation and no-show) and `other_revenue`.
   - These are summed from `folio_line.base_amount` with `business_date = D`, reversals included. Revenue is recognised on the posting business date.
   - `adr = room_revenue / rooms_sold` and `revpar = room_revenue / rooms_available`, in minor units, rounded half-up, 0 when the divisor is 0.
