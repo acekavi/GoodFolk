@@ -11,11 +11,12 @@ Multi-tenant, cloud-hosted hotel property management system.
 |---|---|
 | `crates/core-api` | axum HTTP API (REST commands, GraphQL reads, server-sent events) |
 | `crates/media-svc` | The media service: verifies uploads over gRPC, makes the archive and renditions in worker subprocesses, and renders invoice PDFs with Typst (no database) |
+| `crates/jobs-svc` | The jobs service: the night-audit close, started over gRPC or by its 15-minute tick, which also closes each property at its audit moment and resumes a crashed close |
 | `crates/imaging` | The image pipeline: decode, upright, sRGB, resize, AVIF and WebP, the JPEG XL archive, the SSIMULACRA2 quality gate |
 | `crates/storage` | S3 operations (presigned multipart, signed GET, put/get/head/delete) and the dev bucket setup |
 | `crates/events` | The transactional outbox, its relay and the event bus (`PushBus`, `PubSubBus`) |
 | `crates/svc-auth` | Service-to-service auth: Google ID tokens in production, a shared secret locally |
-| `crates/proto`, `crates/media-types` | The media gRPC contract (compiled with `protox`, no `protoc`), and the job and result types core-api and media-svc share |
+| `crates/proto`, `crates/media-types` | The media and jobs gRPC contracts (compiled with `protox`, no `protoc`), and the job and result types core-api and media-svc share |
 | `crates/db` | Postgres pool, migrations, tenant-scoped transactions, change events |
 | `crates/domain` | Pure business rules with no I/O of their own, shared by callers instead of re-derived (the reservation-room state machine) |
 | `modules/*` | Domain modules (`identity`, `property`, `rooms`, `rates`, `reservations`, `housekeeping`, `folio`, `tax`, `fx`, …) |

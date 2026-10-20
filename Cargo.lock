@@ -2876,6 +2876,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "jobs-svc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "audit",
+ "axum",
+ "db",
+ "folio",
+ "fx",
+ "property",
+ "proto",
+ "reqwest",
+ "rooms",
+ "rust_decimal",
+ "rustix",
+ "serde_json",
+ "sqlx",
+ "storage",
+ "svc-auth",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "jobserver"
 version = "0.1.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5675,6 +5704,7 @@ dependencies = [
  "futures-core",
  "futures-io",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",

@@ -1,0 +1,23 @@
+syntax = "proto3";
+package goodfolk.jobs.v1;
+
+// Scheduled work and the night-audit close. Every call needs service auth.
+service Jobs {
+  // Runs every due job once: auto closes, resumes, then the daily jobs.
+  rpc Tick(TickRequest) returns (TickResponse);
+  // Creates or returns the close of the property's business date and runs it in the background.
+  rpc StartClose(StartCloseRequest) returns (CloseResponse);
+  // Retries a failed close and runs it in the background.
+  rpc RetryClose(RetryCloseRequest) returns (CloseResponse);
+}
+
+message TickRequest {}
+message TickResponse { repeated JobOutcome jobs = 1; }
+message JobOutcome {
+  string job = 1;      // "auto_close", "resume", "fx_import", "media_sweep", "window", "cleanup", "drift"
+  string key = 2;      // the property id, or "" for a global job
+  string outcome = 3;  // "ran", "skipped" (lock held / not due), or "failed: <message>"
+}
+message StartCloseRequest { string tenant_id = 1; string property_id = 2; string user_id = 3; }
+message RetryCloseRequest { string tenant_id = 1; string run_id = 2; string user_id = 3; }
+message CloseResponse { string run_id = 1; }

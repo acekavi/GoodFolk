@@ -1,9 +1,14 @@
-//! The gRPC contract between core-api and media-svc, plus the standard health service.
+//! The gRPC contracts between core-api and media-svc and between core-api and jobs-svc, plus the standard health
+//! service.
 
 pub use tonic_health;
 
 pub mod media {
     tonic::include_proto!("goodfolk.media.v1");
+}
+
+pub mod jobs {
+    tonic::include_proto!("goodfolk.jobs.v1");
 }
 
 #[cfg(test)]
