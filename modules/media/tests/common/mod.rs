@@ -154,8 +154,9 @@ impl Hotel {
         .await
         .unwrap();
         sqlx::query(
-            "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id)
-             values ($1, $2, $3, $4, 'front_desk', $5)",
+            "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id,
+                                      booked_business_date)
+             values ($1, $2, $3, $4, 'front_desk', $5, current_date)",
         )
         .bind(reservation)
         .bind(self.tenant.0)
@@ -169,12 +170,13 @@ impl Hotel {
             "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, stay, adults,
                                            children, rate_plan_id, meal_plan, status, primary_guest_id, currency,
                                            cancelled_at, cancellation_penalty, checked_in_at, checked_in_business_date,
-                                           checked_out_at)
+                                           checked_out_at, cancelled_business_date)
              values ($1, $2, $3, $4, $5, daterange($6, $7), 2, 0, $8, 'RO', $9, $10, 'USD',
                      case when $9 = 'cancelled' then now() end, case when $9 = 'cancelled' then 0 end,
                      case when $9 in ('checked_in', 'checked_out') then now() end,
                      case when $9 in ('checked_in', 'checked_out') then $6 end,
-                     case when $9 = 'checked_out' then now() end)",
+                     case when $9 = 'checked_out' then now() end,
+                     case when $9 in ('cancelled', 'no_show') then $6 end)",
         )
         .bind(room)
         .bind(self.tenant.0)

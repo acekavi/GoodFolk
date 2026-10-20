@@ -36,8 +36,9 @@ async fn hotel(pool: &PgPool, code: &str) -> Hotel {
         "insert into rate_plan (id, tenant_id, property_id, code, name, kind, segment, currency)
          values ($5, $1, $2, 'BAR', 'Best available', 'standard', 'IBE', 'USD')",
         "insert into guest (id, tenant_id, first_name, last_name, residency) values ($6, $1, 'Ada', 'Silva', 'resident')",
-        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id)
-         values ($7, $1, $2, $8 || '-000001', 'front_desk', $6)",
+        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id,
+                                  booked_business_date)
+         values ($7, $1, $2, $8 || '-000001', 'front_desk', $6, current_date)",
     ];
     for statement in statements {
         sqlx::query(statement)
@@ -72,12 +73,13 @@ async fn stay(
         "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, room_id, stay, adults,
                                        children, rate_plan_id, meal_plan, status, primary_guest_id, currency,
                                        cancelled_at, cancellation_penalty, checked_in_at, checked_in_business_date,
-                                       checked_out_at)
+                                       checked_out_at, cancelled_business_date)
          values ($1, $2, $3, $4, $5, $6, daterange(current_date + $7, current_date + $8), 2, 0, $9, 'RO', $10, $11,
                  'USD', case when $10 = 'cancelled' then now() end, case when $10 = 'cancelled' then 0 end,
                  case when $10 in ('checked_in', 'checked_out') then now() end,
                  case when $10 in ('checked_in', 'checked_out') then current_date end,
-                 case when $10 = 'checked_out' then now() end)",
+                 case when $10 = 'checked_out' then now() end,
+                 case when $10 in ('cancelled', 'no_show') then current_date end)",
     )
     .bind(id)
     .bind(hotel.tenant)
@@ -99,8 +101,9 @@ async fn stay(
 async fn reservation(pool: &PgPool, hotel: &Hotel, number: &str) -> Result<Uuid, sqlx::Error> {
     let id = Uuid::now_v7();
     sqlx::query(
-        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id)
-         values ($1, $2, $3, $4, 'phone', $5)",
+        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id,
+                                  booked_business_date)
+         values ($1, $2, $3, $4, 'phone', $5, current_date)",
     )
     .bind(id)
     .bind(hotel.tenant)
@@ -197,7 +200,8 @@ async fn a_stay_records_its_cancellation_and_penalty_exactly_when_cancelled(pool
     let set = |status: &'static str, cancelled: bool, penalty: Option<i64>| {
         sqlx::query(
             "update reservation_room
-             set status = $2, cancelled_at = case when $3 then now() end, cancellation_penalty = $4
+             set status = $2, cancelled_at = case when $3 then now() end, cancellation_penalty = $4,
+                 cancelled_business_date = case when $2 in ('cancelled', 'no_show') then current_date end
              where id = $1",
         )
         .bind(room)

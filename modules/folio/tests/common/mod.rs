@@ -162,8 +162,9 @@ impl Hotel {
         .await
         .unwrap();
         sqlx::query(
-            "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id, account_id)
-             values ($1, $2, $3, $4, 'front_desk', $5, $6)",
+            "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id, account_id,
+                                      booked_business_date)
+             values ($1, $2, $3, $4, 'front_desk', $5, $6, current_date)",
         )
         .bind(reservation)
         .bind(self.tenant.0)

@@ -394,7 +394,8 @@ async fn a_deposit_charged_to_account_moves_back_after_the_reservation_is_cancel
     let line = account_line(&hotel, &paid).await;
     let mut tx = hotel.tx().await;
     sqlx::query(
-        "update reservation_room set status = 'cancelled', cancelled_at = now(), cancellation_penalty = 0
+        "update reservation_room set status = 'cancelled', cancelled_at = now(), cancellation_penalty = 0,
+                 cancelled_business_date = current_date
              where reservation_id = $1",
     )
     .bind(booking.id)

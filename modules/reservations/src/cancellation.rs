@@ -134,7 +134,8 @@ pub async fn cancel_room(
     let penalty = cancellation_penalty(terms, &nights, stay.check_in, today);
     let version: i32 = sqlx::query_scalar(
         "update reservation_room
-         set status = $2, cancelled_at = now(), cancelled_by = $3, cancellation_penalty = $4, version = version + 1
+         set status = $2, cancelled_at = now(), cancelled_by = $3, cancellation_penalty = $4,
+             cancelled_business_date = $5, version = version + 1
          where id = $1
          returning version",
     )
@@ -142,6 +143,7 @@ pub async fn cancel_room(
     .bind(status.as_str())
     .bind(actor.0)
     .bind(penalty)
+    .bind(today)
     .fetch_one(&mut **tx)
     .await?;
     // After this row and its counters, before the reservation: the deposit folio sits between them in the lock order.

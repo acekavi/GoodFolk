@@ -54,7 +54,9 @@ const ACTIONS = {
 	/** Manual exchange rates; mirrors `FxOverride`. */
 	fxOverride: ['owner', 'manager'],
 	/** POS bills; mirrors `PosPost`. */
-	posPost: ['owner', 'manager']
+	posPost: ['owner', 'manager'],
+	/** The night-audit review, starting and retrying the close, and the audit history; mirrors `NightAudit`. */
+	nightAudit: ['owner', 'manager', 'front_desk']
 } satisfies Record<string, Role[]>;
 
 /** UI hint only; the API enforces permissions. A grant counts tenant-wide or for `propertyId`. */

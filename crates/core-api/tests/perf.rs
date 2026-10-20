@@ -391,8 +391,9 @@ async fn seed_reservation_rooms(
     let sources: Vec<&str> = (0..count).map(|_| "front_desk").collect();
     let bookers: Vec<Uuid> = (0..count).map(|index| guest_ids[index % GUESTS]).collect();
     sqlx::query(
-        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id)
-         select r.id, $1, $2, r.confirmation_no, r.source, r.booker_guest_id
+        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id,
+                                  booked_business_date)
+         select r.id, $1, $2, r.confirmation_no, r.source, r.booker_guest_id, current_date
          from unnest($3::uuid[], $4::text[], $5::text[], $6::uuid[])
               as r (id, confirmation_no, source, booker_guest_id)",
     )
@@ -724,8 +725,9 @@ async fn seed_tape_property(opts: PgConnectOptions) -> TapeFixture {
         let sources: Vec<&str> = batch.iter().map(|_| "front_desk").collect();
         let bookers: Vec<Uuid> = (0..batch.len()).map(|index| guest_ids[index % GUESTS]).collect();
         sqlx::query(
-            "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id)
-             select r.id, $1, $2, r.confirmation_no, r.source, r.booker_guest_id
+            "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id,
+                                      booked_business_date)
+             select r.id, $1, $2, r.confirmation_no, r.source, r.booker_guest_id, current_date
              from unnest($3::uuid[], $4::text[], $5::text[], $6::uuid[])
                   as r (id, confirmation_no, source, booker_guest_id)",
         )
@@ -1408,8 +1410,9 @@ async fn business_date_posting_for_200_rooms_under_3s(_: PgPoolOptions, opts: Pg
     let stay_ids: Vec<Uuid> = (0..STAYS).map(|_| Uuid::now_v7()).collect();
     let confirmations: Vec<String> = (0..STAYS).map(|index| format!("NIGHT-{index:06}")).collect();
     sqlx::query(
-        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id)
-         select r.id, $1, $2, r.confirmation_no, 'front_desk', r.booker_guest_id
+        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id,
+                                  booked_business_date)
+         select r.id, $1, $2, r.confirmation_no, 'front_desk', r.booker_guest_id, current_date
          from unnest($3::uuid[], $4::text[], $5::uuid[]) as r (id, confirmation_no, booker_guest_id)",
     )
     .bind(tenant)
