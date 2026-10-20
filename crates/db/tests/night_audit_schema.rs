@@ -257,7 +257,7 @@ async fn a_second_open_run(pool: &PgPool, hotel: &Hotel) {
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn purge_expired_deletes_only_rows_past_their_window(_: PgPoolOptions, opts: PgConnectOptions) {
     let (owner, pool) = pools(opts).await;
-    let hotel = hotel(&owner, "GAL").await;
+    let first = hotel(&owner, "GAL").await;
     let user = Uuid::now_v7();
     sqlx::query("insert into app_user (id, email, password_hash, display_name) values ($1, 'u@example.com', 'x', 'U')")
         .bind(user)
@@ -283,12 +283,17 @@ async fn purge_expired_deletes_only_rows_past_their_window(_: PgPoolOptions, opt
             .await
             .unwrap();
     }
-    for (key, age) in [("key-aged-7-days", "7 days"), ("key-aged-6-days", "6 days")] {
+    let other = hotel(&owner, "KAN").await;
+    for (tenant, key, age) in [
+        (first.tenant, "key-aged-7-days", "7 days"),
+        (first.tenant, "key-aged-6-days", "6 days"),
+        (other.tenant, "key-other-7-days", "7 days"),
+    ] {
         sqlx::query(
             "insert into idempotency_key (tenant_id, key, request_hash, created_at)
              values ($1, $2, '\\x01', now() - $3::interval)",
         )
-        .bind(hotel.tenant)
+        .bind(tenant)
         .bind(key)
         .bind(age)
         .execute(&owner)
@@ -302,11 +307,15 @@ async fn purge_expired_deletes_only_rows_past_their_window(_: PgPoolOptions, opt
             .await
             .unwrap();
 
-    assert_eq!(purged, (1, 1, 1));
+    assert_eq!(purged, (1, 1, 2));
     let sessions: i64 = sqlx::query_scalar("select count(*) from session").fetch_one(&pool).await.unwrap();
     let failures: i64 = sqlx::query_scalar("select count(*) from login_failure").fetch_one(&pool).await.unwrap();
     assert_eq!((sessions, failures), (1, 1));
-    let mut tx = begin(&pool, Scope::tenant(TenantId(hotel.tenant))).await.unwrap();
+    let mut tx = begin(&pool, Scope::tenant(TenantId(first.tenant))).await.unwrap();
     let keys: Vec<String> = sqlx::query_scalar("select key from idempotency_key").fetch_all(&mut *tx).await.unwrap();
     assert_eq!(keys, vec!["key-aged-6-days".to_owned()]);
+    drop(tx);
+    let mut tx = begin(&pool, Scope::tenant(TenantId(other.tenant))).await.unwrap();
+    let keys: i64 = sqlx::query_scalar("select count(*) from idempotency_key").fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(keys, 0, "the other tenant's expired key is purged too");
 }

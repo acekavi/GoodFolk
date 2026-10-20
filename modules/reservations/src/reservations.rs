@@ -181,8 +181,7 @@ pub async fn create_reservation(
     let version: i32 = sqlx::query_scalar(
         "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id, notes,
                                   created_by, account_id, booked_business_date)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-                 (select business_date from property where id = $3 for share))
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          returning version",
     )
     .bind(id)
@@ -194,6 +193,7 @@ pub async fn create_reservation(
     .bind(notes)
     .bind(actor.0)
     .bind(input.account_id)
+    .bind(today)
     .fetch_one(&mut **tx)
     .await?;
     folio::ensure_deposit_folio(tx, tenant, property, id).await?;

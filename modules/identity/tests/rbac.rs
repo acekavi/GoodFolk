@@ -234,7 +234,7 @@ fn invoices_are_issued_by_the_front_desk_and_the_accountant_too() {
 }
 
 #[test]
-fn the_front_desk_runs_the_night_audit_and_nobody_else_does() {
+fn owners_managers_and_the_front_desk_run_the_night_audit() {
     assert_eq!(roles_allowed(Permission::NightAudit), [Role::Owner, Role::Manager, Role::FrontDesk]);
 }
 
