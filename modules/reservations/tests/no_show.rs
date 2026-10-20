@@ -173,10 +173,13 @@ async fn a_no_show_releases_its_nights_and_posts_its_fee_beside_the_deposit(_: P
         )]
     );
 
+    let again = conflict(hotel.try_no_show(Some(hotel.user), room, marked.version).await);
+    assert_eq!(again, "a no-show room can't be marked a no-show");
     let mut tx = hotel.tx().await;
     folio::post_no_show_fee(&mut tx, hotel.tenant, None, hotel.property, room, 30_000, "USD", false).await.unwrap();
     tx.commit().await.unwrap();
     assert_eq!(hotel.deposit(booked.id).await.lines.len(), 1, "a replay posts nothing more");
+    assert_eq!(hotel.sold(hotel.deluxe.id, 0, 4).await, [0; 4], "and releases nothing more");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -271,19 +274,22 @@ async fn a_delayed_arrival_drops_only_the_business_date_s_night(_: PgPoolOptions
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
-async fn a_one_night_stay_is_not_delayed_but_a_tentative_one_is(_: PgPoolOptions, opts: PgConnectOptions) {
+async fn a_one_night_or_future_stay_is_not_delayed_but_a_tentative_one_is(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = Hotel::for_booking(opts, 2).await;
     let booker = hotel.guest(new_guest("Ada", "Silva")).await;
     let one_night = hotel.stay(&booker, &plans.bar, 0, 1).await.rooms[0].id;
     let tentative = hotel.stay(&booker, &plans.bar, 0, 2).await.rooms[0].id;
     hotel.set("update reservation_room set status = $2 where id = $1", tentative, "tentative").await;
 
+    let tomorrow = hotel.stay(&booker, &plans.rack, 1, 3).await.rooms[0].id;
+
     assert_eq!(conflict(hotel.try_delay(one_night, 1).await), "Change the dates with Modify");
+    assert_eq!(conflict(hotel.try_delay(tomorrow, 1).await), "Change the dates with Modify", "not due yet");
     let delayed = hotel.try_delay(tentative, 1).await.unwrap();
 
     assert_eq!((delayed.check_in, delayed.check_out), (hotel.day(1), hotel.day(2)));
     assert_eq!(hotel.row(tentative).await.0, "tentative");
-    assert_eq!(hotel.sold(hotel.deluxe.id, 0, 2).await, [1, 1]);
+    assert_eq!(hotel.sold(hotel.deluxe.id, 0, 3).await, [1, 2, 1]);
 }
 
 /// Books `[business date, business date + 1)` in room 101, checks it in, and moves the business date to its

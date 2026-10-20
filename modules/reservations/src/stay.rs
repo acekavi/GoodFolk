@@ -1,7 +1,9 @@
 //! Checking a room in, undoing a same-day check-in, and checking it out -- releasing an early departure's
 //! nights back onto the counters they were sold from.
 
-use crate::{ReservationsError, audit, business_date, decode_error, notify, reservation_key, reservations_key};
+use crate::{
+    ReservationsError, audit, bump_reservation, business_date, decode_error, notify, reservation_key, reservations_key,
+};
 use db::{TenantId, Tx, UserId};
 use domain::{Action, RoomStatus};
 use housekeeping::{Condition, hk_key};
@@ -161,10 +163,7 @@ pub async fn check_in(
     .await?;
     // After this row and the room, before the reservation: the folios sit between them in the lock order.
     folio::move_deposit(tx, tenant, Some(actor), property, row.reservation_id, id).await?;
-    sqlx::query("update reservation set version = version + 1 where id = $1")
-        .bind(row.reservation_id)
-        .execute(&mut **tx)
-        .await?;
+    bump_reservation(tx, row.reservation_id).await?;
 
     let mut data = serde_json::json!({
         "reservation_id": row.reservation_id,
@@ -259,10 +258,7 @@ pub async fn undo_check_in(
     folio::lock_stay_folios(tx, tenant, property, id, &tonight).await?;
     folio::reverse_released_nights(tx, tenant, Some(actor), property, id, &tonight, CHECK_IN_UNDONE).await?;
     folio::undo_deposit_move(tx, tenant, Some(actor), property, id).await?;
-    sqlx::query("update reservation set version = version + 1 where id = $1")
-        .bind(reservation_id)
-        .execute(&mut **tx)
-        .await?;
+    bump_reservation(tx, reservation_id).await?;
 
     let data = serde_json::json!({ "reservation_id": reservation_id, "condition": restored.as_str() });
     audit(tx, tenant, Some(actor), "reservation_room.check_in_undone", "reservation_room", id, data).await?;
@@ -374,10 +370,7 @@ pub async fn check_out(
     .bind(new_check_out)
     .fetch_one(&mut **tx)
     .await?;
-    sqlx::query("update reservation set version = version + 1 where id = $1")
-        .bind(stay.reservation_id)
-        .execute(&mut **tx)
-        .await?;
+    bump_reservation(tx, stay.reservation_id).await?;
 
     let data = serde_json::json!({
         "reservation_id": stay.reservation_id,

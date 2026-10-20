@@ -1,7 +1,9 @@
 //! Cancelling a reservation room: its unused nights go back on sale and it records what cancelling cost under
 //! the terms the booking kept, whatever its plan's policy says now.
 
-use crate::{ReservationsError, audit, business_date, notify, reservation_key, reservations_key};
+use crate::{
+    ReservationsError, audit, bump_reservation, business_date, decode_error, notify, reservation_key, reservations_key,
+};
 use db::{TenantId, Tx, UserId};
 use domain::{Action, RoomStatus};
 use rates::{CancellationRule, Penalty, PenaltyKind};
@@ -94,52 +96,12 @@ pub async fn cancel_room(
     id: Uuid,
     expected_version: i32,
 ) -> Result<CancelledRoom, ReservationsError> {
-    let row: Option<StayRow> = sqlx::query_as(
-        "select rr.reservation_id, rr.room_type_id, rr.status, lower(rr.stay) as check_in,
-                upper(rr.stay) as check_out, rr.currency, rr.cancellation_terms, rr.version, rp.prices_include_tax
-         from reservation_room rr join rate_plan rp on rp.id = rr.rate_plan_id
-         where rr.id = $1 and rr.property_id = $2
-         for update of rr",
-    )
-    .bind(id)
-    .bind(property)
-    .fetch_optional(&mut **tx)
-    .await?;
-    let stay = row.ok_or(ReservationsError::NotFound("reservation room"))?;
-    if stay.version != expected_version {
-        return Err(ReservationsError::VersionMismatch("reservation room"));
-    }
-    let current = RoomStatus::parse(&stay.status).ok_or_else(|| sqlx::Error::ColumnDecode {
-        index: "status".into(),
-        source: format!("unknown {:?}", stay.status).into(),
-    })?;
+    let (stay, current) = lock_closing_stay(tx, property, id, expected_version).await?;
     let status =
         domain::transition(current, Action::Cancel).map_err(|invalid| ReservationsError::Conflict(invalid.message))?;
     let today = business_date(tx, property).await?;
-
-    // Counters before the business date are history, outside the counter window: only the nights from the
-    // business date on go back on sale.
-    let from = stay.check_in.max(today);
-    if from < stay.check_out {
-        rooms::lock_days(tx, property, &[stay.room_type_id], from, stay.check_out).await?;
-        sqlx::query(
-            "update inventory_day set sold = sold - 1
-             where property_id = $1 and room_type_id = $2 and date >= $3 and date < $4",
-        )
-        .bind(property)
-        .bind(stay.room_type_id)
-        .bind(from)
-        .bind(stay.check_out)
-        .execute(&mut **tx)
-        .await?;
-    }
-
-    let nights: Vec<(Date, i64, i64)> = sqlx::query_as(
-        "select date, room_amount, meal_amount from reservation_night where reservation_room_id = $1 order by date",
-    )
-    .bind(id)
-    .fetch_all(&mut **tx)
-    .await?;
+    let from = release_from(tx, property, &stay, today).await?;
+    let nights = stay_nights(tx, id).await?;
     let terms = stay.cancellation_terms.as_ref().map(|terms| &terms.0);
     let penalty = cancellation_penalty(terms, &nights, stay.check_in, today);
     let version: i32 = sqlx::query_scalar(
@@ -159,10 +121,7 @@ pub async fn cancel_room(
     // After this row and its counters, before the reservation: the deposit folio sits between them in the lock order.
     folio::post_cancellation_fee(tx, tenant, actor, property, id, penalty, &stay.currency, stay.prices_include_tax)
         .await?;
-    sqlx::query("update reservation set version = version + 1 where id = $1")
-        .bind(stay.reservation_id)
-        .execute(&mut **tx)
-        .await?;
+    bump_reservation(tx, stay.reservation_id).await?;
 
     let data = serde_json::json!({
         "reservation_id": stay.reservation_id,
@@ -170,31 +129,96 @@ pub async fn cancel_room(
         "currency": stay.currency,
     });
     audit(tx, tenant, actor, "reservation_room.cancelled", "reservation_room", id, data).await?;
-    // The tape key covers the stay's whole range, not just the nights `from` released: the chart shows a
-    // cancelled stay's past nights too.
-    let keys = [reservations_key(property), reservation_key(stay.reservation_id), housekeeping::hk_key(property)]
-        .into_iter()
-        .chain(rooms::month_keys(property, from, stay.check_out))
-        .chain(rooms::tape_keys(property, stay.check_in, stay.check_out))
-        .collect();
-    notify(tx, tenant, property, keys).await?;
+    notify(tx, tenant, property, closed_keys(property, &stay, from)).await?;
 
     Ok(CancelledRoom { id, reservation_id: stay.reservation_id, status, version, penalty, currency: stay.currency })
 }
 
-/// The parts of a `reservation_room` that cancelling reads.
+/// A stay being cancelled or marked a no-show: the parts of its `reservation_room` that closing it reads.
 #[derive(sqlx::FromRow)]
-struct StayRow {
-    reservation_id: Uuid,
-    room_type_id: Uuid,
-    status: String,
-    check_in: Date,
-    check_out: Date,
-    currency: String,
-    cancellation_terms: Option<Json<CancellationTerms>>,
-    version: i32,
+pub(crate) struct ClosingStay {
+    pub(crate) reservation_id: Uuid,
+    pub(crate) room_type_id: Uuid,
+    pub(crate) status: String,
+    pub(crate) check_in: Date,
+    pub(crate) check_out: Date,
+    pub(crate) currency: String,
+    pub(crate) cancellation_terms: Option<Json<CancellationTerms>>,
+    pub(crate) version: i32,
     /// The rate plan's: the penalty, priced from it, includes tax.
-    prices_include_tax: bool,
+    pub(crate) prices_include_tax: bool,
+}
+
+/// Locks the stay `id` of the property (`NotFound`) and checks it is at `expected_version` (`VersionMismatch`), with
+/// its status. First in the lock order of cancelling and of a no-show.
+pub(crate) async fn lock_closing_stay(
+    tx: &mut Tx,
+    property: Uuid,
+    id: Uuid,
+    expected_version: i32,
+) -> Result<(ClosingStay, RoomStatus), ReservationsError> {
+    let row: Option<ClosingStay> = sqlx::query_as(
+        "select rr.reservation_id, rr.room_type_id, rr.status, lower(rr.stay) as check_in,
+                upper(rr.stay) as check_out, rr.currency, rr.cancellation_terms, rr.version, rp.prices_include_tax
+         from reservation_room rr join rate_plan rp on rp.id = rr.rate_plan_id
+         where rr.id = $1 and rr.property_id = $2
+         for update of rr",
+    )
+    .bind(id)
+    .bind(property)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let stay = row.ok_or(ReservationsError::NotFound("reservation room"))?;
+    if stay.version != expected_version {
+        return Err(ReservationsError::VersionMismatch("reservation room"));
+    }
+    let status = RoomStatus::parse(&stay.status).ok_or_else(|| decode_error("status", &stay.status))?;
+    Ok((stay, status))
+}
+
+/// Puts the closed `stay`'s nights from the business date `today` on back on sale, and returns the first of them.
+/// Counters before the business date are history, outside the counter window.
+pub(crate) async fn release_from(
+    tx: &mut Tx,
+    property: Uuid,
+    stay: &ClosingStay,
+    today: Date,
+) -> Result<Date, ReservationsError> {
+    let from = stay.check_in.max(today);
+    if from < stay.check_out {
+        rooms::lock_days(tx, property, &[stay.room_type_id], from, stay.check_out).await?;
+        sqlx::query(
+            "update inventory_day set sold = sold - 1
+             where property_id = $1 and room_type_id = $2 and date >= $3 and date < $4",
+        )
+        .bind(property)
+        .bind(stay.room_type_id)
+        .bind(from)
+        .bind(stay.check_out)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(from)
+}
+
+/// The stay `id`'s nights as `(date, room_amount, meal_amount)`, in date order: what its penalties are priced from.
+pub(crate) async fn stay_nights(tx: &mut Tx, id: Uuid) -> Result<Vec<(Date, i64, i64)>, sqlx::Error> {
+    sqlx::query_as(
+        "select date, room_amount, meal_amount from reservation_night where reservation_room_id = $1 order by date",
+    )
+    .bind(id)
+    .fetch_all(&mut **tx)
+    .await
+}
+
+/// The cache keys a closed `stay` changes, its nights released from `from`. The tape keys cover the stay's whole
+/// range, not just the nights released: the chart shows a closed stay's past nights too.
+pub(crate) fn closed_keys(property: Uuid, stay: &ClosingStay, from: Date) -> Vec<String> {
+    [reservations_key(property), reservation_key(stay.reservation_id), housekeeping::hk_key(property)]
+        .into_iter()
+        .chain(rooms::month_keys(property, from, stay.check_out))
+        .chain(rooms::tape_keys(property, stay.check_in, stay.check_out))
+        .collect()
 }
 
 #[cfg(test)]

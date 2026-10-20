@@ -3,17 +3,16 @@
 //! review; the automatic close runs them with no actor.
 
 use crate::assignment::room_taken_conflict;
-use crate::cancellation::no_show_penalty;
+use crate::cancellation::{closed_keys, lock_closing_stay, no_show_penalty, release_from, stay_nights};
 use crate::modify::check_not_blocked;
 use crate::{
-    CancellationTerms, ReservationsError, SELLABLE, audit, business_date, decode_error, notify, reservation_key,
+    ReservationsError, SELLABLE, audit, bump_reservation, business_date, decode_error, notify, reservation_key,
     reservations_key, violates,
 };
 use db::{TenantId, Tx, UserId};
 use domain::{Action, RoomStatus};
 use serde::Serialize;
 use sqlx::Acquire;
-use sqlx::types::Json;
 use time::{Date, Duration};
 use uuid::Uuid;
 
@@ -56,22 +55,7 @@ pub async fn mark_no_show(
     id: Uuid,
     expected_version: i32,
 ) -> Result<NoShowRoom, ReservationsError> {
-    let row: Option<NoShowRow> = sqlx::query_as(
-        "select rr.reservation_id, rr.room_type_id, rr.status, lower(rr.stay) as check_in,
-                upper(rr.stay) as check_out, rr.currency, rr.cancellation_terms, rr.version, rp.prices_include_tax
-         from reservation_room rr join rate_plan rp on rp.id = rr.rate_plan_id
-         where rr.id = $1 and rr.property_id = $2
-         for update of rr",
-    )
-    .bind(id)
-    .bind(property)
-    .fetch_optional(&mut **tx)
-    .await?;
-    let stay = row.ok_or(ReservationsError::NotFound("reservation room"))?;
-    if stay.version != expected_version {
-        return Err(ReservationsError::VersionMismatch("reservation room"));
-    }
-    let current = RoomStatus::parse(&stay.status).ok_or_else(|| decode_error("status", &stay.status))?;
+    let (stay, current) = lock_closing_stay(tx, property, id, expected_version).await?;
     domain::transition(current, Action::NoShow).map_err(|invalid| ReservationsError::Conflict(invalid.message))?;
     let today = business_date(tx, property).await?;
     if stay.check_in > today {
@@ -81,21 +65,8 @@ pub async fn mark_no_show(
         )));
     }
 
-    // As in cancelling: the nights before the business date are history, outside the counter window.
-    let from = stay.check_in.max(today);
-    rooms::lock_days(tx, property, &[stay.room_type_id], from, stay.check_out).await?;
-    sqlx::query(
-        "update inventory_day set sold = sold - 1
-         where property_id = $1 and room_type_id = $2 and date >= $3 and date < $4",
-    )
-    .bind(property)
-    .bind(stay.room_type_id)
-    .bind(from)
-    .bind(stay.check_out)
-    .execute(&mut **tx)
-    .await?;
-
-    let nights = nights(tx, id).await?;
+    let from = release_from(tx, property, &stay, today).await?;
+    let nights = stay_nights(tx, id).await?;
     let penalty = no_show_penalty(stay.cancellation_terms.as_ref().map(|terms| &terms.0), &nights);
     let version: i32 = sqlx::query_scalar(
         "update reservation_room set status = 'no_show', cancelled_business_date = $2, version = version + 1
@@ -116,12 +87,7 @@ pub async fn mark_no_show(
         "mode": mode(actor),
     });
     audit(tx, tenant, actor, "reservation_room.no_show", "reservation_room", id, data).await?;
-    let keys = [reservations_key(property), reservation_key(stay.reservation_id), housekeeping::hk_key(property)]
-        .into_iter()
-        .chain(rooms::month_keys(property, from, stay.check_out))
-        .chain(rooms::tape_keys(property, stay.check_in, stay.check_out))
-        .collect();
-    notify(tx, tenant, property, keys).await?;
+    notify(tx, tenant, property, closed_keys(property, &stay, from)).await?;
 
     Ok(NoShowRoom { id, reservation_id: stay.reservation_id, version, penalty, currency: stay.currency })
 }
@@ -281,7 +247,7 @@ pub async fn extend_stay(
         .bind(night)
         .execute(&mut **tx)
         .await?;
-    sqlx::query(
+    let priced = sqlx::query(
         "insert into reservation_night (tenant_id, property_id, reservation_room_id, date, room_amount, meal_amount,
                                         currency)
          select tenant_id, property_id, reservation_room_id, $2, room_amount, meal_amount, currency
@@ -293,6 +259,9 @@ pub async fn extend_stay(
     .bind(night)
     .execute(&mut **tx)
     .await?;
+    if priced.rows_affected() != 1 {
+        return Err(ReservationsError::Conflict("the stay has no night to take tonight's price from".into()));
+    }
     bump_reservation(tx, stay.reservation_id).await?;
     let total = total(tx, id).await?;
 
@@ -351,16 +320,6 @@ async fn lock_stay(
     Ok((stay, status))
 }
 
-/// The stay's nights as `(date, room_amount, meal_amount)`, in date order.
-async fn nights(tx: &mut Tx, id: Uuid) -> Result<Vec<(Date, i64, i64)>, sqlx::Error> {
-    sqlx::query_as(
-        "select date, room_amount, meal_amount from reservation_night where reservation_room_id = $1 order by date",
-    )
-    .bind(id)
-    .fetch_all(&mut **tx)
-    .await
-}
-
 /// The stay's room and meal amounts, all nights.
 async fn total(tx: &mut Tx, id: Uuid) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
@@ -369,30 +328,6 @@ async fn total(tx: &mut Tx, id: Uuid) -> Result<i64, sqlx::Error> {
     .bind(id)
     .fetch_one(&mut **tx)
     .await
-}
-
-/// Bumps the reservation's version: its detail shows the stay. Last in the lock order.
-async fn bump_reservation(tx: &mut Tx, reservation: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query("update reservation set version = version + 1 where id = $1")
-        .bind(reservation)
-        .execute(&mut **tx)
-        .await?;
-    Ok(())
-}
-
-/// The parts of a `reservation_room` that marking a no-show reads.
-#[derive(sqlx::FromRow)]
-struct NoShowRow {
-    reservation_id: Uuid,
-    room_type_id: Uuid,
-    status: String,
-    check_in: Date,
-    check_out: Date,
-    currency: String,
-    cancellation_terms: Option<Json<CancellationTerms>>,
-    version: i32,
-    /// The rate plan's: the penalty, priced from it, includes tax.
-    prices_include_tax: bool,
 }
 
 /// The parts of a `reservation_room` that delaying and extending read.

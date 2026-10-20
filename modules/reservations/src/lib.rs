@@ -195,6 +195,16 @@ async fn audit(
     Ok(())
 }
 
+/// Bumps the reservation's version: its detail shows its rooms, and its derived status may change. Last in the lock
+/// order.
+async fn bump_reservation(tx: &mut Tx, reservation: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("update reservation set version = version + 1 where id = $1")
+        .bind(reservation)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 /// Queues one change event for `keys`. Reservation writes stay inside the counter window, so their inventory
 /// month keys (at most 25) keep the event well under the NOTIFY payload limit.
 async fn notify(tx: &mut Tx, tenant: TenantId, property: Uuid, keys: Vec<String>) -> Result<(), sqlx::Error> {
