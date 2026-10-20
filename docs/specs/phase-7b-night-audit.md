@@ -168,7 +168,7 @@ Read through GraphQL `dailyStats(propertyId, from, to)`, at most 366 days, with 
   - `PATCH` property `audit_time`
 - **GraphQL:** `nightAudit`, `auditRuns(propertyId, first, after)` with steps and reports, `dailyStats`, and the `ops_alert` banners.
 - **Events:** `audit:<property>` for run and step changes, delivered to users holding `NightAudit` or `FolioView`. The existing `reservations`, `tape:` and `folio:` keys are sent for every change the actions and the close make.
-- **Audit log:** `reservation_room.no_show`, `reservation_room.arrival_delayed`, `night_audit.started`, `night_audit.retried`, `night_audit.completed` and `night_audit.failed`. Actions taken by an auto close are recorded with no actor and `mode: auto` in their data.
+- **Audit log:** `reservation_room.no_show`, `reservation_room.arrival_delayed`, `reservation_room.extended`, `night_audit.started`, `night_audit.retried`, `night_audit.completed` and `night_audit.failed`. Actions taken by an auto close are recorded with no actor and `mode: auto` in their data.
 
 ## UI
 
