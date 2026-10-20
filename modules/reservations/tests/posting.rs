@@ -167,6 +167,23 @@ async fn only_stays_in_house_on_the_date_are_posted(_: PgPoolOptions, opts: PgCo
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_day_the_night_audit_closed_posts_nothing(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = hotel(opts, 2).await;
+    let booked = hotel
+        .checked_in(None, vec![hotel.stay(&plans.bar, MealPlan::Bb, 0, 3), hotel.stay(&plans.bar, MealPlan::Ro, 0, 3)])
+        .await;
+    hotel.move_business_date(1).await;
+
+    let report = hotel.post(hotel.day(0)).await;
+
+    let closed = "That day is closed".to_owned();
+    let mut failures: Vec<(Uuid, String)> = booked.rooms.iter().map(|stay| (stay.id, closed.clone())).collect();
+    failures.sort();
+    assert_eq!(report, PostReport { stays: 0, lines: 0, skipped_existing: 0, failures }, "in stay id order");
+    assert_eq!(hotel.keys().await, Vec::<String>::new());
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn a_stay_checked_out_today_is_not_posted_for_today(_: PgPoolOptions, opts: PgConnectOptions) {
     let (hotel, plans) = hotel(opts, 1).await;
     let stay = hotel.checked_in(None, vec![hotel.stay(&plans.bar, MealPlan::Ro, 0, 3)]).await.rooms[0].id;

@@ -319,6 +319,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "audit"
+version = "0.1.0"
+dependencies = [
+ "db",
+ "domain",
+ "folio",
+ "fx",
+ "property",
+ "reservations",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "time",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
