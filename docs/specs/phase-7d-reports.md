@@ -12,7 +12,7 @@ the owner (2026-10-20).
   - SSCL monthly and quarterly;
   - VAT per period;
   - service charge collected.
-- **The close renders reports.** It gains a `render_reports` step, before the business-date advance. The PDFs are rendered by media-svc and stored privately.
+- **The close renders reports.** It gains a `render_reports` step that queues the day's PDFs from its committed snapshot. The PDFs are rendered by media-svc and stored privately.
 
 ## Open before the spec
 
