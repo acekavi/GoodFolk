@@ -9,17 +9,19 @@ publish.workspace = true
 db.workspace = true
 domain.workspace = true
 folio.workspace = true
+fx.workspace = true
 reservations.workspace = true
-sqlx.workspace = true
+rust_decimal.workspace = true
+serde.workspace = true
+sqlx = { workspace = true, features = ["rust_decimal"] }
 thiserror.workspace = true
 time.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 db = { workspace = true, features = ["testing"] }
-fx.workspace = true
 property.workspace = true
-rust_decimal.workspace = true
+rand.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 

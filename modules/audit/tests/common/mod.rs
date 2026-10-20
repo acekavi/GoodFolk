@@ -29,7 +29,7 @@ pub struct Stay<'a> {
     pub to: i64,
     pub room: Option<&'a str>,
     pub currency: &'a str,
-    /// The rate plan's segment; `FIT_F` plans are sold to non-residents.
+    /// The rate plan's segment; `FIT_F` plans are sold to non-residents and `FIT_L` plans to residents.
     pub segment: &'a str,
     pub room_amount: i64,
     pub meal_amount: i64,
@@ -37,11 +37,22 @@ pub struct Stay<'a> {
     pub terms: Option<serde_json::Value>,
     pub first_name: &'a str,
     pub last_name: &'a str,
+    /// The primary guest's residency.
+    pub residency: &'a str,
+    /// The reservation's source.
+    pub source: &'a str,
+    /// The reservation was booked on `D + booked`.
+    pub booked: i64,
+    /// The room type's code; [`Hotel::room_type`] adds any but `STD`.
+    pub room_type: &'a str,
+    pub adults: i32,
+    pub children: i32,
 }
 
 impl<'a> Stay<'a> {
     /// A stay in `property` of `[D + from, D + to)` in `status`, unassigned, in LKR on an `IBE` plan at 10 000 a night
-    /// with no meals and no terms, for Ada Silva.
+    /// with no meals and no terms, for Ada Silva (a resident), two adults in a `STD` room booked at the front desk on
+    /// D − 30.
     pub fn new(property: Uuid, status: &'a str, from: i64, to: i64) -> Self {
         Stay {
             property,
@@ -56,6 +67,12 @@ impl<'a> Stay<'a> {
             terms: None,
             first_name: "Ada",
             last_name: "Silva",
+            residency: "resident",
+            source: "front_desk",
+            booked: -30,
+            room_type: "STD",
+            adults: 2,
+            children: 0,
         }
     }
 }
@@ -139,8 +156,9 @@ impl Hotel {
     pub async fn stay(&self, stay: Stay<'_>) -> Booked {
         let mut tx = self.tx().await;
         let n: i64 = sqlx::query_scalar("select count(*) + 1 from reservation").fetch_one(&mut *tx).await.unwrap();
-        let room_type: Uuid = sqlx::query_scalar("select id from room_type where property_id = $1 and code = 'STD'")
+        let room_type: Uuid = sqlx::query_scalar("select id from room_type where property_id = $1 and code = $2")
             .bind(stay.property)
+            .bind(stay.room_type)
             .fetch_one(&mut *tx)
             .await
             .unwrap();
@@ -163,17 +181,20 @@ impl Hotel {
             None => None,
         };
         let (guest, plan, reservation, id) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
-        sqlx::query(
-            "insert into guest (id, tenant_id, first_name, last_name, residency) values ($1, $2, $3, $4, 'resident')",
-        )
-        .bind(guest)
-        .bind(self.tenant.0)
-        .bind(stay.first_name)
-        .bind(stay.last_name)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-        let residency = (stay.segment == "FIT_F").then_some("non_resident");
+        sqlx::query("insert into guest (id, tenant_id, first_name, last_name, residency) values ($1, $2, $3, $4, $5)")
+            .bind(guest)
+            .bind(self.tenant.0)
+            .bind(stay.first_name)
+            .bind(stay.last_name)
+            .bind(stay.residency)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let residency = match stay.segment {
+            "FIT_F" => Some("non_resident"),
+            "FIT_L" => Some("resident"),
+            _ => None,
+        };
         sqlx::query(
             "insert into rate_plan (id, tenant_id, property_id, code, name, kind, segment, residency, currency,
                                     allowed_meal_plans)
@@ -193,14 +214,15 @@ impl Hotel {
         sqlx::query(
             "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id,
                                       booked_business_date)
-             values ($1, $2, $3, $4, 'front_desk', $5, $6)",
+             values ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(reservation)
         .bind(self.tenant.0)
         .bind(stay.property)
         .bind(&confirmation)
+        .bind(stay.source)
         .bind(guest)
-        .bind(self.business_date)
+        .bind(self.day(stay.booked))
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -211,7 +233,7 @@ impl Hotel {
                                            adults, children, rate_plan_id, meal_plan, status, primary_guest_id,
                                            currency, cancellation_terms, checked_in_at, checked_in_business_date,
                                            checked_out_at)
-             values ($1, $2, $3, $4, $5, $6, daterange($7, $8), 2, 0, $9, $10, $11, $12, $13, $14,
+             values ($1, $2, $3, $4, $5, $6, daterange($7, $8), $16, $17, $9, $10, $11, $12, $13, $14,
                      case when $15 then now() end, case when $15 then $7::date end,
                      case when $11 = 'checked_out' then now() end)",
         )
@@ -230,6 +252,8 @@ impl Hotel {
         .bind(stay.currency)
         .bind(stay.terms)
         .bind(checked_in)
+        .bind(stay.adults)
+        .bind(stay.children)
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -391,6 +415,118 @@ impl Hotel {
             .await
             .unwrap();
         tx.commit().await.unwrap();
+    }
+
+    /// Another room type of `property`, like `STD`.
+    pub async fn room_type(&self, property: Uuid, code: &str) {
+        let mut tx = self.tx().await;
+        sqlx::query(
+            "insert into room_type (id, tenant_id, property_id, code, name, base_occupancy, max_adults, max_children,
+                                    max_occupancy)
+             values ($1, $2, $3, $4, $4, 2, 2, 1, 3)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(self.tenant.0)
+        .bind(property)
+        .bind(code)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    /// A `STD` room of `property` with no stay.
+    pub async fn room(&self, property: Uuid, number: &str, active: bool) -> Uuid {
+        let mut tx = self.tx().await;
+        let id = Uuid::now_v7();
+        sqlx::query(
+            "insert into room (id, tenant_id, property_id, room_type_id, number, active)
+             select $1, $2, $3, id, $4, $5 from room_type where property_id = $3 and code = 'STD'",
+        )
+        .bind(id)
+        .bind(self.tenant.0)
+        .bind(property)
+        .bind(number)
+        .bind(active)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        id
+    }
+
+    /// A `kind` block of `room` over `[D + from, D + to)`, released when `released`.
+    pub async fn block(&self, property: Uuid, room: Uuid, kind: &str, from: i64, to: i64, released: bool) {
+        let mut tx = self.tx().await;
+        let reason = Uuid::now_v7();
+        sqlx::query(
+            "insert into block_reason (id, tenant_id, property_id, code, label, default_kind)
+             values ($1, $2, $3, 'R' || upper(right(replace($1::text, '-', ''), 12)), 'Reason', $4)",
+        )
+        .bind(reason)
+        .bind(self.tenant.0)
+        .bind(property)
+        .bind(kind)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into room_block (id, tenant_id, property_id, room_id, period, kind, reason_id, released_at)
+             values ($1, $2, $3, $4, daterange($5, $6), $7, $8, case when $9 then now() end)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(self.tenant.0)
+        .bind(property)
+        .bind(room)
+        .bind(self.day(from))
+        .bind(self.day(to))
+        .bind(kind)
+        .bind(reason)
+        .bind(released)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    /// A company account the reservation is billed to.
+    pub async fn bill_to_account(&self, reservation: Uuid) -> Uuid {
+        let mut tx = self.tx().await;
+        let account = Uuid::now_v7();
+        sqlx::query(
+            "insert into account (id, tenant_id, kind, name, currency) values ($1, $2, 'company', 'Acme', 'LKR')",
+        )
+        .bind(account)
+        .bind(self.tenant.0)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        sqlx::query("update reservation set account_id = $2 where id = $1")
+            .bind(reservation)
+            .bind(account)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        account
+    }
+
+    /// `(folio, line)` of the line posted under `key`.
+    pub async fn keyed_line(&self, key: &str) -> (Uuid, Uuid) {
+        sqlx::query_as("select folio_id, id from folio_line where posting_key = $1")
+            .bind(key)
+            .fetch_one(&mut *self.tx().await)
+            .await
+            .unwrap()
+    }
+
+    /// Posts `property`'s room and meal-plan charges of `D + days`, which must all post.
+    pub async fn post_nights(&self, property: Uuid, days: i64) {
+        let report =
+            folio::post_business_date_charges(&self.pool, self.tenant, Some(self.user), property, self.day(days))
+                .await
+                .unwrap();
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
     }
 
     /// `audit::night_audit` of `property`.

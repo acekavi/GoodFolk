@@ -6,8 +6,14 @@
 //! arrivals plus the unresolved departures: the close waits until both are resolved.
 //!
 //! The review only reads, so it takes no locks.
+//!
+//! [`compute`] takes a business date's statistics, [`store`] snapshots them when the day closes, and [`daily_stats`]
+//! reads them back by date range.
 
 mod review;
+mod stats;
+
+pub use stats::{BreakdownRow, DAY_LINES_SQL, DailyStats, compute, daily_stats, store};
 
 pub use review::{
     ARRIVALS_SQL, ArrivalRow, BookingBills, CategoryTotal, DEPARTURES_SQL, DepartureRow, NightAudit, OutletBills,
@@ -36,6 +42,17 @@ pub enum AuditError {
     /// Only from a test's CloseHooks: the run stops as if the process died (left `running`).
     #[error("interrupted")]
     Interrupted,
+}
+
+impl From<fx::FxError> for AuditError {
+    fn from(err: fx::FxError) -> Self {
+        match err {
+            fx::FxError::NotFound(what) => AuditError::NotFound(what),
+            fx::FxError::Invalid(message) => AuditError::Invalid(message),
+            fx::FxError::Database(err) => AuditError::Database(err),
+            other => AuditError::Conflict(other.to_string()),
+        }
+    }
 }
 
 /// Cache key for a property's night audit: its review and its runs.

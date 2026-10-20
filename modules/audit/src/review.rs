@@ -269,6 +269,11 @@ async fn departures(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<Depar
         .collect())
 }
 
+/// The payment of the POS bill `b` settled at its outlet, as a lateral subquery: its `currency`, `base_amount` and
+/// `rate`. `pos_bill` has no currency of its own; its payment's is the bill's.
+pub(crate) const SETTLED_PAYMENT: &str = "select currency::text as currency, base_amount, rate from payment
+                                          where pos_bill_id = b.id and refund_of is null limit 1";
+
 #[derive(sqlx::FromRow)]
 struct Bill {
     outlet: String,
@@ -285,7 +290,7 @@ struct Bill {
 /// D's POS bills, by outlet code then posting order. A posted bill's lines are found by their posting keys
 /// (`pos:<bill>:<n>`); a settled bill's base total is its payment's.
 async fn pos_bills(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<OutletBills>, AuditError> {
-    let rows: Vec<Bill> = sqlx::query_as(
+    let rows: Vec<Bill> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select o.name as outlet, b.id, b.bill_no,
                 coalesce(paid.currency, posted.currency, '') as currency,
                 case when b.settled
@@ -304,16 +309,15 @@ async fn pos_bills(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<Outlet
          left join reservation_room rr on rr.id = b.reservation_room_id
          left join room on room.id = rr.room_id
          left join folio gf on gf.reservation_room_id = rr.id and gf.kind = 'guest'
-         left join lateral (select currency::text as currency, base_amount from payment
-                            where pos_bill_id = b.id and refund_of is null limit 1) paid on b.settled
+         left join lateral ({SETTLED_PAYMENT}) paid on b.settled
          left join lateral (select min(l.currency::text) as currency, sum(l.total) as total,
                                    sum(l.base_total) as base
                             from folio_line l join folio f on f.id = l.folio_id
                             where f.property_id = b.property_id
                               and starts_with(l.posting_key, 'pos:' || b.id::text || ':')) posted on not b.settled
          where b.property_id = $1 and b.business_date = $2
-         order by o.code, b.posted_at, b.id",
-    )
+         order by o.code, b.posted_at, b.id"
+    )))
     .bind(property)
     .bind(date)
     .fetch_all(&mut **tx)

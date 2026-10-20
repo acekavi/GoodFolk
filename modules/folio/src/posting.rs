@@ -133,13 +133,13 @@ pub async fn post_business_date_charges(
 /// partial index (see "A leakproof stored column for range queries" in `docs/design/api-conventions.md`).
 async fn in_house(pool: &PgPool, tenant: TenantId, property: Uuid, date: Date) -> Result<Vec<Uuid>, FolioError> {
     let mut tx = db::begin(pool, Scope::tenant(tenant)).await?;
-    let stays = in_house_in(&mut tx, property, date).await?;
+    let stays = in_house_stays(&mut tx, property, date).await?;
     tx.commit().await?;
     Ok(stays)
 }
 
-/// [`in_house`], in the caller's transaction.
-async fn in_house_in(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<Uuid>, sqlx::Error> {
+/// `in_house`, in the caller's transaction. The night audit counts these stays as the rooms sold on `date`.
+pub async fn in_house_stays(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<Uuid>, sqlx::Error> {
     sqlx::query_scalar(
         "select id from reservation_room
          where property_id = $1 and status = 'checked_in'
@@ -162,7 +162,7 @@ pub async fn preview_business_date_charges(
     property: Uuid,
     date: Date,
 ) -> Result<Vec<NightPreview>, FolioError> {
-    let stays = in_house_in(tx, property, date).await?;
+    let stays = in_house_stays(tx, property, date).await?;
     let keys: Vec<String> =
         stays.iter().flat_map(|stay| [format!("room:{stay}:{date}"), format!("meal_plan:{stay}:{date}")]).collect();
     let used: HashSet<String> = sqlx::query_scalar::<_, String>(
