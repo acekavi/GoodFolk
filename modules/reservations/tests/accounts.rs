@@ -429,3 +429,137 @@ async fn a_real_account_of_another_tenant_is_no_such_account_to_create_and_updat
     .await;
     assert_eq!(invalid(update_refused), "no such account");
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn changing_the_account_re_points_the_routing_and_clearing_it_deletes_the_rules(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let acme = hotel.account(new_account("Acme")).await;
+    let globex = hotel.account(new_account("Globex")).await;
+    let booked = hotel
+        .try_book_for_account(&booker, Some(acme.id), vec![hotel.room(hotel.deluxe.id, &plans.bar, 2, 4)])
+        .await
+        .unwrap();
+    let rules = || async {
+        let rows: Vec<(String, Uuid)> =
+            sqlx::query_as("select category, account_id from routing_rule where reservation_id = $1 order by category")
+                .bind(booked.id)
+                .fetch_all(&mut *hotel.tx().await)
+                .await
+                .unwrap();
+        rows
+    };
+
+    let mut tx = hotel.tx().await;
+    let moved = reservations::update_reservation(
+        &mut tx,
+        hotel.tenant,
+        hotel.user,
+        hotel.property,
+        booked.id,
+        booked.version,
+        ReservationChanges { account_id: Some(Some(globex.id)), notes: None },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        rules().await,
+        [("meal_plan".to_owned(), globex.id), ("room".to_owned(), globex.id)],
+        "the same categories now route to the new account"
+    );
+
+    let mut tx = hotel.tx().await;
+    reservations::update_reservation(
+        &mut tx,
+        hotel.tenant,
+        hotel.user,
+        hotel.property,
+        booked.id,
+        moved.version,
+        ReservationChanges { account_id: Some(None), notes: None },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert!(rules().await.is_empty(), "clearing the account deletes its routing");
+
+    let audited: Vec<serde_json::Value> = sqlx::query_scalar(
+        "select data from audit_log where entity = 'reservation' and entity_id = $1
+         and action = 'reservation.updated' order by at, id",
+    )
+    .bind(booked.id)
+    .fetch_all(&mut *hotel.tx().await)
+    .await
+    .unwrap();
+    assert_eq!(
+        audited,
+        [
+            serde_json::json!({ "fields": ["account_id"], "account_id": globex.id, "routing": ["meal_plan", "room"] }),
+            serde_json::json!({ "fields": ["account_id"], "account_id": null, "routing": ["meal_plan", "room"] }),
+        ],
+        "each account change records the routing it carried along"
+    );
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_routed_posting_replayed_after_the_account_changes_is_not_posted_again(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let (acme, globex) = (hotel.account(new_account("Acme")).await, hotel.account(new_account("Globex")).await);
+    let booked = hotel
+        .try_book_for_account(&booker, Some(acme.id), vec![hotel.room(hotel.deluxe.id, &plans.bar, 2, 4)])
+        .await
+        .unwrap();
+    let stay = booked.rooms[0].id;
+    let key = format!("room:{stay}:{}", hotel.business_date);
+    let charge = folio::NewCharge {
+        source: folio::Source::Room,
+        category: "room".into(),
+        description: "Room".into(),
+        quantity: 1,
+        unit_net: 10_000,
+        currency: "LKR".into(),
+        business_date: hotel.business_date,
+        posting_key: Some(key.clone()),
+        inclusive: false,
+    };
+    let post = |charge: folio::NewCharge| async {
+        let mut tx = hotel.tx().await;
+        let line = folio::post_for_stay(&mut tx, hotel.tenant, None, stay, charge).await.unwrap();
+        tx.commit().await.unwrap();
+        line
+    };
+
+    let first = post(charge.clone()).await;
+    let mut tx = hotel.tx().await;
+    reservations::update_reservation(
+        &mut tx,
+        hotel.tenant,
+        hotel.user,
+        hotel.property,
+        booked.id,
+        booked.version,
+        ReservationChanges { account_id: Some(Some(globex.id)), notes: None },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let replay = post(charge).await;
+
+    assert_eq!(replay, first, "the replay returns the line on Acme's folio");
+    let lines: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
+        "select l.folio_id, f.account_id from folio_line l join folio f on f.id = l.folio_id where l.posting_key = $1",
+    )
+    .bind(&key)
+    .fetch_all(&mut *hotel.tx().await)
+    .await
+    .unwrap();
+    assert_eq!(lines, vec![(first.folio_id, Some(acme.id))], "one line, on the account it was routed to");
+}

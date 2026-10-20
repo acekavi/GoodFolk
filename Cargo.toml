@@ -4,13 +4,15 @@ members = ["crates/*", "modules/*"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.97"
+rust-version = "1.99"
 publish = false
 
 [workspace.dependencies]
 db = { path = "crates/db" }
 domain = { path = "crates/domain" }
 events = { path = "crates/events" }
+folio = { path = "modules/folio" }
+fx = { path = "modules/fx" }
 housekeeping = { path = "modules/housekeeping" }
 identity = { path = "modules/identity" }
 imaging = { path = "crates/imaging" }
@@ -24,13 +26,14 @@ reservations = { path = "modules/reservations" }
 rooms = { path = "modules/rooms" }
 storage = { path = "crates/storage" }
 svc-auth = { path = "crates/svc-auth" }
+tax = { path = "modules/tax" }
 
 anyhow = "1"
 async-trait = "0.1"
 argon2 = "0.6"
 async-graphql = { version = "7.2", default-features = false, features = ["uuid", "time"] }
 async-graphql-axum = "7.2"
-avif-decode = { version = "1.0.2", default-features = false }
+avif-decode = { version = "3", default-features = false }
 axum = { version = "0.8", features = ["macros"] }
 axum-extra = { version = "0.12", features = ["cookie"] }
 base64 = "0.23"
@@ -50,6 +53,7 @@ proptest = "1"
 prost = "0.14"
 protox = "0.10"
 rayon = "1"
+rust_decimal = { version = "1", default-features = false, features = ["std"] }
 # rustls without a bundled crypto provider: the tree already has ring (through sqlx), and rustls picks the only one built.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }

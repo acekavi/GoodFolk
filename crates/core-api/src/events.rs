@@ -5,6 +5,7 @@ use axum::extract::State;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use db::Event;
 use futures::Stream;
+use identity::{Permission, allows};
 use serde::Deserialize;
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
@@ -103,6 +104,11 @@ async fn reconnect(pool: &PgPool) -> PgListener {
     }
 }
 
+/// Whether `key` is a folio's (`folio:<id>`) or a property's exchange rates' (`fx:<property>`).
+fn is_money_key(key: &str) -> bool {
+    key.starts_with("folio:") || key.starts_with("fx:")
+}
+
 #[derive(Debug, Deserialize)]
 pub struct EventsQuery {
     pub property: Option<Uuid>,
@@ -117,13 +123,17 @@ pub async fn stream(
     ApiQuery(query): ApiQuery<EventsQuery>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let tenant = ctx.tenant;
+    let grants = ctx.grants;
     let ready = tokio_stream::once(Ok(SseEvent::default().event("ready").data("{}")));
     let updates = BroadcastStream::new(state.events.subscribe()).filter_map(move |item| match item {
         Ok(LiveEvent::Invalidate(event)) => {
             let relevant = event.tenant_id == tenant
                 && (event.property_id.is_none() || query.property.is_none() || event.property_id == query.property);
-            relevant
-                .then(|| Ok(SseEvent::default().event("invalidate").json_data(&event.keys).expect("keys serialize")))
+            // Folio and exchange-rate keys name money: only those who may view the property's folios hear of them.
+            let folio_viewer = allows(&grants, Permission::FolioView, event.property_id);
+            let keys: Vec<&String> = event.keys.iter().filter(|key| folio_viewer || !is_money_key(key)).collect();
+            (relevant && !keys.is_empty())
+                .then(|| Ok(SseEvent::default().event("invalidate").json_data(&keys).expect("keys serialize")))
         }
         Ok(LiveEvent::Resync) | Err(BroadcastStreamRecvError::Lagged(_)) => {
             Some(Ok(SseEvent::default().event("resync").data("{}")))

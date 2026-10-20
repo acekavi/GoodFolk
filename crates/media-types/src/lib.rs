@@ -1,7 +1,8 @@
-//! The media job and result types shared by core-api, media-svc and the imaging worker. This crate
-//! holds no codecs, so core-api can depend on it without linking any.
+//! The media job and result types shared by core-api, media-svc and the imaging worker, and the invoice data
+//! media-svc renders. This crate holds no codecs, so core-api can depend on it without linking any.
 
 use serde::{Deserialize, Serialize};
+use time::Date;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -105,6 +106,131 @@ pub enum MediaResult {
         asset_id: Uuid,
         reason: String,
     },
+    /// An invoice's or credit note's PDF is stored at `key`.
+    InvoiceRendered {
+        tenant_id: Uuid,
+        invoice_id: Uuid,
+        key: String,
+    },
+}
+
+/// An `invoice-render` job: lay `data` out as the PDF of `invoice_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvoiceRenderJob {
+    pub tenant_id: Uuid,
+    pub invoice_id: Uuid,
+    pub data: InvoiceData,
+}
+
+/// Whether a document is an invoice or a credit note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvoiceKind {
+    Invoice,
+    CreditNote,
+}
+
+impl InvoiceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Invoice => "invoice",
+            Self::CreditNote => "credit_note",
+        }
+    }
+}
+
+impl TryFrom<String> for InvoiceKind {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "invoice" => Ok(Self::Invoice),
+            "credit_note" => Ok(Self::CreditNote),
+            _ => Err(format!("unknown InvoiceKind {value:?}")),
+        }
+    }
+}
+
+/// The most lines an invoice may print. media-svc refuses a larger render job for good (400), so no push can hold a
+/// render slot or the memory of a huge layout, and the folio module refuses to issue such an invoice, before its
+/// serial is taken.
+pub const MAX_INVOICE_LINES: usize = 2000;
+/// The most payments an invoice may print, refused as [`MAX_INVOICE_LINES`] is.
+pub const MAX_INVOICE_PAYMENTS: usize = 500;
+/// The most taxes an invoice may print, refused as [`MAX_INVOICE_LINES`] is.
+pub const MAX_INVOICE_TAXES: usize = 50;
+
+/// Everything printed on an invoice or credit note, as it was when the document was issued. Every `_lkr` figure is
+/// whole rupees; `total` and `amount` are minor units of their `currency`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvoiceData {
+    pub kind: InvoiceKind,
+    pub supplier: Supplier,
+    pub purchaser: Purchaser,
+    pub serial: String,
+    /// "TAX INVOICE", "INVOICE" or "CREDIT NOTE".
+    pub title: String,
+    pub issued_on: Date,
+    pub supply_from: Date,
+    pub supply_to: Date,
+    pub lines: Vec<InvoiceLine>,
+    /// The on-bill taxes, one per tax and rate.
+    pub taxes: Vec<InvoiceTax>,
+    /// `total_lkr` less the taxes, so the printed figures always add up.
+    pub net_lkr: i64,
+    /// The sum of the lines' `total_lkr`.
+    pub total_lkr: i64,
+    /// `total_lkr` in English words.
+    pub total_words: String,
+    pub payments: Vec<InvoicePayment>,
+    pub vat_registered: bool,
+    /// The serial of the invoice a credit note credits.
+    #[serde(default)]
+    pub credits_serial: Option<String>,
+    /// Why a credit note was issued.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Supplier {
+    pub legal_name: String,
+    pub address: Option<String>,
+    pub tin: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Purchaser {
+    pub name: String,
+    pub tin: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvoiceLine {
+    pub description: String,
+    pub quantity: i32,
+    pub currency: String,
+    /// In minor units of `currency`, shown for reference on a foreign line.
+    pub total: i64,
+    pub total_lkr: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvoiceTax {
+    pub name: String,
+    pub rate_bp: i32,
+    pub amount_lkr: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvoicePayment {
+    pub method: String,
+    /// In minor units of `currency`; a refund is negative.
+    pub amount: i64,
+    pub currency: String,
+    /// `amount` in whole rupees, rounded half up, for a payment in LKR; `None` for one in another currency.
+    #[serde(default)]
+    pub amount_lkr: Option<i64>,
 }
 
 #[cfg(test)]
@@ -163,5 +289,64 @@ mod tests {
         assert_eq!(Profile::GuestDocument.sizes(), [Size::Thumb, Size::Md]);
         assert_eq!(Profile::IssuePhoto.sizes().len(), 4);
         assert_eq!((Format::Avif.as_str(), Format::Webp.as_str()), ("avif", "webp"));
+    }
+
+    fn credit_note() -> InvoiceData {
+        InvoiceData {
+            kind: InvoiceKind::CreditNote,
+            supplier: Supplier { legal_name: "Galle Ltd".into(), address: None, tin: Some("123456789".into()) },
+            purchaser: Purchaser { name: "Acme".into(), tin: None },
+            serial: "CN-GAL-2026-000001".into(),
+            title: "CREDIT NOTE".into(),
+            issued_on: Date::from_calendar_date(2026, time::Month::October, 17).unwrap(),
+            supply_from: Date::from_calendar_date(2026, time::Month::October, 15).unwrap(),
+            supply_to: Date::from_calendar_date(2026, time::Month::October, 16).unwrap(),
+            lines: vec![InvoiceLine {
+                description: "Room".into(),
+                quantity: -1,
+                currency: "USD".into(),
+                total: -10_000,
+                total_lkr: -30_000,
+            }],
+            taxes: vec![InvoiceTax { name: "Tourism development levy".into(), rate_bp: 100, amount_lkr: -297 }],
+            net_lkr: -29_703,
+            total_lkr: -30_000,
+            total_words: "Minus Thirty Thousand Rupees Only".into(),
+            payments: vec![InvoicePayment {
+                method: "cash".into(),
+                amount: -10_000,
+                currency: "USD".into(),
+                amount_lkr: None,
+            }],
+            vat_registered: false,
+            credits_serial: Some("GAL-2026-000001".into()),
+            reason: Some("Billed twice".into()),
+        }
+    }
+
+    #[test]
+    fn invoice_data_round_trips_with_its_wire_shape() {
+        let data = credit_note();
+        let json = serde_json::to_value(&data).unwrap();
+        assert_eq!(json["kind"], "credit_note");
+        assert_eq!(json["issued_on"], "2026-10-17");
+        assert_eq!(serde_json::from_value::<InvoiceData>(json).unwrap(), data);
+        assert_eq!(InvoiceKind::try_from("invoice".to_owned()), Ok(InvoiceKind::Invoice));
+        assert!(InvoiceKind::try_from("receipt".to_owned()).is_err());
+    }
+
+    #[test]
+    fn a_render_job_and_its_result_round_trip_with_their_wire_shape() {
+        let (tenant_id, invoice_id) = (Uuid::nil(), Uuid::max());
+        // The shape folio queues on `invoice-render`.
+        let queued = serde_json::json!({ "tenant_id": tenant_id, "invoice_id": invoice_id, "data": credit_note() });
+        let job: InvoiceRenderJob = serde_json::from_value(queued).unwrap();
+        assert_eq!(job, InvoiceRenderJob { tenant_id, invoice_id, data: credit_note() });
+
+        let rendered = MediaResult::InvoiceRendered { tenant_id, invoice_id, key: "t/a/invoices/b.pdf".into() };
+        let json = serde_json::to_value(&rendered).unwrap();
+        assert_eq!(json["type"], "invoice_rendered");
+        assert_eq!(json["key"], "t/a/invoices/b.pdf");
+        assert_eq!(serde_json::from_value::<MediaResult>(json).unwrap(), rendered);
     }
 }

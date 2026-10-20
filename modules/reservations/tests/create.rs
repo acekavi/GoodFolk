@@ -1,6 +1,6 @@
 mod common;
 
-use common::{Hotel, new_guest};
+use common::{Hotel, new_account, new_guest};
 use rates::{MealPlan, QuoteRequest, Residency, RestrictionChange};
 use reservations::{
     CreatedReservation, NewGuest, NewReservation, NewReservationRoom, ReservationsError, Source, Total,
@@ -400,4 +400,45 @@ async fn parallel_bookings_against_an_overbooking_allowance_sell_exactly_the_all
     assert_eq!(booked.len(), 2, "exactly the allowance sells, no more, no less: {results:?}");
     assert_eq!(conflicts.len(), RACERS - 2, "{results:?}");
     assert_eq!(hotel.sold(hotel.deluxe.id, 0, 5).await, [0, 2, 2, 2, 0], "both rooms sold on nights 1 to 3");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_booking_opens_its_folios_and_routes_rooms_and_meals_to_its_account(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let (hotel, plans) = Hotel::for_booking(opts, 2).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let acme = hotel.account(new_account("Acme")).await;
+    let rooms = vec![hotel.room(hotel.deluxe.id, &plans.bar, 1, 3), hotel.room(hotel.deluxe.id, &plans.bar, 1, 2)];
+
+    let billed = hotel.try_book_for_account(&booker, Some(acme.id), rooms).await.unwrap();
+    let unbilled = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.rack, 2, 3)]).await.unwrap();
+
+    let folios: Vec<(String, Option<Uuid>, Option<Uuid>, String)> = sqlx::query_as(
+        "select kind, reservation_id, reservation_room_id, status from folio
+         order by kind, reservation_room_id, reservation_id",
+    )
+    .fetch_all(&mut *hotel.tx().await)
+    .await
+    .unwrap();
+    let expected = vec![
+        ("deposit".to_owned(), Some(billed.id), None, "open".to_owned()),
+        ("deposit".to_owned(), Some(unbilled.id), None, "open".to_owned()),
+        ("guest".to_owned(), None, Some(billed.rooms[0].id), "open".to_owned()),
+        ("guest".to_owned(), None, Some(billed.rooms[1].id), "open".to_owned()),
+        ("guest".to_owned(), None, Some(unbilled.rooms[0].id), "open".to_owned()),
+    ];
+    assert_eq!(folios, expected, "a deposit folio per reservation, a guest folio per room, no account folio yet");
+
+    let rules: Vec<(Uuid, String, Uuid)> =
+        sqlx::query_as("select reservation_id, category, account_id from routing_rule order by category")
+            .fetch_all(&mut *hotel.tx().await)
+            .await
+            .unwrap();
+    assert_eq!(
+        rules,
+        vec![(billed.id, "meal_plan".into(), acme.id), (billed.id, "room".into(), acme.id)],
+        "a booking billed to an account routes its rooms and meals there"
+    );
 }

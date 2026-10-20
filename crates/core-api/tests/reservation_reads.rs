@@ -111,6 +111,15 @@ impl Hotel {
         let id = common::uuid(&property["id"]);
         let path = format!("/api/v1/properties/{id}");
         let business_date = Date::parse(property["business_date"].as_str().unwrap(), &Iso8601::DEFAULT).unwrap();
+        // BAR sells in USD, and cancelling a whole reservation posts its penalty with a base amount.
+        sqlx::query(
+            "insert into fx_rate (tenant_id, property_id, date, currency, rate_to_base, source, source_date)
+             select tenant_id, id, business_date, 'USD', 300, 'cbsl', business_date from property where id = $1",
+        )
+        .bind(id)
+        .execute(&superuser)
+        .await
+        .unwrap();
         let mut types = Vec::new();
         let mut rooms = Vec::new();
         for (code, name, first, last) in [("DLX", "Deluxe", 101, 112), ("STD", "Standard", 201, 202)] {

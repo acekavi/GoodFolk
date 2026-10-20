@@ -1,13 +1,15 @@
 //! media-svc: verifies uploads over gRPC and turns them into an archive and renditions in supervised worker
-//! subprocesses. It has no database; results go back to core-api on the `media-results` topic.
+//! subprocesses, and renders invoice PDFs. It has no database; results go back to core-api on the `media-results`
+//! topic.
 //!
 //! One port serves gRPC (`goodfolk.media.v1.Media` and `grpc.health.v1.Health`, over cleartext HTTP/2) and HTTP
-//! (`POST /work` for `media-process` pushes, `GET /healthz`). The media service and `/work` sit behind service auth;
-//! the health checks do not, so platform probes can reach them.
+//! (`POST /work` for `media-process` pushes, `POST /render` for `invoice-render` pushes, `GET /healthz`). The media
+//! service, `/work` and `/render` sit behind service auth; the health checks do not, so platform probes can reach them.
 
 pub mod config;
 mod grpc;
 pub mod limits;
+pub mod render;
 mod work;
 pub mod worker;
 
@@ -40,13 +42,15 @@ pub struct MediaSvc {
     pub worker_exe: PathBuf,
 }
 
-/// gRPC (tonic) + health + HTTP (/work behind svc-auth, /healthz) on one port (tonic's axum router).
+/// gRPC (tonic) + health + HTTP (/work and /render behind svc-auth, /healthz) on one port (tonic's axum router).
 ///
 /// Each worker's threads come from `MEDIA_WORKER_THREADS`, or else from the permits `svc.workers` holds now, so build
 /// the router before any are taken. This matches what [`config::Config`] reports (see [`config::worker_threads`]).
 pub fn router(svc: MediaSvc, verifier: Arc<Verifier>) -> axum::Router {
     let auth = svc_auth::layer(verifier);
     let rayon_threads = config::worker_threads(svc.workers.available_permits());
+    let renders =
+        render::RenderState { svc: svc.clone(), permits: Arc::new(Semaphore::new(render::CONCURRENT_RENDERS)) };
     // The overall status ("") starts as serving, which is what probes ask for.
     let (_reporter, health) = tonic_health::server::health_reporter();
 
@@ -57,7 +61,14 @@ pub fn router(svc: MediaSvc, verifier: Arc<Verifier>) -> axum::Router {
     tonic::service::Routes::from(media)
         .add_service(health)
         .into_axum_router()
-        .route("/work", post(work::work).with_state(work::WorkState { svc, rayon_threads }).layer(auth))
+        .route("/work", post(work::work).with_state(work::WorkState { svc, rayon_threads }).layer(auth.clone()))
+        .route(
+            "/render",
+            post(render::render)
+                .with_state(renders)
+                .layer::<_, std::convert::Infallible>(axum::extract::DefaultBodyLimit::max(render::MAX_RENDER_BODY))
+                .layer(auth),
+        )
         .route("/healthz", get(|| async { "ok" }))
 }
 

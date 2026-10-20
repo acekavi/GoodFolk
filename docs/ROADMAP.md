@@ -90,7 +90,7 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
 - **Performance gates: done.** `crates/core-api/tests/perf.rs`, in-process through the router, release mode, `--test-threads=1`, two runs each (this laptop's CPU governor is powersave): creating a reservation (1 room, 3 nights, a 12-type property with a standard plan priced for 400 days, restrictions and BB/HB supplements) p95 22.8 ms then 28.7 ms against a 60 ms gate; the reservations list (50 rows filtered by a ~60-day arrival range and one status, out of 10k seeded reservation rooms, `withCount: true`) p95 12.3 ms then 16.3 ms against 25 ms; availability (7 nights × 12 room types × 5 rate plans, 3 derived levels and a second standard plan, room only and breakfast) p95 16.1 ms then 16.0 ms against 40 ms. All three cleared their gate with room to spare; the availability fixtures use a 3-level derived chain (below its own standard plan) plus a second, independent standard plan to reach 5 plans without exceeding the domain's own 3-level cap on derived plans. No query, index or code change was needed.
 - **Guest name search: done.** pg_trgm's `<%` isn't leakproof, so it couldn't use its index under forced row-level security (~150 ms at 20k guests, a full tenant scan). Fixed with `guest_search` (id + tenant + lowercased name, no RLS, no privileges for `goodfolk_app`) and `app.search_guest_ids`, a `SECURITY DEFINER` function that filters by `app.current_tenant()` and returns ids only, read back from `guest` under RLS as usual (~9 ms at 20k) — see "reading around RLS for index-only searches" in [api-conventions.md](design/api-conventions.md).
 - **An overbooking allowance: done.** `room_type.overbooking` (0–20, default 0, `RoomsManage`); a night is sellable when `physical - sold - out_of_order + overbooking > 0`, applied in `reservations::availability`'s `free` and `create_reservation`'s per-night check, both through one shared SQL expression. `rooms::InventoryDay::available` stays the plain physical figure — see "the sellable rule" in [api-conventions.md](design/api-conventions.md).
-- No-show, as part of the night audit (Phase 7).
+- No-show, as part of the night audit (Phase 7b).
 - Carried over from the Phase 3a reviews:
   - **Check-out must shorten `stay`: done** (the spec said so): `reservations::check_out` sets `upper(stay)` to `max(business date, check_in + 1)` on an early departure, so `rooms::assigned_stay` stops counting the room the moment it's checked out, and it can be blocked or deactivated again — proven directly against the real `rooms::create_block`/`update_room` functions in `modules/reservations/tests/stay.rs`, not re-implemented checks.
   - **Re-baseline the Phase 1 month-grid gate: done.** Instrumented `fetch`/`EventSource` and took a CDP CPU
@@ -228,23 +228,67 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
 - Quality gate in CI: VMAF thresholds on a fixture set.
 - PDF engine for first-page thumbnails (and linearizing), which 6a left out.
 
-## Phase 7 — Folio and night audit ([spec](specs/phase-7-folio-audit.md))
+## Phase 7a — Folio, taxes, desk payments and invoices ([spec](specs/phase-7-folio-audit.md), [plan](superpowers/plans/2026-10-16-phase-7a-folio.md))
 
-- Folio: charges (room, meal plan, laundry, POS, manual), payments, routing, reversals, multi-currency lines with base-currency equivalents.
-- Tax and service-charge rules engine: effective-dated, ordered, configurable bases, on-bill or absorbed, conditional (VAT registration, residency, currency), inclusive-price back-calculation. Sri Lanka preset (SC, TDL, SSCL, VAT) in order A (cascade). Golden tests on the worked examples in ARCHITECTURE.md §7.6.2.
-- Liability reports: TDL quarterly (SLTDA), SSCL monthly and quarterly, VAT per period, service charge collected.
-- IRD-format tax invoice: LKR values without cents, total in words, TIN, gapless serial per property; USD folios converted at the locked rate.
-- Exchange rate table, daily import of the Central Bank TT selling rate (with alert on failure), and manual override.
-- `PostPosBill` contract (gRPC + REST), so a future POS can post bills.
-- Payments: `PaymentProvider` trait. `manual` provider for the card terminal, cash and bank transfer (approval code, last 4 digits, currency). **CyberSource** for LKR and foreign currency (Unified Checkout, TMS tokens, authorize/capture, 3-D Secure, JWT auth, encrypted webhooks). **Mastercard Gateway (MPGS)**: Hosted Checkout, tokens, authorize/capture, 3-D Secure, per-property gateway host, webhook secret check plus order re-fetch. payments.lk optional (LKR only). Per-property merchant credentials in Secret Manager, and routing rules.
-- `docs/guides/payments/`: common technical guides (CyberSource, MPGS) plus one page per bank (ComBank, HNB, Sampath, BOC, People's, Seylan, NTB, and NDB/DFCC once confirmed). Written from current bank merchant documentation and checked with each bank.
-- Night audit review screen: expected arrivals not checked in (mark no-show / extend / cancel), departures, the day's POS bills, booking bills, and payments by method and currency.
-- `jobs-svc`: checkpointed, idempotent close (room/meal postings, exchange-rate lock, statistics snapshot, reports, business-date roll), triggered by Cloud Scheduler or manually.
-- Daily statistics and core reports (occupancy, ADR, RevPAR, arrivals and departures, in-house).
+Phase 7 was split three ways (the owner, 2026-10-16): 7a here, then 7b and 7c below.
+
+- **Folios: done.** Three kinds: a `guest` folio per reservation room, an `account` folio per account and property (the city ledger, created by its first charge; once it is invoiced the account's next charge opens a fresh one, so an account has one open folio and any number of invoiced ones) and a `deposit` folio per reservation. Lines carry a source and a category, the original currency and amount, and the base-currency (LKR) equivalent at the rate for the business date; a folio's balance is per currency. Money rows are append-only (`folio_line`, `folio_line_tax`, `payment` and `invoice` have no `update` or `delete` grant for the app role): a correction is a reversal, a transfer or a refund. Routing rules send a reservation's charges by category to its account folio; a reservation billed to an account routes `room` and `meal_plan` by default. Every system posting goes through `folio::post_for_stay`, which applies the routing. Reservations made before 7a get their folios and default routing from migration `0027`. Migrations `0020`–`0029`.
+- **Tax engine: done.** `modules/tax` is pure and exact (`rust_decimal`, half-up per component with the remainder to net, inclusive back-calculation). The Sri Lanka preset (SC on `pos:*`, TDL, SSCL, VAT only when registered, order A) is applied to every property and editable by the owner, with effective dates; taxes are calculated and stored at posting, so past lines never change. The golden figures hold: Rs. 10,000.00 at a restaurant is 13,425.45 in order A.
+- **Desk payments, refunds and deposits: done.** Cash, card terminal (approval code, last four digits, brand; a card number is refused), bank transfer and charge to account, in any accepted currency. A refund is a negative payment in the original's currency, method and rate. A deposit taken before arrival moves to the stay at its first check-in, and back on an undo. Each cancelled room posts its own cancellation fee to the deposit folio.
+- **Room and meal-plan posting: done.** `post_business_date_charges` posts the business date for every checked-in stay, once (posting keys), from **Post tonight's charges** now and from 7b's close later. Check-out posts any night not yet posted, and an early check-out reverses the lines already posted for the nights it releases.
+- **POS bills: done.** `POST …/pos-bills` is idempotent on `(outlet, bill number)`, taxes each item by the outlet's rules (service charge on or off per outlet), and posts to a stay or records a bill settled at the outlet. Outlets are a property setting.
+- **Invoices and credit notes: done.** Whole-LKR invoices with gapless serials per property (`<CODE>-<YYYY>-<NNNNNN>`, credit notes `CN-…`), issued in the transaction that takes the number, rendered to a PDF by media-svc with Typst (in process, bundled Noto Sans) and stored privately; a credit note reopens the folio. A checked-in stay is invoiced only once its nights to date are posted, and a folio past the render limits (2000 lines, 500 payments, 50 taxes) is refused before a number is taken. Audited 5-minute links.
+- **Exchange rates: done.** `fx_rate` per property, the Central Bank TT selling rate imported at start-up and daily from 10:30 `Asia/Colombo` (off with `FX_IMPORT=off`, and in the end-to-end suite), an `fx_alert` banner for owners and managers when the page cannot be read, and an audited manual override.
+- **UI: done.** A **Folios** tab in the reservation modal (one tab per folio, lines with expandable taxes, payments, per-currency balances, and the actions), the account's folios on **Accounts** (the open one first, then the invoiced ones with their invoices), **Post tonight's charges** on Reservations, and **Taxes**, **Outlets** and **Exchange rates** under Settings.
+- **Seven permissions**: `FolioView`, `FolioPost`, `FolioAdjust`, `InvoiceIssue`, `TaxSettingsManage`, `FxOverride` and `PosPost` (matrix in [api-conventions.md](design/api-conventions.md)); events `folio:<id>` and `fx:<property>`, delivered only to a stream whose user holds `FolioView`.
+- **Deviations from the spec as first written**, each a ruling made during the phase:
+  - **A posting key is unique per tenant**, not per folio (migration `0023`): every key embeds a stay or a POS bill, which are unique, so a replay after a routing or account change finds the line instead of posting it again.
+  - **`transfer` is a payment method**, internal only (migration `0024`), so a deposit moving to a stay, or a charge to account, is a pair of payments sharing a `transfer_id` with the base amounts carried exactly.
+  - **Refunds name the folio they come from** (the payment's own by default), which must hold the credit; a charge to account and a `transfer` are never refunded.
+  - **The cancellation fee is per room** at its cancel (key `cancellation:<reservation_room>`), taxed under the `*` rules, tax-inclusive when the rate plan's prices include tax.
+  - **An early check-out reverses the released nights' lines**, rather than leaving them to the night audit.
+  - **The invoice series is one per property** and never restarts with the year (the year only dates the document); serials are at least six digits (migration `0025`). A VAT-registered property cannot issue without its TIN, and the refusal comes before a number is taken.
+  - **Invoice figures:** the total is the money settled, rounded once from base amounts; line figures are shared out by the largest remainder method so they add up; a reversed line and its reversal print as an exact mirrored pair. `net_lkr` is the total less the printed taxes.
+  - **`InvoiceData` lives in `media-types`**, so media-svc renders it without depending on the folio module; core-api queues `invoice-render` and media-svc answers with `MediaResult::InvoiceRendered`.
+  - **Charges are never negative** for staff or a POS (reverse instead), the Sri Lanka preset applied by hand starts the day after the business date, a POS bill's business date is at most 7 days back, and a folio read is bounded (the newest 500 lines, flagged `truncated`; an account's lines are left out of the reservation query).
+  - **The exchange-rate import serves LKR-base properties only**, since the bank quotes against the rupee; the Central Bank publishes nine currencies.
+  - **A fresh account folio after an invoice** (migration `0028`: one open account folio per account and property, not one in all). A credit note on an invoiced account folio is refused (`409`) while a newer folio of that account is open, rather than reopening a second one.
+  - **A rule in force only changes its name and a later end** (`409`, "End it and add a new rule"), and an accepted currency an open folio still holds is not removed (`422`).
+  - **Typst is compiled in** (`typst` 0.15, MIT/Apache) with Noto Sans (SIL OFL); `deny.toml` allows `0BSD` for a dependency of it. `/render` allows two renders at once and caps lines, taxes and payments.
+- **Performance gates: done**, release builds:
+
+  | Gate | Spec | Measured |
+  |---|---|---|
+  | Posting a charge with the Sri Lanka taxes | p95 < 30 ms | p95 11.7 ms |
+  | `post_business_date_charges`, 200 rooms at 80% (160 stays, each in its own transaction) | < 3 s | 1.23 s (median) |
+  | `folios` for a folio of 200 taxed lines | p95 < 30 ms | p95 10.2 ms |
+  | Invoice PDF ready, from the issue response to `pdf_key` | < 2 s | 44.5 ms (median of five, release media-svc) |
+
+  The Playwright suite for the phase (a charge and a payment, an invoice refused until the stay's night is posted, then its PDF with a credit note and re-issue, a POS bill, a deposit moving at check-in, routing to an account, a fresh account folio after its invoice, the settings pages with the exchange-rate alert, tonight's charges, and a housekeeper without access) brings the suite to 90 tests, and the web unit tests to 359.
+- Carried over from the Phase 7a reviews:
+  - **Rust 1.99** (from 1.97), with `avif-decode` 3 (rav1d in place of libaom, which drops `owning_ref`); `rustls` and `yoke-derive` were upgraded.
+  - **Advisory ignores in `deny.toml`** (the owner's ruling): two `quick-xml` denial-of-service advisories reachable only through Typst's bibliography loading, which the renderer never exposes; five unmaintained crates with no fixed release via Typst (`bincode`, `yaml-rust`, `unsafe-libyaml`, `rustybuzz`, `ttf-parser`); and `paste`, an unmaintained proc-macro via rav1e and hayagriva. `cargo deny check` passes. Review them on every Typst upgrade (`quick-xml` 0.41 or later fixes the first two).
+  - **A dedicated POS role.** A POS signs in as a manager-role user set aside for it (`PosPost`: owner, manager); Phase 8 adds a POS role with `PosPost` alone.
+  - **A POS bill settled at the outlet cannot be refunded or voided.** It is attached to no folio, so there is no folio to refund from. A wrong walk-in payment cannot be corrected from the desk yet; 7b's night audit lists these bills and adds their refunds.
+  - **The invoice layout waits for the IRD specification.** The template follows ARCHITECTURE §7.6.4 as far as it is known; the layout is a Typst file, so the published specification should need no code change. Pending the IRD.
+  - **7b takes over the exchange-rate import and the media sweep in `jobs-svc`** (both run inside core-api now), and locks each day's rates at the close.
+  - **GraphQL money is `Int`: checked.** async-graphql serialises an `i64` `Int` in full, so amounts above 2^31 minor units round-trip (`amounts_past_two_to_the_31_round_trip_through_graphql`); no custom scalar is needed.
+  - **Properties whose base currency is not LKR get no rates imported**, and need them entered by hand.
+
+## Phase 7b — Night audit, `jobs-svc` and reports ([spec](specs/phase-7b-night-audit.md))
+
+- The guided night-audit review (arrivals not checked in with no-show fees, departures, the day's POS bills, booking bills, payments by method and currency) and the checkpointed, idempotent close: post the charges (7a's `post_business_date_charges`), lock the day's exchange rates, snapshot statistics, render reports, advance the business date.
+- `jobs-svc`, run by Cloud Scheduler: the close, the exchange-rate import and the media sweep (both moved from core-api), window extension, cleanup, a counter drift check.
+- Daily statistics and core reports (occupancy, ADR, RevPAR, arrivals and departures, in-house), and the liability reports: TDL quarterly (SLTDA), SSCL monthly and quarterly, VAT per period, service charge collected.
 - Carried over from Phase 1:
   - Once the business-date roll exists, run `rooms::extend_window` under a property-level lock: today a writer may insert counter rows computed from a business date the roll is moving, leaving stale rows behind.
   - The roll updates `property.business_date` with the row locked `for update`, and counter writers read the business date `for share` (today `inventory::business_date` reads it unlocked), so no write adjusts counters from a business date that is changing under it.
-- Linen and guest laundry (moved from Phase 5): [spec](specs/laundry.md). Guest laundry charges post to the folio built here.
+- Linen and guest laundry (moved from Phase 5): [spec](specs/laundry.md). Guest laundry charges post to the folio built in 7a.
+
+## Phase 7c — Online payment gateways and bank guides ([spec](specs/phase-7c-payment-gateways.md))
+
+- Needs sandbox merchant accounts from the owner first. A `PaymentProvider` trait, with 7a's desk payments as the `manual` provider; **CyberSource** (Unified Checkout, TMS tokens, authorize/capture, 3-D Secure, JWT auth, encrypted webhooks) and the **Mastercard Gateway (MPGS)** (Hosted Checkout, tokens, 3-D Secure, per-property host, webhook secret check plus order re-fetch); payments.lk optional (LKR only). Per-property merchant credentials in Secret Manager, refunds and voids.
+- `docs/guides/payments/`: common technical guides plus one page per bank, written from current bank documentation and checked with each bank.
 
 ## Phase 8 — Settings completeness and channels ([spec](specs/phase-8-settings-channels.md))
 

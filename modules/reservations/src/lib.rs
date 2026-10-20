@@ -52,6 +52,7 @@ pub use tape::{
 };
 
 use db::{Event, TenantId, Tx, UserId};
+use folio::FolioError;
 use rates::RatesError;
 use rooms::WINDOW_DAYS;
 use time::{Date, Duration};
@@ -83,6 +84,18 @@ impl From<RatesError> for ReservationsError {
             RatesError::Conflict(message) => ReservationsError::Conflict(message),
             RatesError::Invalid(message) => ReservationsError::Invalid(message),
             RatesError::Database(err) => ReservationsError::Database(err),
+        }
+    }
+}
+
+impl From<FolioError> for ReservationsError {
+    fn from(err: FolioError) -> Self {
+        match err {
+            FolioError::NotFound(what) => ReservationsError::NotFound(what),
+            FolioError::VersionMismatch(what) => ReservationsError::VersionMismatch(what),
+            FolioError::Conflict(message) => ReservationsError::Conflict(message),
+            FolioError::Invalid(message) => ReservationsError::Invalid(message),
+            FolioError::Database(err) => ReservationsError::Database(err),
         }
     }
 }

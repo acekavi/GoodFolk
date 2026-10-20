@@ -1,15 +1,19 @@
 pub(crate) mod accounts;
 pub(crate) mod auth;
 pub(crate) mod blocks;
+pub(crate) mod folio;
+pub(crate) mod fx;
 mod health;
 pub(crate) mod housekeeping;
 mod internal;
 pub(crate) mod media;
+pub(crate) mod pos;
 pub(crate) mod properties;
 pub(crate) mod rates;
 pub(crate) mod reservations;
 pub(crate) mod room_types;
 pub(crate) mod rooms;
+pub(crate) mod taxes;
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -27,6 +31,11 @@ use tower_http::trace::TraceLayer;
 pub use accounts::{CreateAccountRequest, UpdateAccountRequest};
 pub use auth::{LoginRequest, SignupRequest, SwitchTenantRequest};
 pub use blocks::{CreateBlockReasonRequest, CreateBlockRequest, ShortenBlockRequest, UpdateBlockReasonRequest};
+pub use folio::{
+    PaymentDetails, PaymentMethod, PostChargeRequest, PostChargesResponse, PostFailure, ReasonRequest, RefundRequest,
+    RoutingRequest, TakePaymentRequest, TransferRequest, TransferredLine,
+};
+pub use fx::SetRateRequest;
 pub use housekeeping::{
     AssignmentRequest, CopiedAssignments, ReportIssueRequest, SetAssignmentsRequest, SetConditionRequest,
     SetConditionsRequest, UpdateIssueRequest,
@@ -34,6 +43,9 @@ pub use housekeeping::{
 pub use media::{
     CaptionRequest, CompleteUploadRequest, MediaAsset, ReorderMediaRequest, SignedLink, StartUploadRequest,
     StartedUpload, UploadPart, UploadedPart,
+};
+pub use pos::{
+    CreateOutletRequest, PosBillRequest, PosItemRequest, PosTargetRequest, SettledRequest, UpdateOutletRequest,
 };
 pub use properties::{CreatePropertyRequest, UpdatePropertyRequest};
 pub use rates::{
@@ -47,6 +59,7 @@ pub use reservations::{
 };
 pub use room_types::{BedRequest, CreateRoomTypeRequest, UpdateRoomTypeRequest};
 pub use rooms::{CreateRoomRangeRequest, CreateRoomRequest, ReorderRequest, SectionRequest, UpdateRoomRequest};
+pub use taxes::{CreateTaxRuleRequest, UpdateTaxRuleRequest, UpdateTaxSettingsRequest};
 
 /// Longest a request may run before it is answered with 504.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -76,6 +89,18 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/room-issues"), post(housekeeping::report_issue))
         .route(&format!("{PROPERTY}/media/uploads"), post(media::start_upload))
         .route(&format!("{PROPERTY}/media/uploads/{{upload}}/complete"), post(media::complete_upload))
+        .route(&format!("{PROPERTY}/folios/{{folio}}/charges"), post(folio::post_charge))
+        .route(&format!("{PROPERTY}/folios/{{folio}}/lines/{{line}}/reversal"), post(folio::reverse))
+        .route(&format!("{PROPERTY}/folios/{{folio}}/lines/{{line}}/transfer"), post(folio::transfer))
+        .route(&format!("{PROPERTY}/folios/{{folio}}/payments"), post(folio::take_payment))
+        .route(&format!("{PROPERTY}/payments/{{payment}}/refunds"), post(folio::refund))
+        .route(&format!("{PROPERTY}/folio/post-charges"), post(folio::post_charges))
+        .route(&format!("{PROPERTY}/folios/{{folio}}/invoice"), post(folio::issue_invoice))
+        .route(&format!("{PROPERTY}/invoices/{{invoice}}/credit-note"), post(folio::credit_note))
+        .route(&format!("{PROPERTY}/pos-bills"), post(pos::post_bill))
+        .route(&format!("{PROPERTY}/outlets"), post(pos::create_outlet))
+        .route(&format!("{PROPERTY}/tax-rules"), post(taxes::create_rule))
+        .route(&format!("{PROPERTY}/tax-rules/apply-preset"), post(taxes::apply_preset))
         .route_layer(from_fn_with_state(state.clone(), idempotency::idempotent));
 
     let requests = Router::new()
@@ -124,6 +149,12 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/room-issues/{{issue}}/media/{{asset}}"), delete(media::remove_issue_photo))
         .route(&format!("{PROPERTY}/guest-documents/{{document}}/link"), get(media::guest_document_link))
         .route(&format!("{PROPERTY}/guest-documents/{{document}}"), delete(media::delete_guest_document))
+        .route(&format!("{PROPERTY}/reservations/{{reservation}}/routing"), put(folio::set_routing))
+        .route(&format!("{PROPERTY}/invoices/{{invoice}}/link"), get(folio::invoice_link))
+        .route(&format!("{PROPERTY}/outlets/{{outlet}}"), patch(pos::update_outlet))
+        .route(&format!("{PROPERTY}/tax-rules/{{rule}}"), patch(taxes::update_rule).delete(taxes::end_rule))
+        .route(&format!("{PROPERTY}/tax-settings"), patch(taxes::update_settings))
+        .route(&format!("{PROPERTY}/fx-rates/{{date}}/{{currency}}"), put(fx::set_rate))
         .route("/graphql", post(graphql::handler))
         .merge(commands)
         .layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)));

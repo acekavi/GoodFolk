@@ -6,7 +6,7 @@ Related: [ARCHITECTURE.md](../ARCHITECTURE.md) (why), [api-conventions.md](api-c
 
 ## Rules for every table
 
-1. **Tenant-owned rows carry `tenant_id uuid not null`, with forced row-level security** and a case in `crates/db/tests/isolation.rs`. The schema guard test fails otherwise. Tables that are not tenant-owned (for example `session`, `fx_rate`) must not name any column `tenant_id`.
+1. **Tenant-owned rows carry `tenant_id uuid not null`, with forced row-level security** and a case in `crates/db/tests/isolation.rs`. The schema guard test fails otherwise. Tables that are not tenant-owned (for example `session`) must not name any column `tenant_id`.
 2. **Property-scoped rows also carry `property_id`**, and their composite indexes lead with `property_id` (or `tenant_id` for tenant-wide tables).
 3. **IDs are UUIDv7** generated in Rust. Human-facing numbers (confirmation, invoice) are separate columns, unique per property.
 4. **Money is `bigint` minor units plus a `char(3)` ISO-4217 currency** on the same row. Never floats. Exchange rates are `numeric(18,8)`.
@@ -79,7 +79,7 @@ Phase 3 ships in two slices. **3a** (`migrations/0007_reservations.sql`) creates
 | `reservation_room` | `id`, `tenant_id`, `property_id`, `reservation_id`, `room_type_id`, `room_id null`, `stay daterange`, `arrival date` (generated: `lower(stay)`, stored), `adults` (≥ 1), `children` (≥ 0), `rate_plan_id`, `meal_plan` (`RO` \| `BB` \| `HB` \| `FB`), `status` (`tentative` \| `confirmed` \| `checked_in` \| `checked_out` \| `cancelled` \| `no_show`), `primary_guest_id` (its residency prices the room), `currency` (the plan's), `cancellation_terms jsonb null` (the plan's policy at booking: `{rules, no_show}`), `cancelled_at null`, `cancelled_by null`, `cancellation_penalty bigint null`, `checked_in_at timestamptz null` (3b), `checked_in_business_date date null` (3b), `checked_out_at timestamptz null` (3b), `eta time null`, `version` | **`reservation_room_no_double_booking`: `exclude using gist (room_id with =, stay with &&) where (room_id is not null and status not in ('cancelled','no_show'))`**, so double booking is impossible. `reservation_room_stay_check`: non-empty, bounded, `[)`. `reservation_room_cancellation_check`: `cancelled_at` is set exactly when `status` is `cancelled`, `cancellation_penalty` exactly when `cancelled_at` is, and `cancelled_by` only then. `reservation_room_checked_in_at_check` (3b): `checked_in_at` is set exactly when `status` is `checked_in` or `checked_out`. `reservation_room_checked_in_business_date_check` (3b): `checked_in_business_date` is set exactly when `checked_in_at` is. `reservation_room_checked_out_at_check` (3b): `checked_out_at` is set exactly when `status` is `checked_out`. GiST `(property_id, stay)` serves tape-chart tiles and date-range lists; `reservation_room_arrival_idx (property_id, arrival, id)` serves the reservations list, sorted and paged by arrival (plain date comparisons are leakproof, so under row-level security they can be index conditions, which `lower(stay)` can't). Check-out early sets `upper(stay)` to the actual date |
 | `reservation_night` | `(reservation_room_id, date)`, `tenant_id`, `property_id`, `room_amount`, `meal_amount`, `currency` | Price snapshot at booking (amounts ≥ 0); later rate changes do not reprice existing bookings |
 | `reservation_guest` | `(reservation_room_id, guest_id)`, `tenant_id`, `property_id` | 3b. Additional occupants of a room, beyond its `primary_guest_id`. Composite FKs `(property_id, reservation_room_id)` to `reservation_room` (`on delete cascade`) and `(tenant_id, guest_id)` to `guest` keep both ends in the room's own property and tenant. Index `(tenant_id, guest_id)` |
-| `property_counter` | `(property_id, name)`, `tenant_id`, `value bigint` | Gapless numbers (`confirmation`; `invoice` is added to the `name` check in Phase 7), taken with `insert … on conflict (property_id, name) do update set value = property_counter.value + 1 returning value` inside the transaction that uses the number |
+| `property_counter` | `(property_id, name)`, `tenant_id`, `value bigint` | Gapless numbers (`confirmation`; `invoice` and `credit_note` are added to the `name` check in Phase 7a), taken with `insert … on conflict (property_id, name) do update set value = property_counter.value + 1 returning value` inside the transaction that uses the number |
 
 ## Phase 5: Housekeeping and laundry
 
@@ -107,27 +107,35 @@ Phase 3 ships in two slices. **3a** (`migrations/0007_reservations.sql`) creates
 | `media_link` | `(asset_id, entity, entity_id)`, `tenant_id`, `sort_order` | Room-type galleries, issue photos, guest documents |
 | `outbox` | `id bigserial`, `tenant_id`, `topic`, `payload jsonb`, `created_at`, `published_at null` | Written in the business transaction; a relay publishes to Pub/Sub for internal services. UI invalidation stays on `LISTEN/NOTIFY` |
 
-## Phase 7: Folio, tax, payments, night audit
+## Phase 7a: Folio, taxes, desk payments and invoices (implemented)
 
-`property` gains: `vat_registered bool`, `tdl_band` (`standard` \| `small`), `tin text`, `sltda_licence_no text`, `audit_time time`.
+Migrations `0020_folio.sql` to `0029_folio_no_delete.sql`. Every table below is tenant-owned with forced row-level security. Amounts are `bigint` minor units in the row's `currency`; a base amount is in the property's base currency (LKR) at `rate` (`numeric(18,6)`, LKR per unit) dated `rate_date`. `folio_line`, `folio_line_tax`, `payment`, `pos_bill` and `invoice` are append-only: the app role has no `update` or `delete` on them (only `invoice.pdf_key` can be set), and on `folio` it may update only `status` and `version` and never delete.
+
+`property` gains `accepted_currencies char(3)[]` (default `{LKR,USD,EUR,GBP}`), `vat_registered`, `tdl_small_turnover`, `tin`, `legal_name` and `address`; `account` and `guest` gain `tin`; `rate_plan` gains `prices_include_tax`; `property_counter` names gain `invoice` and `credit_note`.
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `folio` | `id`, `tenant_id`, `property_id`, `number` (per property), `reservation_id null`, `guest_id null`, `account_id null`, `currency`, `status` (`open` \| `closed`) | A reservation can have several folios (split billing) |
-| `folio_line` | `id`, `tenant_id`, `property_id`, `folio_id`, `business_date`, `kind` (`charge` \| `payment` \| `adjustment`), `source` (`room` \| `meal_plan` \| `laundry` \| `pos` \| `manual` \| `no_show_fee`), `description`, `quantity`, `unit_amount`, `amount`, `currency`, `fx_rate numeric(18,8)`, `base_amount`, `reverses_id null`, `pos_bill_id null`, `created_by`, `created_at` | **Append-only.** A reversal points at the original with `reverses_id` |
-| `folio_tax_line` | `id`, `tenant_id`, `folio_line_id`, `tax_rule_id`, `code`, `base_amount`, `amount`, `currency`, `presentation` (`on_bill` \| `absorbed`) | Computed and frozen at posting |
-| `tax_rule` | `id`, `tenant_id`, `property_id`, `code`, `name`, `kind` (`tax` \| `levy` \| `service_charge`), `rate_bp`, `applies_to text[]`, `base_components text[]`, `sequence`, `presentation`, `condition jsonb`, `valid daterange` | Sri Lanka preset, order A (ARCHITECTURE §7.6) |
-| `outlet` | `id`, `tenant_id`, `property_id`, `code`, `name` | POS outlets (restaurant, bar …) |
-| `pos_bill` | `id`, `tenant_id`, `property_id`, `outlet_id`, `bill_no`, `business_date`, `currency`, `total`, `settlement` (`folio` \| `direct`), `folio_id null`, `status` (`open` \| `settled` \| `void`), `items jsonb` | `unique (property_id, outlet_id, bill_no)`, so `PostPosBill` is idempotent |
-| `payment` | `id`, `tenant_id`, `property_id`, `folio_id`, `provider` (`manual` \| `cybersource` \| `mpgs` \| `payments_lk` \| `channel`), `method` (`cash` \| `card_terminal` \| `online_card` \| `bank_transfer` \| `account` \| `ota`), `status` (`pending` \| `authorized` \| `captured` \| `voided` \| `refunded` \| `failed`), `amount`, `currency`, `provider_ref`, `approval_code`, `card_brand`, `card_last4`, `residency_evidence_ref null`, `created_by`, `created_at` | State changes are new `payment_event` rows; `status` is the latest |
-| `payment_event` | `id`, `tenant_id`, `payment_id`, `status`, `provider_payload jsonb`, `at` | Append-only; webhook and API responses |
-| `card_token` | `id`, `tenant_id`, `guest_id`, `provider`, `token_ref`, `card_brand`, `last4`, `expiry` | Gateway tokens only; never card numbers |
-| `merchant_account` | `id`, `tenant_id`, `property_id`, `provider`, `gateway_host`, `merchant_id`, `secret_name` (Secret Manager), `currencies char(3)[]`, `active` | Per-property credentials |
-| `fx_rate` | `(date, currency, source)`, `buying numeric`, `selling numeric`, `published_on date` | **Global** (Central Bank data), no RLS, no `tenant_id` |
-| `fx_override` | `(property_id, date, currency)`, `tenant_id`, `rate`, `set_by`, `set_at` | Manual override; audit-logged |
-| `invoice` | `id`, `tenant_id`, `property_id`, `folio_id`, `serial_no` (gapless per property), `issued_at`, `lkr_total bigint` (whole rupees), `document jsonb`, `pdf_asset_id` | IRD tax-invoice format |
-| `audit_run` | `id`, `tenant_id`, `property_id`, `business_date`, `status`, `steps jsonb`, `started_by`, `started_at`, `finished_at` | `unique (property_id, business_date)`; checkpointed steps |
-| `daily_stat` | `(property_id, business_date)`, `tenant_id`, `rooms_available`, `rooms_sold`, `room_revenue`, `adr`, `revpar`, `by_segment jsonb`, `by_source jsonb`, `residency_mix jsonb` | Base currency; written by the audit |
+| `tax_rule` | `id`, `tenant_id`, `property_id`, `code`, `name`, `kind` (`tax` \| `levy` \| `service_charge`), `rate_bp`, `applies_to text[]`, `base text[]`, `sequence`, `presentation` (`on_bill` \| `absorbed`), `condition jsonb` (`always` \| `vat_registered` \| `residency` \| `payment_currency`), `effective_from`, `effective_to null`, `version` | The Sri Lanka preset, order A (ARCHITECTURE §7.6). Never deleted: a rule is ended. One in force changes only its name and a later end |
+| `outlet` | `id`, `tenant_id`, `property_id`, `code` (`^[A-Z0-9]{1,10}$`), `name`, `service_charge`, `active`, `version` | `unique (property_id, code)`; the code never changes |
+| `fx_rate` | `(property_id, date, currency)`, `tenant_id`, `rate_to_base numeric(18,6)`, `source` (`cbsl` \| `manual`), `source_date`, `set_by`, `set_at` | Per property; a manual rate replaces the day's imported one |
+| `fx_alert` | `property_id`, `tenant_id`, `message`, `raised_at` | The failed import's banner, cleared by a rate for every accepted currency |
+| `folio` | `id`, `tenant_id`, `property_id`, `kind` (`guest` \| `account` \| `deposit`), `reservation_room_id null`, `account_id null`, `reservation_id null`, `status` (`open` \| `invoiced`), `created_at`, `version` | One guest folio per reservation room and one deposit folio per reservation; one **open** account folio per account and property (`folio_account_idx`, partial on `status = 'open'`), so an invoiced one gives way to a fresh one |
+| `folio_line` | `id`, `tenant_id`, `folio_id`, `source`, `category` (`room` \| `meal_plan` \| `laundry` \| `misc` \| `fee` \| `pos:<outlet>`), `description`, `quantity`, `net`, `total`, `currency`, `base_total`, `rate`, `rate_date`, `business_date`, `posting_key null`, `reverses null`, `reason`, `transfer_id null`, `posted_by`, `posted_at` | A posting key is unique per tenant (`room:<rr>:<date>`, `meal_plan:<rr>:<date>`, `pos:<bill>:<n>`, `cancellation:<rr>`); a line is reversed once |
+| `folio_line_tax` | `(line_id, code)`, `tenant_id`, `name`, `kind`, `rate_bp`, `base`, `amount`, `presentation` | Computed and frozen at posting |
+| `payment` | `id`, `tenant_id`, `folio_id null`, `pos_bill_id null`, `method` (`cash` \| `card_terminal` \| `bank_transfer` \| `account` \| `transfer`), `amount` (negative for a refund), `currency`, `base_amount`, `rate`, `rate_date`, `details jsonb`, `evidence`, `refund_of null`, `business_date`, `transfer_id null`, `taken_by`, `taken_at` | `transfer` is internal: a pair sharing a `transfer_id` moves credit between two folios. A bill settled at an outlet has a payment on no folio |
+| `routing_rule` | `(reservation_id, category)`, `tenant_id`, `account_id` | Which of a reservation's categories go to its account folio; `room` and `meal_plan` by default |
+| `pos_bill` | `id`, `tenant_id`, `property_id`, `outlet_id`, `bill_no`, `business_date`, `body_hash`, `reservation_room_id null`, `settled`, `lines jsonb`, `posted_at` | `unique (property_id, outlet_id, bill_no)`, so a POS bill posts once |
+| `invoice` | `id`, `tenant_id`, `property_id`, `folio_id`, `kind` (`invoice` \| `credit_note`), `serial` (`[CN-]<CODE>-<YYYY>-<NNNNNN>`, gapless per property), `credits null`, `reason`, `data jsonb`, `total_lkr` (whole rupees), `pdf_key null`, `issued_by`, `issued_at` | `unique (property_id, serial)`; an invoice is credited once. The IRD format (ARCHITECTURE §7.6.4) |
+
+## Phase 7b and 7c: Night audit and payment gateways (planned)
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `payment_event` | `id`, `tenant_id`, `payment_id`, `status`, `provider_payload jsonb`, `at` | Append-only; gateway webhook and API responses (7c) |
+| `card_token` | `id`, `tenant_id`, `guest_id`, `provider`, `token_ref`, `card_brand`, `last4`, `expiry` | Gateway tokens only; never card numbers (7c) |
+| `merchant_account` | `id`, `tenant_id`, `property_id`, `provider`, `gateway_host`, `merchant_id`, `secret_name` (Secret Manager), `currencies char(3)[]`, `active` | Per-property credentials (7c) |
+| `audit_run` | `id`, `tenant_id`, `property_id`, `business_date`, `status`, `steps jsonb`, `started_by`, `started_at`, `finished_at` | `unique (property_id, business_date)`; checkpointed steps (7b) |
+| `daily_stat` | `(property_id, business_date)`, `tenant_id`, `rooms_available`, `rooms_sold`, `room_revenue`, `adr`, `revpar`, `by_segment jsonb`, `by_source jsonb`, `residency_mix jsonb` | Base currency; written by the audit (7b) |
 
 ## Phase 8: Settings and channels
 

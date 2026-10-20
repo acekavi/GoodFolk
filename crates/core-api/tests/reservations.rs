@@ -415,9 +415,49 @@ async fn a_booking_tells_screens_to_refetch_the_list_the_reservation_and_its_inv
     assert_eq!(event.keys, expected);
 }
 
-/// Everything the `fmt` subscriber writes, for asserting on log output.
+/// What the process-wide `fmt` subscriber writes on threads that are capturing, for asserting on log output.
+///
+/// A capture installed with `set_default` (thread-local) is not enough under parallel tests: with a single dispatcher
+/// registered, tracing-core rebuilds a callsite's interest (and the global max level) from whatever dispatcher the
+/// rebuilding thread sees, and another test's thread sees none, so the capture's callsites can be cached as never
+/// enabled and it records nothing. One global subscriber is the same dispatcher on every thread; the writer then keeps
+/// only what the capturing test's own thread writes (a `sqlx::test` runs on one current-thread runtime).
 #[derive(Clone, Default)]
 struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
+
+thread_local! {
+    /// Whether this thread's log lines go to [`captured_logs`].
+    static CAPTURING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The process-wide capture, installed as the global subscriber on first use.
+fn captured_logs() -> &'static CapturedLogs {
+    static LOGS: std::sync::OnceLock<CapturedLogs> = std::sync::OnceLock::new();
+    LOGS.get_or_init(|| {
+        let logs = CapturedLogs::default();
+        let subscriber =
+            tracing_subscriber::fmt().with_max_level(tracing::Level::TRACE).with_writer(logs.clone()).finish();
+        tracing::subscriber::set_global_default(subscriber).expect("no other global subscriber in this binary");
+        logs
+    })
+}
+
+/// Captures this thread's log lines until dropped.
+struct Capturing;
+
+impl Capturing {
+    fn start() -> Self {
+        captured_logs();
+        CAPTURING.set(true);
+        Capturing
+    }
+}
+
+impl Drop for Capturing {
+    fn drop(&mut self) {
+        CAPTURING.set(false);
+    }
+}
 
 impl CapturedLogs {
     fn text(&self) -> String {
@@ -427,7 +467,9 @@ impl CapturedLogs {
 
 impl std::io::Write for CapturedLogs {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
+        if CAPTURING.get() {
+            self.0.lock().unwrap().extend_from_slice(buf);
+        }
         Ok(buf.len())
     }
 
@@ -453,9 +495,7 @@ async fn id_numbers_never_appear_in_responses_stored_replays_or_logs(_: PgPoolOp
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts).await;
     let user = uuid(&app.send(Method::GET, "/api/v1/me", Some(&hotel.owner), None).await.body["user_id"]);
-    let logs = CapturedLogs::default();
-    let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::TRACE).with_writer(logs.clone()).finish();
-    let guard = tracing::subscriber::set_default(subscriber);
+    let guard = Capturing::start();
     let mut new_guest = hotel.guest("Silva");
     new_guest["id_doc"] = json!({"type": "passport", "number": "N1234567X"});
 
@@ -534,7 +574,7 @@ async fn id_numbers_never_appear_in_responses_stored_replays_or_logs(_: PgPoolOp
         }
     }
 
-    let logged = logs.text();
+    let logged = captured_logs().text();
     assert!(logged.contains(&hotel.guests()), "the capture saw the guest requests: {logged}");
     assert!(!logged.contains(DIGITS), "the logs show the ID number: {logged}");
 }

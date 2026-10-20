@@ -12,6 +12,7 @@
 	import { ApiError, errorMessage } from '$lib/api/problem';
 	import type { components } from '$lib/api/openapi';
 	import { formKeys, ifMatch, rest, unwrap } from '$lib/api/rest';
+	import AccountFolio from '$lib/components/AccountFolio.svelte';
 	import { Pending } from '$lib/pending.svelte';
 	import { formatMoney, parseMoney } from '$lib/rates';
 	import { can, fetchMe } from '$lib/session';
@@ -29,6 +30,15 @@
 	const client = useQueryClient();
 	const me = createQuery(() => ({ queryKey: ['me'], queryFn: fetchMe }));
 	const manage = $derived(!!me.data && can(me.data, 'manageReservations', propertyId));
+	const viewFolios = $derived(!!me.data && can(me.data, 'folioView', propertyId));
+	const folioCan = $derived({
+		post: !!me.data && can(me.data, 'folioPost', propertyId),
+		adjust: !!me.data && can(me.data, 'folioAdjust', propertyId),
+		invoice: !!me.data && can(me.data, 'invoiceIssue', propertyId)
+	});
+	const hasActions = $derived(manage || viewFolios);
+	/** The account whose folio at this property is open below the list. */
+	let ledger = $state<{ id: string; name: string } | null>(null);
 
 	// The search box is typed into directly; the query re-runs a moment after typing stops.
 	let searchText = $state('');
@@ -258,7 +268,7 @@
 				<th>Credit limit</th>
 				<th>Currency</th>
 				<th>Active</th>
-				{#if manage}<th><span class="visually-hidden">Actions</span></th>{/if}
+				{#if hasActions}<th><span class="visually-hidden">Actions</span></th>{/if}
 			</tr>
 		</thead>
 		<tbody>
@@ -327,30 +337,59 @@
 						<td>{formatCreditLimit(account.creditLimit, account.currency)}</td>
 						<td>{account.currency}</td>
 						<td>{account.active ? 'Active' : 'Inactive'}</td>
-						{#if manage}
+						{#if hasActions}
 							<td class="actions">
-								<button
-									class="secondary"
-									aria-label="Edit {account.name}"
-									disabled={pending.has(account.id)}
-									onclick={() => edit(account)}>Edit</button
-								>
-								<button
-									class="secondary"
-									disabled={pending.has(account.id)}
-									aria-label="{account.active ? 'Deactivate' : 'Activate'} {account.name}"
-									onclick={() => toggleActive(account)}
-									>{account.active ? 'Deactivate' : 'Activate'}</button
-								>
+								{#if viewFolios}
+									<button
+										class="secondary"
+										aria-label="Folio of {account.name}"
+										aria-expanded={ledger?.id === account.id}
+										aria-controls="account-folio"
+										onclick={() =>
+											(ledger =
+												ledger?.id === account.id ? null : { id: account.id, name: account.name })}
+										>Folio</button
+									>
+								{/if}
+								{#if manage}
+									<button
+										class="secondary"
+										aria-label="Edit {account.name}"
+										disabled={pending.has(account.id)}
+										onclick={() => edit(account)}>Edit</button
+									>
+									<button
+										class="secondary"
+										disabled={pending.has(account.id)}
+										aria-label="{account.active ? 'Deactivate' : 'Activate'} {account.name}"
+										onclick={() => toggleActive(account)}
+										>{account.active ? 'Deactivate' : 'Activate'}</button
+									>
+								{/if}
 							</td>
 						{/if}
 					{/if}
 				</tr>
 			{:else}
-				<tr><td colspan={manage ? 7 : 6}>No accounts yet.</td></tr>
+				<tr><td colspan={hasActions ? 7 : 6}>No accounts yet.</td></tr>
 			{/each}
 		</tbody>
 	</table>
+
+	{#if viewFolios && ledger}
+		<section id="account-folio" class="ledger" aria-labelledby="ledger-title">
+			<div class="ledger-title">
+				<h2 id="ledger-title">{ledger.name} · folio</h2>
+				<button class="secondary" onclick={() => (ledger = null)}>Close</button>
+			</div>
+			<p class="hint">
+				The account's city ledger at this property: charges from every reservation billed to it.
+			</p>
+			{#key ledger.id}
+				<AccountFolio {propertyId} account={ledger} can={folioCan} />
+			{/key}
+		</section>
+	{/if}
 
 	{#if manage}
 		<h2>Add an account</h2>
@@ -405,5 +444,21 @@
 	}
 	.contact-fields input {
 		width: 100%;
+	}
+	.ledger {
+		margin: var(--space) 0;
+		padding: var(--space);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+	}
+	.ledger-title {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space);
+	}
+	.ledger-title h2 {
+		margin: 0;
 	}
 </style>

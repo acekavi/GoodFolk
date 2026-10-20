@@ -16,8 +16,8 @@ use sqlx::postgres::PgConnectOptions;
 use time::{Date, Duration};
 use uuid::Uuid;
 
-/// A tenant with one user, one property and two room types: `DLX` (up to 2 adults and 1 child) and `STD`
-/// (up to 2 adults), and the test guest ID key.
+/// A tenant with one user, one property (with a USD rate of 300 on its business date) and two room types: `DLX` (up
+/// to 2 adults and 1 child) and `STD` (up to 2 adults), and the test guest ID key.
 pub struct Hotel {
     pub pool: PgPool,
     pub tenant: TenantId,
@@ -69,6 +69,17 @@ impl Hotel {
             max_occupancy: 2,
             ..deluxe.clone()
         };
+        // Plans sell in USD, and a cancellation penalty posts to the deposit folio with its base amount.
+        sqlx::query(
+            "insert into fx_rate (tenant_id, property_id, date, currency, rate_to_base, source, source_date)
+             values ($1, $2, $3, 'USD', 300, 'cbsl', $3)",
+        )
+        .bind(tenant.0)
+        .bind(property.id)
+        .bind(property.business_date)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
         let deluxe = rooms::create_room_type(&mut tx, tenant, user, property.id, deluxe).await.unwrap();
         let standard = rooms::create_room_type(&mut tx, tenant, user, property.id, standard).await.unwrap();
         tx.commit().await.unwrap();

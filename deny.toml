@@ -5,11 +5,23 @@ all-features = true
 # Fail on any RustSec advisory (vulnerability, unmaintained, unsound, yanked).
 version = 2
 yanked = "deny"
+# Each exception names why it cannot be fixed now and when to look again.
+ignore = [
+  { id = "RUSTSEC-2026-0194", reason = "quick-xml via typst: only reachable through bibliography/CSL loading; the renderer exposes only invoice.typ and data.json; review when typst moves to quick-xml >= 0.41" },
+  { id = "RUSTSEC-2026-0195", reason = "quick-xml via typst: only reachable through bibliography/CSL loading; the renderer exposes only invoice.typ and data.json; review when typst moves to quick-xml >= 0.41" },
+  { id = "RUSTSEC-2025-0141", reason = "bincode: unmaintained; no fixed release; via typst 0.15; review on typst upgrade" },
+  { id = "RUSTSEC-2024-0320", reason = "yaml-rust: unmaintained; no fixed release; via typst 0.15; review on typst upgrade" },
+  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml: unmaintained; no fixed release; via typst 0.15; review on typst upgrade" },
+  { id = "RUSTSEC-2026-0206", reason = "rustybuzz: unmaintained; no fixed release; via typst 0.15; review on typst upgrade" },
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser: unmaintained; no fixed release; via typst 0.15; review on typst upgrade" },
+  { id = "RUSTSEC-2024-0436", reason = "paste (proc-macro): unmaintained; no fixed release; via rav1e and hayagriva; review on their upgrades" },
+]
 
 [licenses]
 version = 2
 confidence-threshold = 0.9
 allow = [
+  "0BSD",
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
@@ -23,7 +35,8 @@ allow = [
 ]
 
 # rav1e lists libfuzzer-sys under cfg(fuzzing) only; it is never built. NCSA is the permissive LLVM/Illinois licence.
-exceptions = [{ allow = ["NCSA"], crate = "libfuzzer-sys" }]
+# to_method (via avif-decode's rav1d) is CC0-1.0, a public-domain dedication.
+exceptions = [{ allow = ["NCSA"], crate = "libfuzzer-sys" }, { allow = ["CC0-1.0"], crate = "to_method" }]
 
 [licenses.private]
 ignore = true

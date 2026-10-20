@@ -101,7 +101,8 @@ pub struct CreatedReservation {
 /// `Invalid`, with every reason listed. Only then is the confirmation number taken, so a refused booking never
 /// uses one. Each room is then auto-assigned the tightest-fitting free room of its type (`autoassign::pick_room`,
 /// picked and inserted one room at a time, in input order); a room no free room fits is created unassigned
-/// rather than refused, and the response and audit name the room chosen, or none.
+/// rather than refused, and the response and audit name the room chosen, or none. The reservation gets its deposit
+/// folio and each stay its guest folio; a reservation billed to an account routes [`folio::DEFAULT_ROUTING`] there.
 pub async fn create_reservation(
     tx: &mut Tx,
     tenant: TenantId,
@@ -194,6 +195,7 @@ pub async fn create_reservation(
     .bind(input.account_id)
     .fetch_one(&mut **tx)
     .await?;
+    folio::ensure_deposit_folio(tx, tenant, property, id).await?;
 
     let mut created = Vec::with_capacity(input.rooms.len());
     for (room, quote) in input.rooms.iter().zip(quotes) {
@@ -229,6 +231,7 @@ pub async fn create_reservation(
         .bind(terms.get(&room.rate_plan_id))
         .fetch_one(&mut **tx)
         .await?;
+        folio::ensure_guest_folio(tx, tenant, property, room_id).await?;
         let dates: Vec<Date> = quote.nights.iter().map(|night| night.date).collect();
         let room_amounts: Vec<i64> = quote.nights.iter().map(|night| night.room).collect();
         let meal_amounts: Vec<i64> = quote.nights.iter().map(|night| night.meal).collect();
@@ -273,6 +276,11 @@ pub async fn create_reservation(
             currency: quote.currency,
             version: room_version,
         });
+    }
+
+    if input.account_id.is_some() {
+        let routed = folio::DEFAULT_ROUTING.map(String::from);
+        folio::set_routing(tx, tenant, Some(actor), property, id, &routed).await?;
     }
 
     let assigned: serde_json::Map<String, serde_json::Value> =
@@ -321,6 +329,8 @@ pub struct UpdatedReservation {
 }
 
 /// Sets or clears the reservation `id` of the property's billed-to account and notes, at `expected_version`.
+/// A change of account re-points the reservation's routing rules, with the same categories, to the new account;
+/// clearing it deletes them. The audit entry lists the affected categories as `routing`.
 ///
 /// Locks only the `reservation` row. Every reservation-room command (`cancel_room`, `assign_room`,
 /// `unassign_room`) takes `reservation` LAST, after `reservation_room` (and, for `assign_room`, `room`) --
@@ -365,9 +375,14 @@ pub async fn update_reservation(
     .bind(&notes_value)
     .fetch_one(&mut **tx)
     .await?;
+    let routing =
+        if account_id != current_account { folio::follow_account_change(tx, id, account_id).await? } else { vec![] };
     let mut data = serde_json::json!({ "fields": fields });
     if changes.account_id.is_some() {
         data["account_id"] = serde_json::json!(account_id);
+    }
+    if !routing.is_empty() {
+        data["routing"] = serde_json::json!(routing);
     }
     audit(tx, tenant, actor, "reservation.updated", "reservation", id, data).await?;
     notify(tx, tenant, property, vec![reservations_key(property), reservation_key(id)]).await?;

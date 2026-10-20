@@ -293,3 +293,74 @@ async fn sold_always_matches_the_rooms_booked_through_random_bookings_and_cancel
         }
     }
 }
+
+/// The lines of `reservation`'s deposit folio, oldest first.
+async fn deposit_lines(hotel: &Hotel, reservation: Uuid) -> Vec<folio::LineWithTaxes> {
+    let mut tx = hotel.tx().await;
+    let deposit = folio::ensure_deposit_folio(&mut tx, hotel.tenant, hotel.property, reservation).await.unwrap();
+    let query = folio::FolioQuery::Folio { property: hotel.property, folio: deposit };
+    folio::folios_for(&mut tx, query).await.unwrap().pop().expect("the deposit folio").lines
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn each_cancelled_room_posts_its_own_fee_in_its_currency(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 2).await;
+    let local = rates::NewRatePlan {
+        cancellation_policy_id: plans.bar.cancellation_policy_id,
+        ..hotel.rate_plan("LOCAL", "LKR", &[hotel.deluxe.id])
+    };
+    let local = hotel.priced_plan(local, 0, 40, 2_000_000).await;
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    // Arriving tomorrow, within the "1 night from 2 days out" rule.
+    let booked = hotel
+        .try_book(
+            &booker,
+            vec![hotel.room(hotel.deluxe.id, &plans.bar, 1, 3), hotel.room(hotel.deluxe.id, &local, 1, 3)],
+        )
+        .await
+        .unwrap();
+    let (usd, lkr) = (&booked.rooms[0], &booked.rooms[1]);
+
+    assert_eq!(hotel.try_cancel(usd.id, usd.version).await.unwrap().penalty, 10_000);
+    let after_first = deposit_lines(&hotel, booked.id).await;
+    assert_eq!(hotel.try_cancel(lkr.id, lkr.version).await.unwrap().penalty, 2_000_000);
+    let lines = deposit_lines(&hotel, booked.id).await;
+
+    assert_eq!(after_first.len(), 1, "the first room's fee posts with its cancellation");
+    let fees: Vec<_> = lines
+        .iter()
+        .map(|fee| {
+            assert_eq!((fee.line.source, fee.line.category.as_str()), (folio::Source::CancellationFee, "fee"));
+            assert!(!fee.taxes.is_empty(), "a penalty is taxed");
+            (fee.line.posting_key.clone(), fee.line.net, fee.line.currency.clone())
+        })
+        .collect();
+    assert_eq!(
+        fees,
+        vec![
+            (Some(format!("cancellation:{}", usd.id)), 10_000, "USD".to_owned()),
+            (Some(format!("cancellation:{}", lkr.id)), 2_000_000, "LKR".to_owned()),
+        ]
+    );
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_tax_inclusive_plan_s_fee_totals_exactly_the_penalty(_: PgPoolOptions, opts: PgConnectOptions) {
+    let (hotel, plans) = Hotel::for_booking(opts, 1).await;
+    let mut tx = hotel.tx().await;
+    sqlx::query("update rate_plan set prices_include_tax = true where id = $1")
+        .bind(plans.bar.id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let booker = hotel.guest(new_guest("Ada", "Silva")).await;
+    let booked = hotel.book(&booker, hotel.room(hotel.deluxe.id, &plans.bar, 1, 3)).await;
+
+    assert_eq!(hotel.try_cancel(booked.rooms[0].id, 1).await.unwrap().penalty, 10_000);
+
+    let lines = deposit_lines(&hotel, booked.id).await;
+    let [fee] = &lines[..] else { panic!("one line: {lines:?}") };
+    assert_eq!(fee.line.total, 10_000, "the penalty already includes its taxes");
+    assert!(fee.line.net < 10_000 && !fee.taxes.is_empty(), "{fee:?}");
+}

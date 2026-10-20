@@ -16,7 +16,11 @@
 	import { tick, untrack } from 'svelte';
 	import type { ReservationSortField } from '$lib/api/gql/graphql';
 	import { errorMessage } from '$lib/api/problem';
+	import { formKeys, rest, unwrap } from '$lib/api/rest';
+	import type { components } from '$lib/api/openapi';
+	import { allFoliosKey } from '$lib/folio';
 	import { revealRow, visibleRows } from '$lib/grid';
+	import { fetchProperties, propertiesKey } from '$lib/properties';
 	import { formatMoney } from '$lib/rates';
 	import {
 		fetchReservation,
@@ -60,6 +64,14 @@
 	const client = useQueryClient();
 	const me = createQuery(() => ({ queryKey: ['me'], queryFn: fetchMe }));
 	const manage = $derived(!!me.data && can(me.data, 'manageReservations', propertyId));
+	const postCharges = $derived(!!me.data && can(me.data, 'folioAdjust', propertyId));
+	const properties = createQuery(() => ({
+		queryKey: propertiesKey,
+		queryFn: ({ signal }) => fetchProperties(signal)
+	}));
+	const businessDate = $derived(
+		properties.data?.find((property) => property.id === propertyId)?.businessDate ?? ''
+	);
 
 	const params = $derived(filterFromSearchParams(page.url.searchParams));
 	const filtered = $derived(Object.keys(params.filter).length > 0);
@@ -197,6 +209,47 @@
 		scroller?.querySelector<HTMLElement>(`a[data-row="${index}"]`)?.focus({ preventScroll: true });
 	});
 
+	// Posting tonight's charges: the room and meal-plan charges of every in-house stay for the business date.
+	// A repeat posts nothing new; a retry after a network error reuses the request's key.
+	let posting = $state(false);
+	let posted = $state<components['schemas']['PostChargesResponse'] | null>(null);
+	let postError = $state('');
+	const postKeys = formKeys();
+
+	async function postTonight() {
+		if (!confirm(`Post room and meal-plan charges for ${businessDate}?`)) return;
+		posting = true;
+		posted = null;
+		postError = '';
+		try {
+			try {
+				posted = unwrap(
+					await rest.POST('/api/v1/properties/{property}/folio/post-charges', {
+						params: {
+							path: { property: propertyId },
+							header: { 'Idempotency-Key': postKeys.keyFor({ propertyId, businessDate }) }
+						}
+					})
+				);
+			} catch (err) {
+				postKeys.failed(err);
+				throw err;
+			}
+			postKeys.reset();
+		} catch (err) {
+			postError = errorMessage(err);
+		} finally {
+			posting = false;
+			void client.invalidateQueries({ queryKey: allFoliosKey(propertyId) });
+		}
+	}
+
+	/** A failed stay by its confirmation number when the list has loaded it, else by its id. */
+	function stayName(reservationRoom: string): string {
+		const row = rows.find((candidate) => candidate.id === reservationRoom);
+		return row ? `${row.confirmationNo} (${row.guestName})` : `Stay ${reservationRoom}`;
+	}
+
 	function ariaSort(field: ReservationSortField | undefined) {
 		if (!field) return undefined;
 		if (params.sort.field !== field) return 'none';
@@ -210,6 +263,14 @@
 		<p role="status">{total} reserved {total === 1 ? 'room' : 'rooms'}</p>
 	{/if}
 	<span class="spacer"></span>
+	{#if postCharges}
+		<button
+			type="button"
+			class="secondary"
+			disabled={posting || !businessDate}
+			onclick={postTonight}>Post tonight's charges</button
+		>
+	{/if}
 	{#if manage}
 		<a
 			class="button"
@@ -218,6 +279,29 @@
 		>
 	{/if}
 </div>
+
+{#if postError}<p class="error" role="alert">{postError}</p>{/if}
+{#if posted}
+	<div class="posted" role="status" aria-label="Tonight's charges">
+		<p>
+			Charges for {posted.business_date}: {posted.lines}
+			{posted.lines === 1 ? 'line' : 'lines'} posted for {posted.stays}
+			{posted.stays === 1 ? 'stay' : 'stays'}; {posted.skipped_existing} already posted.
+			{#if posted.failures.length > 0}
+				{posted.failures.length}
+				{posted.failures.length === 1 ? 'stay' : 'stays'} could not be posted:
+			{/if}
+		</p>
+		{#if posted.failures.length > 0}
+			<ul aria-label="Stays not posted">
+				{#each posted.failures as failure (failure.reservation_room)}
+					<li>{stayName(failure.reservation_room)}: {failure.error}</li>
+				{/each}
+			</ul>
+		{/if}
+		<button type="button" class="secondary" onclick={() => (posted = null)}>Dismiss</button>
+	</div>
+{/if}
 
 <form class="inline-form" role="search" aria-label="Filters" onsubmit={(e) => e.preventDefault()}>
 	<label>
@@ -390,6 +474,17 @@
 	}
 	.spacer {
 		flex: 1;
+	}
+	.posted {
+		margin-bottom: var(--space);
+		padding: 0.5rem 0.75rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	.posted p,
+	.posted ul {
+		margin: 0 0 0.5rem;
 	}
 	.button {
 		padding: 0.45rem 0.6rem;

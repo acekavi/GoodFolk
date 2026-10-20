@@ -48,6 +48,7 @@ describe('money', () => {
 		expect(formatMoney(15050, 'USD')).toBe('150.50');
 		expect(formatMoney(4500000, 'LKR')).toBe('45,000.00');
 		expect(formatMoney(1500, 'JPY')).toBe('1,500');
+		expect(formatMoney(12345, 'KWD')).toBe('12.345');
 	});
 
 	it('parses what a person types into minor units', () => {
@@ -55,6 +56,7 @@ describe('money', () => {
 		expect(parseMoney(' 45,000 ', 'LKR')).toBe(4500000);
 		expect(parseMoney('0.005', 'USD')).toBe(1);
 		expect(parseMoney('1500', 'JPY')).toBe(1500);
+		expect(parseMoney('12.345', 'KWD')).toBe(12345);
 		expect(parseMoney('', 'USD')).toBeNull();
 		expect(parseMoney('-5', 'USD')).toBeNull();
 		expect(parseMoney('abc', 'USD')).toBeNull();

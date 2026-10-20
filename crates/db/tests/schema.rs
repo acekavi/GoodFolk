@@ -1,6 +1,8 @@
 //! Guards that hold for every migration, including future ones.
 
+use db::testing::app_pool;
 use sqlx::PgPool;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 /// A table with a `tenant_id` column must have row-level security enabled and forced, or one tenant could
 /// read another's rows -- except `guest_search`, which is deliberately exempt: it carries no data worth
@@ -88,4 +90,78 @@ async fn definer_functions_search_pg_temp_last(pool: PgPool) {
     .await
     .unwrap();
     assert!(bad.is_empty(), "security definer functions with a weak search_path: {bad:?}");
+}
+
+/// Money rows are append-only (`migrations/0020_folio.sql`): the application role holds no update or delete on a line,
+/// a line's taxes or a payment, and may change an invoice only by recording where its PDF is stored. A folio changes
+/// only its status and version, and is never deleted (`0029`).
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_app_role_cannot_rewrite_money_rows(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts, 1).await;
+    for table in ["folio_line", "folio_line_tax", "payment", "invoice"] {
+        for privilege in ["UPDATE", "DELETE"] {
+            let has: bool = sqlx::query_scalar("select has_table_privilege('goodfolk_app', $1, $2)")
+                .bind(table)
+                .bind(privilege)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert!(!has, "goodfolk_app has table-wide {privilege} on {table}");
+        }
+    }
+    let updatable: Vec<String> = sqlx::query_scalar(
+        "select a.attname::text from pg_attribute a
+         where a.attrelid = 'invoice'::regclass and a.attnum > 0 and not a.attisdropped
+           and has_column_privilege('goodfolk_app', 'invoice', a.attname, 'UPDATE')",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(updatable, ["pdf_key"]);
+    for table in ["folio_line", "folio_line_tax", "payment", "invoice", "pos_bill"] {
+        for privilege in ["TRUNCATE", "REFERENCES", "TRIGGER"] {
+            let has: bool = sqlx::query_scalar("select has_table_privilege('goodfolk_app', $1, $2)")
+                .bind(table)
+                .bind(privilege)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert!(!has, "goodfolk_app has {privilege} on {table}");
+        }
+    }
+    for privilege in ["UPDATE", "DELETE"] {
+        let has: bool = sqlx::query_scalar("select has_table_privilege('goodfolk_app', 'pos_bill', $1)")
+            .bind(privilege)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(!has, "goodfolk_app has {privilege} on pos_bill");
+    }
+    let folio_updatable: Vec<String> = sqlx::query_scalar(
+        "select a.attname::text from pg_attribute a
+         where a.attrelid = 'folio'::regclass and a.attnum > 0 and not a.attisdropped
+           and has_column_privilege('goodfolk_app', 'folio', a.attname, 'UPDATE')
+         order by 1",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(folio_updatable, ["status", "version"]);
+    let folio_deletable: bool = sqlx::query_scalar("select has_table_privilege('goodfolk_app', 'folio', 'DELETE')")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(!folio_deletable, "goodfolk_app can delete a folio");
+    for table in ["folio_line", "folio_line_tax", "payment"] {
+        let columns: i64 = sqlx::query_scalar(
+            "select count(*) from pg_attribute a
+             where a.attrelid = $1::regclass and a.attnum > 0 and not a.attisdropped
+               and has_column_privilege('goodfolk_app', $1::regclass, a.attname, 'UPDATE')",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(columns, 0, "goodfolk_app can update a column of {table}");
+    }
 }

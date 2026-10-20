@@ -28,12 +28,17 @@ tokio = { workspace = true, features = ["io-util", "net", "process"] }
 tonic = { workspace = true, features = ["router"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# Invoice PDFs, rendered in-process from our own template (pure Rust, no subprocess).
+typst = "0.15"
+typst-layout = "0.15"
+typst-pdf = "0.15"
 uuid.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
 base64.workspace = true
 reqwest.workspace = true
+time.workspace = true
 
 [lints]
 workspace = true

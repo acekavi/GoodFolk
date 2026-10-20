@@ -179,7 +179,7 @@ fn failed(job: &ProcessJob, reason: &str) -> MediaResult {
     MediaResult::Failed { tenant_id: job.tenant_id, asset_id: job.asset_id, reason: reason.to_owned() }
 }
 
-async fn publish(svc: &MediaSvc, result: MediaResult) -> anyhow::Result<()> {
+pub(crate) async fn publish(svc: &MediaSvc, result: MediaResult) -> anyhow::Result<()> {
     let message =
         Message { id: Uuid::now_v7(), topic: RESULTS_TOPIC.to_owned(), payload: serde_json::to_value(&result)? };
     svc.bus.publish(&message).await?;

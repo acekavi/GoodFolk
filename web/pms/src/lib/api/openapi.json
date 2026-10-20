@@ -677,6 +677,419 @@
         }
       }
     },
+    "/api/v1/properties/{property}/folio/post-charges": {
+      "post": {
+        "tags": [
+          "crate::routes::folio"
+        ],
+        "summary": "Posts tonight's room and meal-plan charges for every in-house stay of the property, for its business date. Safe to\nrun again: a night already posted is skipped. A stay that can't be posted (such as no exchange rate for its\ncurrency) is listed in `failures` and the others still post. Audited.",
+        "operationId": "post_tonights_charges",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostChargesResponse"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/folios/{folio}/charges": {
+      "post": {
+        "tags": [
+          "crate::routes::folio"
+        ],
+        "summary": "Posts a manual charge on the folio, taxed by the property's rules on the business date, with its base-currency\nequivalent. An invoiced folio is 409, as is a foreign currency with no rate on the business date (\"No exchange rate\nfor USD on 2026-10-17\"); a currency the property does not accept is 422. Audited. A retried request with the same\n`Idempotency-Key` is answered without posting again.",
+        "operationId": "post_folio_charge",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "folio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostChargeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LineRow"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/folios/{folio}/invoice": {
+      "post": {
+        "tags": [
+          "crate::routes::folio"
+        ],
+        "summary": "Issues the folio's invoice in whole LKR under the property's next serial, and freezes the folio. It must be open,\nsettled in every currency and have a line (each 409); a VAT-registered property needs its TIN (409). The PDF is\nrendered after: `pdf_ready` turns true and `folio:<id>` is sent when it is. Audited.",
+        "operationId": "issue_invoice",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "folio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceSummary"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/folios/{folio}/lines/{line}/reversal": {
+      "post": {
+        "tags": [
+          "crate::routes::folio"
+        ],
+        "summary": "Reverses a line with an equal negative line carrying its taxes negated, on the business date. A reversal, and the\naccount's line of a charge to account, can't be reversed (422); a line already reversed or moved, or one on an\ninvoiced folio, is 409. Audited.",
+        "operationId": "reverse_folio_line",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "folio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "line",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReasonRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LineRow"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/folios/{folio}/lines/{line}/transfer": {
+      "post": {
+        "tags": [
+          "crate::routes::folio"
+        ],
+        "summary": "Moves a line to another folio of the property: a reversal here and an identical line there, on the business date.\nA stay's line moves only to its reservation's deposit or account folio or to another stay's folio (422); both\nfolios must be open (409). Audited.",
+        "operationId": "transfer_folio_line",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "folio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "line",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferredLine"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/folios/{folio}/payments": {
+      "post": {
+        "tags": [
+          "crate::routes::folio"
+        ],
+        "summary": "Takes a payment on the folio, in any accepted currency, with its base amount at the business date's rate (409\nwhen there is none). `account` charges the reservation's account: it needs a stay's or deposit folio of a\nreservation billed to one (422). Card details never hold a card number (422). Audited.",
+        "operationId": "take_folio_payment",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "folio",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TakePaymentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentRow"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/fx-rates/{date}/{currency}": {
+      "put": {
+        "tags": [
+          "crate::routes::fx"
+        ],
+        "summary": "Sets the rate of `currency` for `date` by hand, replacing the imported (or an earlier manual) rate for that day; a\nlater import does not undo it. The currency must be one the property accepts, other than its base currency (422).\nAudited as `fx.overridden` with the previous rate.",
+        "operationId": "set_fx_rate",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "date",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "currency",
+            "in": "path",
+            "description": "ISO 4217, such as `USD`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetRateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/guest-documents/{document}": {
       "delete": {
         "tags": [
@@ -970,6 +1383,111 @@
         }
       }
     },
+    "/api/v1/properties/{property}/invoices/{invoice}/credit-note": {
+      "post": {
+        "tags": [
+          "crate::routes::folio"
+        ],
+        "summary": "Issues a credit note for an invoice, under the property's next credit-note serial, and reopens its folio so a new\ninvoice can be issued. A credit note, or an invoice already credited, is refused (422, 409). Audited.",
+        "operationId": "issue_credit_note",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "invoice",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReasonRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceSummary"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/invoices/{invoice}/link": {
+      "get": {
+        "tags": [
+          "crate::routes::folio"
+        ],
+        "summary": "A link to the invoice's or credit note's PDF that works for 5 minutes. Each link issued is audited as\n`invoice.viewed`. A PDF still being rendered is 409.",
+        "operationId": "invoice_link",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "invoice",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignedLink"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/meal-supplements": {
       "post": {
         "tags": [
@@ -1251,6 +1769,263 @@
           "409": {},
           "422": {},
           "502": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/outlets": {
+      "post": {
+        "tags": [
+          "crate::routes::pos"
+        ],
+        "summary": "Adds a POS outlet to the property. A code the property already uses is 409. Audited. A retried request with the\nsame `Idempotency-Key` is answered without adding another.",
+        "operationId": "create_outlet",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateOutletRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutletRow"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/outlets/{outlet}": {
+      "patch": {
+        "tags": [
+          "crate::routes::pos"
+        ],
+        "summary": "Changes an outlet's name, service charge or whether it is active. Audited.",
+        "operationId": "update_outlet",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "outlet",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateOutletRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutletRow"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/payments/{payment}/refunds": {
+      "post": {
+        "tags": [
+          "crate::routes::folio"
+        ],
+        "summary": "Refunds part or all of a payment, in its currency and method, at its rate: a negative payment. All its refunds\ntogether never exceed it, and the folio refunded from must hold that much credit (each 422). A charge to account\nor a transfer is never refunded (422). Audited.",
+        "operationId": "refund_payment",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "payment",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefundRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentRow"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/pos-bills": {
+      "post": {
+        "tags": [
+          "crate::routes::pos"
+        ],
+        "summary": "Posts a POS bill once: the outlet and bill number name it. Posting the same bill again returns the bill first\nposted (200) and posts nothing; a different bill under that number is 409. Each item is taxed with the property's\nrules (without the service charge when the outlet's is off). To a stay, which must be checked in (422), each item\nis a folio line routed as the stay's other charges; settled at the outlet, the bill is recorded with its payment.\nA foreign currency with no rate on the bill's date is 409. Audited.",
+        "operationId": "post_pos_bill",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PosBillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "posted before; nothing posted now",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PosBillRow"
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PosBillRow"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
         }
       }
     },
@@ -2270,6 +3045,51 @@
           "412": {},
           "422": {},
           "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/reservations/{reservation}/routing": {
+      "put": {
+        "tags": [
+          "crate::routes::folio"
+        ],
+        "summary": "Replaces the reservation's routing: charges of these categories posted for its stays go to its account's folio.\nA reservation with no account can route nothing (422). Audited.",
+        "operationId": "set_reservation_routing",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "reservation",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoutingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "403": {},
+          "404": {},
+          "422": {}
         }
       }
     },
@@ -3301,6 +4121,302 @@
         }
       }
     },
+    "/api/v1/properties/{property}/tax-rules": {
+      "post": {
+        "tags": [
+          "crate::routes::taxes"
+        ],
+        "summary": "Adds a tax rule to the property. Lines already posted keep their taxes. Audited. A retried request with the same\n`Idempotency-Key` is answered without adding another.",
+        "operationId": "create_tax_rule",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTaxRuleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaxRuleRow"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/tax-rules/apply-preset": {
+      "post": {
+        "tags": [
+          "crate::routes::taxes"
+        ],
+        "summary": "Replaces the property's tax rules with the Sri Lanka preset from the day after its business date (the tourism\ndevelopment levy at 0.5% when `tdl_small_turnover` is set): every rule in force on that day ends on it, and any\nrule starting after the business date (never yet in force) is removed. Lines already posted keep their taxes.\nAudited with each ended rule's previous end and every removed rule.",
+        "operationId": "apply_tax_preset",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetApplied"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/tax-rules/{rule}": {
+      "delete": {
+        "tags": [
+          "crate::routes::taxes"
+        ],
+        "summary": "Ends a tax rule on the property's business date: it applies to no line dated that day or later. A rule is never\ndeleted; one that has not started yet, or has already ended, is 409 (change its dates instead). Audited.",
+        "operationId": "end_tax_rule",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "rule",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaxRuleRow"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      },
+      "patch": {
+        "tags": [
+          "crate::routes::taxes"
+        ],
+        "summary": "Changes a tax rule, checked as a new rule is. Lines already posted keep their taxes. Audited with the rule before\nand after.",
+        "operationId": "update_tax_rule",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "rule",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTaxRuleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaxRuleRow"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/tax-settings": {
+      "patch": {
+        "tags": [
+          "crate::routes::taxes"
+        ],
+        "summary": "Changes the property's tax settings: VAT registration, TIN, the small-turnover levy band, the legal name and\naddress printed on invoices, and the accepted currencies. Shares the property's version. Audited with the values\nbefore and after.",
+        "operationId": "update_tax_settings",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "the property's version, e.g. \"3\"",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTaxSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the property's version, e.g. \"4\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaxSettings"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
     "/api/v1/session/tenant": {
       "put": {
         "tags": [
@@ -4149,6 +5265,27 @@
           }
         }
       },
+      "CreateOutletRequest": {
+        "type": "object",
+        "required": [
+          "code",
+          "name"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "1 to 10 upper-case letters and digits, unique in the property; its bills' category is `pos:<code>`. Never\nchanges."
+          },
+          "name": {
+            "type": "string",
+            "description": "1 to 100 characters once trimmed."
+          },
+          "service_charge": {
+            "type": "boolean",
+            "description": "Whether the property's service charge applies to the outlet's bills; true when left out."
+          }
+        }
+      },
       "CreatePropertyRequest": {
         "type": "object",
         "required": [
@@ -4439,6 +5576,78 @@
           }
         }
       },
+      "CreateTaxRuleRequest": {
+        "type": "object",
+        "description": "A tax, levy or service charge. A change of rate from a date is the current rule ended that day plus a new rule\nfrom it. Checked against the property's whole rule set: a base may name only `net` and rules calculated earlier\n(a lower `sequence`), and a code may be in force only once on any day (422).",
+        "required": [
+          "code",
+          "name",
+          "kind",
+          "rate_bp",
+          "applies_to",
+          "base",
+          "sequence",
+          "effective_from"
+        ],
+        "properties": {
+          "applies_to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`*`, `room`, `meal_plan`, `laundry`, `misc`, `fee`, `pos:*` or `pos:<OUTLET>`; 1 to 20."
+          },
+          "base": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`net` and the codes of rules with a lower `sequence`; 1 to 20."
+          },
+          "code": {
+            "type": "string",
+            "description": "1 to 16 upper-case letters, digits and `_`, starting with a letter, such as `VAT`."
+          },
+          "condition": {
+            "$ref": "#/components/schemas/TaxCondition",
+            "description": "`{\"type\": \"always\"}` (the default), `{\"type\": \"vat_registered\"}`, `{\"type\": \"residency\", \"resident\": true}`\nor `{\"type\": \"payment_currency\", \"currencies\": [\"USD\"]}`."
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date"
+          },
+          "effective_to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "The first day the rule no longer applies; open-ended when left out."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`tax`, `levy` or `service_charge`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "presentation": {
+            "type": "string",
+            "description": "`on_bill` (the default) or `absorbed`."
+          },
+          "rate_bp": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Basis points, 0 to 10000: 1000 is 10%.",
+            "minimum": 0
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rules are calculated in ascending sequence."
+          }
+        }
+      },
       "CreatedReservation": {
         "type": "object",
         "description": "A new reservation. Rooms may be in different currencies, so `totals` has one entry per currency, in the\norder the rooms first use them.",
@@ -4678,6 +5887,63 @@
           "other"
         ]
       },
+      "InvoiceSummary": {
+        "type": "object",
+        "description": "What staff see of an invoice or credit note: never its data snapshot or its PDF's object key, which only the\naudited link reaches.",
+        "required": [
+          "id",
+          "folio_id",
+          "kind",
+          "serial",
+          "total_lkr",
+          "issued_at",
+          "pdf_ready"
+        ],
+        "properties": {
+          "credits": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The invoice a credit note credits."
+          },
+          "folio_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "issued_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "issued_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "pdf_ready": {
+            "type": "boolean",
+            "description": "Whether the PDF has been rendered, so its link can be fetched."
+          },
+          "serial": {
+            "type": "string"
+          },
+          "total_lkr": {
+            "type": "integer",
+            "format": "int64",
+            "description": "In whole rupees; negative for a credit note."
+          }
+        }
+      },
       "Issue": {
         "type": "object",
         "required": [
@@ -4743,6 +6009,118 @@
           "open",
           "resolved"
         ]
+      },
+      "LineRow": {
+        "type": "object",
+        "required": [
+          "id",
+          "folio_id",
+          "source",
+          "category",
+          "description",
+          "quantity",
+          "net",
+          "total",
+          "currency",
+          "base_total",
+          "rate",
+          "rate_date",
+          "business_date",
+          "posted_at"
+        ],
+        "properties": {
+          "base_total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`total` in the property's base currency at `rate`."
+          },
+          "business_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "category": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "folio_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "net": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Before taxes, in minor units of `currency`."
+          },
+          "posted_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "posted_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "posting_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quantity": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "rate": {
+            "type": "string",
+            "description": "Base currency per one unit of `currency`."
+          },
+          "rate_date": {
+            "type": "string",
+            "format": "date",
+            "description": "The date the rate was published."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reverses": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The line this one reverses."
+          },
+          "source": {
+            "$ref": "#/components/schemas/Source"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Net plus the on-bill taxes."
+          },
+          "transfer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Shared by the two lines of a transfer."
+          }
+        }
       },
       "LinkSize": {
         "type": "string",
@@ -5014,6 +6392,180 @@
           }
         }
       },
+      "OutletRow": {
+        "type": "object",
+        "required": [
+          "id",
+          "property_id",
+          "code",
+          "name",
+          "service_charge",
+          "active",
+          "version"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean",
+            "description": "An inactive outlet takes no new bills; its past bills stay."
+          },
+          "code": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "property_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "service_charge": {
+            "type": "boolean",
+            "description": "Whether the property's service charge applies to the outlet's bills."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "PaymentDetails": {
+        "type": "object",
+        "description": "A payment method's details: a card terminal's `approval`, `last4` and `brand` (never the card number), a bank\ntransfer's `reference`; nothing for cash or account.",
+        "properties": {
+          "approval": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "brand": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last4": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PaymentMethod": {
+        "type": "string",
+        "description": "How a payment was made. `transfer` is internal and never chosen.",
+        "enum": [
+          "cash",
+          "card_terminal",
+          "bank_transfer",
+          "account"
+        ]
+      },
+      "PaymentRow": {
+        "type": "object",
+        "required": [
+          "id",
+          "method",
+          "amount",
+          "currency",
+          "base_amount",
+          "rate",
+          "rate_date",
+          "details",
+          "business_date",
+          "taken_at"
+        ],
+        "properties": {
+          "amount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "base_amount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "business_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object"
+          },
+          "evidence": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "folio_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "method": {
+            "type": "string"
+          },
+          "pos_bill_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "rate": {
+            "type": "string"
+          },
+          "rate_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "refund_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "taken_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "taken_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "transfer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        }
+      },
       "Penalty": {
         "type": "object",
         "required": [
@@ -5047,6 +6599,369 @@
           "derived",
           "custom"
         ]
+      },
+      "PosBillRequest": {
+        "type": "object",
+        "required": [
+          "outlet",
+          "bill_no",
+          "currency",
+          "items",
+          "target"
+        ],
+        "properties": {
+          "bill_no": {
+            "type": "string",
+            "description": "1 to 50 characters; with the outlet it names the bill, so posting it again changes nothing."
+          },
+          "business_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "The property's business date when left out; at most 7 days before it, and never after it."
+          },
+          "currency": {
+            "type": "string",
+            "description": "One of the property's accepted currencies."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PosItemRequest"
+            },
+            "description": "1 to 200 items."
+          },
+          "outlet": {
+            "type": "string",
+            "description": "The outlet's code."
+          },
+          "target": {
+            "$ref": "#/components/schemas/PosTargetRequest"
+          }
+        }
+      },
+      "PosBillRow": {
+        "type": "object",
+        "required": [
+          "id",
+          "outlet_id",
+          "bill_no",
+          "business_date",
+          "settled",
+          "lines",
+          "posted_at"
+        ],
+        "properties": {
+          "bill_no": {
+            "type": "string"
+          },
+          "business_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PosLine"
+            },
+            "description": "A settled bill's taxed items; empty for a bill posted to a stay, whose items are folio lines."
+          },
+          "outlet_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "posted_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reservation_room_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The stay the bill was posted to; `None` for a bill settled at the outlet."
+          },
+          "settled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PosItemRequest": {
+        "type": "object",
+        "required": [
+          "description",
+          "quantity",
+          "unit_net"
+        ],
+        "properties": {
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`misc`, or the outlet's own `pos:<OUTLET>` (the default when left out)."
+          },
+          "description": {
+            "type": "string",
+            "description": "1 to 200 characters once trimmed."
+          },
+          "quantity": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 to 9999."
+          },
+          "unit_net": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Before taxes, in minor units of the bill's currency; at least 0."
+          }
+        }
+      },
+      "PosLine": {
+        "type": "object",
+        "description": "One item of a settled bill, taxed.",
+        "required": [
+          "description",
+          "quantity",
+          "unit_net",
+          "category",
+          "net",
+          "total",
+          "taxes"
+        ],
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "net": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "quantity": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "taxes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PosLineTax"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Net plus the on-bill taxes."
+          },
+          "unit_net": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PosLineTax": {
+        "type": "object",
+        "description": "One tax component of a settled bill's line, as `folio_line_tax` holds it for a posted line.",
+        "required": [
+          "code",
+          "name",
+          "kind",
+          "rate_bp",
+          "base",
+          "amount",
+          "presentation"
+        ],
+        "properties": {
+          "amount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "base": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "code": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "presentation": {
+            "type": "string"
+          },
+          "rate_bp": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "PosTargetRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "reservation_room"
+            ],
+            "properties": {
+              "reservation_room": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "settled"
+            ],
+            "properties": {
+              "settled": {
+                "$ref": "#/components/schemas/SettledRequest"
+              }
+            }
+          }
+        ],
+        "description": "Where a bill goes: `{\"reservation_room\": \"<id>\"}` to an in-house stay's folios, routed as its other charges, or\n`{\"settled\": {\"method\": \"cash\"}}` paid at the outlet."
+      },
+      "PostChargeRequest": {
+        "type": "object",
+        "description": "A charge posted by hand on the property's business date, taxed by the property's rules.",
+        "required": [
+          "category",
+          "description",
+          "unit_net",
+          "currency"
+        ],
+        "properties": {
+          "category": {
+            "type": "string",
+            "description": "`room`, `meal_plan`, `laundry`, `misc`, `fee` or `pos:<OUTLET>`."
+          },
+          "currency": {
+            "type": "string",
+            "description": "One of the property's accepted currencies."
+          },
+          "description": {
+            "type": "string",
+            "description": "1 to 200 characters once trimmed."
+          },
+          "quantity": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 to 9999; 1 when left out. A charge is never a credit: correct a line by reversing it."
+          },
+          "unit_net": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Before taxes, in minor units of `currency`; at least 0."
+          }
+        }
+      },
+      "PostChargesResponse": {
+        "type": "object",
+        "required": [
+          "business_date",
+          "stays",
+          "lines",
+          "skipped_existing",
+          "failures"
+        ],
+        "properties": {
+          "business_date": {
+            "type": "string",
+            "format": "date",
+            "description": "The night posted: the property's business date."
+          },
+          "failures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PostFailure"
+            }
+          },
+          "lines": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lines posted now.",
+            "minimum": 0
+          },
+          "skipped_existing": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Charges already posted before, left alone.",
+            "minimum": 0
+          },
+          "stays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "In-house stays whose night was posted, or found already posted.",
+            "minimum": 0
+          }
+        }
+      },
+      "PostFailure": {
+        "type": "object",
+        "description": "A stay whose charges could not be posted, and why; nothing of it was posted.",
+        "required": [
+          "reservation_room",
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "reservation_room": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "PresetApplied": {
+        "type": "object",
+        "description": "What [`apply_preset`] did.",
+        "required": [
+          "effective_from",
+          "ended",
+          "removed",
+          "rules"
+        ],
+        "properties": {
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "description": "The day the preset takes effect: the day after the property's business date, so no line already posted for\nthe business date is taxed differently from the rest of that day's."
+          },
+          "ended": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rules in force on that day, now ended on it.",
+            "minimum": 0
+          },
+          "removed": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rules that would have started after the business date, removed: they had never been in force, and once the\npreset takes over they would apply to no day at all.",
+            "minimum": 0
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TaxRuleRow"
+            },
+            "description": "The property's rules now, as [`list_tax_rules`] returns them."
+          }
+        }
       },
       "PriceChangeMode": {
         "type": "string",
@@ -5328,6 +7243,44 @@
           "version": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "ReasonRequest": {
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "1 to 500 characters once trimmed."
+          }
+        }
+      },
+      "RefundRequest": {
+        "type": "object",
+        "required": [
+          "amount",
+          "reason"
+        ],
+        "properties": {
+          "amount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "More than 0, in minor units of the payment's currency."
+          },
+          "from_folio": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The folio the money goes back from: the payment's own when left out, or another folio of the same\nreservation that holds the credit (such as the stay a deposit moved to)."
+          },
+          "reason": {
+            "type": "string",
+            "description": "1 to 500 characters once trimmed."
           }
         }
       },
@@ -5740,6 +7693,21 @@
           }
         }
       },
+      "RoutingRequest": {
+        "type": "object",
+        "required": [
+          "categories"
+        ],
+        "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The categories the reservation's account pays (`room`, `meal_plan`, `laundry`, `misc`, `fee`,\n`pos:<OUTLET>`); empty routes everything to the stays."
+          }
+        }
+      },
       "Section": {
         "type": "object",
         "description": "A housekeeping section: a group of rooms one housekeeper looks after.",
@@ -5851,6 +7819,41 @@
           }
         }
       },
+      "SetRateRequest": {
+        "type": "object",
+        "required": [
+          "rate"
+        ],
+        "properties": {
+          "rate": {
+            "type": "string",
+            "description": "Base currency per one unit of the currency, as a decimal string such as `\"301.25\"` (at most 20 characters, no\nexponent or `_`): positive, with at most 6 decimals and 12 digits before them."
+          }
+        }
+      },
+      "SettledRequest": {
+        "type": "object",
+        "description": "How a bill settled at the outlet was paid.",
+        "required": [
+          "method"
+        ],
+        "properties": {
+          "details": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PaymentDetails"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "method": {
+            "$ref": "#/components/schemas/PaymentMethod",
+            "description": "`cash`, `card_terminal` or `bank_transfer`; never `account`."
+          }
+        }
+      },
       "Severity": {
         "type": "string",
         "description": "How urgent an issue is; a `High` one offers to block the room.",
@@ -5916,13 +7919,16 @@
       },
       "Source": {
         "type": "string",
-        "description": "Where a booking came from. Staff create `front_desk`, `phone` and `email` bookings; `ibe` and `channel`\nbookings arrive through the booking engine (Phase 9) and channels (Phase 8).",
+        "description": "What posted a line.",
         "enum": [
-          "front_desk",
-          "ibe",
-          "channel",
-          "phone",
-          "email"
+          "room",
+          "meal_plan",
+          "laundry",
+          "pos",
+          "manual",
+          "cancellation_fee",
+          "no_show_fee",
+          "adjustment"
         ]
       },
       "StartUploadRequest": {
@@ -6014,6 +8020,260 @@
           }
         }
       },
+      "TakePaymentRequest": {
+        "type": "object",
+        "required": [
+          "method",
+          "amount",
+          "currency"
+        ],
+        "properties": {
+          "amount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "More than 0, in minor units of `currency`."
+          },
+          "currency": {
+            "type": "string",
+            "description": "One of the property's accepted currencies."
+          },
+          "details": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PaymentDetails"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Such as a bank encashment receipt; at most 500 characters."
+          },
+          "method": {
+            "$ref": "#/components/schemas/PaymentMethod"
+          }
+        }
+      },
+      "TaxCondition": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "always"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "vat_registered"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "resident",
+              "type"
+            ],
+            "properties": {
+              "resident": {
+                "type": "boolean"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "residency"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "currencies",
+              "type"
+            ],
+            "properties": {
+              "currencies": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "payment_currency"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "When a rule applies: always, only for a VAT-registered property, only for stays on plans sold to residents (or\nnon-residents), or only for charges in one of `currencies`."
+      },
+      "TaxRuleRow": {
+        "type": "object",
+        "description": "A stored rule, with its id and version, as the settings screens show it.",
+        "required": [
+          "id",
+          "code",
+          "name",
+          "kind",
+          "rate_bp",
+          "applies_to",
+          "base",
+          "sequence",
+          "presentation",
+          "condition",
+          "effective_from",
+          "version"
+        ],
+        "properties": {
+          "applies_to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`*`, a category (`room`, `meal_plan`, `laundry`, `misc`, `fee`), `pos:*` or one outlet (`pos:BAR`)."
+          },
+          "base": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`net` and the codes of rules calculated earlier."
+          },
+          "code": {
+            "type": "string"
+          },
+          "condition": {
+            "$ref": "#/components/schemas/TaxCondition",
+            "description": "`{\"type\": \"always\"}`, `{\"type\": \"vat_registered\"}`, `{\"type\": \"residency\", \"resident\": true}` or\n`{\"type\": \"payment_currency\", \"currencies\": [\"USD\"]}`."
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date"
+          },
+          "effective_to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "The first day the rule no longer applies; `null` while open-ended."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`tax`, `levy` or `service_charge`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "presentation": {
+            "type": "string",
+            "description": "`on_bill` or `absorbed`."
+          },
+          "rate_bp": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Basis points: 1000 is 10%.",
+            "minimum": 0
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "TaxSettings": {
+        "type": "object",
+        "description": "What a property's invoices and taxes depend on.",
+        "required": [
+          "property_id",
+          "vat_registered",
+          "tdl_small_turnover",
+          "base_currency",
+          "accepted_currencies",
+          "version"
+        ],
+        "properties": {
+          "accepted_currencies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The currencies charges and payments may be in, base currency included."
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "base_currency": {
+            "type": "string"
+          },
+          "legal_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The supplier's name on invoices; the property's name when `null`."
+          },
+          "property_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tdl_small_turnover": {
+            "type": "boolean",
+            "description": "The tourism development levy's small-turnover band (0.5% instead of 1%), used when the preset is applied."
+          },
+          "tin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The taxpayer identification number printed on invoices."
+          },
+          "vat_registered": {
+            "type": "boolean",
+            "description": "VAT applies, and invoices are tax invoices, which need the TIN."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The property's version, shared with its other settings: send it as `If-Match`."
+          }
+        }
+      },
       "TenantSummary": {
         "type": "object",
         "required": [
@@ -6044,6 +8304,42 @@
           },
           "currency": {
             "type": "string"
+          }
+        }
+      },
+      "TransferRequest": {
+        "type": "object",
+        "required": [
+          "to_folio",
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "1 to 500 characters once trimmed."
+          },
+          "to_folio": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The folio the line moves to, in the same property."
+          }
+        }
+      },
+      "TransferredLine": {
+        "type": "object",
+        "description": "The two lines of a transfer, sharing a `transfer_id`.",
+        "required": [
+          "reversal",
+          "moved"
+        ],
+        "properties": {
+          "moved": {
+            "$ref": "#/components/schemas/LineRow",
+            "description": "The identical line on the target folio."
+          },
+          "reversal": {
+            "$ref": "#/components/schemas/LineRow",
+            "description": "The reversal on the line's folio."
           }
         }
       },
@@ -6305,6 +8601,30 @@
               "null"
             ],
             "format": "date"
+          }
+        }
+      },
+      "UpdateOutletRequest": {
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "An inactive outlet takes no new bills; its past bills stay."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "service_charge": {
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         }
       },
@@ -6570,6 +8890,135 @@
             ],
             "format": "int32",
             "description": "Rooms of this type that may be sold beyond the physical count, 0 to 20."
+          }
+        }
+      },
+      "UpdateTaxRuleRequest": {
+        "type": "object",
+        "description": "Fields left out keep their value; `effective_to: null` makes the rule open-ended. The code never changes.",
+        "properties": {
+          "applies_to": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "base": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "condition": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TaxCondition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effective_from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "effective_to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "presentation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rate_bp": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "sequence": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        }
+      },
+      "UpdateTaxSettingsRequest": {
+        "type": "object",
+        "description": "Fields left out keep their value; `null` clears `tin`, `legal_name` or `address`.",
+        "properties": {
+          "accepted_currencies": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "ISO 4217 codes, 1 to 20, including the base currency."
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "legal_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tdl_small_turnover": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The tourism development levy's small-turnover band; takes effect on the rules when the preset is applied."
+          },
+          "tin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "5 to 20 digits, capital letters or `-`."
+          },
+          "vat_registered": {
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         }
       },

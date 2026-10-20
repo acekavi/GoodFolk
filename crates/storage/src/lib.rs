@@ -401,6 +401,11 @@ pub fn rendition_key(tenant: Uuid, asset: Uuid, size: &str, format: &str) -> Str
     format!("t/{tenant}/a/{asset}/{size}.{format}")
 }
 
+/// An invoice's or credit note's PDF, in the private bucket.
+pub fn invoice_pdf_key(tenant: Uuid, invoice: Uuid) -> String {
+    format!("t/{tenant}/invoices/{invoice}.pdf")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,6 +416,7 @@ mod tests {
         assert_eq!(upload_key(t, a), format!("t/{t}/a/{a}/upload"));
         assert_eq!(archive_key(t, a, "jxl"), format!("t/{t}/a/{a}/archive.jxl"));
         assert_eq!(rendition_key(t, a, "md", "avif"), format!("t/{t}/a/{a}/md.avif"));
+        assert_eq!(invoice_pdf_key(t, a), format!("t/{t}/invoices/{a}.pdf"));
     }
 
     #[test]

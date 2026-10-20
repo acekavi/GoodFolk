@@ -1193,6 +1193,419 @@ impl From<rates::Violation> for ViolationNode {
     }
 }
 
+mirror_enum!(
+    /// Whose charges a folio holds: one stay's, an account's (the city ledger) or a reservation's deposits.
+    FolioKindNode as "FolioKind" from folio::FolioKind { Guest, Account, Deposit }
+);
+mirror_enum!(
+    /// An invoiced folio takes no lines or payments until a credit note reopens it.
+    FolioStatusNode as "FolioStatus" from folio::FolioStatus { Open, Invoiced }
+);
+mirror_enum!(
+    /// What posted a line.
+    LineSourceNode as "LineSource" from folio::Source {
+        Room,
+        MealPlan,
+        Laundry,
+        Pos,
+        Manual,
+        CancellationFee,
+        NoShowFee,
+        Adjustment,
+    }
+);
+mirror_enum!(TaxKindNode as "TaxKind" from tax::Kind { Tax, Levy, ServiceCharge });
+mirror_enum!(
+    /// `ON_BILL` taxes are added to the line's total; `ABSORBED` ones are calculated but borne by the property.
+    TaxPresentationNode as "TaxPresentation" from tax::Presentation { OnBill, Absorbed }
+);
+mirror_enum!(InvoiceKindNode as "InvoiceKind" from media_types::InvoiceKind { Invoice, CreditNote });
+
+/// A stored text value (a line tax's kind or presentation) as its `tax` enum.
+fn tax_enum<T: serde::de::DeserializeOwned>(value: &str) -> async_graphql::Result<T> {
+    serde_json::from_value(serde_json::Value::String(value.to_owned())).map_err(|_| {
+        tracing::error!(value, "an unknown tax value is stored");
+        async_graphql::Error::new("Internal error")
+    })
+}
+
+/// One tax, levy or service charge of a line, as calculated when it was posted. Amounts are minor units of the
+/// line's currency.
+#[derive(SimpleObject)]
+pub struct LineTaxNode {
+    pub code: String,
+    pub name: String,
+    pub kind: TaxKindNode,
+    pub rate_bp: i32,
+    pub base: i64,
+    pub amount: i64,
+    pub presentation: TaxPresentationNode,
+}
+
+impl TryFrom<folio::LineTax> for LineTaxNode {
+    type Error = async_graphql::Error;
+
+    fn try_from(tax: folio::LineTax) -> async_graphql::Result<Self> {
+        Ok(Self {
+            kind: tax_enum::<tax::Kind>(&tax.kind)?.into(),
+            presentation: tax_enum::<tax::Presentation>(&tax.presentation)?.into(),
+            code: tax.code,
+            name: tax.name,
+            rate_bp: tax.rate_bp,
+            base: tax.base,
+            amount: tax.amount,
+        })
+    }
+}
+
+/// A charge on a folio. Lines never change: a correction is a reversal (`reverses`) or a transfer (`transferId`).
+/// Amounts are minor units of `currency`; `baseTotal` is in the property's base currency at `rate`.
+#[derive(SimpleObject)]
+pub struct FolioLineNode {
+    pub id: Uuid,
+    pub source: LineSourceNode,
+    pub category: String,
+    pub description: String,
+    pub quantity: i32,
+    /// Before taxes.
+    pub net: i64,
+    /// Net plus the on-bill taxes.
+    pub total: i64,
+    pub currency: String,
+    pub base_total: i64,
+    /// Base currency per one unit of `currency`, as a decimal string.
+    pub rate: String,
+    /// The date the rate was published.
+    pub rate_date: Date,
+    pub business_date: Date,
+    pub posting_key: Option<String>,
+    /// The line this one reverses.
+    pub reverses: Option<Uuid>,
+    pub reason: Option<String>,
+    /// Shared by the two lines of a transfer, and by a charge to account's line and payment.
+    pub transfer_id: Option<Uuid>,
+    pub posted_by: Option<Uuid>,
+    pub posted_at: OffsetDateTime,
+    /// By code.
+    pub taxes: Vec<LineTaxNode>,
+}
+
+impl TryFrom<folio::LineWithTaxes> for FolioLineNode {
+    type Error = async_graphql::Error;
+
+    fn try_from(entry: folio::LineWithTaxes) -> async_graphql::Result<Self> {
+        let line = entry.line;
+        Ok(Self {
+            id: line.id,
+            source: line.source.into(),
+            category: line.category,
+            description: line.description,
+            quantity: line.quantity,
+            net: line.net,
+            total: line.total,
+            currency: line.currency,
+            base_total: line.base_total,
+            rate: line.rate.to_string(),
+            rate_date: line.rate_date,
+            business_date: line.business_date,
+            posting_key: line.posting_key,
+            reverses: line.reverses,
+            reason: line.reason,
+            transfer_id: line.transfer_id,
+            posted_by: line.posted_by,
+            posted_at: line.posted_at,
+            taxes: entry.taxes.into_iter().map(LineTaxNode::try_from).collect::<async_graphql::Result<_>>()?,
+        })
+    }
+}
+
+/// A payment on a folio: positive when taken, negative for a refund (`refundOf`). Amounts are minor units of
+/// `currency`; `baseAmount` is in the property's base currency.
+#[derive(SimpleObject)]
+pub struct PaymentNode {
+    pub id: Uuid,
+    /// `cash`, `card_terminal`, `bank_transfer`, `account` or `transfer` (a credit moving between two folios).
+    pub method: String,
+    pub amount: i64,
+    pub currency: String,
+    pub base_amount: i64,
+    /// Base currency per one unit of `currency`, as a decimal string.
+    pub rate: String,
+    pub rate_date: Date,
+    /// A card's `approval`, `brand` and `last4`, a bank transfer's `reference`, a refund's `reason`, or a transfer's
+    /// `to_folio` / `from_folio`.
+    pub details: Json<serde_json::Value>,
+    pub evidence: Option<String>,
+    pub refund_of: Option<Uuid>,
+    pub business_date: Date,
+    pub transfer_id: Option<Uuid>,
+    pub taken_by: Option<Uuid>,
+    pub taken_at: OffsetDateTime,
+}
+
+impl From<folio::PaymentRow> for PaymentNode {
+    fn from(p: folio::PaymentRow) -> Self {
+        Self {
+            id: p.id,
+            method: p.method,
+            amount: p.amount,
+            currency: p.currency,
+            base_amount: p.base_amount,
+            rate: p.rate.to_string(),
+            rate_date: p.rate_date,
+            details: Json(p.details),
+            evidence: p.evidence,
+            refund_of: p.refund_of,
+            business_date: p.business_date,
+            transfer_id: p.transfer_id,
+            taken_by: p.taken_by,
+            taken_at: p.taken_at,
+        }
+    }
+}
+
+/// What a folio holds in one currency: charges less payments, and the same in the base currency.
+#[derive(SimpleObject)]
+pub struct BalanceNode {
+    pub currency: String,
+    pub amount: i64,
+    pub base_amount: i64,
+}
+
+/// An invoice or credit note. Its PDF is reached only through the audited REST link, once `pdfReady`.
+#[derive(SimpleObject)]
+pub struct InvoiceNode {
+    pub id: Uuid,
+    pub kind: InvoiceKindNode,
+    pub serial: String,
+    /// Whole rupees; negative for a credit note.
+    pub total_lkr: i64,
+    pub issued_at: OffsetDateTime,
+    pub issued_by: Option<Uuid>,
+    /// The invoice a credit note credits.
+    pub credits: Option<Uuid>,
+    pub pdf_ready: bool,
+}
+
+impl From<folio::InvoiceSummary> for InvoiceNode {
+    fn from(i: folio::InvoiceSummary) -> Self {
+        Self {
+            id: i.id,
+            kind: i.kind.into(),
+            serial: i.serial,
+            total_lkr: i.total_lkr,
+            issued_at: i.issued_at,
+            issued_by: i.issued_by,
+            credits: i.credits,
+            pdf_ready: i.pdf_ready,
+        }
+    }
+}
+
+#[derive(SimpleObject)]
+pub struct FolioNode {
+    pub id: Uuid,
+    pub kind: FolioKindNode,
+    pub status: FolioStatusNode,
+    /// A guest folio's stay.
+    pub reservation_room_id: Option<Uuid>,
+    /// A deposit folio's reservation.
+    pub reservation_id: Option<Uuid>,
+    /// An account folio's account.
+    pub account_id: Option<Uuid>,
+    pub created_at: OffsetDateTime,
+    /// Moves when the folio is invoiced or reopened.
+    pub version: i32,
+    /// Oldest first: at most the newest 500 (see `truncated`); empty when `linesOmitted`.
+    pub lines: Vec<FolioLineNode>,
+    /// Oldest first: at most the newest 500 (see `truncated`); empty when `linesOmitted`.
+    pub payments: Vec<PaymentNode>,
+    /// One per currency the folio has lines or payments in, by currency code, over all of them, whatever was read.
+    pub balances: Vec<BalanceNode>,
+    /// The lines and payments were left out: an account folio read through a reservation. Read it by `accountId`.
+    pub lines_omitted: bool,
+    /// The folio has more than 500 lines or payments; only the newest 500 of each are here.
+    pub truncated: bool,
+    /// Oldest first.
+    pub invoices: Vec<InvoiceNode>,
+}
+
+impl TryFrom<folio::FolioView> for FolioNode {
+    type Error = async_graphql::Error;
+
+    fn try_from(view: folio::FolioView) -> async_graphql::Result<Self> {
+        let folio = view.folio;
+        Ok(Self {
+            id: folio.id,
+            kind: folio.kind.into(),
+            status: folio.status.into(),
+            reservation_room_id: folio.reservation_room_id,
+            reservation_id: folio.reservation_id,
+            account_id: folio.account_id,
+            created_at: folio.created_at,
+            version: folio.version,
+            lines: view.lines.into_iter().map(FolioLineNode::try_from).collect::<async_graphql::Result<_>>()?,
+            payments: view.payments.into_iter().map(PaymentNode::from).collect(),
+            balances: view
+                .balances
+                .into_iter()
+                .map(|b| BalanceNode { currency: b.currency, amount: b.amount, base_amount: b.base_amount })
+                .collect(),
+            invoices: Vec::new(),
+            lines_omitted: view.lines_omitted,
+            truncated: view.truncated,
+        })
+    }
+}
+
+/// A tax, levy or service charge of the property, in force over `[effectiveFrom, effectiveTo)`.
+#[derive(SimpleObject)]
+pub struct TaxRuleNode {
+    pub id: Uuid,
+    pub code: String,
+    pub name: String,
+    pub kind: TaxKindNode,
+    /// Basis points: 1000 is 10%.
+    pub rate_bp: i32,
+    /// `*`, `room`, `meal_plan`, `laundry`, `misc`, `fee`, `pos:*` or `pos:<OUTLET>`.
+    pub applies_to: Vec<String>,
+    /// `net` and the codes of rules calculated earlier.
+    pub base: Vec<String>,
+    pub sequence: i32,
+    pub presentation: TaxPresentationNode,
+    /// `{"type": "always"}`, `{"type": "vat_registered"}`, `{"type": "residency", "resident": true}` or
+    /// `{"type": "payment_currency", "currencies": ["USD"]}`.
+    pub condition: Json<serde_json::Value>,
+    pub effective_from: Date,
+    /// The first day the rule no longer applies; `null` while open-ended.
+    pub effective_to: Option<Date>,
+    pub version: i32,
+}
+
+impl From<folio::TaxRuleRow> for TaxRuleNode {
+    fn from(r: folio::TaxRuleRow) -> Self {
+        Self {
+            id: r.id,
+            code: r.code,
+            name: r.name,
+            kind: r.kind.into(),
+            rate_bp: i32::try_from(r.rate_bp).unwrap_or(i32::MAX),
+            applies_to: r.applies_to,
+            base: r.base,
+            sequence: r.sequence,
+            presentation: r.presentation.into(),
+            condition: Json(serde_json::json!(r.condition)),
+            effective_from: r.effective_from,
+            effective_to: r.effective_to,
+            version: r.version,
+        }
+    }
+}
+
+/// A POS outlet. Its bills' category is `pos:<code>`.
+#[derive(SimpleObject)]
+pub struct OutletNode {
+    pub id: Uuid,
+    pub code: String,
+    pub name: String,
+    /// Whether the property's service charge applies to the outlet's bills.
+    pub service_charge: bool,
+    pub active: bool,
+    pub version: i32,
+}
+
+impl From<folio::OutletRow> for OutletNode {
+    fn from(o: folio::OutletRow) -> Self {
+        Self {
+            id: o.id,
+            code: o.code,
+            name: o.name,
+            service_charge: o.service_charge,
+            active: o.active,
+            version: o.version,
+        }
+    }
+}
+
+/// A stored exchange rate: base currency per one unit of `currency`, in force from `date` until the next one.
+#[derive(SimpleObject)]
+pub struct FxRateNode {
+    pub date: Date,
+    pub currency: String,
+    /// A decimal string, such as `"301.250000"`.
+    pub rate: String,
+    /// `cbsl` (the Central Bank's TT selling rate) or `manual`.
+    pub source: String,
+    /// The day the source published it: earlier than `date` over a weekend or holiday.
+    pub source_date: Date,
+    /// Who set a manual rate.
+    pub set_by: Option<Uuid>,
+    pub set_at: OffsetDateTime,
+}
+
+impl From<fx::RateRow> for FxRateNode {
+    fn from(r: fx::RateRow) -> Self {
+        Self {
+            date: r.date,
+            currency: r.currency,
+            rate: r.rate.to_string(),
+            source: r.source,
+            source_date: r.source_date,
+            set_by: r.set_by,
+            set_at: r.set_at,
+        }
+    }
+}
+
+/// Why the last exchange-rate import left the property without complete, current rates; shown until one does.
+#[derive(SimpleObject)]
+pub struct FxAlertNode {
+    pub message: String,
+    pub raised_at: OffsetDateTime,
+}
+
+/// What the property's invoices and taxes depend on.
+#[derive(SimpleObject)]
+pub struct TaxSettingsNode {
+    pub vat_registered: bool,
+    pub tin: Option<String>,
+    /// The tourism development levy's small-turnover band, used when the preset is applied.
+    pub tdl_small_turnover: bool,
+    /// The supplier's name on invoices; the property's name when `null`.
+    pub legal_name: Option<String>,
+    pub address: Option<String>,
+    pub base_currency: String,
+    pub accepted_currencies: Vec<String>,
+    /// The property's version: send it as `If-Match` when updating.
+    pub version: i32,
+}
+
+impl From<property::TaxSettings> for TaxSettingsNode {
+    fn from(s: property::TaxSettings) -> Self {
+        Self {
+            vat_registered: s.vat_registered,
+            tin: s.tin,
+            tdl_small_turnover: s.tdl_small_turnover,
+            legal_name: s.legal_name,
+            address: s.address,
+            base_currency: s.base_currency,
+            accepted_currencies: s.accepted_currencies,
+            version: s.version,
+        }
+    }
+}
+
+/// A folio rule the query broke, as a GraphQL error; database errors stay hidden.
+fn folio_error(err: folio::FolioError) -> async_graphql::Error {
+    match err {
+        folio::FolioError::Database(db_err) => internal(db_err),
+        other => async_graphql::Error::new(other.to_string()),
+    }
+}
+
+/// Most days one `fxRates` query spans.
+const MAX_FX_RATE_DAYS: i64 = 366;
+
 /// A reservations rule the query broke, as a GraphQL error; database errors stay hidden.
 fn reservations_error(err: reservations::ReservationsError) -> async_graphql::Error {
     match err {
@@ -1908,6 +2321,123 @@ impl Query {
         let documents = media::guest_documents(&mut tx, property_id, guest_id).await.map_err(media_error)?;
         tx.commit().await.map_err(internal)?;
         Ok(documents.into_iter().map(GuestDocumentNode::from).collect())
+    }
+
+    /// The folios of one reservation, stay or account in the property; name exactly one of `reservationId`,
+    /// `reservationRoomId` and `accountId`. A reservation's are its deposit folio, each stay's guest folio and its
+    /// account's current folio (the open one, else the newest), in that order. An account folio is the account's city
+    /// ledger in the property, charges from every reservation billed to it included, as any staff member with
+    /// `FolioView` may see; once invoiced, the account's next charge opens a fresh one. Read through a reservation it
+    /// comes with its balances and invoices but no lines or payments (`linesOmitted`); a read by `accountId` gives
+    /// every folio of the account, the open one first, then the invoiced ones newest first, each with its lines. Every
+    /// folio gives at most its newest 500 lines and newest 500 payments (`truncated` when it has more); balances always
+    /// cover all of them. Lines (with their taxes), payments, balances and invoices of every folio are read at once,
+    /// whatever the number of folios.
+    async fn folios(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        reservation_id: Option<Uuid>,
+        reservation_room_id: Option<Uuid>,
+        account_id: Option<Uuid>,
+    ) -> async_graphql::Result<Vec<FolioNode>> {
+        let query = match (reservation_id, reservation_room_id, account_id) {
+            (Some(reservation), None, None) => folio::FolioQuery::Reservation { property: property_id, reservation },
+            (None, Some(reservation_room), None) => {
+                folio::FolioQuery::ReservationRoom { property: property_id, reservation_room }
+            }
+            (None, None, Some(account)) => folio::FolioQuery::Account { property: property_id, account },
+            _ => {
+                return Err(async_graphql::Error::new(
+                    "name exactly one of reservationId, reservationRoomId and accountId",
+                ));
+            }
+        };
+        let mut tx = scoped(ctx, Permission::FolioView, property_id).await?;
+        let views = folio::folios_for(&mut tx, query).await.map_err(folio_error)?;
+        let mut nodes = views.into_iter().map(FolioNode::try_from).collect::<async_graphql::Result<Vec<_>>>()?;
+        if selected(ctx, "invoices")? && !nodes.is_empty() {
+            let ids: Vec<Uuid> = nodes.iter().map(|node| node.id).collect();
+            let mut by_folio: HashMap<Uuid, Vec<InvoiceNode>> = HashMap::new();
+            for invoice in folio::invoice_summaries(&mut tx, &ids).await.map_err(internal)? {
+                by_folio.entry(invoice.folio_id).or_default().push(invoice.into());
+            }
+            for node in &mut nodes {
+                node.invoices = by_folio.remove(&node.id).unwrap_or_default();
+            }
+        }
+        tx.commit().await.map_err(internal)?;
+        Ok(nodes)
+    }
+
+    /// The categories of the reservation's stays that its account pays (its routing), sorted; empty when it has no
+    /// account or routes nothing. Charges of every other category go to the stays' guest folios.
+    async fn routing(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        reservation_id: Uuid,
+    ) -> async_graphql::Result<Vec<String>> {
+        let mut tx = scoped(ctx, Permission::FolioView, property_id).await?;
+        let categories = folio::routing(&mut tx, property_id, reservation_id).await.map_err(folio_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(categories)
+    }
+
+    /// The property's tax rules, ended or not, in calculation order then by start date.
+    async fn tax_rules(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<TaxRuleNode>> {
+        let mut tx = scoped(ctx, Permission::FolioView, property_id).await?;
+        let rules = folio::list_tax_rules(&mut tx, property_id).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(rules.into_iter().map(TaxRuleNode::from).collect())
+    }
+
+    /// The property's POS outlets, active or not, by code.
+    async fn outlets(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<OutletNode>> {
+        let mut tx = scoped(ctx, Permission::FolioView, property_id).await?;
+        let outlets = folio::list_outlets(&mut tx, property_id).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(outlets.into_iter().map(OutletNode::from).collect())
+    }
+
+    /// The property's stored exchange rates dated in `[from, to)` (1 to 366 days), by date then currency. A rate is
+    /// in force from its date until the next one.
+    async fn fx_rates(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        from: Date,
+        to: Date,
+    ) -> async_graphql::Result<Vec<FxRateNode>> {
+        check_range(from, to, MAX_FX_RATE_DAYS)?;
+        let mut tx = scoped(ctx, Permission::FolioView, property_id).await?;
+        let rates = fx::list_rates(&mut tx, property_id, from, to).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(rates.into_iter().map(FxRateNode::from).collect())
+    }
+
+    /// Why the last exchange-rate import left the property without complete, current rates; `null` when all is well.
+    async fn fx_alert(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Option<FxAlertNode>> {
+        let mut tx = scoped(ctx, Permission::FolioView, property_id).await?;
+        let alert = fx::alert(&mut tx, property_id).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(alert.map(|alert| FxAlertNode { message: alert.message, raised_at: alert.raised_at }))
+    }
+
+    /// The property's tax settings: VAT registration, TIN, the small-turnover levy band, the invoice name and
+    /// address, and the accepted currencies.
+    async fn property_tax_settings(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+    ) -> async_graphql::Result<TaxSettingsNode> {
+        let mut tx = scoped(ctx, Permission::FolioView, property_id).await?;
+        let settings = property::tax_settings(&mut tx, property_id).await.map_err(|err| match err {
+            property::PropertyError::Database(db_err) => internal(db_err),
+            other => async_graphql::Error::new(other.to_string()),
+        })?;
+        tx.commit().await.map_err(internal)?;
+        Ok(settings.into())
     }
 }
 

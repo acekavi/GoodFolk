@@ -14,6 +14,7 @@ export function applyEvent(client: QueryClient, type: string, data: string): voi
 		const keys: string[] = JSON.parse(data);
 		for (const key of keys) {
 			if (key.startsWith('tape:')) invalidateTape(client, key);
+			else if (key.startsWith('folio:')) invalidateFolio(client, key.slice('folio:'.length));
 			else void client.invalidateQueries({ queryKey: [key] });
 		}
 	}
@@ -40,6 +41,19 @@ function invalidateTape(client: QueryClient, eventKey: string): void {
 		queryKey: ['tape-unassigned', propertyId],
 		predicate: (query) =>
 			rangeTouchesMonth(query.queryKey[2] as string, query.queryKey[3] as string, month)
+	});
+}
+
+/**
+ * A reservation's folios are cached together under `['folios', property, reservation, account]`; those holding
+ * the folio refetch.
+ */
+function invalidateFolio(client: QueryClient, folioId: string): void {
+	void client.invalidateQueries({
+		queryKey: ['folios'],
+		predicate: (query) =>
+			(query.state.data as { id: string }[] | undefined)?.some((folio) => folio.id === folioId) ??
+			false
 	});
 }
 

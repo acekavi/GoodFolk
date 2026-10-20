@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Static musl build of core-api on a distroless base (no shell, runs as non-root).
-FROM rust:1.97-alpine AS build
+FROM rust:1.99-alpine AS build
 RUN apk add --no-cache build-base
 WORKDIR /src
 COPY . .

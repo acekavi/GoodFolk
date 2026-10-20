@@ -4,7 +4,8 @@
 	called when the dialog closes (Escape, the Close button or a click on the backdrop). Every room's own
 	actions (assign, cancel, modify, check in/out, occupants) live in `RoomCard`; this component keeps the
 	reservation-wide facts, the booker, every guest's ID documents (for `GuestDocumentsManage` only), the
-	billed account and the history.
+	billed account and the history. For `FolioView`, a Folios tab beside these details holds the reservation's
+	folios (`FolioTab`); housekeeping never sees it, and its folios are read only once it is opened.
 -->
 <script lang="ts">
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
@@ -13,6 +14,7 @@
 	import { reservationGuests } from '$lib/guest-documents';
 	import { ApiError, errorMessage } from '$lib/api/problem';
 	import { ifMatch, rest, unwrap } from '$lib/api/rest';
+	import FolioTab from '$lib/components/FolioTab.svelte';
 	import GuestDocuments from '$lib/components/GuestDocuments.svelte';
 	import RoomCard from '$lib/components/RoomCard.svelte';
 	import { Pending } from '$lib/pending.svelte';
@@ -46,6 +48,13 @@
 	const viewConditions = $derived(!!me.data && can(me.data, 'housekeepingView', propertyId));
 	const supervise = $derived(!!me.data && can(me.data, 'housekeepingSupervise', propertyId));
 	const manageDocuments = $derived(!!me.data && can(me.data, 'guestDocumentsManage', propertyId));
+	const viewFolios = $derived(!!me.data && can(me.data, 'folioView', propertyId));
+	const folioCan = $derived({
+		post: !!me.data && can(me.data, 'folioPost', propertyId),
+		adjust: !!me.data && can(me.data, 'folioAdjust', propertyId),
+		invoice: !!me.data && can(me.data, 'invoiceIssue', propertyId)
+	});
+	let tab = $state<'details' | 'folios'>('details');
 	// The same key and fetcher as the table's prefetch on hover and focus, so an opened row is often
 	// already loaded.
 	const reservation = createQuery(() => ({
@@ -150,97 +159,118 @@
 			<p class="error" role="alert">{errorMessage(reservation.error)}</p>
 			<button type="button" onclick={() => reservation.refetch()}>Retry</button>
 		{:else if data}
-			<dl class="facts">
-				<dt>Stay</dt>
-				<dd>{stay}</dd>
-				<dt>Rooms</dt>
-				<dd>{data.rooms.length}</dd>
-				<dt>Source</dt>
-				<dd>{sourceLabel(data.source)}</dd>
-				<dt>Booked</dt>
-				<dd>{when(data.createdAt)}</dd>
-				<dt>Total</dt>
-				<dd>
-					{data.totals.map((total) => money(total.amount, total.currency)).join(' + ') || '–'}
-				</dd>
-				<dt>Account</dt>
-				<dd>
-					{#if manage}
-						<select
-							aria-label="Billed account"
-							value={data.account?.id ?? ''}
-							disabled={accountPending.has('account')}
-							onchange={(event) => setAccount(event.currentTarget.value || null)}
+			{#if viewFolios}
+				<div class="tabs" role="tablist" aria-label="Reservation">
+					{#each [{ value: 'details', label: 'Details' }, { value: 'folios', label: 'Folios' }] as const as entry (entry.value)}
+						<button
+							type="button"
+							role="tab"
+							id="reservation-tab-{entry.value}"
+							aria-selected={tab === entry.value}
+							class:secondary={tab !== entry.value}
+							onclick={() => (tab = entry.value)}>{entry.label}</button
 						>
-							<option value="">No account</option>
-							{#each accounts.data ?? [] as account (account.id)}
-								<option value={account.id}>{account.name} · {accountKindLabel(account.kind)}</option
-								>
-							{/each}
-						</select>
-					{:else}
-						{data.account ? `${data.account.name} · ${accountKindLabel(data.account.kind)}` : '–'}
+					{/each}
+				</div>
+			{/if}
+			{#if viewFolios && tab === 'folios'}
+				<div role="tabpanel" aria-labelledby="reservation-tab-folios">
+					<FolioTab {propertyId} reservation={data} can={folioCan} />
+				</div>
+			{:else}
+				<dl class="facts">
+					<dt>Stay</dt>
+					<dd>{stay}</dd>
+					<dt>Rooms</dt>
+					<dd>{data.rooms.length}</dd>
+					<dt>Source</dt>
+					<dd>{sourceLabel(data.source)}</dd>
+					<dt>Booked</dt>
+					<dd>{when(data.createdAt)}</dd>
+					<dt>Total</dt>
+					<dd>
+						{data.totals.map((total) => money(total.amount, total.currency)).join(' + ') || '–'}
+					</dd>
+					<dt>Account</dt>
+					<dd>
+						{#if manage}
+							<select
+								aria-label="Billed account"
+								value={data.account?.id ?? ''}
+								disabled={accountPending.has('account')}
+								onchange={(event) => setAccount(event.currentTarget.value || null)}
+							>
+								<option value="">No account</option>
+								{#each accounts.data ?? [] as account (account.id)}
+									<option value={account.id}
+										>{account.name} · {accountKindLabel(account.kind)}</option
+									>
+								{/each}
+							</select>
+						{:else}
+							{data.account ? `${data.account.name} · ${accountKindLabel(data.account.kind)}` : '–'}
+						{/if}
+					</dd>
+					{#if data.notes}
+						<dt>Notes</dt>
+						<dd>{data.notes}</dd>
 					{/if}
-				</dd>
-				{#if data.notes}
-					<dt>Notes</dt>
-					<dd>{data.notes}</dd>
-				{/if}
-			</dl>
-			{#if accountProblem}<p class="error" role="alert">{accountProblem}</p>{/if}
+				</dl>
+				{#if accountProblem}<p class="error" role="alert">{accountProblem}</p>{/if}
 
-			<h3>Booker</h3>
-			<dl class="facts">
-				<dt>Name</dt>
-				<dd>{data.booker.firstName} {data.booker.lastName}</dd>
-				<dt>Email</dt>
-				<dd>{data.booker.email ?? '–'}</dd>
-				<dt>Phone</dt>
-				<dd>{data.booker.phone ?? '–'}</dd>
-				<dt>Country</dt>
-				<dd>{data.booker.country ?? '–'}</dd>
-				<dt>ID</dt>
-				<dd>{idDocText(data.booker)}</dd>
-			</dl>
-			{#if manageDocuments}
-				{#each reservationGuests(data) as guest (guest.id)}
-					<GuestDocuments
+				<h3>Booker</h3>
+				<dl class="facts">
+					<dt>Name</dt>
+					<dd>{data.booker.firstName} {data.booker.lastName}</dd>
+					<dt>Email</dt>
+					<dd>{data.booker.email ?? '–'}</dd>
+					<dt>Phone</dt>
+					<dd>{data.booker.phone ?? '–'}</dd>
+					<dt>Country</dt>
+					<dd>{data.booker.country ?? '–'}</dd>
+					<dt>ID</dt>
+					<dd>{idDocText(data.booker)}</dd>
+				</dl>
+				{#if manageDocuments}
+					{#each reservationGuests(data) as guest (guest.id)}
+						<GuestDocuments
+							{propertyId}
+							guestId={guest.id}
+							guestName="{guest.firstName} {guest.lastName}"
+						/>
+					{/each}
+				{/if}
+
+				{#each data.rooms as room (room.id)}
+					<RoomCard
 						{propertyId}
-						guestId={guest.id}
-						guestName="{guest.firstName} {guest.lastName}"
+						reservationId={id}
+						{room}
+						roomTypes={roomTypes.data ?? []}
+						{businessDate}
+						{manage}
+						{checkInAllowed}
+						{viewConditions}
+						{supervise}
 					/>
 				{/each}
+
+				<h3>History</h3>
+				<table aria-label="History">
+					<thead>
+						<tr><th>What</th><th>When</th><th>Who</th></tr>
+					</thead>
+					<tbody>
+						{#each data.history as entry, index (index)}
+							<tr>
+								<td>{historyLabel(entry)}</td>
+								<td>{when(entry.at)}</td>
+								<td>{entry.actorName ?? 'A deleted user'}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
 			{/if}
-
-			{#each data.rooms as room (room.id)}
-				<RoomCard
-					{propertyId}
-					reservationId={id}
-					{room}
-					roomTypes={roomTypes.data ?? []}
-					{businessDate}
-					{manage}
-					{checkInAllowed}
-					{viewConditions}
-					{supervise}
-				/>
-			{/each}
-
-			<h3>History</h3>
-			<table aria-label="History">
-				<thead>
-					<tr><th>What</th><th>When</th><th>Who</th></tr>
-				</thead>
-				<tbody>
-					{#each data.history as entry, index (index)}
-						<tr>
-							<td>{historyLabel(entry)}</td>
-							<td>{when(entry.at)}</td>
-							<td>{entry.actorName ?? 'A deleted user'}</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
 		{:else}
 			<p>Loading…</p>
 		{/if}
@@ -263,6 +293,8 @@
 	header {
 		position: sticky;
 		top: 0;
+		/* Above the content scrolling under it, a disabled (translucent) button included. */
+		z-index: 1;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -273,6 +305,11 @@
 	}
 	h2 {
 		margin: 0;
+	}
+	.tabs {
+		display: flex;
+		gap: 0.25rem;
+		margin-top: var(--space);
 	}
 	.facts {
 		display: grid;

@@ -72,6 +72,10 @@ pub fn cancellation_penalty(
 /// tentative or confirmed (`Conflict`). Its nights from the business date on go back on sale, and the penalty
 /// its booked terms set for cancelling on the business date is recorded. The reservation's version moves
 /// too: its derived status may change, so a client holding it must refetch.
+///
+/// A penalty posts to the reservation's deposit folio as this stay's `cancellation_fee` line
+/// ([`folio::post_cancellation_fee`]), tax-inclusive when its rate plan's prices are: that needs a rate for a foreign
+/// currency on the business date and an open deposit folio (`Conflict` otherwise).
 pub async fn cancel_room(
     tx: &mut Tx,
     tenant: TenantId,
@@ -81,10 +85,11 @@ pub async fn cancel_room(
     expected_version: i32,
 ) -> Result<CancelledRoom, ReservationsError> {
     let row: Option<StayRow> = sqlx::query_as(
-        "select reservation_id, room_type_id, status, lower(stay) as check_in, upper(stay) as check_out, currency,
-                cancellation_terms, version
-         from reservation_room where id = $1 and property_id = $2
-         for update",
+        "select rr.reservation_id, rr.room_type_id, rr.status, lower(rr.stay) as check_in,
+                upper(rr.stay) as check_out, rr.currency, rr.cancellation_terms, rr.version, rp.prices_include_tax
+         from reservation_room rr join rate_plan rp on rp.id = rr.rate_plan_id
+         where rr.id = $1 and rr.property_id = $2
+         for update of rr",
     )
     .bind(id)
     .bind(property)
@@ -139,6 +144,18 @@ pub async fn cancel_room(
     .bind(penalty)
     .fetch_one(&mut **tx)
     .await?;
+    // After this row and its counters, before the reservation: the deposit folio sits between them in the lock order.
+    folio::post_cancellation_fee(
+        tx,
+        tenant,
+        Some(actor),
+        property,
+        id,
+        penalty,
+        &stay.currency,
+        stay.prices_include_tax,
+    )
+    .await?;
     sqlx::query("update reservation set version = version + 1 where id = $1")
         .bind(stay.reservation_id)
         .execute(&mut **tx)
@@ -173,6 +190,8 @@ struct StayRow {
     currency: String,
     cancellation_terms: Option<Json<CancellationTerms>>,
     version: i32,
+    /// The rate plan's: the penalty, priced from it, includes tax.
+    prices_include_tax: bool,
 }
 
 #[cfg(test)]

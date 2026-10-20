@@ -217,6 +217,154 @@ export interface paths {
         patch: operations["update_cancellation_policy"];
         trace?: never;
     };
+    "/api/v1/properties/{property}/folio/post-charges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Posts tonight's room and meal-plan charges for every in-house stay of the property, for its business date. Safe to
+         *     run again: a night already posted is skipped. A stay that can't be posted (such as no exchange rate for its
+         *     currency) is listed in `failures` and the others still post. Audited.
+         */
+        post: operations["post_tonights_charges"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/folios/{folio}/charges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Posts a manual charge on the folio, taxed by the property's rules on the business date, with its base-currency
+         *     equivalent. An invoiced folio is 409, as is a foreign currency with no rate on the business date ("No exchange rate
+         *     for USD on 2026-10-17"); a currency the property does not accept is 422. Audited. A retried request with the same
+         *     `Idempotency-Key` is answered without posting again.
+         */
+        post: operations["post_folio_charge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/folios/{folio}/invoice": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issues the folio's invoice in whole LKR under the property's next serial, and freezes the folio. It must be open,
+         *     settled in every currency and have a line (each 409); a VAT-registered property needs its TIN (409). The PDF is
+         *     rendered after: `pdf_ready` turns true and `folio:<id>` is sent when it is. Audited.
+         */
+        post: operations["issue_invoice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/folios/{folio}/lines/{line}/reversal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reverses a line with an equal negative line carrying its taxes negated, on the business date. A reversal, and the
+         *     account's line of a charge to account, can't be reversed (422); a line already reversed or moved, or one on an
+         *     invoiced folio, is 409. Audited.
+         */
+        post: operations["reverse_folio_line"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/folios/{folio}/lines/{line}/transfer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Moves a line to another folio of the property: a reversal here and an identical line there, on the business date.
+         *     A stay's line moves only to its reservation's deposit or account folio or to another stay's folio (422); both
+         *     folios must be open (409). Audited.
+         */
+        post: operations["transfer_folio_line"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/folios/{folio}/payments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Takes a payment on the folio, in any accepted currency, with its base amount at the business date's rate (409
+         *     when there is none). `account` charges the reservation's account: it needs a stay's or deposit folio of a
+         *     reservation billed to one (422). Card details never hold a card number (422). Audited.
+         */
+        post: operations["take_folio_payment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/fx-rates/{date}/{currency}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Sets the rate of `currency` for `date` by hand, replacing the imported (or an earlier manual) rate for that day; a
+         *     later import does not undo it. The currency must be one the property accepts, other than its base currency (422).
+         *     Audited as `fx.overridden` with the previous rate.
+         */
+        put: operations["set_fx_rate"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/guest-documents/{document}": {
         parameters: {
             query?: never;
@@ -327,6 +475,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/properties/{property}/invoices/{invoice}/credit-note": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issues a credit note for an invoice, under the property's next credit-note serial, and reopens its folio so a new
+         *     invoice can be issued. A credit note, or an invoice already credited, is refused (422, 409). Audited.
+         */
+        post: operations["issue_credit_note"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/invoices/{invoice}/link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A link to the invoice's or credit note's PDF that works for 5 minutes. Each link issued is audited as
+         *     `invoice.viewed`. A PDF still being rendered is 409.
+         */
+        get: operations["invoice_link"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/meal-supplements": {
         parameters: {
             query?: never;
@@ -418,6 +606,87 @@ export interface paths {
          *     which is returned instead. A retried request with the same `Idempotency-Key` returns the same answer.
          */
         post: operations["complete_media_upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/outlets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adds a POS outlet to the property. A code the property already uses is 409. Audited. A retried request with the
+         *     same `Idempotency-Key` is answered without adding another.
+         */
+        post: operations["create_outlet"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/outlets/{outlet}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Changes an outlet's name, service charge or whether it is active. Audited. */
+        patch: operations["update_outlet"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/payments/{payment}/refunds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refunds part or all of a payment, in its currency and method, at its rate: a negative payment. All its refunds
+         *     together never exceed it, and the folio refunded from must hold that much credit (each 422). A charge to account
+         *     or a transfer is never refunded (422). Audited.
+         */
+        post: operations["refund_payment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/pos-bills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Posts a POS bill once: the outlet and bill number name it. Posting the same bill again returns the bill first
+         *     posted (200) and posts nothing; a different bill under that number is 409. Each item is taxed with the property's
+         *     rules (without the service charge when the outlet's is off). To a stay, which must be checked in (422), each item
+         *     is a folio line routed as the stay's other charges; settled at the outlet, the bill is recorded with its payment.
+         *     A foreign currency with no rate on the bill's date is 409. Audited.
+         */
+        post: operations["post_pos_bill"];
         delete?: never;
         options?: never;
         head?: never;
@@ -702,6 +971,26 @@ export interface paths {
         head?: never;
         /** Sets or clears the reservation's billed-to account, and its notes. */
         patch: operations["update_reservation"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reservations/{reservation}/routing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Replaces the reservation's routing: charges of these categories posted for its stays go to its account's folio.
+         *     A reservation with no account can route nothing (422). Audited.
+         */
+        put: operations["set_reservation_routing"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/properties/{property}/room-issues": {
@@ -993,6 +1282,93 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["rename_section"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/tax-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adds a tax rule to the property. Lines already posted keep their taxes. Audited. A retried request with the same
+         *     `Idempotency-Key` is answered without adding another.
+         */
+        post: operations["create_tax_rule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/tax-rules/apply-preset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Replaces the property's tax rules with the Sri Lanka preset from the day after its business date (the tourism
+         *     development levy at 0.5% when `tdl_small_turnover` is set): every rule in force on that day ends on it, and any
+         *     rule starting after the business date (never yet in force) is removed. Lines already posted keep their taxes.
+         *     Audited with each ended rule's previous end and every removed rule.
+         */
+        post: operations["apply_tax_preset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/tax-rules/{rule}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Ends a tax rule on the property's business date: it applies to no line dated that day or later. A rule is never
+         *     deleted; one that has not started yet, or has already ended, is 409 (change its dates instead). Audited.
+         */
+        delete: operations["end_tax_rule"];
+        options?: never;
+        head?: never;
+        /**
+         * Changes a tax rule, checked as a new rule is. Lines already posted keep their taxes. Audited with the rule before
+         *     and after.
+         */
+        patch: operations["update_tax_rule"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/tax-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Changes the property's tax settings: VAT registration, TIN, the small-turnover levy band, the legal name and
+         *     address printed on invoices, and the accepted currencies. Shares the property's version. Audited with the values
+         *     before and after.
+         */
+        patch: operations["update_tax_settings"];
         trace?: never;
     };
     "/api/v1/session/tenant": {
@@ -1329,6 +1705,17 @@ export interface components {
              */
             to?: string | null;
         };
+        CreateOutletRequest: {
+            /**
+             * @description 1 to 10 upper-case letters and digits, unique in the property; its bills' category is `pos:<code>`. Never
+             *     changes.
+             */
+            code: string;
+            /** @description 1 to 100 characters once trimmed. */
+            name: string;
+            /** @description Whether the property's service charge applies to the outlet's bills; true when left out. */
+            service_charge?: boolean;
+        };
         CreatePropertyRequest: {
             /** @description ISO 4217 code, e.g. `LKR`. */
             base_currency: string;
@@ -1438,6 +1825,46 @@ export interface components {
             overbooking?: number;
         };
         /**
+         * @description A tax, levy or service charge. A change of rate from a date is the current rule ended that day plus a new rule
+         *     from it. Checked against the property's whole rule set: a base may name only `net` and rules calculated earlier
+         *     (a lower `sequence`), and a code may be in force only once on any day (422).
+         */
+        CreateTaxRuleRequest: {
+            /** @description `*`, `room`, `meal_plan`, `laundry`, `misc`, `fee`, `pos:*` or `pos:<OUTLET>`; 1 to 20. */
+            applies_to: string[];
+            /** @description `net` and the codes of rules with a lower `sequence`; 1 to 20. */
+            base: string[];
+            /** @description 1 to 16 upper-case letters, digits and `_`, starting with a letter, such as `VAT`. */
+            code: string;
+            /**
+             * @description `{"type": "always"}` (the default), `{"type": "vat_registered"}`, `{"type": "residency", "resident": true}`
+             *     or `{"type": "payment_currency", "currencies": ["USD"]}`.
+             */
+            condition?: components["schemas"]["TaxCondition"];
+            /** Format: date */
+            effective_from: string;
+            /**
+             * Format: date
+             * @description The first day the rule no longer applies; open-ended when left out.
+             */
+            effective_to?: string | null;
+            /** @description `tax`, `levy` or `service_charge`. */
+            kind: string;
+            name: string;
+            /** @description `on_bill` (the default) or `absorbed`. */
+            presentation?: string;
+            /**
+             * Format: int32
+             * @description Basis points, 0 to 10000: 1000 is 10%.
+             */
+            rate_bp: number;
+            /**
+             * Format: int32
+             * @description Rules are calculated in ascending sequence.
+             */
+            sequence: number;
+        };
+        /**
          * @description A new reservation. Rooms may be in different currencies, so `totals` has one entry per currency, in the
          *     order the rooms first use them.
          */
@@ -1529,6 +1956,34 @@ export interface components {
          * @enum {string}
          */
         IdDocType: "passport" | "nic" | "driving_licence" | "other";
+        /**
+         * @description What staff see of an invoice or credit note: never its data snapshot or its PDF's object key, which only the
+         *     audited link reaches.
+         */
+        InvoiceSummary: {
+            /**
+             * Format: uuid
+             * @description The invoice a credit note credits.
+             */
+            credits?: string | null;
+            /** Format: uuid */
+            folio_id: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            issued_at: string;
+            /** Format: uuid */
+            issued_by?: string | null;
+            kind: string;
+            /** @description Whether the PDF has been rendered, so its link can be fetched. */
+            pdf_ready: boolean;
+            serial: string;
+            /**
+             * Format: int64
+             * @description In whole rupees; negative for a credit note.
+             */
+            total_lkr: number;
+        };
         Issue: {
             description: string;
             /** Format: uuid */
@@ -1553,6 +2008,58 @@ export interface components {
          * @enum {string}
          */
         IssueStatus: "open" | "resolved";
+        LineRow: {
+            /**
+             * Format: int64
+             * @description `total` in the property's base currency at `rate`.
+             */
+            base_total: number;
+            /** Format: date */
+            business_date: string;
+            category: string;
+            currency: string;
+            description: string;
+            /** Format: uuid */
+            folio_id: string;
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: int64
+             * @description Before taxes, in minor units of `currency`.
+             */
+            net: number;
+            /** Format: date-time */
+            posted_at: string;
+            /** Format: uuid */
+            posted_by?: string | null;
+            posting_key?: string | null;
+            /** Format: int32 */
+            quantity: number;
+            /** @description Base currency per one unit of `currency`. */
+            rate: string;
+            /**
+             * Format: date
+             * @description The date the rate was published.
+             */
+            rate_date: string;
+            reason?: string | null;
+            /**
+             * Format: uuid
+             * @description The line this one reverses.
+             */
+            reverses?: string | null;
+            source: components["schemas"]["Source"];
+            /**
+             * Format: int64
+             * @description Net plus the on-bill taxes.
+             */
+            total: number;
+            /**
+             * Format: uuid
+             * @description Shared by the two lines of a transfer.
+             */
+            transfer_id?: string | null;
+        };
         /**
          * @description The file a guest-document link points at: a rendition, or the archived original.
          * @enum {string}
@@ -1665,6 +2172,64 @@ export interface components {
             /** Format: uuid */
             room_type_id?: string | null;
         };
+        OutletRow: {
+            /** @description An inactive outlet takes no new bills; its past bills stay. */
+            active: boolean;
+            code: string;
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: uuid */
+            property_id: string;
+            /** @description Whether the property's service charge applies to the outlet's bills. */
+            service_charge: boolean;
+            /** Format: int32 */
+            version: number;
+        };
+        /**
+         * @description A payment method's details: a card terminal's `approval`, `last4` and `brand` (never the card number), a bank
+         *     transfer's `reference`; nothing for cash or account.
+         */
+        PaymentDetails: {
+            approval?: string | null;
+            brand?: string | null;
+            last4?: string | null;
+            reference?: string | null;
+        };
+        /**
+         * @description How a payment was made. `transfer` is internal and never chosen.
+         * @enum {string}
+         */
+        PaymentMethod: "cash" | "card_terminal" | "bank_transfer" | "account";
+        PaymentRow: {
+            /** Format: int64 */
+            amount: number;
+            /** Format: int64 */
+            base_amount: number;
+            /** Format: date */
+            business_date: string;
+            currency: string;
+            details: Record<string, never>;
+            evidence?: string | null;
+            /** Format: uuid */
+            folio_id?: string | null;
+            /** Format: uuid */
+            id: string;
+            method: string;
+            /** Format: uuid */
+            pos_bill_id?: string | null;
+            rate: string;
+            /** Format: date */
+            rate_date: string;
+            /** Format: uuid */
+            refund_of?: string | null;
+            /** Format: date-time */
+            taken_at: string;
+            /** Format: uuid */
+            taken_by?: string | null;
+            /** Format: uuid */
+            transfer_id?: string | null;
+        };
         Penalty: {
             kind: components["schemas"]["PenaltyKind"];
             /** Format: int64 */
@@ -1682,6 +2247,167 @@ export interface components {
          * @enum {string}
          */
         PlanKind: "standard" | "derived" | "custom";
+        PosBillRequest: {
+            /** @description 1 to 50 characters; with the outlet it names the bill, so posting it again changes nothing. */
+            bill_no: string;
+            /**
+             * Format: date
+             * @description The property's business date when left out; at most 7 days before it, and never after it.
+             */
+            business_date?: string | null;
+            /** @description One of the property's accepted currencies. */
+            currency: string;
+            /** @description 1 to 200 items. */
+            items: components["schemas"]["PosItemRequest"][];
+            /** @description The outlet's code. */
+            outlet: string;
+            target: components["schemas"]["PosTargetRequest"];
+        };
+        PosBillRow: {
+            bill_no: string;
+            /** Format: date */
+            business_date: string;
+            /** Format: uuid */
+            id: string;
+            /** @description A settled bill's taxed items; empty for a bill posted to a stay, whose items are folio lines. */
+            lines: components["schemas"]["PosLine"][];
+            /** Format: uuid */
+            outlet_id: string;
+            /** Format: date-time */
+            posted_at: string;
+            /**
+             * Format: uuid
+             * @description The stay the bill was posted to; `None` for a bill settled at the outlet.
+             */
+            reservation_room_id?: string | null;
+            settled: boolean;
+        };
+        PosItemRequest: {
+            /** @description `misc`, or the outlet's own `pos:<OUTLET>` (the default when left out). */
+            category?: string | null;
+            /** @description 1 to 200 characters once trimmed. */
+            description: string;
+            /**
+             * Format: int32
+             * @description 1 to 9999.
+             */
+            quantity: number;
+            /**
+             * Format: int64
+             * @description Before taxes, in minor units of the bill's currency; at least 0.
+             */
+            unit_net: number;
+        };
+        /** @description One item of a settled bill, taxed. */
+        PosLine: {
+            category: string;
+            description: string;
+            /** Format: int64 */
+            net: number;
+            /** Format: int32 */
+            quantity: number;
+            taxes: components["schemas"]["PosLineTax"][];
+            /**
+             * Format: int64
+             * @description Net plus the on-bill taxes.
+             */
+            total: number;
+            /** Format: int64 */
+            unit_net: number;
+        };
+        /** @description One tax component of a settled bill's line, as `folio_line_tax` holds it for a posted line. */
+        PosLineTax: {
+            /** Format: int64 */
+            amount: number;
+            /** Format: int64 */
+            base: number;
+            code: string;
+            kind: string;
+            name: string;
+            presentation: string;
+            /** Format: int32 */
+            rate_bp: number;
+        };
+        /**
+         * @description Where a bill goes: `{"reservation_room": "<id>"}` to an in-house stay's folios, routed as its other charges, or
+         *     `{"settled": {"method": "cash"}}` paid at the outlet.
+         */
+        PosTargetRequest: {
+            /** Format: uuid */
+            reservation_room: string;
+        } | {
+            settled: components["schemas"]["SettledRequest"];
+        };
+        /** @description A charge posted by hand on the property's business date, taxed by the property's rules. */
+        PostChargeRequest: {
+            /** @description `room`, `meal_plan`, `laundry`, `misc`, `fee` or `pos:<OUTLET>`. */
+            category: string;
+            /** @description One of the property's accepted currencies. */
+            currency: string;
+            /** @description 1 to 200 characters once trimmed. */
+            description: string;
+            /**
+             * Format: int32
+             * @description 1 to 9999; 1 when left out. A charge is never a credit: correct a line by reversing it.
+             */
+            quantity?: number;
+            /**
+             * Format: int64
+             * @description Before taxes, in minor units of `currency`; at least 0.
+             */
+            unit_net: number;
+        };
+        PostChargesResponse: {
+            /**
+             * Format: date
+             * @description The night posted: the property's business date.
+             */
+            business_date: string;
+            failures: components["schemas"]["PostFailure"][];
+            /**
+             * Format: int32
+             * @description Lines posted now.
+             */
+            lines: number;
+            /**
+             * Format: int32
+             * @description Charges already posted before, left alone.
+             */
+            skipped_existing: number;
+            /**
+             * Format: int32
+             * @description In-house stays whose night was posted, or found already posted.
+             */
+            stays: number;
+        };
+        /** @description A stay whose charges could not be posted, and why; nothing of it was posted. */
+        PostFailure: {
+            error: string;
+            /** Format: uuid */
+            reservation_room: string;
+        };
+        /** @description What [`apply_preset`] did. */
+        PresetApplied: {
+            /**
+             * Format: date
+             * @description The day the preset takes effect: the day after the property's business date, so no line already posted for
+             *     the business date is taxed differently from the rest of that day's.
+             */
+            effective_from: string;
+            /**
+             * Format: int32
+             * @description Rules in force on that day, now ended on it.
+             */
+            ended: number;
+            /**
+             * Format: int32
+             * @description Rules that would have started after the business date, removed: they had never been in force, and once the
+             *     preset takes over they would apply to no day at all.
+             */
+            removed: number;
+            /** @description The property's rules now, as [`list_tax_rules`] returns them. */
+            rules: components["schemas"]["TaxRuleRow"][];
+        };
         /**
          * @description A bulk change adds basis points (`percent`) or minor units (`amount`) to existing prices, rounded to
          *     the plan's step, or `set`s every selected price to the value.
@@ -1793,6 +2519,25 @@ export interface components {
             segment: components["schemas"]["Segment"];
             /** Format: int32 */
             version: number;
+        };
+        ReasonRequest: {
+            /** @description 1 to 500 characters once trimmed. */
+            reason: string;
+        };
+        RefundRequest: {
+            /**
+             * Format: int64
+             * @description More than 0, in minor units of the payment's currency.
+             */
+            amount: number;
+            /**
+             * Format: uuid
+             * @description The folio the money goes back from: the payment's own when left out, or another folio of the same
+             *     reservation that holds the credit (such as the stay a deposit moved to).
+             */
+            from_folio?: string | null;
+            /** @description 1 to 500 characters once trimmed. */
+            reason: string;
         };
         /** @description A room after [`remove_occupant`]. */
         RemovedOccupant: {
@@ -1950,6 +2695,13 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        RoutingRequest: {
+            /**
+             * @description The categories the reservation's account pays (`room`, `meal_plan`, `laundry`, `misc`, `fee`,
+             *     `pos:<OUTLET>`); empty routes everything to the stays.
+             */
+            categories: string[];
+        };
         /** @description A housekeeping section: a group of rooms one housekeeper looks after. */
         Section: {
             /** Format: uuid */
@@ -1986,6 +2738,19 @@ export interface components {
         SetPricesRequest: {
             prices: components["schemas"]["PriceRequest"][];
         };
+        SetRateRequest: {
+            /**
+             * @description Base currency per one unit of the currency, as a decimal string such as `"301.25"` (at most 20 characters, no
+             *     exponent or `_`): positive, with at most 6 decimals and 12 digits before them.
+             */
+            rate: string;
+        };
+        /** @description How a bill settled at the outlet was paid. */
+        SettledRequest: {
+            details?: components["schemas"]["PaymentDetails"] | null;
+            /** @description `cash`, `card_terminal` or `bank_transfer`; never `account`. */
+            method: components["schemas"]["PaymentMethod"];
+        };
         /**
          * @description How urgent an issue is; a `High` one offers to block the room.
          * @enum {string}
@@ -2015,11 +2780,10 @@ export interface components {
             tenant_name: string;
         };
         /**
-         * @description Where a booking came from. Staff create `front_desk`, `phone` and `email` bookings; `ibe` and `channel`
-         *     bookings arrive through the booking engine (Phase 9) and channels (Phase 8).
+         * @description What posted a line.
          * @enum {string}
          */
-        Source: "front_desk" | "ibe" | "channel" | "phone" | "email";
+        Source: "room" | "meal_plan" | "laundry" | "pos" | "manual" | "cancellation_fee" | "no_show_fee" | "adjustment";
         StartUploadRequest: {
             /**
              * Format: int64
@@ -2057,6 +2821,96 @@ export interface components {
             /** Format: uuid */
             tenant_id: string;
         };
+        TakePaymentRequest: {
+            /**
+             * Format: int64
+             * @description More than 0, in minor units of `currency`.
+             */
+            amount: number;
+            /** @description One of the property's accepted currencies. */
+            currency: string;
+            details?: components["schemas"]["PaymentDetails"] | null;
+            /** @description Such as a bank encashment receipt; at most 500 characters. */
+            evidence?: string | null;
+            method: components["schemas"]["PaymentMethod"];
+        };
+        /**
+         * @description When a rule applies: always, only for a VAT-registered property, only for stays on plans sold to residents (or
+         *     non-residents), or only for charges in one of `currencies`.
+         */
+        TaxCondition: {
+            /** @enum {string} */
+            type: "always";
+        } | {
+            /** @enum {string} */
+            type: "vat_registered";
+        } | {
+            resident: boolean;
+            /** @enum {string} */
+            type: "residency";
+        } | {
+            currencies: string[];
+            /** @enum {string} */
+            type: "payment_currency";
+        };
+        /** @description A stored rule, with its id and version, as the settings screens show it. */
+        TaxRuleRow: {
+            /** @description `*`, a category (`room`, `meal_plan`, `laundry`, `misc`, `fee`), `pos:*` or one outlet (`pos:BAR`). */
+            applies_to: string[];
+            /** @description `net` and the codes of rules calculated earlier. */
+            base: string[];
+            code: string;
+            /**
+             * @description `{"type": "always"}`, `{"type": "vat_registered"}`, `{"type": "residency", "resident": true}` or
+             *     `{"type": "payment_currency", "currencies": ["USD"]}`.
+             */
+            condition: components["schemas"]["TaxCondition"];
+            /** Format: date */
+            effective_from: string;
+            /**
+             * Format: date
+             * @description The first day the rule no longer applies; `null` while open-ended.
+             */
+            effective_to?: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @description `tax`, `levy` or `service_charge`. */
+            kind: string;
+            name: string;
+            /** @description `on_bill` or `absorbed`. */
+            presentation: string;
+            /**
+             * Format: int32
+             * @description Basis points: 1000 is 10%.
+             */
+            rate_bp: number;
+            /** Format: int32 */
+            sequence: number;
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description What a property's invoices and taxes depend on. */
+        TaxSettings: {
+            /** @description The currencies charges and payments may be in, base currency included. */
+            accepted_currencies: string[];
+            address?: string | null;
+            base_currency: string;
+            /** @description The supplier's name on invoices; the property's name when `null`. */
+            legal_name?: string | null;
+            /** Format: uuid */
+            property_id: string;
+            /** @description The tourism development levy's small-turnover band (0.5% instead of 1%), used when the preset is applied. */
+            tdl_small_turnover: boolean;
+            /** @description The taxpayer identification number printed on invoices. */
+            tin?: string | null;
+            /** @description VAT applies, and invoices are tax invoices, which need the TIN. */
+            vat_registered: boolean;
+            /**
+             * Format: int32
+             * @description The property's version, shared with its other settings: send it as `If-Match`.
+             */
+            version: number;
+        };
         TenantSummary: {
             /** Format: uuid */
             id: string;
@@ -2067,6 +2921,22 @@ export interface components {
             /** Format: int64 */
             amount: number;
             currency: string;
+        };
+        TransferRequest: {
+            /** @description 1 to 500 characters once trimmed. */
+            reason: string;
+            /**
+             * Format: uuid
+             * @description The folio the line moves to, in the same property.
+             */
+            to_folio: string;
+        };
+        /** @description The two lines of a transfer, sharing a `transfer_id`. */
+        TransferredLine: {
+            /** @description The identical line on the target folio. */
+            moved: components["schemas"]["LineRow"];
+            /** @description The reversal on the line's folio. */
+            reversal: components["schemas"]["LineRow"];
         };
         /** @description A room after [`undo_check_in`]. */
         UndoneCheckIn: {
@@ -2132,6 +3002,12 @@ export interface components {
             from?: string | null;
             /** Format: date */
             to?: string | null;
+        };
+        UpdateOutletRequest: {
+            /** @description An inactive outlet takes no new bills; its past bills stay. */
+            active?: boolean | null;
+            name?: string | null;
+            service_charge?: boolean | null;
         };
         UpdatePropertyRequest: {
             /** @description `HH:MM` (24-hour), local time. */
@@ -2204,6 +3080,35 @@ export interface components {
              * @description Rooms of this type that may be sold beyond the physical count, 0 to 20.
              */
             overbooking?: number | null;
+        };
+        /** @description Fields left out keep their value; `effective_to: null` makes the rule open-ended. The code never changes. */
+        UpdateTaxRuleRequest: {
+            applies_to?: string[] | null;
+            base?: string[] | null;
+            condition?: components["schemas"]["TaxCondition"] | null;
+            /** Format: date */
+            effective_from?: string | null;
+            /** Format: date */
+            effective_to?: string | null;
+            kind?: string | null;
+            name?: string | null;
+            presentation?: string | null;
+            /** Format: int32 */
+            rate_bp?: number | null;
+            /** Format: int32 */
+            sequence?: number | null;
+        };
+        /** @description Fields left out keep their value; `null` clears `tin`, `legal_name` or `address`. */
+        UpdateTaxSettingsRequest: {
+            /** @description ISO 4217 codes, 1 to 20, including the base currency. */
+            accepted_currencies?: string[] | null;
+            address?: string | null;
+            legal_name?: string | null;
+            /** @description The tourism development levy's small-turnover band; takes effect on the rules when the preset is applied. */
+            tdl_small_turnover?: boolean | null;
+            /** @description 5 to 20 digits, capital letters or `-`. */
+            tin?: string | null;
+            vat_registered?: boolean | null;
         };
         /** @description A reservation after [`update_reservation`]. */
         UpdatedReservation: {
@@ -2858,6 +3763,343 @@ export interface operations {
             };
         };
     };
+    post_tonights_charges: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostChargesResponse"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    post_folio_charge: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+                folio: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PostChargeRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LineRow"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    issue_invoice: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+                folio: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvoiceSummary"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reverse_folio_line: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+                folio: string;
+                line: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReasonRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LineRow"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    transfer_folio_line: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+                folio: string;
+                line: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferredLine"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    take_folio_payment: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+                folio: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TakePaymentRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentRow"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_fx_rate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                date: string;
+                /** @description ISO 4217, such as `USD` */
+                currency: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetRateRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     delete_guest_document: {
         parameters: {
             query?: never;
@@ -3120,6 +4362,98 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    issue_credit_note: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+                invoice: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReasonRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvoiceSummary"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    invoice_link: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                invoice: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignedLink"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3398,6 +4732,231 @@ export interface operations {
                 content?: never;
             };
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_outlet: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateOutletRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutletRow"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_outlet: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                outlet: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateOutletRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutletRow"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    refund_payment: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+                payment: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RefundRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentRow"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    post_pos_bill: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PosBillRequest"];
+            };
+        };
+        responses: {
+            /** @description posted before; nothing posted now */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PosBillRow"];
+                };
+            };
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PosBillRow"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4301,6 +5860,48 @@ export interface operations {
             };
         };
     };
+    set_reservation_routing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                reservation: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RoutingRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     report_room_issue: {
         parameters: {
             query?: never;
@@ -5183,6 +6784,276 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_tax_rule: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTaxRuleRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaxRuleRow"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_tax_preset: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PresetApplied"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    end_tax_rule: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                rule: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaxRuleRow"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_tax_rule: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                rule: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateTaxRuleRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaxRuleRow"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_tax_settings: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description the property's version, e.g. "3" */
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateTaxSettingsRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the property's version, e.g. "4" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaxSettings"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

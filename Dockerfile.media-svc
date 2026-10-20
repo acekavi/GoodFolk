@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # media-svc on glibc (the vendored C and C++ codecs are reliable there, unlike on musl) on a distroless base (no shell,
 # runs as non-root), with libjxl's static cjxl and djxl for the JPEG XL archive.
-FROM rust:1.97-bookworm AS build
+FROM rust:1.99-bookworm AS build
 # cmake and nasm build the vendored codecs; lzip unpacks the libjxl release; tini supplies a static init.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends cmake nasm lzip tini \
