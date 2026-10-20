@@ -1,7 +1,7 @@
 //! What a property can sell for a stay: free rooms per room type from the inventory counters, and every offer
 //! priced by [`rates::load_offers`].
 
-use crate::{ReservationsError, SELLABLE, business_date, check_window};
+use crate::{ReservationsError, SELLABLE, check_window, read_business_date};
 use db::Tx;
 use rates::{Offer, OfferRequest, Residency};
 use serde::Serialize;
@@ -63,7 +63,7 @@ pub async fn availability(
             "an availability search covers at most {MAX_AVAILABILITY_NIGHTS} nights"
         )));
     }
-    check_window(business_date(tx, property).await?, check_in, check_out)?;
+    check_window(read_business_date(tx, property).await?, check_in, check_out)?;
 
     let rows: Vec<FreeRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select rt.id, rt.code, rt.name, count(i.date) as counted, min({SELLABLE}) as free

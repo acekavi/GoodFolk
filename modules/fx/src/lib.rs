@@ -25,6 +25,9 @@ pub enum FxError {
     /// A business rule, such as an override for a currency the property does not accept.
     #[error("{0}")]
     Invalid(String),
+    /// The command clashes with the property's state, such as an override for a day the night audit has closed.
+    #[error("{0}")]
+    Conflict(String),
     /// The rate source's page no longer looks the way the parser expects.
     #[error("the rate source's layout changed: {0}")]
     Layout(String),
@@ -153,7 +156,9 @@ pub async fn alert(tx: &mut Tx, property: Uuid) -> Result<Option<Alert>, sqlx::E
 /// Overrides the rate of `currency` for `date`, for a staff member who knows better than the bank. Replaces an
 /// imported or earlier manual rate for that day, and a later import does not undo it. Audited as `fx.overridden`.
 /// Clears the property's `fx_alert` once every accepted currency other than the base has a rate dated today in the
-/// property's time zone, as a complete import would.
+/// property's time zone, as a complete import would. A day before the business date is closed: `Conflict`. The business
+/// date is read `for share`, so an override waits for the night audit's roll (see "Locking" in
+/// `docs/specs/phase-7b-night-audit.md`).
 pub async fn set_manual(
     tx: &mut Tx,
     tenant: TenantId,
@@ -168,12 +173,16 @@ pub async fn set_manual(
             "the rate must be positive, with at most 6 decimals and 12 digits before them".into(),
         ));
     }
-    let row: Option<(String, Vec<String>)> =
-        sqlx::query_as("select base_currency::text, accepted_currencies::text[] from property where id = $1")
-            .bind(property)
-            .fetch_optional(&mut **tx)
-            .await?;
-    let (base, accepted) = row.ok_or(FxError::NotFound("property"))?;
+    let row: Option<(String, Vec<String>, Date)> = sqlx::query_as(
+        "select base_currency::text, accepted_currencies::text[], business_date from property where id = $1 for share",
+    )
+    .bind(property)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let (base, accepted, business_date) = row.ok_or(FxError::NotFound("property"))?;
+    if date < business_date {
+        return Err(FxError::Conflict("That day is closed".into()));
+    }
     if currency == base {
         return Err(FxError::Invalid(format!("{currency} is the base currency; its rate is always 1")));
     }
@@ -333,7 +342,9 @@ const STALE_DAYS: i64 = 5;
 
 /// Stores the rates of one property from the rates fetched for all properties and clears or raises its alert, returning how
 /// many rates it stored and whether an alert was raised (a currency missing or stale). Rates found are stored even
-/// when others are missing.
+/// when others are missing. A property whose business date is after `today` is skipped, with nothing stored and no
+/// alert: `today` is a closed day there. Its business date is read `for share`, so the import waits for the night
+/// audit's roll (see "Locking" in `docs/specs/phase-7b-night-audit.md`).
 async fn import_one(
     pool: &PgPool,
     all: &[(String, Date, Decimal)],
@@ -344,6 +355,15 @@ async fn import_one(
 ) -> Result<(u32, bool), FxError> {
     let found: Vec<&(String, Date, Decimal)> = all.iter().filter(|(c, _, _)| wanted.contains(c)).collect();
     let mut tx = db::begin(pool, Scope::tenant(tenant)).await?;
+    let business_date: Date = sqlx::query_scalar("select business_date from property where id = $1 for share")
+        .bind(property)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(FxError::NotFound("property"))?;
+    if business_date > today {
+        tracing::info!(%property, %business_date, %today, "fx import: skipped, the day is closed at the property");
+        return Ok((0, false));
+    }
     let mut stored = 0;
     for (currency, source_date, rate) in &found {
         let written = sqlx::query(

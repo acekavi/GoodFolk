@@ -1041,7 +1041,7 @@
         "tags": [
           "crate::routes::fx"
         ],
-        "summary": "Sets the rate of `currency` for `date` by hand, replacing the imported (or an earlier manual) rate for that day; a\nlater import does not undo it. The currency must be one the property accepts, other than its base currency (422).\nAudited as `fx.overridden` with the previous rate.",
+        "summary": "Sets the rate of `currency` for `date` by hand, replacing the imported (or an earlier manual) rate for that day; a\nlater import does not undo it. The currency must be one the property accepts, other than its base currency (422).\nA day before the business date is closed (409). Audited as `fx.overridden` with the previous rate.",
         "operationId": "set_fx_rate",
         "parameters": [
           {
@@ -1086,6 +1086,7 @@
           "204": {},
           "403": {},
           "404": {},
+          "409": {},
           "422": {}
         }
       }

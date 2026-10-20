@@ -355,7 +355,7 @@ export interface paths {
         /**
          * Sets the rate of `currency` for `date` by hand, replacing the imported (or an earlier manual) rate for that day; a
          *     later import does not undo it. The currency must be one the property accepts, other than its base currency (422).
-         *     Audited as `fx.overridden` with the previous rate.
+         *     A day before the business date is closed (409). Audited as `fx.overridden` with the previous rate.
          */
         put: operations["set_fx_rate"];
         post?: never;
@@ -4087,6 +4087,12 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

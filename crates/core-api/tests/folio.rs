@@ -421,7 +421,7 @@ async fn a_replayed_pos_bill_posts_once(_: PgPoolOptions, opts: PgConnectOptions
     assert_eq!(codes, ["SC", "SSCL", "TDL"], "a POS line carries the service charge");
 }
 
-/// A manual rate is set by an owner or manager only, replaces the day's rate and is audited.
+/// A manual rate is set by an owner or manager only, for an open day, replaces the day's rate and is audited.
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn a_rate_override_is_audited(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
@@ -437,6 +437,9 @@ async fn a_rate_override_is_audited(_: PgPoolOptions, opts: PgConnectOptions) {
     let base = format!("{}/fx-rates/{}/LKR", hotel.path, hotel.day(0));
     let base = app.send(Method::PUT, &base, Some(&manager), Some(json!({"rate": "2"}))).await;
     assert_eq!(base.status, StatusCode::UNPROCESSABLE_ENTITY, "the base currency's rate is always 1");
+    let closed = format!("{}/fx-rates/{}/USD", hotel.path, hotel.day(-1));
+    let closed = app.send(Method::PUT, &closed, Some(&manager), Some(json!({"rate": "301.5"}))).await;
+    assert_eq!(closed.status, StatusCode::CONFLICT, "a day before the business date is closed");
 
     let set = app.send(Method::PUT, &path, Some(&manager), Some(json!({"rate": "301.5"}))).await;
     assert_eq!(set.status, StatusCode::NO_CONTENT, "{:?}", set.body);

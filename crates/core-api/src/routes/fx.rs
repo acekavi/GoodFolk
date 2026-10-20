@@ -20,6 +20,7 @@ fn fx_error(err: FxError) -> ApiError {
     match err {
         FxError::NotFound(_) => ApiError::not_found(err.to_string()),
         FxError::Invalid(message) => ApiError::unprocessable(message),
+        FxError::Conflict(message) => ApiError::conflict(message),
         FxError::Database(db_err) => db_err.into(),
         FxError::Layout(_) | FxError::Source(_) => ApiError::bad_gateway(err.to_string()),
     }
@@ -34,10 +35,10 @@ pub struct SetRateRequest {
 
 /// Sets the rate of `currency` for `date` by hand, replacing the imported (or an earlier manual) rate for that day; a
 /// later import does not undo it. The currency must be one the property accepts, other than its base currency (422).
-/// Audited as `fx.overridden` with the previous rate.
+/// A day before the business date is closed (409). Audited as `fx.overridden` with the previous rate.
 #[utoipa::path(put, operation_id = "set_fx_rate", path = "/api/v1/properties/{property}/fx-rates/{date}/{currency}", request_body = SetRateRequest,
     params(("property" = Uuid, Path), ("date" = Date, Path), ("currency" = String, Path, description = "ISO 4217, such as `USD`")),
-    responses((status = 204), (status = 403), (status = 404), (status = 422)))]
+    responses((status = 204), (status = 403), (status = 404), (status = 409), (status = 422)))]
 pub async fn set_rate(
     State(state): State<AppState>,
     ctx: TenantContext,

@@ -571,8 +571,10 @@ async fn may_transfer(tx: &mut Tx, a: &Locked, b: &Locked) -> Result<bool, sqlx:
     })
 }
 
-pub(crate) async fn business_date(tx: &mut Tx, property: Uuid) -> Result<Date, FolioError> {
-    sqlx::query_scalar("select business_date from property where id = $1")
+/// The property's business date, for a writer. `NotFound` if the property is not in this tenant.
+/// Read `for share`: writers wait for the night audit's roll (see "Locking" in `docs/specs/phase-7b-night-audit.md`).
+pub async fn business_date(tx: &mut Tx, property: Uuid) -> Result<Date, FolioError> {
+    sqlx::query_scalar("select business_date from property where id = $1 for share")
         .bind(property)
         .fetch_optional(&mut **tx)
         .await?

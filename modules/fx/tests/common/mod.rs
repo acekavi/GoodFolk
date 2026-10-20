@@ -4,7 +4,12 @@ use db::testing::app_pool;
 use db::{Scope, TenantId, Tx, UserId, begin};
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
+use time::Date;
+use time::macros::date;
 use uuid::Uuid;
+
+/// The business date a new hotel starts on.
+pub const OPEN_FROM: Date = date!(2026 - 01 - 01);
 
 /// A tenant with one user and one LKR property that accepts LKR, USD, EUR and GBP.
 pub struct Hotel {
@@ -39,8 +44,27 @@ impl Hotel {
             base_currency: "LKR".into(),
         };
         let property = property::create_property(&mut tx, tenant, user, hotel).await.unwrap();
+        // Before every date the tests use, so none of them is a closed day.
+        sqlx::query("update property set business_date = $2 where id = $1")
+            .bind(property.id)
+            .bind(OPEN_FROM)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
         Self { pool, tenant, user, property: property.id }
+    }
+
+    /// Moves the property's business date to `date`, as the night audit's roll does.
+    pub async fn set_business_date(&self, date: Date) {
+        let mut tx = self.tx().await;
+        sqlx::query("update property set business_date = $2 where id = $1")
+            .bind(self.property)
+            .bind(date)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
     }
 
     pub async fn tx(&self) -> Tx {

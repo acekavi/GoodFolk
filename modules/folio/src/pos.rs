@@ -344,12 +344,13 @@ pub async fn post_pos_bill(
     if !outlet.active {
         return Err(FolioError::Invalid(format!("the outlet {} is not active", outlet.code)));
     }
-    let (today, accepted, vat_registered): (Date, Vec<String>, bool) =
-        sqlx::query_as("select business_date, accepted_currencies::text[], vat_registered from property where id = $1")
-            .bind(property)
-            .fetch_optional(&mut **tx)
-            .await?
-            .ok_or(FolioError::NotFound("property"))?;
+    let (today, accepted, vat_registered): (Date, Vec<String>, bool) = sqlx::query_as(
+        "select business_date, accepted_currencies::text[], vat_registered from property where id = $1 for share",
+    )
+    .bind(property)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or(FolioError::NotFound("property"))?;
     if !accepted.contains(&bill.currency) {
         return Err(FolioError::Invalid(format!("{} is not a currency this property accepts", bill.currency)));
     }

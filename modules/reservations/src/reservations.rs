@@ -120,11 +120,12 @@ pub async fn create_reservation(
     if input.rooms.iter().any(|room| room.check_out <= room.check_in) {
         return Err(invalid("check-out is after check-in".into()));
     }
-    let (code, today): (String, Date) = sqlx::query_as("select code, business_date from property where id = $1")
-        .bind(property)
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or(ReservationsError::NotFound("property"))?;
+    let (code, today): (String, Date) =
+        sqlx::query_as("select code, business_date from property where id = $1 for share")
+            .bind(property)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or(ReservationsError::NotFound("property"))?;
     for room in &input.rooms {
         check_window(today, room.check_in, room.check_out)?;
     }

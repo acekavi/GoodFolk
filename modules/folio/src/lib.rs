@@ -71,7 +71,7 @@ pub use invoices::{
     INVOICE_RENDER_TOPIC, InvoiceRow, InvoiceSummary, credit_note, invoice_link_key, invoice_summaries, issue_invoice,
     set_invoice_pdf,
 };
-pub use lines::{LineRow, NewCharge, post_charge, reverse, transfer};
+pub use lines::{LineRow, NewCharge, business_date, post_charge, reverse, transfer};
 pub use payments::{Method, move_deposit, post_cancellation_fee, refund, take_payment, undo_deposit_move};
 pub use pos::{
     NewOutlet, OutletChanges, OutletRow, PosBillIn, PosBillRow, PosItem, PosLine, PosLineTax, PosOutcome, PosTarget,

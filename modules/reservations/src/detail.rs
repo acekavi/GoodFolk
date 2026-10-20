@@ -4,7 +4,7 @@
 use crate::accounts::AccountKind;
 use crate::guests::COLUMNS as GUEST_COLUMNS;
 use crate::reservations::totals;
-use crate::{CancellationTerms, Guest, ReservationsError, Source, Total, business_date, cancellation_penalty};
+use crate::{CancellationTerms, Guest, ReservationsError, Source, Total, cancellation_penalty, read_business_date};
 use db::Tx;
 use domain::{Action, RoomStatus};
 use rates::MealPlan;
@@ -166,7 +166,7 @@ pub async fn get_reservation(tx: &mut Tx, property: Uuid, id: Uuid) -> Result<Re
     .fetch_optional(&mut **tx)
     .await?
     .ok_or(ReservationsError::NotFound("reservation"))?;
-    let today = business_date(tx, property).await?;
+    let today = read_business_date(tx, property).await?;
     let account = match reservation.account_id {
         Some(account_id) => {
             let (name, kind): (String, String) = sqlx::query_as("select name, kind from account where id = $1")

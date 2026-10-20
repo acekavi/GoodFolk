@@ -132,7 +132,7 @@ async fn issuer(tx: &mut Tx, property: Uuid) -> Result<Issuer, FolioError> {
     sqlx::query_as(
         "select code, coalesce(legal_name, name) as legal_name, address, tin, vat_registered,
                 base_currency::text as base_currency, business_date
-         from property where id = $1",
+         from property where id = $1 for share",
     )
     .bind(property)
     .fetch_optional(&mut **tx)

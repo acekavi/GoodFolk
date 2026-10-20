@@ -193,7 +193,7 @@ async fn conversion(
     on: Option<Date>,
 ) -> Result<Conversion, FolioError> {
     let (business_date, base_currency, accepted): (Date, String, Vec<String>) = sqlx::query_as(
-        "select business_date, base_currency::text, accepted_currencies::text[] from property where id = $1",
+        "select business_date, base_currency::text, accepted_currencies::text[] from property where id = $1 for share",
     )
     .bind(property)
     .fetch_optional(&mut **tx)
@@ -794,7 +794,8 @@ pub async fn post_cancellation_fee(
     let (reservation, business_date): (Uuid, Date) = sqlx::query_as(
         "select rr.reservation_id, p.business_date
          from reservation_room rr join property p on p.id = rr.property_id
-         where rr.id = $1 and rr.property_id = $2",
+         where rr.id = $1 and rr.property_id = $2
+         for share of p",
     )
     .bind(reservation_room)
     .bind(property)

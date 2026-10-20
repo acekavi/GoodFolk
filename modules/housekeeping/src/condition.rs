@@ -1,6 +1,7 @@
 //! A room's cleaning condition: housekeepers move their assigned rooms one step forward, supervisors set any
 //! value.
 
+use crate::assignments::business_date;
 use crate::{HousekeepingError, audit, hk_key, notify, role_holders};
 use db::{TenantId, Tx, UserId};
 use serde::Serialize;
@@ -140,14 +141,15 @@ pub async fn set_conditions(
 
 /// The housekeeper must be assigned the room for the business date and still hold a housekeeping role.
 async fn require_housekeeper(tx: &mut Tx, property: Uuid, room: Uuid, user: UserId) -> Result<(), HousekeepingError> {
+    let today = business_date(tx, property).await?;
     let assigned: bool = sqlx::query_scalar(
-        "select exists (select 1 from hk_assignment a join property p on p.id = a.property_id
-                        where a.property_id = $1 and a.room_id = $2 and a.user_id = $3
-                          and a.business_date = p.business_date)",
+        "select exists (select 1 from hk_assignment
+                        where property_id = $1 and room_id = $2 and user_id = $3 and business_date = $4)",
     )
     .bind(property)
     .bind(room)
     .bind(user.0)
+    .bind(today)
     .fetch_one(&mut **tx)
     .await?;
     if !assigned {
