@@ -529,6 +529,24 @@ impl Hotel {
         assert!(report.failures.is_empty(), "{:?}", report.failures);
     }
 
+    /// Extends `property`'s counter window and counts each day's sold rooms from its stays, as booking them through
+    /// `reservations` would have: the seeded stays bypass the counters.
+    pub async fn window(&self, property: Uuid) {
+        let mut tx = self.tx().await;
+        rooms::extend_window(&mut tx, property).await.unwrap();
+        sqlx::query(
+            "update inventory_day i set sold = (select count(*) from reservation_room rr
+                                                where rr.room_type_id = i.room_type_id and rr.stay @> i.date
+                                                  and rr.status in ('tentative', 'confirmed', 'checked_in'))
+             where i.property_id = $1",
+        )
+        .bind(property)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
     /// `audit::night_audit` of `property`.
     pub async fn night_audit(&self, property: Uuid) -> audit::NightAudit {
         audit::night_audit(&mut self.tx().await, property).await.unwrap()

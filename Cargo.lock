@@ -329,6 +329,7 @@ dependencies = [
  "property",
  "rand 0.9.5",
  "reservations",
+ "rooms",
  "rust_decimal",
  "serde",
  "serde_json",

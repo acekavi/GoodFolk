@@ -10,9 +10,12 @@ db.workspace = true
 domain.workspace = true
 folio.workspace = true
 fx.workspace = true
+property.workspace = true
 reservations.workspace = true
+rooms.workspace = true
 rust_decimal.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 sqlx = { workspace = true, features = ["rust_decimal"] }
 thiserror.workspace = true
 time.workspace = true
@@ -20,9 +23,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 db = { workspace = true, features = ["testing"] }
-property.workspace = true
 rand.workspace = true
-serde_json.workspace = true
 tokio.workspace = true
 
 [lints]

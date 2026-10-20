@@ -9,9 +9,21 @@
 //!
 //! [`compute`] takes a business date's statistics, [`store`] snapshots them when the day closes, and [`daily_stats`]
 //! reads them back by date range.
+//!
+//! [`start_run`] opens the close of the business date, and [`execute`] runs its steps (`resolve`, `post_charges`,
+//! `lock_fx`, then `snapshot_stats` and `advance_business_date` together), each committed with its step row, under the
+//! property's session advisory lock: a run stopped anywhere resumes where it stopped. A failed run waits for
+//! [`retry_run`]; an automatic one failing its third attempt raises the `audit` ops alert ([`alerts`]).
 
+pub mod alerts;
+mod close;
 mod review;
 mod stats;
+
+pub use alerts::{AlertKind, OpsAlert};
+pub use close::{
+    AuditRun, CloseHooks, Mode, NoHooks, RunStatus, RunStep, Step, execute, get_run, list_runs, retry_run, start_run,
+};
 
 pub use stats::{BreakdownRow, DAY_LINES_SQL, DailyStats, compute, daily_stats, store};
 
