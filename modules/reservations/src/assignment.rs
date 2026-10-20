@@ -278,7 +278,7 @@ async fn finish(
         .bind(stay.reservation_id)
         .execute(&mut **tx)
         .await?;
-    audit(tx, tenant, actor, action, "reservation_room", id, data).await?;
+    audit(tx, tenant, Some(actor), action, "reservation_room", id, data).await?;
     let keys = [reservations_key(property), reservation_key(stay.reservation_id), housekeeping::hk_key(property)]
         .into_iter()
         .chain(rooms::tape_keys(property, stay.check_in, stay.check_out))

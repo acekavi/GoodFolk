@@ -292,7 +292,7 @@ pub async fn create_reservation(
         "rooms": created.iter().map(|room| room.id).collect::<Vec<_>>(),
         "assigned": assigned,
     });
-    audit(tx, tenant, actor, "reservation.created", "reservation", id, data).await?;
+    audit(tx, tenant, Some(actor), "reservation.created", "reservation", id, data).await?;
     let months: BTreeSet<String> =
         input.rooms.iter().flat_map(|room| rooms::month_keys(property, room.check_in, room.check_out)).collect();
     let tape: BTreeSet<String> =
@@ -386,7 +386,7 @@ pub async fn update_reservation(
     if !routing.is_empty() {
         data["routing"] = serde_json::json!(routing);
     }
-    audit(tx, tenant, actor, "reservation.updated", "reservation", id, data).await?;
+    audit(tx, tenant, Some(actor), "reservation.updated", "reservation", id, data).await?;
     notify(tx, tenant, property, vec![reservations_key(property), reservation_key(id)]).await?;
     Ok(UpdatedReservation { id, version: updated_version, account_id, notes: notes_value })
 }

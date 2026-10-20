@@ -18,7 +18,7 @@ impl Hotel {
     async fn try_cancel(&self, room: Uuid, version: i32) -> Result<CancelledRoom, ReservationsError> {
         let mut tx = self.tx().await;
         let cancelled =
-            reservations::cancel_room(&mut tx, self.tenant, self.user, self.property, room, version).await?;
+            reservations::cancel_room(&mut tx, self.tenant, Some(self.user), self.property, room, version).await?;
         tx.commit().await.unwrap();
         Ok(cancelled)
     }
@@ -198,10 +198,10 @@ async fn a_room_of_another_property_or_tenant_is_not_found(_: PgPoolOptions, opt
     let stranger = Hotel::new(opts).await;
 
     let mut tx = hotel.tx().await;
-    let elsewhere = reservations::cancel_room(&mut tx, hotel.tenant, hotel.user, other.id, room, 1).await;
+    let elsewhere = reservations::cancel_room(&mut tx, hotel.tenant, Some(hotel.user), other.id, room, 1).await;
     let mut tx = stranger.tx().await;
     let other_tenant =
-        reservations::cancel_room(&mut tx, stranger.tenant, stranger.user, stranger.property, room, 1).await;
+        reservations::cancel_room(&mut tx, stranger.tenant, Some(stranger.user), stranger.property, room, 1).await;
 
     assert!(matches!(elsewhere, Err(ReservationsError::NotFound("reservation room"))), "{elsewhere:?}");
     assert!(matches!(other_tenant, Err(ReservationsError::NotFound("reservation room"))), "{other_tenant:?}");

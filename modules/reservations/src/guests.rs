@@ -233,7 +233,7 @@ pub async fn create_guest(
     audit(
         tx,
         tenant,
-        actor,
+        Some(actor),
         "guest.created",
         "guest",
         id,
@@ -322,7 +322,7 @@ pub async fn update_guest(
     if id_doc.is_some() {
         data["id_doc"] = IdDoc::audit(replaced);
     }
-    audit(tx, tenant, actor, "guest.updated", "guest", id, data).await?;
+    audit(tx, tenant, Some(actor), "guest.updated", "guest", id, data).await?;
     Ok(updated)
 }
 

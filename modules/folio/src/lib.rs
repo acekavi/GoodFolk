@@ -72,7 +72,10 @@ pub use invoices::{
     set_invoice_pdf,
 };
 pub use lines::{LineRow, NewCharge, business_date, post_charge, reverse, transfer};
-pub use payments::{Method, move_deposit, post_cancellation_fee, refund, take_payment, undo_deposit_move};
+pub use payments::{
+    FeeKind, Method, move_deposit, post_cancellation_fee, post_no_show_fee, post_stay_fee, refund, take_payment,
+    undo_deposit_move,
+};
 pub use pos::{
     NewOutlet, OutletChanges, OutletRow, PosBillIn, PosBillRow, PosItem, PosLine, PosLineTax, PosOutcome, PosTarget,
     create_outlet, list_outlets, post_pos_bill, update_outlet,

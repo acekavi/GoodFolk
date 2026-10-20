@@ -361,7 +361,7 @@ pub async fn cancel_room(
 ) -> Result<Versioned<CancelledRoom>, ApiError> {
     ctx.require(Permission::ReservationsManage, Some(property))?;
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
-    let cancelled = reservations::cancel_room(&mut tx, ctx.tenant, ctx.user, property, room, version)
+    let cancelled = reservations::cancel_room(&mut tx, ctx.tenant, Some(ctx.user), property, room, version)
         .await
         .map_err(reservations_error)?;
     tx.commit().await?;

@@ -70,7 +70,8 @@ impl Hotel {
 
     async fn try_cancel(&self, id: Uuid, version: i32) -> Result<CancelledRoom, ReservationsError> {
         let mut tx = self.tx().await;
-        let cancelled = reservations::cancel_room(&mut tx, self.tenant, self.user, self.property, id, version).await?;
+        let cancelled =
+            reservations::cancel_room(&mut tx, self.tenant, Some(self.user), self.property, id, version).await?;
         tx.commit().await.unwrap();
         Ok(cancelled)
     }

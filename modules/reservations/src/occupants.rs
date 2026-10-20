@@ -104,7 +104,7 @@ pub async fn add_occupant(
     let version = bump(tx, room_id, room.reservation_id).await?;
     let name = full_name(&guest.first_name, &guest.last_name);
     let data = serde_json::json!({ "guest_id": guest_id, "name": name });
-    audit(tx, tenant, actor, "reservation_room.occupant_added", "reservation_room", room_id, data).await?;
+    audit(tx, tenant, Some(actor), "reservation_room.occupant_added", "reservation_room", room_id, data).await?;
     notify(tx, tenant, property, vec![reservations_key(property), reservation_key(room.reservation_id)]).await?;
 
     Ok(RoomOccupant { room_id, reservation_id: room.reservation_id, version, guest })
@@ -148,7 +148,7 @@ pub async fn remove_occupant(
 
     let version = bump(tx, room_id, room.reservation_id).await?;
     let data = serde_json::json!({ "guest_id": guest_id, "name": full_name(&first_name, &last_name) });
-    audit(tx, tenant, actor, "reservation_room.occupant_removed", "reservation_room", room_id, data).await?;
+    audit(tx, tenant, Some(actor), "reservation_room.occupant_removed", "reservation_room", room_id, data).await?;
     notify(tx, tenant, property, vec![reservations_key(property), reservation_key(room.reservation_id)]).await?;
 
     Ok(RemovedOccupant { room_id, reservation_id: room.reservation_id, version, guest_id })

@@ -13,6 +13,7 @@ mod detail;
 mod guests;
 mod list;
 mod modify;
+mod no_show;
 mod occupants;
 mod reservations;
 mod stay;
@@ -25,7 +26,7 @@ pub use accounts::{
 pub use assignment::{AssignedRoom, FreeRoom, assign_room, free_rooms, unassign_room};
 pub use autoassign::FIT_HORIZON_DAYS;
 pub use availability::{AvailabilityRequest, MAX_AVAILABILITY_NIGHTS, RoomTypeAvailability, availability};
-pub use cancellation::{CancellationTerms, CancelledRoom, cancel_room, cancellation_penalty};
+pub use cancellation::{CancellationTerms, CancelledRoom, cancel_room, cancellation_penalty, no_show_penalty};
 pub use detail::{
     AccountRef, HistoryEntry, Night, RatePlanRef, ReservationDetail, RoomDetail, RoomRef, RoomTypeRef, get_reservation,
     reservation_history,
@@ -38,6 +39,7 @@ pub use list::{
     list_reservation_rooms,
 };
 pub use modify::{ModifiedRoom, RoomChanges, modify_room};
+pub use no_show::{ChangedStay, NoShowRoom, delay_arrival, extend_stay, mark_no_show};
 pub use occupants::{RemovedOccupant, RoomOccupant, add_occupant, remove_occupant};
 pub use reservations::{
     CreatedReservation, CreatedRoom, MAX_ROOMS_PER_RESERVATION, NewReservation, NewReservationRoom, ReservationChanges,
@@ -167,10 +169,11 @@ fn check_window(business_date: Date, check_in: Date, check_out: Date) -> Result<
     Ok(())
 }
 
+/// Records `action` on `entity` `id` by `actor`, `None` for the system (the night audit's automatic close).
 async fn audit(
     tx: &mut Tx,
     tenant: TenantId,
-    actor: UserId,
+    actor: Option<UserId>,
     action: &str,
     entity: &str,
     id: Uuid,
@@ -182,7 +185,7 @@ async fn audit(
     )
     .bind(Uuid::now_v7())
     .bind(tenant.0)
-    .bind(actor.0)
+    .bind(actor.map(|actor| actor.0))
     .bind(action)
     .bind(entity)
     .bind(id)

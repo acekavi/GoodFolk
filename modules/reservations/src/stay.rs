@@ -175,7 +175,7 @@ pub async fn check_in(
         data["override_reason"] = reason.into();
         data["condition"] = condition.as_str().into();
     }
-    audit(tx, tenant, actor, "reservation_room.checked_in", "reservation_room", id, data).await?;
+    audit(tx, tenant, Some(actor), "reservation_room.checked_in", "reservation_room", id, data).await?;
     let keys = [reservations_key(property), reservation_key(row.reservation_id), hk_key(property)]
         .into_iter()
         .chain(rooms::tape_keys(property, row.check_in, row.check_out))
@@ -265,7 +265,7 @@ pub async fn undo_check_in(
         .await?;
 
     let data = serde_json::json!({ "reservation_id": reservation_id, "condition": restored.as_str() });
-    audit(tx, tenant, actor, "reservation_room.check_in_undone", "reservation_room", id, data).await?;
+    audit(tx, tenant, Some(actor), "reservation_room.check_in_undone", "reservation_room", id, data).await?;
     let keys = [reservations_key(property), reservation_key(reservation_id), hk_key(property)]
         .into_iter()
         .chain(rooms::tape_keys(property, check_in, check_out))
@@ -384,7 +384,7 @@ pub async fn check_out(
         "released_nights": released_nights,
         "condition_before": was.map(Condition::as_str),
     });
-    audit(tx, tenant, actor, "reservation_room.checked_out", "reservation_room", id, data).await?;
+    audit(tx, tenant, Some(actor), "reservation_room.checked_out", "reservation_room", id, data).await?;
     let mut keys = vec![reservations_key(property), reservation_key(stay.reservation_id), hk_key(property)];
     if !released_nights.is_empty() {
         keys.extend(rooms::month_keys(property, new_check_out, stay.check_out));

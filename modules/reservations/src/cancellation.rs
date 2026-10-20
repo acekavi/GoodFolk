@@ -34,10 +34,8 @@ pub struct CancelledRoom {
 ///
 /// `nights` are the stay's nights in date order, each with its room and meal amounts. The days left are
 /// `check_in - today`, 0 once the guest was due. The rule with the fewest `days_before_arrival` that is still
-/// at or above the days left applies: `nights` costs the room amounts of the first that many nights (all of
-/// them if the stay is shorter), `percent` costs that many basis points of the stay's total (room and meals),
-/// rounded half up, and `amount` costs the amount. The penalty never exceeds the stay's total. Without terms,
-/// or when no rule reaches the days left, cancelling is free.
+/// at or above the days left applies, as [`penalty_amount`] prices it. Without terms, or when no rule reaches the
+/// days left, cancelling is free.
 pub fn cancellation_penalty(
     terms: Option<&CancellationTerms>,
     nights: &[(Date, i64, i64)],
@@ -51,21 +49,33 @@ pub fn cancellation_penalty(
         .iter()
         .filter(|rule| i64::from(rule.days_before_arrival) >= days_left)
         .min_by_key(|rule| rule.days_before_arrival);
-    let Some(rule) = rule else { return 0 };
+    rule.map_or(0, |rule| penalty_amount(rule.penalty, nights))
+}
+
+/// What not arriving for a stay of `nights` costs under `terms`: their `no_show` penalty, as [`penalty_amount`]
+/// prices it. Without terms, nothing.
+pub fn no_show_penalty(terms: Option<&CancellationTerms>, nights: &[(Date, i64, i64)]) -> i64 {
+    terms.map_or(0, |terms| penalty_amount(terms.no_show, nights))
+}
+
+/// What `penalty` costs against `nights` (room, meal): `nights` = the first N nights' room amounts, `percent` = basis
+/// points of the stay's total, half up, `amount` = the amount; never above the stay's total. Shared by cancelling
+/// and no-show.
+pub(crate) fn penalty_amount(penalty: Penalty, nights: &[(Date, i64, i64)]) -> i64 {
     let total: i64 = nights.iter().map(|&(_, room, meal)| room + meal).sum();
-    let penalty = match rule.penalty.kind {
+    let amount = match penalty.kind {
         PenaltyKind::Nights => {
-            let count = usize::try_from(rule.penalty.value).unwrap_or(0);
+            let count = usize::try_from(penalty.value).unwrap_or(0);
             nights.iter().take(count).map(|&(_, room, _)| room).sum()
         }
         PenaltyKind::Percent => {
-            let exact = i128::from(total) * i128::from(rule.penalty.value);
+            let exact = i128::from(total) * i128::from(penalty.value);
             let rounded = ((exact + 5_000) / 10_000).min(i128::from(total));
             i64::try_from(rounded).expect("at most the stay's total")
         }
-        PenaltyKind::Amount => rule.penalty.value,
+        PenaltyKind::Amount => penalty.value,
     };
-    penalty.min(total)
+    amount.min(total)
 }
 
 /// Cancels the room `id` of the property, which must be at `expected_version` (`VersionMismatch`) and
@@ -79,7 +89,7 @@ pub fn cancellation_penalty(
 pub async fn cancel_room(
     tx: &mut Tx,
     tenant: TenantId,
-    actor: UserId,
+    actor: Option<UserId>,
     property: Uuid,
     id: Uuid,
     expected_version: i32,
@@ -141,23 +151,14 @@ pub async fn cancel_room(
     )
     .bind(id)
     .bind(status.as_str())
-    .bind(actor.0)
+    .bind(actor.map(|actor| actor.0))
     .bind(penalty)
     .bind(today)
     .fetch_one(&mut **tx)
     .await?;
     // After this row and its counters, before the reservation: the deposit folio sits between them in the lock order.
-    folio::post_cancellation_fee(
-        tx,
-        tenant,
-        Some(actor),
-        property,
-        id,
-        penalty,
-        &stay.currency,
-        stay.prices_include_tax,
-    )
-    .await?;
+    folio::post_cancellation_fee(tx, tenant, actor, property, id, penalty, &stay.currency, stay.prices_include_tax)
+        .await?;
     sqlx::query("update reservation set version = version + 1 where id = $1")
         .bind(stay.reservation_id)
         .execute(&mut **tx)
@@ -198,7 +199,7 @@ struct StayRow {
 
 #[cfg(test)]
 mod tests {
-    use super::{CancellationTerms, cancellation_penalty};
+    use super::{CancellationTerms, cancellation_penalty, no_show_penalty};
     use rates::{CancellationRule, Penalty, PenaltyKind};
     use time::macros::date;
     use time::{Date, Duration};
@@ -286,5 +287,16 @@ mod tests {
         let only_no_show = terms(vec![]);
         assert_eq!(penalty(Some(&only_no_show), 0), 0);
         assert_eq!(penalty(Some(&only_no_show), -1), 0);
+    }
+
+    #[test]
+    fn a_no_show_costs_the_terms_no_show_penalty_priced_as_a_rule_would_be() {
+        assert_eq!(no_show_penalty(None, &nights()), 0);
+        assert_eq!(no_show_penalty(Some(&standard()), &nights()), 39_000, "the whole stay, meals too");
+        let one_night = CancellationTerms { no_show: Penalty { kind: PenaltyKind::Nights, value: 1 }, ..standard() };
+        assert_eq!(no_show_penalty(Some(&one_night), &nights()), 10_000);
+        let too_much =
+            CancellationTerms { no_show: Penalty { kind: PenaltyKind::Amount, value: 50_000 }, ..standard() };
+        assert_eq!(no_show_penalty(Some(&too_much), &nights()), 39_000);
     }
 }

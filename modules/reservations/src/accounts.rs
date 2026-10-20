@@ -186,7 +186,7 @@ pub async fn create_account(
     .fetch_one(&mut **tx)
     .await?;
     let data = serde_json::json!({ "kind": created.kind.as_str(), "name": created.name });
-    audit(tx, tenant, actor, "account.created", "account", id, data).await?;
+    audit(tx, tenant, Some(actor), "account.created", "account", id, data).await?;
     notify(tx, tenant, property, vec![accounts_key(property)]).await?;
     Ok(created)
 }
@@ -253,7 +253,7 @@ pub async fn update_account(
     .fetch_one(&mut **tx)
     .await?;
     let data = serde_json::json!({ "fields": fields });
-    audit(tx, tenant, actor, "account.updated", "account", id, data).await?;
+    audit(tx, tenant, Some(actor), "account.updated", "account", id, data).await?;
     notify(tx, tenant, property, vec![accounts_key(property)]).await?;
     Ok(updated)
 }
