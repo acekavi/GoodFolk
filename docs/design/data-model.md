@@ -12,7 +12,7 @@ Related: [ARCHITECTURE.md](../ARCHITECTURE.md) (why), [api-conventions.md](api-c
 4. **Money is `bigint` minor units plus a `char(3)` ISO-4217 currency** on the same row. Never floats. Exchange rates are `numeric(18,8)`.
 5. **Stay and business dates are `date` in the property's time zone. Ranges are `daterange` with `[)` bounds** (check-in inclusive, check-out exclusive). Event times are `timestamptz`.
 6. **Rows that users edit concurrently carry `version integer not null default 1`.** Updates use `where version = $n` and increment it; the API maps a miss to `412 Precondition Failed` (`If-Match`).
-7. **Financial records are append-only.** Folio lines, payments, invoices, audit runs and `audit_log` are never updated or deleted by the app role; corrections are reversal rows.
+7. **Financial records are append-only.** Folio lines, payments, invoices, audit-run steps, daily statistics and `audit_log` are never updated or deleted by the app role; corrections are reversal rows. An audit run only moves forward: the app role may update its `status`, `attempts`, `error`, `failure` and `finished_at`, never its date or mode.
 8. **Enumerations are `text` with a `check` constraint** (easy to extend in a migration), mirrored by a Rust enum with `as_str`/`parse`.
 
 ## Phase 0: Foundation (implemented)
@@ -26,13 +26,13 @@ Related: [ARCHITECTURE.md](../ARCHITECTURE.md) (why), [api-conventions.md](api-c
 | `session` | `id`, `token_hash bytea unique`, `user_id`, `active_tenant_id`, `expires_at` | SHA-256 of the cookie token; no RLS (looked up before a tenant is known) |
 | `property` | `id`, `tenant_id`, `code` (unique per tenant), `name`, `timezone`, `base_currency`, `version` | Later phases add settings columns (below) |
 | `audit_log` | `id`, `tenant_id`, `actor_user_id`, `action`, `entity`, `entity_id`, `data jsonb`, `at` | Append-only (no update/delete grant) |
-| `idempotency_key` | `(tenant_id, key)`, `request_hash`, `status_code`, `response_body` | Replay store for create commands. A cleanup job (Phase 7 `jobs-svc`) deletes keys older than 7 days |
+| `idempotency_key` | `(tenant_id, key)`, `request_hash`, `status_code`, `response_body` | Replay store for create commands. jobs-svc's daily cleanup deletes keys older than 7 days (`app.purge_expired`), as it deletes expired `session` rows |
 
 ## Phase 1: Rooms and inventory (implemented)
 
 Created by `migrations/0004_rooms_inventory.sql`. Every table below carries `tenant_id` and references its property through `(tenant_id, property_id)`, and a room's type, section, blocks and reasons through `(property_id, id)`, so a row can never point into another tenant or property.
 
-`property` gains: `check_in_time time not null default '14:00'`, `check_out_time time not null default '12:00'`, `business_date date not null` (set to the property's local today when created; moved only by night audit).
+`property` gains: `check_in_time time not null default '14:00'`, `check_out_time time not null default '12:00'`, `business_date date not null` (set to the property's local today when created; moved only by the night audit's close, Phase 7b).
 
 | Table | Key columns | Constraints and indexes |
 |---|---|---|
@@ -41,13 +41,13 @@ Created by `migrations/0004_rooms_inventory.sql`. Every table below carries `ten
 | `room` | `id`, `tenant_id`, `property_id`, `room_type_id`, `number text`, `floor text null`, `section_id null`, `active`, `sort_order`, `version` | `unique (property_id, number)` |
 | `block_reason` | `id`, `tenant_id`, `property_id`, `code`, `label`, `default_kind`, `active`, `version` | `unique (property_id, code)`. Seeded per property: `RENOVATION`, `CONSTRUCTION`, `MAINTENANCE`, `OTHER` (out of order), `DEEP_CLEAN` (out of service) |
 | `room_block` | `id`, `tenant_id`, `property_id`, `room_id`, `period daterange`, `kind` (`out_of_order` \| `out_of_service`), `reason_id`, `note`, `created_by`, `released_at null`, `version` | `room_block_no_overlap: exclude using gist (room_id with =, period with &&) where (released_at is null)`; GiST `(property_id, period)`. `released_at` marks a block cancelled before it started; shortening moves `upper(period)` |
-| `inventory_day` | `(property_id, room_type_id, date)`, `tenant_id`, `physical`, `sold`, `out_of_order` | `check (out_of_order between 0 and physical)`; index `(property_id, date)`. Counters updated in the same transaction as rooms, blocks and (from Phase 3) reservations. `available = physical − sold − out_of_order`. Rows exist from the business date for 730 days. A nightly job (Phase 7) recomputes them and alerts on drift (`rooms::find_drift`) |
+| `inventory_day` | `(property_id, room_type_id, date)`, `tenant_id`, `physical`, `sold`, `out_of_order` | `check (out_of_order between 0 and physical)`; index `(property_id, date)`. Counters updated in the same transaction as rooms, blocks and (from Phase 3) reservations. `available = physical − sold − out_of_order`. Rows exist from the business date for 730 days. jobs-svc extends the window once per business date and checks the counters against the stays (`rooms::find_drift`), raising a `drift` ops alert on a mismatch without repairing it (Phase 7b) |
 
 Extensions: `btree_gist` (needed by the exclusion constraints) and, from Phase 3, `pg_trgm` (guest name search) and, from 3b, `btree_gin` (the `tenant_id` half of `guest_search`'s GIN index).
 
 | Global table | Key columns | Notes |
 |---|---|---|
-| `login_failure` | `id`, `email citext`, `at` | Sign-in throttling (`migrations/0003_login_throttle.sql`). No RLS and no `tenant_id`: looked up before a tenant is known. One row per attempt, written before the password is checked; a successful sign-in deletes the email's rows. The Phase 7 purge job deletes rows older than the window |
+| `login_failure` | `id`, `email citext`, `at` | Sign-in throttling (`migrations/0003_login_throttle.sql`). No RLS and no `tenant_id`: looked up before a tenant is known. One row per attempt, written before the password is checked; a successful sign-in deletes the email's rows. jobs-svc's daily cleanup deletes rows older than the window (Phase 7b) |
 
 ## Phase 2: Rates and meal plans (implemented)
 
@@ -127,15 +127,33 @@ Migrations `0020_folio.sql` to `0029_folio_no_delete.sql`. Every table below is 
 | `pos_bill` | `id`, `tenant_id`, `property_id`, `outlet_id`, `bill_no`, `business_date`, `body_hash`, `reservation_room_id null`, `settled`, `lines jsonb`, `posted_at` | `unique (property_id, outlet_id, bill_no)`, so a POS bill posts once |
 | `invoice` | `id`, `tenant_id`, `property_id`, `folio_id`, `kind` (`invoice` \| `credit_note`), `serial` (`[CN-]<CODE>-<YYYY>-<NNNNNN>`, gapless per property), `credits null`, `reason`, `data jsonb`, `total_lkr` (whole rupees), `pdf_key null`, `issued_by`, `issued_at` | `unique (property_id, serial)`; an invoice is credited once. The IRD format (ARCHITECTURE §7.6.4) |
 
-## Phase 7b and 7c: Night audit and payment gateways (planned)
+## Phase 7b: Night audit, jobs-svc and daily statistics (implemented)
+
+Migrations `0031_night_audit.sql` and `0032_folio_line_business_date.sql`. Every table below except `job_state` is tenant-owned with forced row-level security and joins the isolation suite. Amounts are `bigint` minor units in the property's base currency (LKR), from stored base amounts.
+
+`property` gains `audit_time time not null default '03:00'`: the audit moment of business date D is D at that time when it is 12:00 or later, else D + 1 at that time. `reservation` gains `booked_business_date date not null` and `reservation_room` gains `cancelled_business_date date null` (set exactly when the status is `cancelled` or `no_show`), so statistics count a booking, a cancellation and a no-show on the business date it happened; both were backfilled from their timestamps in the property's time zone, and a no-show's from its arrival. `folio_line.source` already allowed `no_show_fee`; a no-show fee's posting key is `no_show:<reservation_room>`. `0032` indexes `folio_line (business_date)`, `payment (business_date)` and `payment (pos_bill_id) where pos_bill_id is not null`, which the review and the close read by.
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `audit_run` | `id`, `tenant_id`, `property_id`, `business_date`, `mode` (`manual` \| `auto`), `status` (`running` \| `failed` \| `completed`), `started_by null` (null for the system), `attempts` (from 1), `error null`, `failure jsonb null` (`{step, stays: [{reservation_room, room, error}]}`), `started_at`, `finished_at null` | `unique (property_id, business_date)`, so a date has one run; `finished_at` is null exactly while `running`. The app role inserts and updates only `status`, `attempts`, `error`, `failure` and `finished_at`. Indexes `(property_id, business_date desc)` and a partial one on the open runs |
+| `audit_run_step` | `(run_id, step)`, `tenant_id`, `step` (`resolve` \| `post_charges` \| `lock_fx` \| `snapshot_stats` \| `advance_business_date`), `completed_at`, `detail jsonb` | Insert-only. A step is done exactly when its row exists: it is inserted in the step's own transaction |
+| `daily_stats` | `(property_id, business_date)`, `tenant_id`, `rooms_total`, `rooms_out_of_order`, `rooms_available`, `rooms_sold`, `complimentary_rooms`, `occupancy_bp`, `adults`, `children`, `arrivals`, `departures`, `no_shows`, `cancellations`, `walk_ins`, `room_revenue`, `meal_plan_revenue`, `pos_revenue`, `fee_revenue`, `other_revenue`, `adr`, `revpar`, `taxes jsonb` (`{code: amount}`), `payments jsonb` (`{method: amount}`), `taken_at` | Insert-only, taken in the roll's transaction: a closed day is never rewritten, and a later correction counts on the day it is posted. Revenue is net of tax, on the posting business date; `adjustment` lines are not revenue |
+| `daily_stats_breakdown` | `(property_id, business_date, dimension, key)`, `tenant_id`, `dimension` (`segment` \| `source` \| `residency` \| `room_type` \| `outlet`), `key`, `room_nights`, `room_revenue`, `revenue` | Insert-only, with its day. Each dimension's rows sum to the day's totals; revenue no stay accounts for is keyed `unattributed` |
+| `ops_alert` | `(property_id, kind)`, `tenant_id`, `kind` (`audit` \| `drift`), `message`, `raised_at` | One per property and kind: an automatic close that failed its third attempt, or drifted inventory counters. Cleared when the date completes, or by a clean drift check |
+
+| Global table | Key columns | Notes |
+|---|---|---|
+| `job_state` | `(job, key)`, `job` (`fx_import` \| `media_sweep` \| `window` \| `cleanup` \| `drift`), `key` (a property, or `''` for a global job), `done_for date null`, `last_ok_at null`, `last_error null` | jobs-svc's memory between ticks: when each daily job last succeeded. No tenant data, so no RLS; the app role selects, inserts and updates |
+
+jobs-svc reads across tenants through definer functions only (`app.jobs_properties()`, `app.jobs_open_runs()`, `app.purge_expired()`), which rely on the owner's read-only `jobs_read` policy on `audit_run`, the delete-only `purge_idempotency` policy on `idempotency_key` and 0022's `fx_import_read` on `property` ([api-conventions.md](api-conventions.md), "Cross-tenant reads").
+
+## Phase 7c: Payment gateways (planned)
 
 | Table | Key columns | Notes |
 |---|---|---|
 | `payment_event` | `id`, `tenant_id`, `payment_id`, `status`, `provider_payload jsonb`, `at` | Append-only; gateway webhook and API responses (7c) |
 | `card_token` | `id`, `tenant_id`, `guest_id`, `provider`, `token_ref`, `card_brand`, `last4`, `expiry` | Gateway tokens only; never card numbers (7c) |
 | `merchant_account` | `id`, `tenant_id`, `property_id`, `provider`, `gateway_host`, `merchant_id`, `secret_name` (Secret Manager), `currencies char(3)[]`, `active` | Per-property credentials (7c) |
-| `audit_run` | `id`, `tenant_id`, `property_id`, `business_date`, `status`, `steps jsonb`, `started_by`, `started_at`, `finished_at` | `unique (property_id, business_date)`; checkpointed steps (7b) |
-| `daily_stat` | `(property_id, business_date)`, `tenant_id`, `rooms_available`, `rooms_sold`, `room_revenue`, `adr`, `revpar`, `by_segment jsonb`, `by_source jsonb`, `residency_mix jsonb` | Base currency; written by the audit (7b) |
 
 ## Phase 8: Settings and channels
 
