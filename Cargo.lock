@@ -1027,7 +1027,6 @@ dependencies = [
  "anyhow",
  "async-graphql",
  "async-graphql-axum",
- "async-trait",
  "axum",
  "axum-extra",
  "base64 0.23.1",
@@ -2880,11 +2879,14 @@ name = "jobs-svc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "audit",
  "axum",
  "db",
  "folio",
  "fx",
+ "identity",
+ "media",
  "property",
  "proto",
  "reqwest",

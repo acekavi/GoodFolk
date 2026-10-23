@@ -160,8 +160,11 @@ async fn post_tick_answers_with_the_report(_: PgPoolOptions, opts: PgConnectOpti
     let response = http().post(format!("http://{addr}/tick")).bearer_auth(SECRET).send().await.unwrap();
     assert_eq!(response.status(), 200);
     let report: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
-    let expected = serde_json::json!({"job": "auto_close", "key": hotel.property.to_string(), "outcome": "ran"});
-    assert_eq!(report, serde_json::json!({ "jobs": [expected] }));
+    let close = serde_json::json!({"job": "auto_close", "key": hotel.property.to_string(), "outcome": "ran"});
+    let jobs = report["jobs"].as_array().unwrap();
+    assert_eq!(jobs[0], close, "{report}");
+    let daily: Vec<&str> = jobs[1..].iter().map(|job| job["job"].as_str().unwrap()).collect();
+    assert_eq!(daily, ["cleanup", "window", "drift"], "the daily jobs follow: {report}");
 }
 
 /// Stops the close after `resolve` commits, as a crash would.

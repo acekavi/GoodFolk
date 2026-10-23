@@ -4,7 +4,10 @@
 //! One port serves gRPC (`goodfolk.jobs.v1.Jobs`, over cleartext HTTP/2) and HTTP (`POST /tick`, which Cloud
 //! Scheduler calls in production, and `GET /healthz`). Everything but the health check sits behind service auth.
 
+mod cleanup;
 pub mod config;
+pub mod daily;
+mod drift;
 pub mod due;
 mod grpc;
 pub mod tick;

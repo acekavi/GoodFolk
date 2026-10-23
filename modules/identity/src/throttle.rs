@@ -5,7 +5,7 @@ use uuid::Uuid;
 /// Sign-in attempts allowed per email within [`LOGIN_WINDOW_SECS`]; further attempts are refused until the
 /// oldest of them is older than the window.
 pub const MAX_LOGIN_FAILURES: i64 = 5;
-pub const LOGIN_WINDOW_SECS: f64 = 15.0 * 60.0;
+pub const LOGIN_WINDOW_SECS: i32 = 15 * 60;
 
 /// Reserves a sign-in attempt for `email`. Returns `false`, recording nothing, if [`MAX_LOGIN_FAILURES`]
 /// attempts failed within the window. Otherwise the attempt counts as a failure until

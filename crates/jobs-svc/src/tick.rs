@@ -1,5 +1,5 @@
 //! The tick: every due job, run once. Crashed and failed closes first, then the auto closes of the properties whose
-//! audit moment has passed.
+//! audit moment has passed, then the daily jobs (see [`crate::daily`]).
 //!
 //! Each job's [`JobOutcome`] is recorded, and one job's failure never stops the others. A close runs under its
 //! property's advisory lock (see [`audit::execute`]), so overlapping ticks, a close started by hand and other
@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::JobsSvc;
+use crate::daily::{self, FX_TIME_ZONE, UTC};
 use crate::due::audit_due;
 
 /// How often `JOBS_TICK=internal` ticks.
@@ -43,10 +44,10 @@ pub async fn run_ticks(svc: JobsSvc, shutdown: CancellationToken) {
     }
 }
 
-/// [`tick_with`] at each property's local time by the database's clock and time zone data.
+/// [`tick_with`] at each zone's local time by the database's clock and time zone data.
 pub async fn tick(svc: &JobsSvc) -> TickResponse {
     let clock = local_times(svc).await;
-    // A zone the clock was not read for (a property created since) is not due until the next tick.
+    // Nothing is due in a zone the clock was not read for (a property created since) until the next tick.
     let now_for =
         |zone: &str| clock.as_ref().ok().and_then(|times| times.get(zone).copied()).unwrap_or(PrimitiveDateTime::MIN);
     let mut response = tick_with(svc, now_for).await;
@@ -58,11 +59,13 @@ pub async fn tick(svc: &JobsSvc) -> TickResponse {
 
 /// Runs every due job once, in order, with `now_for(zone)` as the local time in `zone`:
 /// 1. the open runs: a `running` one is resumed, and a failed auto one with attempts left is retried;
-/// 2. the auto closes of the properties whose audit moment has passed and whose business date has no run.
+/// 2. the auto closes of the properties whose audit moment has passed and whose business date has no run;
+/// 3. the daily jobs that are due.
 pub async fn tick_with(svc: &JobsSvc, now_for: impl Fn(&str) -> PrimitiveDateTime) -> TickResponse {
     let mut jobs = Vec::new();
     open_runs(svc, &mut jobs).await;
     auto_closes(svc, &now_for, &mut jobs).await;
+    daily::run(svc, &now_for, &mut jobs).await;
     TickResponse { jobs }
 }
 
@@ -174,22 +177,25 @@ async fn unclosed(svc: &JobsSvc, tenant: TenantId, property: Uuid, date: Date) -
     Ok(unclosed)
 }
 
-/// The local time now in each zone a property is in.
+/// The local time now in each zone a property is in, and in the daily jobs' zones.
 async fn local_times(svc: &JobsSvc) -> Result<HashMap<String, PrimitiveDateTime>, sqlx::Error> {
     let times: Vec<(String, PrimitiveDateTime)> = sqlx::query_as(
-        "select zone, now() at time zone zone from (select distinct timezone as zone from app.jobs_properties()) z",
+        "select zone, now() at time zone zone
+         from (select timezone from app.jobs_properties() union select $1 union select $2) z (zone)",
     )
+    .bind(FX_TIME_ZONE)
+    .bind(UTC)
     .fetch_all(&svc.pool)
     .await?;
     Ok(times.into_iter().collect())
 }
 
-fn failed(error: impl std::fmt::Display) -> String {
+pub(crate) fn failed(error: impl std::fmt::Display) -> String {
     format!("failed: {error}")
 }
 
 /// `job`'s outcome for `key`, logged.
-fn record(job: &str, key: String, outcome: String) -> JobOutcome {
+pub(crate) fn record(job: &str, key: String, outcome: String) -> JobOutcome {
     if outcome.starts_with("failed") {
         tracing::error!(job, key, outcome, "job failed");
     } else {

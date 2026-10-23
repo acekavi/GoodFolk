@@ -16,7 +16,9 @@ message TickResponse { repeated JobOutcome jobs = 1; }
 message JobOutcome {
   string job = 1;      // "auto_close", "resume", "fx_import", "media_sweep", "window", "cleanup", "drift"
   string key = 2;      // the property id, or "" for a global job
-  string outcome = 3;  // "ran", "skipped" (lock held / not due), or "failed: <message>"
+  // "ran"; "skipped" when another session holds the job's lock (or is running or retrying the close); or
+  // "failed: <message>". A job that is not due, or is turned off, has no outcome.
+  string outcome = 3;
 }
 message StartCloseRequest { string tenant_id = 1; string property_id = 2; string user_id = 3; }
 message RetryCloseRequest { string tenant_id = 1; string run_id = 2; string user_id = 3; }

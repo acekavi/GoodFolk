@@ -15,14 +15,12 @@ use events::{PushEnvelope, PushMessage};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use sqlx::Connection as _;
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::collections::BTreeMap;
 use std::time::Duration;
-use storage::{Bucket, Storage, upload_key};
+use storage::{Bucket, Storage};
 use tokio::net::TcpListener;
-use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -765,39 +763,4 @@ async fn internal_events_dedupes(_: PgPoolOptions, opts: PgConnectOptions) {
     assert_eq!(push(&app, "not json", Some(&auth)).await, StatusCode::BAD_REQUEST);
     let not_a_result = envelope(Uuid::now_v7(), &json!({"type": "something else"})).to_string();
     assert_eq!(push(&app, &not_a_result, Some(&auth)).await, StatusCode::BAD_REQUEST);
-}
-
-#[sqlx::test(migrator = "db::MIGRATOR")]
-async fn the_sweep_removes_an_orphans_objects_from_their_buckets(_: PgPoolOptions, opts: PgConnectOptions) {
-    let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
-    let app = TestApp::new(opts.clone()).await;
-    let storage = storage().await;
-    let hotel = Hotel::new(&app, "owner@example.com", "GAL").await;
-    let orphan =
-        ready_asset(&superuser, &storage, &hotel, "gallery", "image/jpeg", &[("md", "avif")], "jxl", "select $1, $2")
-            .await;
-    sqlx::query("update media_asset set created_at = now() - interval '2 days' where id = $1")
-        .bind(orphan)
-        .execute(&superuser)
-        .await
-        .unwrap();
-    let rendition = storage::rendition_key(hotel.tenant, orphan, "md", "avif");
-    let archive = storage::archive_key(hotel.tenant, orphan, "jxl");
-    storage.put(Bucket::Private, &upload_key(hotel.tenant, orphan), b"raw".to_vec(), "image/jpeg", None).await.unwrap();
-
-    // Another session holding the lock means another instance is sweeping.
-    let mut holder = sqlx::PgConnection::connect_with(&opts).await.unwrap();
-    sqlx::query("select pg_advisory_lock(hashtext('media_sweep'))").execute(&mut holder).await.unwrap();
-    assert!(
-        core_api::tasks::sweep_once(&app.pool, &opts, &storage, &CancellationToken::new()).await.unwrap().is_none()
-    );
-    sqlx::query("select pg_advisory_unlock(hashtext('media_sweep'))").execute(&mut holder).await.unwrap();
-
-    let report =
-        core_api::tasks::sweep_once(&app.pool, &opts, &storage, &CancellationToken::new()).await.unwrap().unwrap();
-
-    assert_eq!(report.orphans.len(), 1);
-    assert_eq!(storage.head(Bucket::Public, &rendition).await.unwrap(), None);
-    assert_eq!(storage.head(Bucket::Private, &archive).await.unwrap(), None);
-    assert_eq!(storage.head(Bucket::Private, &upload_key(hotel.tenant, orphan)).await.unwrap(), None);
 }

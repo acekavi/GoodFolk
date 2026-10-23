@@ -1,4 +1,4 @@
-//! Manual exchange rates. Reads go through GraphQL (`fxRates`, `fxAlert`); the daily import is `tasks::run_fx_imports`.
+//! Manual exchange rates. Reads go through GraphQL (`fxRates`, `fxAlert`); jobs-svc runs the daily import.
 
 use crate::auth::TenantContext;
 use crate::error::ApiError;

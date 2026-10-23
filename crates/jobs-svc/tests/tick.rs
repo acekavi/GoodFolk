@@ -105,7 +105,12 @@ async fn only_a_failed_auto_run_with_attempts_left_is_retried(_: PgPoolOptions, 
         .await
         .unwrap();
 
-        let jobs = tick_with(&svc, |_| before_the_moment).await.jobs;
+        let jobs: Vec<_> = tick_with(&svc, |_| before_the_moment)
+            .await
+            .jobs
+            .into_iter()
+            .filter(|job| job.job == "auto_close")
+            .collect();
         let run = audit::get_run(&mut hotel.tx().await, run.id).await.unwrap();
         if retried {
             assert_eq!(jobs.len(), 1, "{case}: {jobs:?}");

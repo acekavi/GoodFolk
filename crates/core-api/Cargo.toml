@@ -51,7 +51,6 @@ utoipa.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-async-trait.workspace = true
 db = { workspace = true, features = ["testing"] }
 flate2.workspace = true
 http-body-util.workspace = true

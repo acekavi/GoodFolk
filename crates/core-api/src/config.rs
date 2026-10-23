@@ -31,10 +31,6 @@ pub struct Config {
     pub media_svc_auth: TokenSource,
     /// Recognises service calls to `/internal/events` (`CORE_API_AUDIENCE`, `ALLOWED_SERVICE_EMAILS`).
     pub internal_auth: Verifier,
-    /// Whether `serve` runs the daily exchange-rate import (`FX_IMPORT=on|off`, default `on`). An operations switch:
-    /// tests and end-to-end runs turn it off so they never fetch from the Central Bank, and production may turn it
-    /// off while rates are kept by hand.
-    pub fx_import: bool,
 }
 
 impl Config {
@@ -89,11 +85,6 @@ impl Config {
         // SVC_AUTH, INTERNAL_SHARED_SECRET and ALLOWED_SERVICE_EMAILS are shared by both directions.
         let media_svc_auth = TokenSource::from_vars("MEDIA_SVC_AUDIENCE", &var)?;
         let internal_auth = Verifier::from_vars("CORE_API_AUDIENCE", &var)?;
-        let fx_import = match var("FX_IMPORT").as_deref() {
-            None | Some("on") => true,
-            Some("off") => false,
-            Some(_) => bail!("FX_IMPORT must be on or off"),
-        };
         Ok(Self {
             database_url,
             database_listen_url,
@@ -105,7 +96,6 @@ impl Config {
             media_svc_url,
             media_svc_auth,
             internal_auth,
-            fx_import,
         })
     }
 }
@@ -538,24 +528,6 @@ mod tests {
 
         assert!(!shown.contains("goodfolk_dev_secret"), "{shown}");
         assert!(!shown.contains("a-local-secret-of-at-least-32-bytes"), "{shown}");
-    }
-
-    #[test]
-    fn the_exchange_rate_import_is_on_unless_turned_off() {
-        let base = [("DATABASE_URL", "postgres://localhost/db"), ("GUEST_ID_KEY", GUEST_ID_KEY_B64)];
-        let with = |value: &'static str| {
-            let mut pairs = base.to_vec();
-            pairs.push(("FX_IMPORT", value));
-            Config::from_vars(vars(&pairs))
-        };
-
-        assert!(Config::from_vars(vars(&base)).unwrap().fx_import);
-        assert!(with("on").unwrap().fx_import);
-        assert!(!with("off").unwrap().fx_import);
-        assert!(format!("{:#}", with("no").unwrap_err()).contains("FX_IMPORT"));
-        let mut production = production_pairs();
-        production.push(("FX_IMPORT", "off"));
-        assert!(!Config::from_vars(|name| lookup(&production, name)).unwrap().fx_import, "an operations switch");
     }
 
     fn lookup(pairs: &[(&str, &str)], name: &str) -> Option<String> {

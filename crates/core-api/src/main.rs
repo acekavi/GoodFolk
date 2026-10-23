@@ -1,8 +1,8 @@
 use anyhow::{Context, bail};
 use core_api::config::Config;
 use core_api::state::MediaServices;
-use core_api::{AppState, events, router, staff, tasks};
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use core_api::{AppState, events, router, staff};
+use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use std::time::Duration;
 use storage::Storage;
@@ -10,7 +10,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
-/// How long the background tasks get to stop once the server has.
+/// How long the outbox relay gets to stop once the server has.
 const TASKS_GRACE: Duration = Duration::from_secs(10);
 
 #[global_allocator]
@@ -33,8 +33,7 @@ async fn serve() -> anyhow::Result<()> {
     db::assert_rls_applies(&pool).await?;
     let storage = Arc::new(Storage::new(config.storage)?);
     let media_auth = Arc::new(config.media_svc_auth);
-    let media =
-        MediaServices::new(storage.clone(), &config.media_svc_url, media_auth.clone(), Arc::new(config.internal_auth))?;
+    let media = MediaServices::new(storage, &config.media_svc_url, media_auth.clone(), Arc::new(config.internal_auth))?;
     let state = AppState::with_media(pool.clone(), config.production, config.guest_id_keys, media);
     // Pushes to media-svc carry the same credentials as its gRPC calls.
     let push_auth: ::events::HeaderProvider = Arc::new(move || {
@@ -42,9 +41,6 @@ async fn serve() -> anyhow::Result<()> {
         Box::pin(async move { media_auth.header().await.map_err(|e| ::events::BusError::Retryable(e.to_string())) })
     });
     let bus = ::events::bus_from_env(&[::media::PROCESS_TOPIC, ::folio::INVOICE_RENDER_TOPIC], Some(push_auth))?;
-    // The sweep's and the import's advisory locks are session locks, so each is taken on a direct connection.
-    let lock_connect: PgConnectOptions =
-        config.database_listen_url.parse().context("DATABASE_LISTEN_URL is not a connection string")?;
     // One direct connection, kept open, used only for LISTEN (and to reconnect it).
     let listen_pool = PgPoolOptions::new()
         .max_connections(1)
@@ -56,31 +52,15 @@ async fn serve() -> anyhow::Result<()> {
     events::spawn_listener(listen_pool, state.events.clone(), outbox_wake.clone()).await?;
 
     let shutdown = CancellationToken::new();
-    let relay = tokio::spawn(::events::run_relay(pool.clone(), bus, outbox_wake, shutdown.clone()));
-    let fx_imports = if config.fx_import {
-        let source = Arc::new(fx::Cbsl::new()?);
-        Some(tokio::spawn(tasks::run_fx_imports(pool.clone(), lock_connect.clone(), source, shutdown.clone())))
-    } else {
-        tracing::warn!("FX_IMPORT=off: exchange rates are not imported; set them by hand");
-        None
-    };
-    let sweeps = tokio::spawn(tasks::run_sweeps(pool, lock_connect, storage, shutdown.clone()));
+    let relay = tokio::spawn(::events::run_relay(pool, bus, outbox_wake, shutdown.clone()));
 
     let tcp = tokio::net::TcpListener::bind(config.bind_addr).await?;
     tracing::info!(addr = %config.bind_addr, "listening");
     let served =
         axum::serve(core_api::without_nagle(tcp), router(state)).with_graceful_shutdown(shutdown_signal()).await;
     shutdown.cancel();
-    let stopped = async {
-        let fx_imports = async {
-            if let Some(task) = fx_imports {
-                let _ = task.await;
-            }
-        };
-        tokio::join!(relay, sweeps, fx_imports)
-    };
-    if tokio::time::timeout(TASKS_GRACE, stopped).await.is_err() {
-        tracing::warn!("background tasks did not stop in time");
+    if tokio::time::timeout(TASKS_GRACE, relay).await.is_err() {
+        tracing::warn!("the outbox relay did not stop in time");
     }
     served?;
     Ok(())
