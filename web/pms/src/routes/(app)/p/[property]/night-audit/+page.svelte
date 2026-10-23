@@ -21,6 +21,8 @@
 		fetchAuditRuns,
 		fetchNightAudit,
 		nightAuditKey,
+		nightPosting,
+		owedText,
 		paymentsByMethod,
 		type AuditAction
 	} from '$lib/night-audit';
@@ -37,6 +39,8 @@
 	const baseCurrency = $derived(
 		properties.data?.find((property) => property.id === propertyId)?.baseCurrency ?? ''
 	);
+	/** A base-currency amount, held until the property (and so its base currency) is read. */
+	const base = (amount: number) => (baseCurrency ? money(amount, baseCurrency) : '…');
 	const review = createQuery(() => ({
 		queryKey: nightAuditKey(propertyId),
 		queryFn: ({ signal }) => fetchNightAudit(propertyId, signal)
@@ -232,7 +236,6 @@
 					</thead>
 					<tbody>
 						{#each data.departures as row (row.reservationRoomId)}
-							{@const owed = row.balances.filter((balance) => balance.amount !== 0)}
 							<tr>
 								<td>
 									{row.guest}
@@ -242,9 +245,7 @@
 								<td>{row.roomNumber ?? 'Unassigned'}</td>
 								<td>{row.departure}</td>
 								<td>
-									{owed.length === 0
-										? 'Settled'
-										: owed.map((balance) => money(balance.amount, balance.currency)).join(', ')}
+									{owedText(row.balances) ?? 'Settled'}
 								</td>
 								<td class="actions">
 									<button onclick={() => open({ kind: 'checkOut', row })}>Check out</button>
@@ -294,7 +295,7 @@
 					<tfoot>
 						<tr>
 							<th scope="row">Total</th>
-							<td colspan="2">{money(outlet.totalBase, baseCurrency)}</td>
+							<td colspan="2">{base(outlet.totalBase)}</td>
 						</tr>
 					</tfoot>
 				</table>
@@ -323,9 +324,9 @@
 								<td>
 									{#if night.problem}
 										<span class="error">{night.problem}</span>
-									{:else if night.alreadyPosted >= 2}
+									{:else if nightPosting(night) === 'posted'}
 										Already posted
-									{:else if night.alreadyPosted === 1}
+									{:else if nightPosting(night) === 'partly'}
 										Partly posted
 									{:else}
 										To post
@@ -349,7 +350,7 @@
 							<tr>
 								<td>{category.category}</td>
 								<td>{category.lines}</td>
-								<td>{money(category.totalBase, baseCurrency)}</td>
+								<td>{base(category.totalBase)}</td>
 							</tr>
 						{/each}
 					</tbody>
@@ -372,7 +373,7 @@
 							<th>Currency</th>
 							<th>Payments</th>
 							<th>Amount</th>
-							<th>In {baseCurrency}</th>
+							<th>In {baseCurrency || 'base'}</th>
 							<th>Refunds</th>
 							<th>Flags</th>
 						</tr>
@@ -383,7 +384,7 @@
 								<td>{group.currency}</td>
 								<td>{group.count}</td>
 								<td>{money(group.amount, group.currency)}</td>
-								<td>{money(group.baseAmount, baseCurrency)}</td>
+								<td>{base(group.baseAmount)}</td>
 								<td>{money(group.refunds, group.currency)}</td>
 								<td>
 									{group.flagged.length === 0

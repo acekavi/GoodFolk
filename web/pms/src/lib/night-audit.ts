@@ -7,7 +7,7 @@ import type {
 	OpsAlertsQuery
 } from './api/gql/graphql';
 import { query } from './api/graphql';
-import { methodLabel, PAYMENT_METHODS } from './folio';
+import { methodLabel, money, PAYMENT_METHODS } from './folio';
 import { can, type Profile } from './session';
 
 /** The Night audit page's review of the business date. */
@@ -250,6 +250,25 @@ export function paymentsByMethod(groups: readonly PaymentGroup[]): MethodPayment
 			label: auditMethodLabel(method),
 			groups: list.sort((a, b) => a.currency.localeCompare(b.currency))
 		}));
+}
+
+/**
+ * How much of a stay's night is already posted. The night has a room charge, plus a meal-plan charge when its meal
+ * amount is above zero, as the server counts them.
+ */
+export function nightPosting(
+	night: Pick<NightAudit['bookingBills']['nights'][number], 'mealAmount' | 'alreadyPosted'>
+): 'posted' | 'partly' | 'none' {
+	const charges = 1 + (night.mealAmount > 0 ? 1 : 0);
+	if (night.alreadyPosted >= charges) return 'posted';
+	return night.alreadyPosted > 0 ? 'partly' : 'none';
+}
+
+/** The balances not at zero, as `LKR 1,000.00, USD -5.00`; `null` when the folio is settled. */
+export function owedText(balances: readonly { currency: string; amount: number }[]): string | null {
+	const open = balances.filter((balance) => balance.amount !== 0);
+	if (open.length === 0) return null;
+	return open.map((balance) => money(balance.amount, balance.currency)).join(', ');
 }
 
 /** The steps of a close, in the order they run. */

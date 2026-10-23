@@ -6,7 +6,9 @@ import {
 	dayRevenue,
 	failedStays,
 	lastNightAmount,
+	nightPosting,
 	occupancyText,
+	owedText,
 	paymentsByMethod,
 	runDuration,
 	seesOpsAlerts,
@@ -203,5 +205,35 @@ describe('seesOpsAlerts', () => {
 		expect(seesOpsAlerts(profile('manager'), 'p1')).toBe(true);
 		expect(seesOpsAlerts(profile('front_desk'), 'p1')).toBe(false);
 		expect(seesOpsAlerts(profile('accountant'), 'p1')).toBe(false);
+	});
+});
+
+describe('nightPosting', () => {
+	it('reads a room-only night with its room charge posted as posted', () => {
+		expect(nightPosting({ mealAmount: 0, alreadyPosted: 1 })).toBe('posted');
+	});
+
+	it('reads a night with meals and one of its two charges posted as partly posted', () => {
+		expect(nightPosting({ mealAmount: 500, alreadyPosted: 1 })).toBe('partly');
+		expect(nightPosting({ mealAmount: 500, alreadyPosted: 2 })).toBe('posted');
+	});
+
+	it('reads a night with nothing posted as to post', () => {
+		expect(nightPosting({ mealAmount: 0, alreadyPosted: 0 })).toBe('none');
+		expect(nightPosting({ mealAmount: 500, alreadyPosted: 0 })).toBe('none');
+	});
+});
+
+describe('owedText', () => {
+	it('joins the balances not at zero, and is null when settled', () => {
+		expect(
+			owedText([
+				{ currency: 'LKR', amount: 100_000 },
+				{ currency: 'EUR', amount: 0 },
+				{ currency: 'USD', amount: -500 }
+			])
+		).toBe('LKR 1,000.00, USD -5.00');
+		expect(owedText([{ currency: 'LKR', amount: 0 }])).toBeNull();
+		expect(owedText([])).toBeNull();
 	});
 });

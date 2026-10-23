@@ -14,6 +14,7 @@
 	import {
 		lastNightAmount,
 		nightAuditKey,
+		owedText,
 		totalAfterDelay,
 		type AuditAction
 	} from '$lib/night-audit';
@@ -184,15 +185,11 @@
 					<p class="error" role="alert">{errorMessage(reservation.error)}</p>
 				{/if}
 			{:else if action.kind === 'checkOut'}
-				{@const open = action.row.balances.filter((balance) => balance.amount !== 0)}
-				{#if open.length === 0}
+				{@const owed = owedText(action.row.balances)}
+				{#if owed === null}
 					<p>The guest folio is settled.</p>
 				{:else}
-					<p>
-						The guest folio still has {open
-							.map((balance) => money(balance.amount, balance.currency))
-							.join(', ')}; it stays open after check-out.
-					</p>
+					<p>The guest folio still has {owed}; it stays open after check-out.</p>
 				{/if}
 			{:else if action.kind === 'extend'}
 				<p>The guest stays tonight ({businessDate}) and leaves on {tomorrow}.</p>

@@ -38,6 +38,9 @@
 	const to = $derived(property ? addDays(property.businessDate, -1) : '');
 	const from = $derived(to ? addDays(to, 1 - DAYS) : '');
 
+	/** A base-currency amount, held until the property (and so its base currency) is read. */
+	const base = (amount: number) => (baseCurrency ? money(amount, baseCurrency) : '…');
+
 	const runs = createQuery(() => ({
 		queryKey: auditRunsKey(propertyId, RUNS),
 		queryFn: ({ signal }) => fetchAuditRuns(propertyId, RUNS, signal)
@@ -135,7 +138,7 @@
 	{:else if stats.data && days.length === 0}
 		<p class="hint">No closed day in the last {DAYS} days.</p>
 	{:else if stats.data}
-		<p class="hint">Revenue is net of tax, in {baseCurrency}.</p>
+		<p class="hint">Revenue is net of tax{baseCurrency ? `, in ${baseCurrency}` : ''}.</p>
 		<div class="scroll">
 			<table>
 				<thead>
@@ -154,9 +157,9 @@
 						<tr>
 							<td>{day.businessDate}</td>
 							<td>{occupancyText(day.occupancyBp)} ({day.roomsSold}/{day.roomsAvailable})</td>
-							<td>{money(day.adr, baseCurrency)}</td>
-							<td>{money(day.revpar, baseCurrency)}</td>
-							<td>{money(dayRevenue(day), baseCurrency)}</td>
+							<td>{base(day.adr)}</td>
+							<td>{base(day.revpar)}</td>
+							<td>{base(dayRevenue(day))}</td>
 							<td>{day.arrivals}</td>
 							<td>{day.departures}</td>
 						</tr>
