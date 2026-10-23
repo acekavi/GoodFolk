@@ -42,6 +42,17 @@ pub struct NightPreview {
     pub already_posted: u8,
 }
 
+/// An in-house stay's room and, when priced, its night of the date [`preview_business_date_charges`] previews: the
+/// night's currency, or the stay's when it has none.
+#[derive(sqlx::FromRow)]
+struct PreviewNight {
+    id: Uuid,
+    room_number: Option<String>,
+    room_amount: Option<i64>,
+    meal_amount: Option<i64>,
+    currency: String,
+}
+
 /// One night of a stay, as [`post_night`] posts it.
 #[derive(sqlx::FromRow)]
 struct Night {
@@ -175,32 +186,40 @@ pub async fn preview_business_date_charges(
     .await?
     .into_iter()
     .collect();
+    // Each stay's room and its night of `date`, in one statement rather than one per stay.
+    let rows: Vec<PreviewNight> = sqlx::query_as(
+        "select rr.id, room.number as room_number, n.room_amount, n.meal_amount,
+                coalesce(n.currency, rr.currency)::text as currency
+         from reservation_room rr
+         left join room on room.id = rr.room_id
+         left join reservation_night n on n.reservation_room_id = rr.id and n.date = $2
+         where rr.id = any($1)",
+    )
+    .bind(&stays)
+    .bind(date)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut nights: HashMap<Uuid, PreviewNight> = rows.into_iter().map(|row| (row.id, row)).collect();
     let mut rated: HashMap<String, bool> = HashMap::new();
     let mut previews = Vec::with_capacity(stays.len());
     for stay in stays {
-        let Some(night) = nights(tx, stay, Some(date), date + Duration::days(1)).await?.pop() else {
-            let (currency, room_number): (String, Option<String>) = sqlx::query_as(
-                "select rr.currency::text, room.number from reservation_room rr left join room on room.id = rr.room_id
-                 where rr.id = $1",
-            )
-            .bind(stay)
-            .fetch_one(&mut **tx)
-            .await?;
+        let Some(night) = nights.remove(&stay) else { continue };
+        let (Some(room_amount), Some(meal_amount)) = (night.room_amount, night.meal_amount) else {
             previews.push(NightPreview {
                 reservation_room: stay,
-                room_number,
+                room_number: night.room_number,
                 date,
                 room_amount: 0,
                 meal_amount: 0,
-                currency,
+                currency: night.currency,
                 problem: Some(format!("No price for {date}")),
                 already_posted: 0,
             });
             continue;
         };
         let room_used = used.contains(&format!("room:{stay}:{date}"));
-        let meal_used = night.meal_amount > 0 && used.contains(&format!("meal_plan:{stay}:{date}"));
-        let charges = 1 + u8::from(night.meal_amount > 0);
+        let meal_used = meal_amount > 0 && used.contains(&format!("meal_plan:{stay}:{date}"));
+        let charges = 1 + u8::from(meal_amount > 0);
         let already_posted = u8::from(room_used) + u8::from(meal_used);
         let problem = if night.room_number.is_none() {
             Some("No room assigned".to_owned())
@@ -213,8 +232,8 @@ pub async fn preview_business_date_charges(
             reservation_room: stay,
             room_number: night.room_number,
             date,
-            room_amount: night.room_amount,
-            meal_amount: night.meal_amount,
+            room_amount,
+            meal_amount,
             currency: night.currency,
             problem,
             already_posted,
