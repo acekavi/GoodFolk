@@ -109,7 +109,7 @@ pub struct PaymentGroup {
     pub base_amount: i64,
     pub refunds: i64,
     /// LKR payments, not refunds, with no evidence, on the guest folio of a stay whose rate plan is in segment
-    /// `FIT_F` (sold to non-residents).
+    /// `FIT_F` (sold to non-residents), or on the deposit folio of a reservation with any room on such a plan.
     pub flagged: Vec<Uuid>,
 }
 
@@ -398,7 +398,11 @@ async fn payments(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<Payment
         "select p.id, p.method, p.currency::text as currency, p.amount, p.base_amount,
                 p.refund_of is not null as refund,
                 coalesce(p.currency = 'LKR' and p.refund_of is null and coalesce(p.evidence, '') = ''
-                         and rp.segment = 'FIT_F', false) as flagged
+                         and (rp.segment = 'FIT_F'
+                              or (f.kind = 'deposit' and exists (
+                                    select 1 from reservation_room dr join rate_plan drp on drp.id = dr.rate_plan_id
+                                    where dr.reservation_id = f.reservation_id and drp.segment = 'FIT_F'))),
+                         false) as flagged
          from payment p
          left join folio f on f.id = p.folio_id
          left join pos_bill b on b.id = p.pos_bill_id

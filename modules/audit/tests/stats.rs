@@ -485,6 +485,53 @@ async fn post_bill(hotel: &Hotel, bill: PosBillIn) -> PosOutcome {
     outcome
 }
 
+/// A settled bill's items count by their own category, as a posted bill's lines do: a misc item is other revenue at
+/// no outlet.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_settled_bill_s_misc_item_is_other_revenue(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let p = hotel.property;
+    let stay = hotel.stay(Stay { room: Some("101"), ..Stay::new(p, "checked_in", 0, 1) }).await;
+    hotel.outlet(p, "BAR", "Bar").await;
+    post_bill(&hotel, bill("BAR", "S1", None, 1_000, 2_000, PosTarget::Settled { method: Method::Cash })).await;
+    post_bill(&hotel, bill("BAR", "P1", None, 300, 700, PosTarget::Stay(stay.id))).await;
+
+    let stats = compute(&hotel).await;
+
+    assert_eq!((stats.pos_revenue, stats.other_revenue), (2_000 + 700, 1_000 + 300));
+    let outlets: Vec<BreakdownRow> = stats.breakdown.iter().filter(|row| row.dimension == "outlet").cloned().collect();
+    assert_eq!(outlets, vec![row("outlet", "BAR", 0, 0, 2_700)]);
+    assert_invariants(&stats);
+}
+
+/// Every settled bill has its payment: one without is refused, naming it, never dropped from the figures.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_settled_bill_without_a_payment_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let p = hotel.property;
+    hotel.outlet(p, "BAR", "Bar").await;
+    let mut tx = hotel.tx().await;
+    sqlx::query(
+        "insert into pos_bill (id, tenant_id, property_id, outlet_id, bill_no, business_date, body_hash, settled)
+         select $1, $2, $3, id, 'X1', $4, '\\x00', true from outlet where property_id = $3 and code = 'BAR'",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(hotel.tenant.0)
+    .bind(p)
+    .bind(hotel.business_date)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let refused = audit::compute(&mut hotel.tx().await, p, hotel.business_date).await.unwrap_err();
+
+    assert!(
+        matches!(&refused, audit::AuditError::Invalid(message) if message == "POS bill X1 is settled but has no payment"),
+        "{refused:?}"
+    );
+}
+
 /// A bill dated a closed day (owner ruling R14) keeps its own date, but its lines and payment are today's: today's
 /// review lists it with its own date, today's figures count it, and the closed day's never change. A replay returns
 /// the first copy; a changed body is refused.

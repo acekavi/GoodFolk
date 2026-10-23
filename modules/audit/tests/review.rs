@@ -437,3 +437,22 @@ async fn arrivals_and_departures_use_the_arrival_index(_: PgPoolOptions, opts: P
         assert!(plan.contains("reservation_room_arrival_idx"), "{plan}");
     }
 }
+
+/// An LKR prepayment without evidence on the deposit folio of a reservation with a `FIT_F` room is flagged too (ruling
+/// R9); one on a reservation with no such room is not.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_deposit_without_evidence_for_a_non_resident_stay_is_flagged(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let p = hotel.property;
+    let fit = hotel.stay(Stay { segment: "FIT_F", ..Stay::new(p, "confirmed", 3, 5) }).await;
+    let local = hotel.stay(Stay { segment: "FIT_L", ..Stay::new(p, "confirmed", 3, 5) }).await;
+    let flagged = hotel.pay(p, fit.deposit, Method::Cash, 5_000, "LKR", None).await;
+    hotel.pay(p, fit.deposit, Method::Cash, 1_000, "LKR", Some("passport")).await;
+    hotel.pay(p, local.deposit, Method::Cash, 2_000, "LKR", None).await;
+
+    let payments = hotel.night_audit(p).await.payments;
+
+    assert_eq!(payments.len(), 1);
+    assert_eq!((payments[0].count, payments[0].amount), (3, 8_000));
+    assert_eq!(payments[0].flagged, vec![flagged.id]);
+}

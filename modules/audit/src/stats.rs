@@ -84,8 +84,8 @@ pub const DAY_LINES_SQL: &str = "select l.id, l.category, l.currency::text as cu
 ///   and walk-ins (arrivals booked on D).
 /// - **Revenue:** each of D's lines, net (its base total less its on-bill taxes, each converted at the line's rate),
 ///   by category: `room`, `meal_plan`, `pos:*`, `fee`, and the rest as other. The items of the POS bills settled at
-///   their outlet with a payment dated D (a late bill's own date may be earlier) are POS revenue, converted at their
-///   payment's rate.
+///   their outlet with a payment dated D (a late bill's own date may be earlier) count the same way by their own
+///   category, converted at their payment's rate; a settled bill with no payment is `Invalid`.
 /// - **Taxes** by code, on-bill and absorbed; **payments** by method in base, refunds in, transfers out.
 /// - **Breakdown:** per stay dimension (`segment`, `source`, `residency`, `room_type`), the sold stays and the room
 ///   and meal-plan revenue of the stay each line's posting key names (through a reversal to the line it reverses, and
@@ -236,23 +236,26 @@ pub async fn compute(tx: &mut Tx, property: Uuid, date: Date) -> Result<DailySta
         }
     }
 
-    // The bills settled on D: by their payment's date, so a late bill counts on the day it posted.
+    // The bills settled on D: by their payment's date, so a late bill counts on the day it posted. A bill dated D
+    // with no payment at all is read too, to be refused: every settled bill has one.
     let settled: Vec<SettledBill> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select o.code as outlet, b.lines, paid.currency, paid.rate
+        "select b.bill_no, b.lines, paid.currency, paid.rate
          from pos_bill b
-         join outlet o on o.id = b.outlet_id
-         join lateral ({SETTLED_PAYMENT}) paid on true
+         left join lateral ({SETTLED_PAYMENT}) paid on true
          where b.property_id = $1 and b.settled
-           and b.id in (select pos_bill_id from payment
-                        where business_date = $2 and pos_bill_id is not null and refund_of is null)
-           and paid.business_date = $2"
+           and (b.id in (select pos_bill_id from payment
+                         where business_date = $2 and pos_bill_id is not null and refund_of is null)
+                or b.business_date = $2)
+           and (paid.business_date = $2 or paid.business_date is null)"
     )))
     .bind(property)
     .bind(date)
     .fetch_all(&mut **tx)
     .await?;
     for bill in &settled {
-        let (currency, rate) = (&bill.currency, bill.rate);
+        let (Some(currency), Some(rate)) = (&bill.currency, bill.rate) else {
+            return Err(AuditError::Invalid(format!("POS bill {} is settled but has no payment", bill.bill_no)));
+        };
         for line in &bill.lines.0 {
             let mut net = convert(line.total, currency, rate)?;
             for tax in &line.taxes {
@@ -262,8 +265,14 @@ pub async fn compute(tx: &mut Tx, property: Uuid, date: Date) -> Result<DailySta
                     net -= amount;
                 }
             }
-            stats.pos_revenue += net;
-            breakdown.entry(("outlet", bill.outlet.clone())).or_default().2 += net;
+            // By the item's own category, as a posted bill's line is: a misc item is other revenue, at no outlet.
+            match line.category.strip_prefix("pos:") {
+                Some(outlet) => {
+                    stats.pos_revenue += net;
+                    breakdown.entry(("outlet", outlet.to_owned())).or_default().2 += net;
+                }
+                None => stats.other_revenue += net,
+            }
         }
     }
 
@@ -491,12 +500,13 @@ impl StayRow {
     }
 }
 
+/// A settled bill and its payment's currency and rate (`None` without a payment).
 #[derive(sqlx::FromRow)]
 struct SettledBill {
-    outlet: String,
+    bill_no: String,
     lines: Json<Vec<folio::PosLine>>,
-    currency: String,
-    rate: Decimal,
+    currency: Option<String>,
+    rate: Option<Decimal>,
 }
 
 #[derive(sqlx::FromRow)]
