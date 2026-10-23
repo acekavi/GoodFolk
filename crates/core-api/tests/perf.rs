@@ -22,6 +22,10 @@
 //!   meal plans, each posted in its own transaction) in under 3 s at the median of 3; `folios` for a stay folio of 200
 //!   taxed lines in under 30 ms at p95; an invoice's PDF ready (`pdf_key` set) in under 2 s from the issue response,
 //!   at the median of 5, which also needs `cargo build --release -p media-svc`.
+//! - Phase 7b: the manual night-audit close (`start_run` and `execute`) of the same 200 rooms and 160 stays, with 40
+//!   POS bills over 2 outlets (half posted to stays, half settled) and 120 payments in LKR and USD each day, in under
+//!   10 s at the median of 3 consecutive business dates; `nightAudit` for that day plus 20 arrivals and 20 departures
+//!   due in under 100 ms at p95 (200 samples).
 //!
 //! Ignored by default because debug builds are several times slower. Run them in release mode, one at a time:
 //!
@@ -1353,150 +1357,393 @@ async fn folios_with_200_lines_p95_under_30ms(_: PgPoolOptions, opts: PgConnectO
 }
 
 const NIGHT_RUNS: usize = 3;
+/// The checked-in stays of [`NightHotel`]: 80% of its 200 rooms.
+const IN_HOUSE: usize = 160;
+
+/// A 200-room, 12-type LKR property whose rooms 1001 to 1160 hold a checked-in stay of 5 nights from the business date
+/// (room only, BB and HB in turn), each priced for its first [`NIGHT_RUNS`] nights: the seed of the Phase 7a posting
+/// gate and the Phase 7b night-audit gates.
+struct NightHotel {
+    app: TestApp,
+    superuser: PgPool,
+    owner: String,
+    property: Uuid,
+    tenant: db::TenantId,
+    rate_plan: Uuid,
+    /// The business date the stays arrived on.
+    day0: time::Date,
+    rooms: Vec<Uuid>,
+    room_types: Vec<Uuid>,
+    /// The checked-in stays, in room order.
+    stays: Vec<Uuid>,
+}
+
+impl NightHotel {
+    async fn new(opts: PgConnectOptions) -> Self {
+        let app = TestApp::new(opts.clone()).await;
+        let superuser = PgPool::connect_with(opts).await.unwrap();
+        let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+        let (path, day0, types) = property_with_room_types(&app, &owner).await;
+        let property = Uuid::parse_str(path.trim_start_matches("/api/v1/properties/")).unwrap();
+        let tenant: Uuid = sqlx::query_scalar("select tenant_id from property where id = $1")
+            .bind(property)
+            .fetch_one(&superuser)
+            .await
+            .unwrap();
+        let type_ids: Vec<Uuid> = types.iter().map(uuid).collect();
+        let standard = json!({"code": "STD", "name": "Standard", "kind": "standard", "segment": "IBE",
+                              "currency": "LKR", "room_type_ids": types});
+        let rate_plan = uuid(&post(&app, &owner, &format!("{path}/rate-plans"), standard).await.body["id"]);
+
+        let rooms: Vec<Uuid> = (0..ROOMS).map(|_| Uuid::now_v7()).collect();
+        let numbers: Vec<String> = (0..ROOMS).map(|index| (1001 + index).to_string()).collect();
+        let room_types: Vec<Uuid> = (0..ROOMS as usize).map(|index| type_ids[index % type_ids.len()]).collect();
+        let sort_orders: Vec<i32> = (0..ROOMS).map(|index| i32::try_from(index).unwrap()).collect();
+        sqlx::query(
+            "insert into room (id, tenant_id, property_id, room_type_id, number, sort_order)
+             select r.id, $1, $2, r.room_type_id, r.number, r.sort_order
+             from unnest($3::uuid[], $4::uuid[], $5::text[], $6::int[]) as r (id, room_type_id, number, sort_order)",
+        )
+        .bind(tenant)
+        .bind(property)
+        .bind(&rooms)
+        .bind(&room_types)
+        .bind(&numbers)
+        .bind(&sort_orders)
+        .execute(&superuser)
+        .await
+        .unwrap();
+        let mut hotel = Self {
+            app,
+            superuser,
+            owner,
+            property,
+            tenant: db::TenantId(tenant),
+            rate_plan,
+            day0,
+            rooms,
+            room_types,
+            stays: Vec::new(),
+        };
+        hotel.stays = hotel.stays_in(0..IN_HOUSE, "checked_in", day0, 5, NIGHT_RUNS, "NIGHT").await;
+        hotel
+    }
+
+    /// A stay in each room of `rooms` (indexes into [`Self::rooms`]) in `status`, of `nights` nights from `arrival`,
+    /// priced for its first `priced` nights at 25,000.00 a night plus its meal plan (room only, BB at 1,500.00 and HB
+    /// at 3,000.00, in turn), each its own reservation confirmed as `<prefix>-<n>`. Returns the stays.
+    async fn stays_in(
+        &self,
+        rooms: std::ops::Range<usize>,
+        status: &str,
+        arrival: time::Date,
+        nights: i32,
+        priced: usize,
+        prefix: &str,
+    ) -> Vec<Uuid> {
+        const MEAL_PLANS: [(&str, i64); 3] = [("RO", 0), ("BB", 150_000), ("HB", 300_000)];
+        let count = rooms.len();
+        let guest_ids: Vec<Uuid> = (0..count).map(|_| Uuid::now_v7()).collect();
+        let guest_names: Vec<String> = (0..count).map(|index| format!("{prefix}Guest{index}")).collect();
+        sqlx::query(
+            "insert into guest (id, tenant_id, first_name, last_name, residency)
+             select g.id, $1, 'Ana', g.name, 'non_resident' from unnest($2::uuid[], $3::text[]) as g (id, name)",
+        )
+        .bind(self.tenant.0)
+        .bind(&guest_ids)
+        .bind(&guest_names)
+        .execute(&self.superuser)
+        .await
+        .unwrap();
+        let reservation_ids: Vec<Uuid> = (0..count).map(|_| Uuid::now_v7()).collect();
+        let stay_ids: Vec<Uuid> = (0..count).map(|_| Uuid::now_v7()).collect();
+        let confirmations: Vec<String> = (0..count).map(|index| format!("{prefix}-{index:06}")).collect();
+        sqlx::query(
+            "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id,
+                                      booked_business_date)
+             select r.id, $1, $2, r.confirmation_no, 'front_desk', r.booker_guest_id, current_date
+             from unnest($3::uuid[], $4::text[], $5::uuid[]) as r (id, confirmation_no, booker_guest_id)",
+        )
+        .bind(self.tenant.0)
+        .bind(self.property)
+        .bind(&reservation_ids)
+        .bind(&confirmations)
+        .bind(&guest_ids)
+        .execute(&self.superuser)
+        .await
+        .unwrap();
+        let meals: Vec<(&str, i64)> = (0..count).map(|index| MEAL_PLANS[index % MEAL_PLANS.len()]).collect();
+        let meal_plans: Vec<&str> = meals.iter().map(|&(plan, _)| plan).collect();
+        sqlx::query(
+            "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, room_id, stay,
+                                            adults, children, rate_plan_id, meal_plan, status, primary_guest_id,
+                                            currency, checked_in_at, checked_in_business_date)
+             select c.id, $1, $2, c.reservation_id, c.room_type_id, c.room_id, daterange($3, $3 + $11, '[)'), 2, 0,
+                    $4, c.meal_plan, $12, c.guest_id, 'LKR', case when $12 = 'checked_in' then now() end,
+                    case when $12 = 'checked_in' then $3::date end
+             from unnest($5::uuid[], $6::uuid[], $7::uuid[], $8::uuid[], $9::text[], $10::uuid[])
+                  as c (id, reservation_id, room_type_id, room_id, meal_plan, guest_id)",
+        )
+        .bind(self.tenant.0)
+        .bind(self.property)
+        .bind(arrival)
+        .bind(self.rate_plan)
+        .bind(&stay_ids)
+        .bind(&reservation_ids)
+        .bind(&self.room_types[rooms.clone()])
+        .bind(&self.rooms[rooms])
+        .bind(&meal_plans)
+        .bind(&guest_ids)
+        .bind(nights)
+        .bind(status)
+        .execute(&self.superuser)
+        .await
+        .unwrap();
+        let mut night_stays = Vec::new();
+        let mut night_dates = Vec::new();
+        let mut meal_amounts = Vec::new();
+        for (stay, &(_, meal)) in stay_ids.iter().zip(&meals) {
+            for night in 0..priced {
+                night_stays.push(*stay);
+                night_dates.push(arrival + time::Duration::days(i64::try_from(night).unwrap()));
+                meal_amounts.push(meal);
+            }
+        }
+        sqlx::query(
+            "insert into reservation_night (tenant_id, property_id, reservation_room_id, date, room_amount,
+                                             meal_amount, currency)
+             select $1, $2, n.stay, n.date, 2500000, n.meal_amount, 'LKR'
+             from unnest($3::uuid[], $4::date[], $5::bigint[]) as n (stay, date, meal_amount)",
+        )
+        .bind(self.tenant.0)
+        .bind(self.property)
+        .bind(&night_stays)
+        .bind(&night_dates)
+        .bind(&meal_amounts)
+        .execute(&self.superuser)
+        .await
+        .unwrap();
+        stay_ids
+    }
+
+    async fn tx(&self, user: db::UserId) -> db::Tx {
+        db::begin(&self.app.pool, db::Scope { tenant: Some(self.tenant), user: Some(user) }).await.unwrap()
+    }
+
+    /// The owner's user.
+    async fn owner_user(&self) -> db::UserId {
+        let id: Uuid = sqlx::query_scalar("select id from app_user where email = 'owner@example.com'")
+            .fetch_one(&self.superuser)
+            .await
+            .unwrap();
+        db::UserId(id)
+    }
+
+    /// What the night-audit gates add to the 7a seed: the outlets `BAR` and `REST`, a USD rate of 300 on the first
+    /// business date, and each in-house stay's guest folio. Returns the folios, in stay order.
+    async fn audit_setup(&self, user: db::UserId) -> Vec<Uuid> {
+        let mut tx = self.tx(user).await;
+        for (code, name) in [("BAR", "Bar"), ("REST", "Restaurant")] {
+            let outlet = folio::NewOutlet { code: code.into(), name: name.into(), service_charge: true };
+            folio::create_outlet(&mut tx, self.tenant, Some(user), self.property, outlet).await.unwrap();
+        }
+        fx::set_manual(&mut tx, self.tenant, user, self.property, self.day0, "USD", rust_decimal::Decimal::new(300, 0))
+            .await
+            .unwrap();
+        let mut folios = Vec::with_capacity(self.stays.len());
+        for stay in &self.stays {
+            folios.push(folio::ensure_guest_folio(&mut tx, self.tenant, self.property, *stay).await.unwrap());
+        }
+        tx.commit().await.unwrap();
+        folios
+    }
+
+    /// The `day`-th business date's trade, each in its own transaction as the front desk and outlets post it: 40 POS
+    /// bills over `BAR` and `REST`, half posted to stays and half settled in cash, and 120 payments on the stays'
+    /// guest `folios`, half LKR cash and half USD by card.
+    async fn trade(&self, user: db::UserId, folios: &[Uuid], day: usize) {
+        for n in 0..40 {
+            let target = if n < 20 {
+                folio::PosTarget::Stay(self.stays[(n * 7 + day) % self.stays.len()])
+            } else {
+                folio::PosTarget::Settled { method: folio::Method::Cash }
+            };
+            let bill = folio::PosBillIn {
+                outlet: if n % 2 == 0 { "BAR" } else { "REST" }.into(),
+                bill_no: format!("D{day}-{n:02}"),
+                business_date: None,
+                currency: "LKR".into(),
+                items: vec![folio::PosItem {
+                    description: "Dinner".into(),
+                    quantity: 1,
+                    unit_net: 250_000 + i64::try_from(n).unwrap() * 1_000,
+                    category: None,
+                }],
+                target,
+            };
+            let mut tx = self.tx(user).await;
+            folio::post_pos_bill(&mut tx, self.tenant, Some(user), self.property, bill).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+        for n in 0..120 {
+            let (method, amount, currency) = if n % 2 == 0 {
+                (folio::Method::Cash, 1_000_000, "LKR")
+            } else {
+                let card = folio::Method::CardTerminal {
+                    approval: "A1B2C3".into(),
+                    last4: "4242".into(),
+                    brand: "visa".into(),
+                };
+                (card, 5_000, "USD")
+            };
+            let folio = folios[(n + day * 40) % folios.len()];
+            let mut tx = self.tx(user).await;
+            folio::take_payment(&mut tx, self.tenant, Some(user), self.property, folio, method, amount, currency, None)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+    }
+
+    async fn analyze(&self) {
+        sqlx::query("analyze").execute(&self.superuser).await.unwrap();
+    }
+}
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
 #[ignore = "performance gate; run in release mode (see the module docs)"]
 async fn business_date_posting_for_200_rooms_under_3s(_: PgPoolOptions, opts: PgConnectOptions) {
-    const STAYS: usize = 160;
-    const MEAL_PLANS: [&str; 3] = ["RO", "BB", "HB"];
-    let app = TestApp::new(opts.clone()).await;
-    let superuser = PgPool::connect_with(opts).await.unwrap();
-    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
-    let (path, day0, types) = property_with_room_types(&app, &owner).await;
-    let property = Uuid::parse_str(path.trim_start_matches("/api/v1/properties/")).unwrap();
-    let tenant: Uuid = sqlx::query_scalar("select tenant_id from property where id = $1")
-        .bind(property)
-        .fetch_one(&superuser)
-        .await
-        .unwrap();
-    let type_ids: Vec<Uuid> = types.iter().map(uuid).collect();
-    let standard = json!({"code": "STD", "name": "Standard", "kind": "standard", "segment": "IBE",
-                          "currency": "LKR", "room_type_ids": types});
-    let rate_plan = uuid(&post(&app, &owner, &format!("{path}/rate-plans"), standard).await.body["id"]);
-
-    let rooms: Vec<Uuid> = (0..ROOMS).map(|_| Uuid::now_v7()).collect();
-    let numbers: Vec<String> = (0..ROOMS).map(|index| (1001 + index).to_string()).collect();
-    let room_types: Vec<Uuid> = (0..ROOMS as usize).map(|index| type_ids[index % type_ids.len()]).collect();
-    let sort_orders: Vec<i32> = (0..ROOMS).map(|index| i32::try_from(index).unwrap()).collect();
-    sqlx::query(
-        "insert into room (id, tenant_id, property_id, room_type_id, number, sort_order)
-         select r.id, $1, $2, r.room_type_id, r.number, r.sort_order
-         from unnest($3::uuid[], $4::uuid[], $5::text[], $6::int[]) as r (id, room_type_id, number, sort_order)",
-    )
-    .bind(tenant)
-    .bind(property)
-    .bind(&rooms)
-    .bind(&room_types)
-    .bind(&numbers)
-    .bind(&sort_orders)
-    .execute(&superuser)
-    .await
-    .unwrap();
-
-    // 160 of the 200 rooms hold a checked-in stay of 5 nights from the business date.
-    let guest_ids: Vec<Uuid> = (0..STAYS).map(|_| Uuid::now_v7()).collect();
-    let guest_names: Vec<String> = (0..STAYS).map(|index| format!("Guest{index}")).collect();
-    sqlx::query(
-        "insert into guest (id, tenant_id, first_name, last_name, residency)
-         select g.id, $1, 'Ana', g.name, 'non_resident' from unnest($2::uuid[], $3::text[]) as g (id, name)",
-    )
-    .bind(tenant)
-    .bind(&guest_ids)
-    .bind(&guest_names)
-    .execute(&superuser)
-    .await
-    .unwrap();
-    let reservation_ids: Vec<Uuid> = (0..STAYS).map(|_| Uuid::now_v7()).collect();
-    let stay_ids: Vec<Uuid> = (0..STAYS).map(|_| Uuid::now_v7()).collect();
-    let confirmations: Vec<String> = (0..STAYS).map(|index| format!("NIGHT-{index:06}")).collect();
-    sqlx::query(
-        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id,
-                                  booked_business_date)
-         select r.id, $1, $2, r.confirmation_no, 'front_desk', r.booker_guest_id, current_date
-         from unnest($3::uuid[], $4::text[], $5::uuid[]) as r (id, confirmation_no, booker_guest_id)",
-    )
-    .bind(tenant)
-    .bind(property)
-    .bind(&reservation_ids)
-    .bind(&confirmations)
-    .bind(&guest_ids)
-    .execute(&superuser)
-    .await
-    .unwrap();
-    let meal_plans: Vec<&str> = (0..STAYS).map(|index| MEAL_PLANS[index % MEAL_PLANS.len()]).collect();
-    sqlx::query(
-        "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, room_id, stay, adults,
-                                        children, rate_plan_id, meal_plan, status, primary_guest_id, currency,
-                                        checked_in_at, checked_in_business_date)
-         select c.id, $1, $2, c.reservation_id, c.room_type_id, c.room_id, daterange($3, $3 + 5, '[)'), 2, 0, $4,
-                c.meal_plan, 'checked_in', c.guest_id, 'LKR', now(), $3
-         from unnest($5::uuid[], $6::uuid[], $7::uuid[], $8::uuid[], $9::text[], $10::uuid[])
-              as c (id, reservation_id, room_type_id, room_id, meal_plan, guest_id)",
-    )
-    .bind(tenant)
-    .bind(property)
-    .bind(day0)
-    .bind(rate_plan)
-    .bind(&stay_ids)
-    .bind(&reservation_ids)
-    .bind(&room_types[..STAYS])
-    .bind(&rooms[..STAYS])
-    .bind(&meal_plans)
-    .bind(&guest_ids)
-    .execute(&superuser)
-    .await
-    .unwrap();
-    // A priced night for each run's date.
-    let mut night_stays = Vec::new();
-    let mut night_dates = Vec::new();
-    let mut meal_amounts = Vec::new();
-    for (index, stay) in stay_ids.iter().enumerate() {
-        let meal: i64 = match meal_plans[index] {
-            "BB" => 150_000,
-            "HB" => 300_000,
-            _ => 0,
-        };
-        for night in 0..NIGHT_RUNS {
-            night_stays.push(*stay);
-            night_dates.push(day0 + time::Duration::days(i64::try_from(night).unwrap()));
-            meal_amounts.push(meal);
-        }
-    }
-    sqlx::query(
-        "insert into reservation_night (tenant_id, property_id, reservation_room_id, date, room_amount,
-                                         meal_amount, currency)
-         select $1, $2, n.stay, n.date, 2500000, n.meal_amount, 'LKR'
-         from unnest($3::uuid[], $4::date[], $5::bigint[]) as n (stay, date, meal_amount)",
-    )
-    .bind(tenant)
-    .bind(property)
-    .bind(&night_stays)
-    .bind(&night_dates)
-    .bind(&meal_amounts)
-    .execute(&superuser)
-    .await
-    .unwrap();
-    sqlx::query("analyze").execute(&superuser).await.unwrap();
+    let hotel = NightHotel::new(opts).await;
+    hotel.analyze().await;
 
     let mut runs: Vec<Duration> = Vec::with_capacity(NIGHT_RUNS);
     for run in 0..NIGHT_RUNS {
         // Each run posts a new night, so no stay is skipped by its posting key.
-        let date = day0 + time::Duration::days(i64::try_from(run).unwrap());
+        let date = hotel.day0 + time::Duration::days(i64::try_from(run).unwrap());
         let started = Instant::now();
         let report =
-            folio::post_business_date_charges(&app.pool, db::TenantId(tenant), None, property, date).await.unwrap();
+            folio::post_business_date_charges(&hotel.app.pool, hotel.tenant, None, hotel.property, date).await.unwrap();
         let elapsed = started.elapsed();
         assert!(report.failures.is_empty(), "{:?}", report.failures);
-        assert_eq!(report.stays as usize, STAYS);
+        assert_eq!(report.stays as usize, IN_HOUSE);
         assert_eq!(report.skipped_existing, 0);
-        println!("post_business_date_charges, {STAYS} stays of {ROOMS} rooms, night {}: {elapsed:?}", run + 1);
+        println!("post_business_date_charges, {IN_HOUSE} stays of {ROOMS} rooms, night {}: {elapsed:?}", run + 1);
         runs.push(elapsed);
     }
 
     runs.sort();
     let median = runs[NIGHT_RUNS / 2];
-    println!("post_business_date_charges, {STAYS} stays of {ROOMS} rooms, median of {NIGHT_RUNS}: {median:?}");
+    println!("post_business_date_charges, {IN_HOUSE} stays of {ROOMS} rooms, median of {NIGHT_RUNS}: {median:?}");
     assert!(median < Duration::from_secs(3), "median {median:?} is over the 3 s gate");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn night_audit_close_for_200_rooms_under_10s(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = NightHotel::new(opts.clone()).await;
+    let user = hotel.owner_user().await;
+    let folios = hotel.audit_setup(user).await;
+
+    let mut runs: Vec<Duration> = Vec::with_capacity(NIGHT_RUNS);
+    for run in 0..NIGHT_RUNS {
+        hotel.trade(user, &folios, run).await;
+        hotel.analyze().await;
+        let started = Instant::now();
+        let started_run =
+            audit::start_run(&hotel.app.pool, hotel.tenant, Some(user), hotel.property, audit::Mode::Manual)
+                .await
+                .unwrap();
+        let closed = audit::execute(&hotel.app.pool, &opts, hotel.tenant, started_run.id, &audit::NoHooks)
+            .await
+            .unwrap()
+            .expect("no other session holds the audit lock");
+        let elapsed = started.elapsed();
+        assert_eq!(closed.status, audit::RunStatus::Completed, "{:?}", closed.error);
+        assert_eq!(closed.business_date, hotel.day0 + time::Duration::days(i64::try_from(run).unwrap()));
+        let posted = closed.steps.iter().find(|step| step.step == audit::Step::PostCharges).unwrap();
+        assert_eq!(posted.detail["stays"], json!(IN_HOUSE), "{:?}", posted.detail);
+        println!("night audit close, {IN_HOUSE} in house of {ROOMS} rooms, business date {}: {elapsed:?}", run + 1);
+        runs.push(elapsed);
+    }
+
+    runs.sort();
+    let median = runs[NIGHT_RUNS / 2];
+    println!("night audit close, {IN_HOUSE} in house of {ROOMS} rooms, median of {NIGHT_RUNS}: {median:?}");
+    assert!(median < Duration::from_secs(10), "median {median:?} is over the 10 s gate");
+}
+
+const NIGHT_AUDIT_READ: &str = "query ($p: UUID!) {
+    nightAudit(propertyId: $p) {
+        businessDate blocking
+        arrivals { reservationRoomId reservationId confirmation guest roomNumber arrival departure status total currency
+                   noShowPenalty version }
+        departures { reservationRoomId reservationId confirmation guest roomNumber departure
+                     balances { currency amount } version }
+        posBills { outlet totalBase bills { id billNo currency total totalBase roomNumber settled highlight } }
+        bookingBills { nights { reservationRoomId roomNumber date roomAmount mealAmount currency problem alreadyPosted }
+                       posted { category lines totalBase } }
+        payments { method currency count amount baseAmount refunds flagged }
+    }
+}";
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn night_audit_review_p95_under_100ms(_: PgPoolOptions, opts: PgConnectOptions) {
+    const DUE: usize = 20;
+    let hotel = NightHotel::new(opts).await;
+    let user = hotel.owner_user().await;
+    let folios = hotel.audit_setup(user).await;
+    hotel.trade(user, &folios, 0).await;
+    // 20 confirmed arrivals due today in rooms 1161 to 1180, and 20 stays due out today in rooms 1181 to 1200, each
+    // with a manual charge on its guest folio.
+    hotel.stays_in(IN_HOUSE..IN_HOUSE + DUE, "confirmed", hotel.day0, 2, 2, "ARR").await;
+    let leaving = hotel
+        .stays_in(IN_HOUSE + DUE..IN_HOUSE + 2 * DUE, "checked_in", hotel.day0 - time::Duration::days(2), 2, 2, "DEP")
+        .await;
+    for stay in &leaving {
+        let mut tx = hotel.tx(user).await;
+        let guest_folio = folio::ensure_guest_folio(&mut tx, hotel.tenant, hotel.property, *stay).await.unwrap();
+        let charge = folio::NewCharge {
+            source: folio::Source::Manual,
+            category: "misc".into(),
+            description: "Airport transfer".into(),
+            quantity: 1,
+            unit_net: 200_000,
+            currency: "LKR".into(),
+            business_date: hotel.day0,
+            posting_key: None,
+            inclusive: false,
+        };
+        folio::post_charge(&mut tx, hotel.tenant, Some(user), hotel.property, guest_folio, charge).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    hotel.analyze().await;
+
+    let request = json!({"query": NIGHT_AUDIT_READ, "variables": {"p": hotel.property}});
+    let mut samples: Vec<Duration> = Vec::with_capacity(SAMPLES);
+    for round in 0..SAMPLES + FOLIO_WARMUP {
+        let started = Instant::now();
+        let response = hotel.app.send(Method::POST, "/graphql", Some(&hotel.owner), Some(request.clone())).await;
+        let elapsed = started.elapsed();
+        assert_eq!(response.status, StatusCode::OK, "{:?}", response.body);
+        assert!(response.body["errors"].is_null(), "{:?}", response.body);
+        let review = &response.body["data"]["nightAudit"];
+        assert_eq!(review["blocking"], json!(2 * DUE), "{review:?}");
+        assert_eq!(review["bookingBills"]["nights"].as_array().map(Vec::len), Some(IN_HOUSE), "{review:?}");
+        assert_eq!(review["posBills"].as_array().map(Vec::len), Some(2), "{review:?}");
+        if round >= FOLIO_WARMUP {
+            samples.push(elapsed);
+        }
+    }
+
+    samples.sort();
+    let p50 = samples[SAMPLES / 2];
+    let p95 = samples[p95_index(SAMPLES)];
+    println!(
+        "nightAudit, {IN_HOUSE} in house of {ROOMS} rooms with {DUE} arrivals and {DUE} departures, {SAMPLES} samples: \
+         p50 {p50:?}, p95 {p95:?}"
+    );
+    assert!(p95 < Duration::from_millis(100), "p95 {p95:?} is over the 100 ms gate");
 }
 
 const INVOICE_RUNS: usize = 5;
