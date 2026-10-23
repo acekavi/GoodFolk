@@ -115,25 +115,24 @@ async fn a_manual_close_waits_for_the_arrivals_and_departures(_: PgPoolOptions, 
 async fn a_tick_racing_a_start_gives_one_run_closed_once(_: PgPoolOptions, opts: PgConnectOptions) {
     let owner = PgPool::connect_with(opts.clone()).await.unwrap();
     let hotel = Hotel::new(opts.clone()).await;
-    // D is two days ago, so its audit moment has passed and the tick closes it too.
-    hotel.move_business_date(hotel.property, -2).await;
-    let addr = serve(svc(hotel.pool.clone(), opts)).await;
-    let (mut ticker, mut starter) = (client(addr).await, client(addr).await);
+    let svc = svc(hotel.pool.clone(), opts);
+    let addr = serve(svc.clone()).await;
+    let mut starter = client(addr).await;
+    // The tick's clock stops at D's audit moment, so it closes D too, but never D + 1.
+    let moment = audit_moment(hotel.business_date, time::macros::time!(03:00));
 
-    let (ticked, started) = tokio::join!(ticker.tick(TickRequest {}), starter.start_close(start(&hotel)));
-    let (ticked, started) = (ticked.unwrap().into_inner(), started.unwrap().into_inner());
-    let id: Uuid = started.run_id.parse().unwrap();
+    let (ticked, started) = tokio::join!(tick_with(&svc, |_| moment), starter.start_close(start(&hotel)));
+    let id: Uuid = started.unwrap().into_inner().run_id.parse().unwrap();
     wait_for(&owner, id, "completed").await;
 
-    let runs: Vec<Uuid> = sqlx::query_scalar("select id from audit_run where property_id = $1 and business_date = $2")
+    let runs: Vec<Uuid> = sqlx::query_scalar("select id from audit_run where property_id = $1")
         .bind(hotel.property)
-        .bind(hotel.day(-2))
         .fetch_all(&owner)
         .await
         .unwrap();
     assert_eq!(runs, vec![id], "{ticked:?}");
     assert_eq!(close_counts(&owner, hotel.property).await, (5, 1, 1), "{ticked:?}");
-    assert_eq!(business_date(&owner, hotel.property).await, hotel.day(-1));
+    assert_eq!(business_date(&owner, hotel.property).await, hotel.day(1));
 }
 
 #[sqlx::test(migrations = "../../migrations")]
