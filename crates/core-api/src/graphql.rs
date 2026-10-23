@@ -2020,6 +2020,11 @@ fn audit_error(err: audit::AuditError) -> async_graphql::Error {
     match err {
         audit::AuditError::Database(db_err) => internal(db_err),
         audit::AuditError::Folio(folio_err) => folio_error(folio_err),
+        audit::AuditError::Reservations(reservations_err) => reservations_error(reservations_err),
+        audit::AuditError::Interrupted => {
+            tracing::error!("the night-audit close was interrupted");
+            async_graphql::Error::new("Internal error")
+        }
         other => async_graphql::Error::new(other.to_string()),
     }
 }
@@ -2929,7 +2934,7 @@ impl Query {
 
 #[cfg(test)]
 mod tests {
-    use super::{internal, selected};
+    use super::{audit_error, internal, selected};
     use async_graphql::{Context, EmptyMutation, EmptySubscription, Object, Request, Schema, Variables};
     use serde_json::json;
 
@@ -2938,6 +2943,23 @@ mod tests {
         let err = internal(sqlx::Error::Protocol("relation \"property\" does not exist".into()));
 
         assert_eq!(err.message, "Internal error");
+    }
+
+    #[test]
+    fn night_audit_errors_hide_database_text_however_nested() {
+        let leak = || sqlx::Error::Protocol("relation \"audit_run\" does not exist".into());
+        for err in [
+            audit::AuditError::Database(leak()),
+            audit::AuditError::Folio(folio::FolioError::Database(leak())),
+            audit::AuditError::Reservations(reservations::ReservationsError::Database(leak())),
+            audit::AuditError::Interrupted,
+        ] {
+            assert_eq!(audit_error(err).message, "Internal error");
+        }
+        let refused = audit_error(audit::AuditError::Reservations(reservations::ReservationsError::Conflict(
+            "Room 101 is taken".into(),
+        )));
+        assert_eq!(refused.message, "Room 101 is taken");
     }
 
     struct Probe(bool);

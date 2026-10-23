@@ -189,6 +189,16 @@ async fn an_auto_close_resolves_arrivals_and_departures(_: PgPoolOptions, opts: 
     assert_eq!(hotel.stay_row(confirmed.id).await, ("no_show".into(), hotel.day(2)));
     assert_eq!(hotel.stay_row(tentative.id).await.0, "cancelled");
     assert_eq!(hotel.stay_row(leaving.id).await, ("checked_in".into(), hotel.day(1)));
+    for (action, stay) in [("reservation_room.no_show", confirmed.id), ("reservation_room.cancelled", tentative.id)] {
+        let mode: Option<String> =
+            sqlx::query_scalar("select data ->> 'mode' from audit_log where action = $1 and entity_id = $2")
+                .bind(action)
+                .bind(stay)
+                .fetch_one(&mut *hotel.tx().await)
+                .await
+                .unwrap();
+        assert_eq!(mode.as_deref(), Some("auto"), "{action}");
+    }
     // The extended night is D's, posted by the same close.
     assert_eq!(hotel.keyed_lines(p).await, vec![(format!("room:{}:{d}", leaving.id), 10_000)]);
     assert_eq!(hotel.current_date().await, hotel.day(1));
@@ -530,4 +540,48 @@ async fn a_resumed_run_posts_a_stay_checked_in_since(_: PgPoolOptions, opts: PgC
     assert_eq!(hotel.keyed_lines(p).await, expected);
     let stats = audit::daily_stats(&mut hotel.tx().await, p, d, d).await.unwrap();
     assert_eq!((stats[0].rooms_sold, stats[0].room_revenue), (2, 20_000));
+}
+
+/// Fails a step's commit with a database error whose text names a table.
+struct DatabaseFails(fn() -> AuditError);
+
+impl CloseHooks for DatabaseFails {
+    fn before_commit(&self, _: Step) -> Result<(), AuditError> {
+        Err((self.0)())
+    }
+}
+
+fn leak() -> sqlx::Error {
+    sqlx::Error::Protocol("relation \"audit_run_step\" does not exist".into())
+}
+
+/// A database error, however nested, is logged; the run, its audit entry and the alert say only that one stopped it.
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_database_error_reaches_staff_without_its_text(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts.clone()).await;
+    let run = hotel.start(Mode::Auto).await.unwrap();
+    let errors: [fn() -> AuditError; 3] = [
+        || AuditError::Database(leak()),
+        || AuditError::Folio(folio::FolioError::Database(leak())),
+        || AuditError::Reservations(reservations::ReservationsError::Database(leak())),
+    ];
+    let expected = "A database error stopped the close; see the logs";
+    for (attempt, error) in errors.into_iter().enumerate() {
+        if attempt > 0 {
+            hotel.retry(run.id).await;
+        }
+        let failed =
+            audit::execute(&hotel.pool, &opts, hotel.tenant, run.id, &DatabaseFails(error)).await.unwrap().unwrap();
+        assert_eq!((failed.status, failed.error.as_deref()), (RunStatus::Failed, Some(expected)), "{attempt}");
+    }
+    let audited: Vec<String> = sqlx::query_scalar(
+        "select data ->> 'error' from audit_log where entity_id = $1 and action = 'night_audit.failed'",
+    )
+    .bind(run.id)
+    .fetch_all(&mut *hotel.tx().await)
+    .await
+    .unwrap();
+    assert_eq!(audited, [expected; 3]);
+    let alert = &audit::alerts::list(&mut hotel.tx().await, hotel.property).await.unwrap()[0];
+    assert!(alert.message.ends_with(expected) && !alert.message.contains("relation"), "{}", alert.message);
 }

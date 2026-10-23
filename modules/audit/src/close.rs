@@ -438,10 +438,27 @@ async fn execute_locked(
         Err((_, Stop::Error(AuditError::Interrupted))) => Err(AuditError::Interrupted),
         Err((step, Stop::Failed { error, failure })) => fail(pool, tenant, &current, step, &error, failure).await,
         Err((step, Stop::Error(err))) => {
-            fail(pool, tenant, &current, step, &err.to_string(), json!({ "step": step.as_str() })).await
+            fail(pool, tenant, &current, step, &stored_error(&err), json!({ "step": step.as_str() })).await
         }
     }
 }
+
+/// What a failed run stores, audits and alerts for `err`. A database error's own text names tables and constraints,
+/// so it goes to the logs, and staff see [`DATABASE_ERROR`].
+fn stored_error(err: &AuditError) -> String {
+    match err {
+        AuditError::Database(db_err)
+        | AuditError::Folio(folio::FolioError::Database(db_err))
+        | AuditError::Reservations(ReservationsError::Database(db_err)) => {
+            tracing::error!(error = %db_err, "database error in the night-audit close");
+            DATABASE_ERROR.to_owned()
+        }
+        other => other.to_string(),
+    }
+}
+
+/// The error a run stores when a database error stopped it.
+const DATABASE_ERROR: &str = "A database error stopped the close; see the logs";
 
 /// Marks `run` failed at `step`, raising the audit alert when an automatic run has failed its third attempt.
 async fn fail(

@@ -126,6 +126,11 @@ fn violates(err: &sqlx::Error, constraint: &str) -> bool {
     err.as_database_error().and_then(|db_err| db_err.constraint()).is_some_and(|name| name == constraint)
 }
 
+/// The audit `mode` of a command: `manual` when a person ran it, `auto` for the automatic close.
+fn mode(actor: Option<UserId>) -> &'static str {
+    if actor.is_some() { "manual" } else { "auto" }
+}
+
 /// A column value the code has no variant for.
 fn decode_error(column: &str, value: &str) -> sqlx::Error {
     sqlx::Error::ColumnDecode { index: column.into(), source: format!("unknown value {value:?}").into() }

@@ -6,7 +6,7 @@ use crate::assignment::room_taken_conflict;
 use crate::cancellation::{closed_keys, lock_closing_stay, no_show_penalty, release_from, stay_nights};
 use crate::modify::check_not_blocked;
 use crate::{
-    ReservationsError, SELLABLE, audit, bump_reservation, business_date, decode_error, notify, reservation_key,
+    ReservationsError, SELLABLE, audit, bump_reservation, business_date, decode_error, mode, notify, reservation_key,
     reservations_key, violates,
 };
 use db::{TenantId, Tx, UserId};
@@ -288,11 +288,6 @@ pub async fn extend_stay(
         total,
         currency: stay.currency,
     })
-}
-
-/// The audit `mode` of a command: `manual` when a person ran it, `auto` for the automatic close.
-fn mode(actor: Option<UserId>) -> &'static str {
-    if actor.is_some() { "manual" } else { "auto" }
 }
 
 /// Locks the stay `id` of the property and checks its version.

@@ -101,7 +101,10 @@ async fn cancelling_releases_the_nights_and_charges_what_the_booked_terms_say(
             .unwrap();
     assert_eq!(
         audited,
-        vec![(room.id, serde_json::json!({ "reservation_id": booked.id, "penalty": 10_000, "currency": "USD" }))]
+        vec![(
+            room.id,
+            serde_json::json!({ "reservation_id": booked.id, "penalty": 10_000, "currency": "USD", "mode": "manual" })
+        )]
     );
 }
 

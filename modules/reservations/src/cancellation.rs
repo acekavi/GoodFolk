@@ -2,7 +2,8 @@
 //! the terms the booking kept, whatever its plan's policy says now.
 
 use crate::{
-    ReservationsError, audit, bump_reservation, business_date, decode_error, notify, reservation_key, reservations_key,
+    ReservationsError, audit, bump_reservation, business_date, decode_error, mode, notify, reservation_key,
+    reservations_key,
 };
 use db::{TenantId, Tx, UserId};
 use domain::{Action, RoomStatus};
@@ -127,6 +128,7 @@ pub async fn cancel_room(
         "reservation_id": stay.reservation_id,
         "penalty": penalty,
         "currency": stay.currency,
+        "mode": mode(actor),
     });
     audit(tx, tenant, actor, "reservation_room.cancelled", "reservation_room", id, data).await?;
     notify(tx, tenant, property, closed_keys(property, &stay, from)).await?;
