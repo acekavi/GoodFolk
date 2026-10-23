@@ -13,8 +13,9 @@ if (noSandbox && process.env.CI) throw new Error('PLAYWRIGHT_NO_SANDBOX is for l
 const API_PORT = 18080;
 const WEB_PORT = 4173;
 const MEDIA_PORT = 8090;
+const JOBS_PORT = 8091;
 
-// core-api and media-svc push to each other with a test-only shared secret; both reach RustFS on :9000
+// core-api, media-svc and jobs-svc push/call to each other with a test-only shared secret; both reach RustFS on :9000
 // with its local defaults (see global-setup.ts).
 const SERVICE_AUTH = {
 	SVC_AUTH: 'secret',
@@ -58,8 +59,7 @@ export default defineConfig({
 				MEDIA_SVC_URL: `http://localhost:${MEDIA_PORT}`,
 				PUSH_ENDPOINT_MEDIA_PROCESS: `http://localhost:${MEDIA_PORT}/work`,
 				PUSH_ENDPOINT_INVOICE_RENDER: `http://localhost:${MEDIA_PORT}/render`,
-				// Never fetch from the Central Bank in tests: the suite seeds its own exchange rates.
-				FX_IMPORT: 'off',
+				JOBS_SVC_URL: `http://localhost:${JOBS_PORT}`,
 				RUST_LOG: 'warn'
 			},
 			reuseExistingServer: !process.env.CI,
@@ -74,6 +74,23 @@ export default defineConfig({
 				PORT: String(MEDIA_PORT),
 				...SERVICE_AUTH,
 				PUSH_ENDPOINT_MEDIA_RESULTS: `http://localhost:${API_PORT}/internal/events`,
+				RUST_LOG: 'warn'
+			},
+			reuseExistingServer: !process.env.CI,
+			timeout: 600_000
+		},
+		{
+			// Runs the night audit's close for core-api. It never ticks itself and never fetches from the Central
+			// Bank in tests: the suite seeds its own exchange rates.
+			command: 'cargo run -q -p jobs-svc',
+			cwd: '../..',
+			url: `http://localhost:${JOBS_PORT}/healthz`,
+			env: {
+				PORT: String(JOBS_PORT),
+				DATABASE_URL: database,
+				...SERVICE_AUTH,
+				JOBS_TICK: 'off',
+				FX_IMPORT: 'off',
 				RUST_LOG: 'warn'
 			},
 			reuseExistingServer: !process.env.CI,
