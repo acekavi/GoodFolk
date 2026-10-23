@@ -1,6 +1,6 @@
 use anyhow::{Context, bail};
 use core_api::config::Config;
-use core_api::state::MediaServices;
+use core_api::state::{JobsServices, MediaServices};
 use core_api::{AppState, events, router, staff};
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
@@ -34,7 +34,8 @@ async fn serve() -> anyhow::Result<()> {
     let storage = Arc::new(Storage::new(config.storage)?);
     let media_auth = Arc::new(config.media_svc_auth);
     let media = MediaServices::new(storage, &config.media_svc_url, media_auth.clone(), Arc::new(config.internal_auth))?;
-    let state = AppState::with_media(pool.clone(), config.production, config.guest_id_keys, media);
+    let jobs = JobsServices::new(&config.jobs_svc_url, Arc::new(config.jobs_svc_auth))?;
+    let state = AppState::with_media(pool.clone(), config.production, config.guest_id_keys, media).with_jobs(jobs);
     // Pushes to media-svc carry the same credentials as its gRPC calls.
     let push_auth: ::events::HeaderProvider = Arc::new(move || {
         let media_auth = media_auth.clone();

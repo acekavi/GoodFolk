@@ -90,6 +90,11 @@ impl ApiError {
         Self::new(StatusCode::BAD_GATEWAY, "Bad gateway", Some(detail.into()))
     }
 
+    /// A service this one depends on cannot be reached; the client may try again.
+    pub fn service_unavailable(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, "Service unavailable", Some(detail.into()))
+    }
+
     pub fn gateway_timeout() -> Self {
         Self::new(StatusCode::GATEWAY_TIMEOUT, "Request timed out", None)
     }
@@ -107,6 +112,22 @@ impl From<sqlx::Error> for ApiError {
     fn from(err: sqlx::Error) -> Self {
         tracing::error!(error = %err, "database error");
         Self::internal()
+    }
+}
+
+/// Maps the night audit's errors to problem details.
+pub(crate) fn audit_error(err: audit::AuditError) -> ApiError {
+    match err {
+        audit::AuditError::NotFound(_) => ApiError::not_found(err.to_string()),
+        audit::AuditError::Conflict(message) => ApiError::conflict(message),
+        audit::AuditError::Invalid(message) => ApiError::unprocessable(message),
+        audit::AuditError::Database(db_err) => db_err.into(),
+        audit::AuditError::Folio(folio_err) => crate::routes::folio::folio_error(folio_err),
+        audit::AuditError::Reservations(res_err) => crate::routes::reservations::reservations_error(res_err),
+        audit::AuditError::Interrupted => {
+            tracing::error!("the night audit was interrupted");
+            ApiError::internal()
+        }
     }
 }
 

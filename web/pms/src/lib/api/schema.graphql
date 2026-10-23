@@ -40,6 +40,149 @@ type AccountRefNode {
 }
 
 """
+A stay due by the business date and still tentative or confirmed.
+"""
+type AuditArrivalNode {
+	reservationRoomId: UUID!
+	reservationId: UUID!
+	confirmation: String!
+	guest: String!
+	roomNumber: String
+	arrival: Date!
+	departure: Date!
+	"""
+	`TENTATIVE` (delay or cancel only) or `CONFIRMED`.
+	"""
+	status: RoomStatus!
+	"""
+	The stay's room and meal amounts, all nights, in minor units of `currency`.
+	"""
+	total: Int!
+	currency: String!
+	"""
+	What marking it a no-show would cost under its booked terms, in minor units of `currency`.
+	"""
+	noShowPenalty: Int!
+	"""
+	The reservation room's version: send it as `If-Match`.
+	"""
+	version: Int!
+}
+
+"""
+A stay due out by the business date and still checked in.
+"""
+type AuditDepartureNode {
+	reservationRoomId: UUID!
+	reservationId: UUID!
+	confirmation: String!
+	guest: String!
+	roomNumber: String
+	departure: Date!
+	"""
+	The guest folio's balance per currency, by currency code.
+	"""
+	balances: [CurrencyAmountNode!]!
+	"""
+	The reservation room's version: send it as `If-Match`.
+	"""
+	version: Int!
+}
+
+enum AuditMode {
+	MANUAL
+	AUTO
+}
+
+"""
+One outlet's POS bills of the business date.
+"""
+type AuditOutletBillsNode {
+	"""
+	The outlet's name.
+	"""
+	outlet: String!
+	bills: [AuditPosBillNode!]!
+	totalBase: Int!
+}
+
+"""
+A POS bill of the business date.
+"""
+type AuditPosBillNode {
+	id: UUID!
+	billNo: String!
+	currency: String!
+	total: Int!
+	totalBase: Int!
+	"""
+	The room of the stay it posted to; `null` when settled at the outlet.
+	"""
+	roomNumber: String
+	settled: Boolean!
+	"""
+	Posted to a stay now checked out whose guest folio is not settled.
+	"""
+	highlight: Boolean!
+}
+
+"""
+The close of one business date.
+"""
+type AuditRunNode {
+	id: UUID!
+	businessDate: Date!
+	mode: AuditMode!
+	status: AuditRunStatus!
+	"""
+	Who started it; `null` for the scheduled close.
+	"""
+	startedBy: UUID
+	attempts: Int!
+	error: String
+	"""
+	The failed step's report: `{"step": ...}`, with `"stays": [{reservation_room, room, error}]` when stays
+	failed.
+	"""
+	failure: JSON
+	startedAt: DateTime!
+	finishedAt: DateTime
+	"""
+	The steps done, in step order.
+	"""
+	steps: [AuditRunStepNode!]!
+}
+
+enum AuditRunStatus {
+	RUNNING
+	FAILED
+	COMPLETED
+}
+
+"""
+A step a run has done.
+"""
+type AuditRunStepNode {
+	step: AuditStep!
+	completedAt: DateTime!
+	"""
+	The step's report, such as the charges it posted.
+	"""
+	detail: JSON!
+}
+
+"""
+The steps of a close, in the order they run.
+"""
+enum AuditStep {
+	RESOLVE
+	POST_CHARGES
+	LOCK_FX
+	SNAPSHOT_STATS
+	ADVANCE_BUSINESS_DATE
+}
+
+"""
 What a folio holds in one currency: charges less payments, and the same in the base currency.
 """
 type BalanceNode {
@@ -113,6 +256,11 @@ type BoardRoomNode {
 	blockKind: BlockKind
 }
 
+type BookingBillsNode {
+	nights: [NightPreviewNode!]!
+	posted: [CategoryTotalNode!]!
+}
+
 type BulkPreviewNode {
 	"""
 	How many of the plan's prices would change.
@@ -148,9 +296,68 @@ type CancellationTermsNode {
 	noShow: PenaltyNode!
 }
 
+"""
+The business date's manual and fee lines in one category.
+"""
+type CategoryTotalNode {
+	category: String!
+	lines: Int!
+	totalBase: Int!
+}
+
 enum ChangeMode {
 	PERCENT
 	AMOUNT
+}
+
+"""
+An amount in one currency, in its minor units.
+"""
+type CurrencyAmountNode {
+	currency: String!
+	amount: Int!
+}
+
+"""
+The statistics of a closed business date, in base-currency minor units, revenue net of tax.
+"""
+type DailyStatsNode {
+	businessDate: Date!
+	roomsTotal: Int!
+	roomsOutOfOrder: Int!
+	roomsAvailable: Int!
+	roomsSold: Int!
+	complimentaryRooms: Int!
+	"""
+	Occupancy in basis points: 10000 is full.
+	"""
+	occupancyBp: Int!
+	adults: Int!
+	children: Int!
+	arrivals: Int!
+	departures: Int!
+	noShows: Int!
+	cancellations: Int!
+	walkIns: Int!
+	roomRevenue: Int!
+	mealPlanRevenue: Int!
+	posRevenue: Int!
+	feeRevenue: Int!
+	otherRevenue: Int!
+	adr: Int!
+	revpar: Int!
+	"""
+	By tax code.
+	"""
+	taxes: [KeyedAmountNode!]!
+	"""
+	By payment method, refunds included.
+	"""
+	payments: [KeyedAmountNode!]!
+	"""
+	Each dimension's rows sum to the day's totals.
+	"""
+	breakdown: [StatsBreakdownNode!]!
 }
 
 """
@@ -468,6 +675,14 @@ A scalar that can represent any JSON value.
 scalar JSON
 
 """
+A base-currency amount under a key, such as a tax code or a payment method.
+"""
+type KeyedAmountNode {
+	key: String!
+	amount: Int!
+}
+
+"""
 What posted a line.
 """
 enum LineSource {
@@ -554,6 +769,42 @@ enum NeedsRoomReason {
 }
 
 """
+The review of the property's business date before it closes.
+"""
+type NightAuditNode {
+	businessDate: Date!
+	"""
+	Unresolved arrivals plus unresolved departures: the close waits until it is 0.
+	"""
+	blocking: Int!
+	arrivals: [AuditArrivalNode!]!
+	departures: [AuditDepartureNode!]!
+	posBills: [AuditOutletBillsNode!]!
+	bookingBills: BookingBillsNode!
+	payments: [PaymentGroupNode!]!
+}
+
+"""
+Tonight's room and meal-plan charges of one in-house stay, as posting them would go.
+"""
+type NightPreviewNode {
+	reservationRoomId: UUID!
+	roomNumber: String
+	date: Date!
+	roomAmount: Int!
+	mealAmount: Int!
+	currency: String!
+	"""
+	Why posting would fail, such as a missing exchange rate; `null` when it would post.
+	"""
+	problem: String
+	"""
+	How many of the night's charges are already posted: 0, 1 or 2.
+	"""
+	alreadyPosted: Int!
+}
+
+"""
 What a room's stays make of it on the business date.
 """
 enum Occupancy {
@@ -582,6 +833,21 @@ type OfferNode {
 	nights: [QuoteNightNode!]!
 }
 
+enum OpsAlertKind {
+	AUDIT
+	DRIFT
+}
+
+"""
+A problem a person must look at: an automatic close that failed its third attempt (`AUDIT`), or inventory
+counters that drifted from the stays they count (`DRIFT`). Shown until what raised it is resolved.
+"""
+type OpsAlertNode {
+	kind: OpsAlertKind!
+	message: String!
+	raisedAt: DateTime!
+}
+
 """
 A POS outlet. Its bills' category is `pos:<code>`.
 """
@@ -603,6 +869,31 @@ type PageInfo {
 	"""
 	endCursor: String
 	hasNextPage: Boolean!
+}
+
+"""
+The business date's payments in one method and currency, refunds netted into the amounts.
+"""
+type PaymentGroupNode {
+	"""
+	`cash`, `card_terminal`, `bank_transfer`, or `account` (a charge to account: the city ledger).
+	"""
+	method: String!
+	currency: String!
+	"""
+	The payments, not the refunds.
+	"""
+	count: Int!
+	amount: Int!
+	baseAmount: Int!
+	"""
+	The refunds' sum, at most 0.
+	"""
+	refunds: Int!
+	"""
+	LKR payments with no evidence on the folio of a stay sold to non-residents.
+	"""
+	flagged: [UUID!]!
 }
 
 """
@@ -684,6 +975,10 @@ type PropertyNode {
 	`HH:MM`, local time.
 	"""
 	checkOutTime: String!
+	"""
+	`HH:MM`, local time: when the night audit closes the business date if nobody has.
+	"""
+	auditTime: String!
 	businessDate: Date!
 	"""
 	Send as `If-Match: "<version>"` when updating.
@@ -865,6 +1160,25 @@ type Query {
 	address, and the accepted currencies.
 	"""
 	propertyTaxSettings(propertyId: UUID!): TaxSettingsNode!
+	"""
+	The review of the property's business date: the arrivals not checked in, the departures not checked out, the
+	day's POS bills by outlet, the booking bills and the payments, with how many stays block the close.
+	"""
+	nightAudit(propertyId: UUID!): NightAuditNode!
+	"""
+	The property's closes, newest business date first, each with its steps: `first` of them (1 to 100) dated
+	before `after`, or the newest when `after` is left out.
+	"""
+	auditRuns(propertyId: UUID!, first: Int! = 20, after: Date): [AuditRunNode!]!
+	"""
+	The statistics of the property's closed business dates from `from` to `to`, both included (at most 366 days),
+	by date, each with its breakdowns. A day not yet closed has none.
+	"""
+	dailyStats(propertyId: UUID!, from: Date!, to: Date!): [DailyStatsNode!]!
+	"""
+	The property's raised ops alerts, by kind; empty when all is well.
+	"""
+	opsAlerts(propertyId: UUID!): [OpsAlertNode!]!
 }
 
 type QuoteNightNode {
@@ -1265,6 +1579,23 @@ enum Source {
 	CHANNEL
 	PHONE
 	EMAIL
+}
+
+"""
+One key of a statistics dimension on a closed day.
+"""
+type StatsBreakdownNode {
+	"""
+	`segment`, `source`, `residency`, `room_type` or `outlet`.
+	"""
+	dimension: String!
+	"""
+	The dimension's value; `unattributed` for revenue no stay accounts for.
+	"""
+	key: String!
+	roomNights: Int!
+	roomRevenue: Int!
+	revenue: Int!
 }
 
 """

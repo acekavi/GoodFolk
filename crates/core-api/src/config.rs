@@ -29,6 +29,10 @@ pub struct Config {
     pub media_svc_url: String,
     /// Authenticates this service's calls to media-svc: gRPC and `media-process` pushes (`MEDIA_SVC_AUDIENCE`).
     pub media_svc_auth: TokenSource,
+    /// jobs-svc's gRPC address (`JOBS_SVC_URL`).
+    pub jobs_svc_url: String,
+    /// Authenticates this service's calls to jobs-svc (`JOBS_SVC_AUDIENCE`).
+    pub jobs_svc_auth: TokenSource,
     /// Recognises service calls to `/internal/events` (`CORE_API_AUDIENCE`, `ALLOWED_SERVICE_EMAILS`).
     pub internal_auth: Verifier,
 }
@@ -71,19 +75,12 @@ impl Config {
         let guest_id_keys = GuestIdKeys::new(guest_id_key, retired_keys)
             .map_err(|err| anyhow!("GUEST_ID_KEY_ID and GUEST_ID_RETIRED_KEYS must have unique key ids: {err}"))?;
         let storage = StorageConfig::from_vars(&var, production)?;
-        let media_svc_url = match var("MEDIA_SVC_URL") {
-            Some(url) => url,
-            None if production => bail!("MEDIA_SVC_URL (media-svc's gRPC address) is required in production"),
-            None => crate::state::LOCAL_MEDIA_SVC_URL.to_owned(),
-        };
-        let Ok(media_svc_uri) = media_svc_url.parse::<axum::http::Uri>() else {
-            bail!("MEDIA_SVC_URL is not a URL");
-        };
-        if production && media_svc_uri.scheme() != Some(&axum::http::uri::Scheme::HTTPS) {
-            bail!("MEDIA_SVC_URL must be an https:// address in production");
-        }
+        let media_svc_url =
+            service_url(&var, "MEDIA_SVC_URL", "media-svc", crate::state::LOCAL_MEDIA_SVC_URL, production)?;
+        let jobs_svc_url = service_url(&var, "JOBS_SVC_URL", "jobs-svc", crate::state::LOCAL_JOBS_SVC_URL, production)?;
         // SVC_AUTH, INTERNAL_SHARED_SECRET and ALLOWED_SERVICE_EMAILS are shared by both directions.
         let media_svc_auth = TokenSource::from_vars("MEDIA_SVC_AUDIENCE", &var)?;
+        let jobs_svc_auth = TokenSource::from_vars("JOBS_SVC_AUDIENCE", &var)?;
         let internal_auth = Verifier::from_vars("CORE_API_AUDIENCE", &var)?;
         Ok(Self {
             database_url,
@@ -95,9 +92,34 @@ impl Config {
             storage,
             media_svc_url,
             media_svc_auth,
+            jobs_svc_url,
+            jobs_svc_auth,
             internal_auth,
         })
     }
+}
+
+/// A service's gRPC address from `name`: required and `https://` in production, `local` otherwise. Errors name the
+/// variable, never its value.
+fn service_url(
+    var: &impl Fn(&str) -> Option<String>,
+    name: &str,
+    service: &str,
+    local: &str,
+    production: bool,
+) -> anyhow::Result<String> {
+    let url = match var(name) {
+        Some(url) => url,
+        None if production => bail!("{name} ({service}'s gRPC address) is required in production"),
+        None => local.to_owned(),
+    };
+    let Ok(uri) = url.parse::<axum::http::Uri>() else {
+        bail!("{name} is not a URL");
+    };
+    if production && uri.scheme() != Some(&axum::http::uri::Scheme::HTTPS) {
+        bail!("{name} must be an https:// address in production");
+    }
+    Ok(url)
 }
 
 /// Parses `id1:base64,id2:base64`; a blank value is no retired keys. A malformed entry is a startup error naming
@@ -145,7 +167,8 @@ mod tests {
     const DEV_MEDIA: &[(&str, &str)] =
         &[("SVC_AUTH", "secret"), ("INTERNAL_SHARED_SECRET", "a-local-secret-of-at-least-32-bytes")];
 
-    /// What the media engine needs in production: storage, media-svc and Google service auth.
+    /// What the media engine and the night audit need in production: storage, media-svc, jobs-svc and Google service
+    /// auth.
     const PROD_MEDIA: &[(&str, &str)] = &[
         ("S3_ENDPOINT", "https://account.r2.cloudflarestorage.com"),
         ("S3_REGION", "auto"),
@@ -157,6 +180,8 @@ mod tests {
         ("MEDIA_SVC_URL", "https://media-svc.example.run.app"),
         ("SVC_AUTH", "google"),
         ("MEDIA_SVC_AUDIENCE", "https://media-svc.example.run.app"),
+        ("JOBS_SVC_URL", "https://jobs-svc.example.run.app"),
+        ("JOBS_SVC_AUDIENCE", "https://jobs-svc.example.run.app"),
         ("CORE_API_AUDIENCE", "https://core-api.example.run.app"),
         ("ALLOWED_SERVICE_EMAILS", "media-results-push@example.iam.gserviceaccount.com"),
     ];
@@ -480,6 +505,7 @@ mod tests {
                 .unwrap();
 
         assert_eq!(config.media_svc_url, "http://localhost:8090");
+        assert_eq!(config.jobs_svc_url, "http://localhost:8091");
         assert_eq!(config.storage.endpoint.as_str(), "http://localhost:9000/");
         assert_eq!(config.storage.private_bucket, "goodfolk-private");
     }
@@ -517,6 +543,18 @@ mod tests {
         let shown = format!("{err:#}");
 
         assert!(shown.contains("MEDIA_SVC_URL") && !shown.contains("media-svc.internal"), "{shown}");
+    }
+
+    #[test]
+    fn production_refuses_a_plain_http_jobs_svc_url_without_showing_it() {
+        let mut pairs = production_pairs();
+        pairs.retain(|(name, _)| *name != "JOBS_SVC_URL");
+        pairs.push(("JOBS_SVC_URL", "http://jobs-svc.internal:8091"));
+
+        let err = Config::from_vars(|name| lookup(&pairs, name)).unwrap_err();
+        let shown = format!("{err:#}");
+
+        assert!(shown.contains("JOBS_SVC_URL") && !shown.contains("jobs-svc.internal"), "{shown}");
     }
 
     #[test]

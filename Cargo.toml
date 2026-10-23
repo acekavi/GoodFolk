@@ -17,6 +17,7 @@ fx = { path = "modules/fx" }
 housekeeping = { path = "modules/housekeeping" }
 identity = { path = "modules/identity" }
 imaging = { path = "crates/imaging" }
+jobs-svc = { path = "crates/jobs-svc" }
 media = { path = "modules/media" }
 media-svc = { path = "crates/media-svc" }
 media-types = { path = "crates/media-types" }

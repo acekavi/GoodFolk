@@ -109,6 +109,11 @@ fn is_money_key(key: &str) -> bool {
     key.starts_with("folio:") || key.starts_with("fx:")
 }
 
+/// Whether `key` is a property's night audit's (`audit:<property>`): its review and its runs.
+fn is_audit_key(key: &str) -> bool {
+    key.starts_with("audit:")
+}
+
 #[derive(Debug, Deserialize)]
 pub struct EventsQuery {
     pub property: Option<Uuid>,
@@ -130,8 +135,14 @@ pub async fn stream(
             let relevant = event.tenant_id == tenant
                 && (event.property_id.is_none() || query.property.is_none() || event.property_id == query.property);
             // Folio and exchange-rate keys name money: only those who may view the property's folios hear of them.
+            // The night audit's keys go to those who run it and to those who may view the folios it closes.
             let folio_viewer = allows(&grants, Permission::FolioView, event.property_id);
-            let keys: Vec<&String> = event.keys.iter().filter(|key| folio_viewer || !is_money_key(key)).collect();
+            let auditor = folio_viewer || allows(&grants, Permission::NightAudit, event.property_id);
+            let keys: Vec<&String> = event
+                .keys
+                .iter()
+                .filter(|key| (folio_viewer || !is_money_key(key)) && (auditor || !is_audit_key(key)))
+                .collect();
             (relevant && !keys.is_empty())
                 .then(|| Ok(SseEvent::default().event("invalidate").json_data(&keys).expect("keys serialize")))
         }

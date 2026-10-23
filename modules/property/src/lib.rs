@@ -16,6 +16,9 @@ pub struct Property {
     pub check_in_time: String,
     /// Local time guests check out by, `HH:MM`.
     pub check_out_time: String,
+    /// Local time the night audit closes the business date by itself, `HH:MM`: on the date at 12:00 or later, on the
+    /// next morning when earlier.
+    pub audit_time: String,
     /// The property's current trading day. Set to its local today when created; moved only by night audit.
     pub business_date: Date,
     pub version: i32,
@@ -25,7 +28,8 @@ pub struct Property {
 macro_rules! property_columns {
     () => {
         "id, code, name, timezone, base_currency, to_char(check_in_time, 'HH24:MI') as check_in_time, \
-         to_char(check_out_time, 'HH24:MI') as check_out_time, business_date, version"
+         to_char(check_out_time, 'HH24:MI') as check_out_time, to_char(audit_time, 'HH24:MI') as audit_time, \
+         business_date, version"
     };
 }
 
@@ -35,6 +39,7 @@ pub struct PropertyChanges {
     pub name: Option<String>,
     pub check_in_time: Option<String>,
     pub check_out_time: Option<String>,
+    pub audit_time: Option<String>,
 }
 
 pub struct NewProperty {
@@ -174,6 +179,7 @@ pub async fn update_property(
         "update property set name = coalesce($3, name),
                 check_in_time = coalesce($4::time, check_in_time),
                 check_out_time = coalesce($5::time, check_out_time),
+                audit_time = coalesce($6::time, audit_time),
                 version = version + 1
          where id = $1 and version = $2
          returning ",
@@ -184,6 +190,7 @@ pub async fn update_property(
     .bind(&changes.name)
     .bind(&changes.check_in_time)
     .bind(&changes.check_out_time)
+    .bind(&changes.audit_time)
     .fetch_optional(&mut **tx)
     .await?;
     let Some(property) = updated else {
@@ -205,6 +212,7 @@ pub async fn update_property(
         "name": changes.name,
         "check_in_time": changes.check_in_time,
         "check_out_time": changes.check_out_time,
+        "audit_time": changes.audit_time,
     }))
     .execute(&mut **tx)
     .await?;

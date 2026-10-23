@@ -37,11 +37,18 @@ pub struct UpdatePropertyRequest {
     /// `HH:MM` (24-hour), local time.
     #[garde(inner(pattern(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")))]
     pub check_out_time: Option<String>,
+    /// `HH:MM` (24-hour), local time: when the night audit closes the business date if nobody has. At 12:00 or later
+    /// it is on the business date itself, earlier it is the next morning.
+    #[garde(inner(pattern(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")))]
+    pub audit_time: Option<String>,
 }
 
 impl Changes for UpdatePropertyRequest {
     fn is_empty(&self) -> bool {
-        self.name.is_none() && self.check_in_time.is_none() && self.check_out_time.is_none()
+        self.name.is_none()
+            && self.check_in_time.is_none()
+            && self.check_out_time.is_none()
+            && self.audit_time.is_none()
     }
 }
 
@@ -90,8 +97,12 @@ pub async fn update(
 ) -> Result<Versioned<Property>, ApiError> {
     ctx.require(Permission::PropertiesManage, Some(property))?;
     validate_changes(&body)?;
-    let changes =
-        PropertyChanges { name: body.name, check_in_time: body.check_in_time, check_out_time: body.check_out_time };
+    let changes = PropertyChanges {
+        name: body.name,
+        check_in_time: body.check_in_time,
+        check_out_time: body.check_out_time,
+        audit_time: body.audit_time,
+    };
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
     let updated = property::update_property(&mut tx, ctx.tenant, ctx.user, property, version, changes)
         .await
