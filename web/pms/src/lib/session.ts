@@ -24,6 +24,8 @@ type Role = Profile['grants'][number]['role'];
 
 /** Roles allowed each action, mirroring `identity::Permission` on the server. */
 const ACTIONS = {
+	/** A property's settings, such as its check-in, check-out and audit times, and its ops alerts; mirrors `PropertiesManage`. */
+	propertiesManage: ['owner', 'manager'],
 	manageRooms: ['owner', 'manager'],
 	blockRooms: ['owner', 'manager', 'front_desk'],
 	manageRates: ['owner', 'manager'],

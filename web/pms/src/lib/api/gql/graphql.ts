@@ -8,6 +8,23 @@ export type AccountKind =
   | 'COMPANY'
   | 'TRAVEL_AGENT';
 
+export type AuditMode =
+  | 'AUTO'
+  | 'MANUAL';
+
+export type AuditRunStatus =
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'RUNNING';
+
+/** The steps of a close, in the order they run. */
+export type AuditStep =
+  | 'ADVANCE_BUSINESS_DATE'
+  | 'LOCK_FX'
+  | 'POST_CHARGES'
+  | 'RESOLVE'
+  | 'SNAPSHOT_STATS';
+
 export type BlockKind =
   /** Out of inventory: reduces availability. */
   | 'OUT_OF_ORDER'
@@ -97,6 +114,10 @@ export type Occupancy =
   /** A guest leaves and another arrives the same day. */
   | 'TURNOVER'
   | 'VACANT';
+
+export type OpsAlertKind =
+  | 'AUDIT'
+  | 'DRIFT';
 
 export type PenaltyKind =
   | 'AMOUNT'
@@ -302,10 +323,41 @@ export type RoomTypeGalleriesQueryVariables = Exact<{
 
 export type RoomTypeGalleriesQuery = { roomTypes: Array<{ id: string, media: Array<{ assetId: string, status: MediaStatus, error: string | null, caption: string | null, width: number | null, height: number | null, renditions: Array<{ size: RenditionSize, format: ImageFormat, width: number, height: number, url: string }> }> }> };
 
+export type NightAuditQueryVariables = Exact<{
+  propertyId: string;
+}>;
+
+
+export type NightAuditQuery = { nightAudit: { businessDate: string, blocking: number, arrivals: Array<{ reservationRoomId: string, reservationId: string, confirmation: string, guest: string, roomNumber: string | null, arrival: string, departure: string, status: RoomStatus, total: number, currency: string, noShowPenalty: number, version: number }>, departures: Array<{ reservationRoomId: string, reservationId: string, confirmation: string, guest: string, roomNumber: string | null, departure: string, version: number, balances: Array<{ currency: string, amount: number }> }>, posBills: Array<{ outlet: string, totalBase: number, bills: Array<{ id: string, billNo: string, currency: string, total: number, totalBase: number, roomNumber: string | null, settled: boolean, highlight: boolean }> }>, bookingBills: { nights: Array<{ reservationRoomId: string, roomNumber: string | null, date: string, roomAmount: number, mealAmount: number, currency: string, problem: string | null, alreadyPosted: number }>, posted: Array<{ category: string, lines: number, totalBase: number }> }, payments: Array<{ method: string, currency: string, count: number, amount: number, baseAmount: number, refunds: number, flagged: Array<string> }> } };
+
+export type AuditRunsQueryVariables = Exact<{
+  propertyId: string;
+  first: number;
+}>;
+
+
+export type AuditRunsQuery = { auditRuns: Array<{ id: string, businessDate: string, mode: AuditMode, status: AuditRunStatus, startedBy: string | null, attempts: number, error: string | null, failure: unknown, startedAt: string, finishedAt: string | null, steps: Array<{ step: AuditStep, completedAt: string, detail: unknown }> }> };
+
+export type DailyStatsQueryVariables = Exact<{
+  propertyId: string;
+  from: string;
+  to: string;
+}>;
+
+
+export type DailyStatsQuery = { dailyStats: Array<{ businessDate: string, roomsAvailable: number, roomsSold: number, occupancyBp: number, arrivals: number, departures: number, roomRevenue: number, mealPlanRevenue: number, posRevenue: number, feeRevenue: number, otherRevenue: number, adr: number, revpar: number }> };
+
+export type OpsAlertsQueryVariables = Exact<{
+  propertyId: string;
+}>;
+
+
+export type OpsAlertsQuery = { opsAlerts: Array<{ kind: OpsAlertKind, message: string, raisedAt: string }> };
+
 export type PropertiesQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type PropertiesQuery = { properties: Array<{ id: string, code: string, name: string, timezone: string, baseCurrency: string, businessDate: string, checkInTime: string, checkOutTime: string, version: number }> };
+export type PropertiesQuery = { properties: Array<{ id: string, code: string, name: string, timezone: string, baseCurrency: string, businessDate: string, checkInTime: string, checkOutTime: string, auditTime: string, version: number }> };
 
 export type RatePlansQueryVariables = Exact<{
   propertyId: string;
@@ -729,6 +781,130 @@ export const RoomTypeGalleriesDocument = new TypedDocumentString(`
   }
 }
     `, {"hash":"sha256:98199afa545df6979c304af243fc998f32d6e775527f04fbd6b2d1ca1b6e538c"}) as unknown as TypedDocumentString<RoomTypeGalleriesQuery, RoomTypeGalleriesQueryVariables>;
+export const NightAuditDocument = new TypedDocumentString(`
+    query NightAudit($propertyId: UUID!) {
+  nightAudit(propertyId: $propertyId) {
+    businessDate
+    blocking
+    arrivals {
+      reservationRoomId
+      reservationId
+      confirmation
+      guest
+      roomNumber
+      arrival
+      departure
+      status
+      total
+      currency
+      noShowPenalty
+      version
+    }
+    departures {
+      reservationRoomId
+      reservationId
+      confirmation
+      guest
+      roomNumber
+      departure
+      balances {
+        currency
+        amount
+      }
+      version
+    }
+    posBills {
+      outlet
+      totalBase
+      bills {
+        id
+        billNo
+        currency
+        total
+        totalBase
+        roomNumber
+        settled
+        highlight
+      }
+    }
+    bookingBills {
+      nights {
+        reservationRoomId
+        roomNumber
+        date
+        roomAmount
+        mealAmount
+        currency
+        problem
+        alreadyPosted
+      }
+      posted {
+        category
+        lines
+        totalBase
+      }
+    }
+    payments {
+      method
+      currency
+      count
+      amount
+      baseAmount
+      refunds
+      flagged
+    }
+  }
+}
+    `, {"hash":"sha256:7fe9b19cd9f2f445f7e26ba01d65d4a5f6894608ae56c46428a82c047181f23c"}) as unknown as TypedDocumentString<NightAuditQuery, NightAuditQueryVariables>;
+export const AuditRunsDocument = new TypedDocumentString(`
+    query AuditRuns($propertyId: UUID!, $first: Int!) {
+  auditRuns(propertyId: $propertyId, first: $first) {
+    id
+    businessDate
+    mode
+    status
+    startedBy
+    attempts
+    error
+    failure
+    startedAt
+    finishedAt
+    steps {
+      step
+      completedAt
+      detail
+    }
+  }
+}
+    `, {"hash":"sha256:d0d820c99d8ee6fe5ff1782f8fb6ccd4c742a937106bde1880eca763b02fefcc"}) as unknown as TypedDocumentString<AuditRunsQuery, AuditRunsQueryVariables>;
+export const DailyStatsDocument = new TypedDocumentString(`
+    query DailyStats($propertyId: UUID!, $from: Date!, $to: Date!) {
+  dailyStats(propertyId: $propertyId, from: $from, to: $to) {
+    businessDate
+    roomsAvailable
+    roomsSold
+    occupancyBp
+    arrivals
+    departures
+    roomRevenue
+    mealPlanRevenue
+    posRevenue
+    feeRevenue
+    otherRevenue
+    adr
+    revpar
+  }
+}
+    `, {"hash":"sha256:6646957a04e5b75a8dd58ba8810587b58bf5270025b336087b084616503c58a7"}) as unknown as TypedDocumentString<DailyStatsQuery, DailyStatsQueryVariables>;
+export const OpsAlertsDocument = new TypedDocumentString(`
+    query OpsAlerts($propertyId: UUID!) {
+  opsAlerts(propertyId: $propertyId) {
+    kind
+    message
+    raisedAt
+  }
+}
+    `, {"hash":"sha256:9dbdff767dda7631d365f8e69c437a04bd601bf99b0c543e5581483c9858c19a"}) as unknown as TypedDocumentString<OpsAlertsQuery, OpsAlertsQueryVariables>;
 export const PropertiesDocument = new TypedDocumentString(`
     query Properties {
   properties {
@@ -740,10 +916,11 @@ export const PropertiesDocument = new TypedDocumentString(`
     businessDate
     checkInTime
     checkOutTime
+    auditTime
     version
   }
 }
-    `, {"hash":"sha256:3cf9cbae0dcdc6b8cd0bd8a8e7df7dd0055510eb42b0458a0d6f1781feaf207b"}) as unknown as TypedDocumentString<PropertiesQuery, PropertiesQueryVariables>;
+    `, {"hash":"sha256:47102d190d3f14bfcac9045a41f0de782abef4c9a351a9a0a8d9ccc99b26c5d8"}) as unknown as TypedDocumentString<PropertiesQuery, PropertiesQueryVariables>;
 export const RatePlansDocument = new TypedDocumentString(`
     query RatePlans($propertyId: UUID!) {
   ratePlans(propertyId: $propertyId) {

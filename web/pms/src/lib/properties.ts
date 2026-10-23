@@ -12,6 +12,7 @@ export const PropertiesDocument = graphql(`
 			businessDate
 			checkInTime
 			checkOutTime
+			auditTime
 			version
 		}
 	}

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { applyEvent } from './events';
 import { foliosKey } from './folio';
 import { addDays } from './inventory';
+import { auditRunsKey, dailyStatsKey, nightAuditKey, opsAlertsKey } from './night-audit';
 import { tapeKey, tileStartFor, unassignedKey } from './tape';
 
 describe('applyEvent', () => {
@@ -119,5 +120,40 @@ describe('applyEvent', () => {
 
 		expect(client.getQueryState(holding)?.isInvalidated).toBe(true);
 		expect(client.getQueryState(other)?.isInvalidated).toBe(false);
+	});
+
+	it("refetches the property's review, runs, statistics and alerts on an audit event", () => {
+		const client = new QueryClient();
+		const keys = [
+			nightAuditKey('p1'),
+			auditRunsKey('p1', 1),
+			dailyStatsKey('p1', '2026-09-01', '2026-09-30'),
+			opsAlertsKey('p1'),
+			nightAuditKey('p2'),
+			auditRunsKey('p2', 1)
+		];
+		for (const key of keys) client.setQueryData(key, []);
+
+		applyEvent(client, 'invalidate', '["audit:p1"]');
+
+		expect(keys.map((key) => client.getQueryState(key)?.isInvalidated)).toEqual([
+			true,
+			true,
+			true,
+			true,
+			false,
+			false
+		]);
+	});
+
+	it("refetches the property's review on a reservations event", () => {
+		const client = new QueryClient();
+		client.setQueryData(nightAuditKey('p1'), {});
+		client.setQueryData(nightAuditKey('p2'), {});
+
+		applyEvent(client, 'invalidate', '["reservations:p1"]');
+
+		expect(client.getQueryState(nightAuditKey('p1'))?.isInvalidated).toBe(true);
+		expect(client.getQueryState(nightAuditKey('p2'))?.isInvalidated).toBe(false);
 	});
 });
