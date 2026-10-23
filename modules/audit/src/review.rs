@@ -67,6 +67,9 @@ pub struct OutletBills {
 pub struct PosBillRow {
     pub id: Uuid,
     pub bill_no: String,
+    /// The bill's own business date: earlier than the review's for a bill posted late, whose lines and payment are
+    /// dated the day it was posted.
+    pub bill_date: Date,
     pub currency: String,
     /// The sum of its lines' totals: its folio lines for a bill posted to a stay, its stored lines for a settled one.
     pub total: i64,
@@ -269,16 +272,18 @@ async fn departures(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<Depar
         .collect())
 }
 
-/// The payment of the POS bill `b` settled at its outlet, as a lateral subquery: its `currency`, `base_amount` and
-/// `rate`. `pos_bill` has no currency of its own; its payment's is the bill's.
-pub(crate) const SETTLED_PAYMENT: &str = "select currency::text as currency, base_amount, rate from payment
-                                          where pos_bill_id = b.id and refund_of is null limit 1";
+/// The payment of the POS bill `b` settled at its outlet, as a lateral subquery: its `currency`, `base_amount`,
+/// `rate` and `business_date` (the day it posted, which is the bill's own date unless the bill came in late).
+/// `pos_bill` has no currency of its own; its payment's is the bill's.
+pub(crate) const SETTLED_PAYMENT: &str = "select currency::text as currency, base_amount, rate, business_date
+                                          from payment where pos_bill_id = b.id and refund_of is null limit 1";
 
 #[derive(sqlx::FromRow)]
 struct Bill {
     outlet: String,
     id: Uuid,
     bill_no: String,
+    bill_date: Date,
     currency: String,
     total: i64,
     total_base: i64,
@@ -287,11 +292,23 @@ struct Bill {
     highlight: bool,
 }
 
-/// D's POS bills, by outlet code then posting order. A posted bill's lines are found by their posting keys
-/// (`pos:<bill>:<n>`); a settled bill's base total is its payment's.
+/// The POS bills posted on D, by outlet code then posting order: those with folio lines dated D (found among D's lines
+/// by their posting keys, `pos:<bill>:<n>`, in one pass) and those settled with a payment dated D. A bill that came
+/// in late is listed on the day it posted, with its own earlier date. A settled bill's base total is its payment's.
 async fn pos_bills(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<OutletBills>, AuditError> {
-    let rows: Vec<Bill> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select o.name as outlet, b.id, b.bill_no,
+    let rows: Vec<Bill> = sqlx::query_as(
+        "with posted as (
+           select split_part(l.posting_key, ':', 2)::uuid as bill_id, min(l.currency::text) as currency,
+                  sum(l.total) as total, sum(l.base_total) as base
+           from folio_line l join folio f on f.id = l.folio_id
+           where l.business_date = $2 and f.property_id = $1 and l.posting_key like 'pos:%'
+           group by split_part(l.posting_key, ':', 2)
+         ), paid as (
+           select pos_bill_id as bill_id, currency::text as currency, base_amount
+           from payment
+           where business_date = $2 and pos_bill_id is not null and refund_of is null
+         )
+         select o.name as outlet, b.id, b.bill_no, b.business_date as bill_date,
                 coalesce(paid.currency, posted.currency, '') as currency,
                 case when b.settled
                      then (select coalesce(sum((line ->> 'total')::bigint), 0) from jsonb_array_elements(b.lines) line)
@@ -304,20 +321,17 @@ async fn pos_bills(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<Outlet
                         union all
                         select currency, -amount from payment where folio_id = gf.id) as entries
                   group by currency having sum(amount) <> 0), false) as highlight
-         from pos_bill b
+         from (select bill_id from posted union select bill_id from paid) day
+         join pos_bill b on b.id = day.bill_id
          join outlet o on o.id = b.outlet_id
+         left join posted on posted.bill_id = b.id and not b.settled
+         left join paid on paid.bill_id = b.id and b.settled
          left join reservation_room rr on rr.id = b.reservation_room_id
          left join room on room.id = rr.room_id
          left join folio gf on gf.reservation_room_id = rr.id and gf.kind = 'guest'
-         left join lateral ({SETTLED_PAYMENT}) paid on b.settled
-         left join lateral (select min(l.currency::text) as currency, sum(l.total) as total,
-                                   sum(l.base_total) as base
-                            from folio_line l join folio f on f.id = l.folio_id
-                            where f.property_id = b.property_id
-                              and starts_with(l.posting_key, 'pos:' || b.id::text || ':')) posted on not b.settled
-         where b.property_id = $1 and b.business_date = $2
-         order by o.code, b.posted_at, b.id"
-    )))
+         where b.property_id = $1
+         order by o.code, b.posted_at, b.id",
+    )
     .bind(property)
     .bind(date)
     .fetch_all(&mut **tx)
@@ -327,6 +341,7 @@ async fn pos_bills(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<Outlet
         let bill = PosBillRow {
             id: row.id,
             bill_no: row.bill_no,
+            bill_date: row.bill_date,
             currency: row.currency,
             total: row.total,
             total_base: row.total_base,

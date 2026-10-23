@@ -112,6 +112,10 @@ A POS bill of the business date.
 type AuditPosBillNode {
 	id: UUID!
 	billNo: String!
+	"""
+	The bill's own business date: before the review's for a bill posted late, which counts on the day it posted.
+	"""
+	billDate: Date!
 	currency: String!
 	total: Int!
 	totalBase: Int!

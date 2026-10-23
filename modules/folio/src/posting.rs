@@ -288,7 +288,7 @@ async fn post_stay_date(
         .pop()
         .ok_or_else(|| FolioError::Conflict(format!("the stay has no price for {date}")))?;
     let mut counts = Counts::default();
-    post_night(tx, tenant, user, stay, &night, &mut counts).await?;
+    post_night(tx, tenant, user, stay, &night, date, &mut counts).await?;
     Ok(Some(counts))
 }
 
@@ -296,6 +296,10 @@ async fn post_stay_date(
 /// returns the number of lines posted. Check-out calls it, holding the stay's row, before marking the stay checked
 /// out, with `before` = `min(departure, business date + 1)`: the business date's own night is unposted until the
 /// night audit posts it. A stay arriving and departing the same day has no nights and posts nothing.
+///
+/// A night of a day the night audit has already closed (one it missed) posts on the property's business date, read
+/// `for share`, so nothing lands on a closed day: its key and description keep the night's date, and its revenue
+/// counts on the day it posts.
 pub async fn post_unposted_nights(
     tx: &mut Tx,
     tenant: TenantId,
@@ -304,8 +308,11 @@ pub async fn post_unposted_nights(
     before: Date,
 ) -> Result<u32, FolioError> {
     let mut counts = Counts::default();
-    for night in nights(tx, reservation_room, None, before).await? {
-        post_night(tx, tenant, user, reservation_room, &night, &mut counts).await?;
+    let nights = nights(tx, reservation_room, None, before).await?;
+    let Some(first) = nights.first() else { return Ok(0) };
+    let today = business_date(tx, first.property_id).await?;
+    for night in &nights {
+        post_night(tx, tenant, user, reservation_room, night, today, &mut counts).await?;
     }
     Ok(counts.lines)
 }
@@ -421,13 +428,15 @@ async fn nights(tx: &mut Tx, stay: Uuid, from: Option<Date>, before: Date) -> Re
     .await
 }
 
-/// Posts `night`'s room charge and, when it has one, its meal-plan charge, each unless its key is already used.
+/// Posts `night`'s room charge and, when it has one, its meal-plan charge, each unless its key is already used, on
+/// the later of the night's date and `today` (the property's business date): a closed day takes no new lines.
 async fn post_night(
     tx: &mut Tx,
     tenant: TenantId,
     user: Option<UserId>,
     stay: Uuid,
     night: &Night,
+    today: Date,
     counts: &mut Counts,
 ) -> Result<(), FolioError> {
     let room =
@@ -453,7 +462,7 @@ async fn post_night(
             quantity: 1,
             unit_net: amount,
             currency: night.currency.clone(),
-            business_date: date,
+            business_date: date.max(today),
             posting_key: Some(key),
             inclusive: night.inclusive,
         };

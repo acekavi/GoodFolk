@@ -444,3 +444,90 @@ async fn a_closed_day_s_rate_cannot_be_overridden(_: PgPoolOptions, opts: PgConn
     .unwrap_err();
     assert!(matches!(&refused, fx::FxError::Conflict(message) if message == "That day is closed"), "{refused:?}");
 }
+
+/// Pauses after `step`'s commit until the test lets it go.
+struct PauseAfter {
+    step: Step,
+    paused: Arc<Barrier>,
+    release: Arc<Barrier>,
+}
+
+impl CloseHooks for PauseAfter {
+    fn after_commit(&self, step: Step) -> Result<(), AuditError> {
+        if step == self.step {
+            self.paused.wait();
+            self.release.wait();
+        }
+        Ok(())
+    }
+}
+
+/// A stay checked in after `post_charges` and before the roll has no charge for D: the roll fails naming it, rather
+/// than snapshot D without its night, and the retry posts the night before rolling.
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_stay_checked_in_after_the_posting_fails_the_roll_until_retried(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts.clone()).await;
+    let (p, d) = (hotel.property, hotel.business_date);
+    hotel.stay(Stay { room: Some("101"), ..Stay::new(p, "checked_in", -1, 2) }).await;
+    let run = hotel.start(Mode::Manual).await.unwrap();
+
+    let (paused, release) = (Arc::new(Barrier::new(2)), Arc::new(Barrier::new(2)));
+    let hooks = PauseAfter { step: Step::LockFx, paused: paused.clone(), release: release.clone() };
+    let (close_opts, tenant) = (opts.clone(), hotel.tenant);
+    let close = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let pool = db::testing::app_pool(close_opts.clone(), 2).await;
+            audit::execute(&pool, &close_opts, tenant, run.id, &hooks).await.unwrap().unwrap()
+        })
+    });
+    tokio::task::spawn_blocking(move || paused.wait()).await.unwrap();
+    let late = hotel.stay(Stay { room: Some("102"), ..Stay::new(p, "checked_in", 0, 2) }).await;
+    tokio::task::spawn_blocking(move || release.wait()).await.unwrap();
+    let failed = tokio::task::spawn_blocking(move || close.join().unwrap()).await.unwrap();
+
+    assert_eq!(failed.status, RunStatus::Failed);
+    let error = failed.error.clone().unwrap();
+    assert!(error.contains("Room 102") && !error.contains("Room 101"), "{error}");
+    let failure = failed.failure.clone().unwrap();
+    assert_eq!(failure["step"], "snapshot_stats");
+    assert_eq!(failure["stays"][0]["reservation_room"], late.id.to_string());
+    assert_eq!(hotel.current_date().await, d);
+
+    hotel.retry(run.id).await;
+    let completed = hotel.execute(&opts, run.id).await;
+
+    assert_eq!(completed.status, RunStatus::Completed, "{:?}", completed.error);
+    let stats = audit::daily_stats(&mut hotel.tx().await, p, d, d).await.unwrap();
+    assert_eq!((stats[0].rooms_sold, stats[0].room_revenue), (2, 20_000));
+}
+
+/// Stops a run after `post_charges` commits, as if the process died there.
+struct DieAfterPosting;
+
+impl CloseHooks for DieAfterPosting {
+    fn after_commit(&self, step: Step) -> Result<(), AuditError> {
+        if step == Step::PostCharges { Err(AuditError::Interrupted) } else { Ok(()) }
+    }
+}
+
+/// A run resumed after `post_charges` posts D again before rolling, so a stay checked in meanwhile counts in D.
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_resumed_run_posts_a_stay_checked_in_since(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts.clone()).await;
+    let (p, d) = (hotel.property, hotel.business_date);
+    let early = hotel.stay(Stay { room: Some("101"), ..Stay::new(p, "checked_in", -1, 2) }).await;
+    let run = hotel.start(Mode::Manual).await.unwrap();
+    let died = audit::execute(&hotel.pool, &opts, hotel.tenant, run.id, &DieAfterPosting).await.unwrap_err();
+    assert!(matches!(died, AuditError::Interrupted), "{died:?}");
+
+    let late = hotel.stay(Stay { room: Some("102"), ..Stay::new(p, "checked_in", 0, 2) }).await;
+    let completed = hotel.execute(&opts, run.id).await;
+
+    assert_eq!(completed.status, RunStatus::Completed, "{:?}", completed.error);
+    let mut expected = vec![(format!("room:{}:{d}", early.id), 10_000), (format!("room:{}:{d}", late.id), 10_000)];
+    expected.sort();
+    assert_eq!(hotel.keyed_lines(p).await, expected);
+    let stats = audit::daily_stats(&mut hotel.tx().await, p, d, d).await.unwrap();
+    assert_eq!((stats[0].rooms_sold, stats[0].room_revenue), (2, 20_000));
+}

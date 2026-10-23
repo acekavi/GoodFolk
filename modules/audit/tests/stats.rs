@@ -5,7 +5,7 @@ mod common;
 
 use audit::{BreakdownRow, DailyStats};
 use common::{Hotel, Stay};
-use folio::{Method, PosTarget};
+use folio::{Method, PosBillIn, PosItem, PosOutcome, PosTarget};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rust_decimal::Decimal;
@@ -454,4 +454,117 @@ async fn a_reversal_follows_an_earlier_transfer_back_to_its_stay(_: PgPoolOption
         stats.breakdown.iter().filter(|row| row.dimension == "segment").cloned().collect();
     assert_eq!(segments, vec![row("segment", "OTA", 1, 0, -2_000), row("segment", "TA", 1, 0, 0)]);
     assert_invariants(&stats);
+}
+
+/// The two items of a bill at `outlet`, one `misc`, dated `bill_date` (the business date when `None`).
+fn bill(
+    outlet: &str,
+    bill_no: &str,
+    bill_date: Option<time::Date>,
+    misc: i64,
+    own: i64,
+    target: PosTarget,
+) -> PosBillIn {
+    PosBillIn {
+        outlet: outlet.into(),
+        bill_no: bill_no.into(),
+        business_date: bill_date,
+        currency: "LKR".into(),
+        items: vec![
+            PosItem { description: "Towel".into(), quantity: 1, unit_net: misc, category: Some("misc".into()) },
+            PosItem { description: "Drinks".into(), quantity: 1, unit_net: own, category: None },
+        ],
+        target,
+    }
+}
+
+async fn post_bill(hotel: &Hotel, bill: PosBillIn) -> PosOutcome {
+    let mut tx = hotel.tx().await;
+    let outcome = folio::post_pos_bill(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, bill).await.unwrap();
+    tx.commit().await.unwrap();
+    outcome
+}
+
+/// A bill dated a closed day (owner ruling R14) keeps its own date, but its lines and payment are today's: today's
+/// review lists it with its own date, today's figures count it, and the closed day's never change. A replay returns
+/// the first copy; a changed body is refused.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_bill_dated_a_closed_day_counts_today(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let (p, d, yesterday) = (hotel.property, hotel.business_date, hotel.day(-1));
+    let stay = hotel.stay(Stay { room: Some("101"), ..Stay::new(p, "checked_in", -1, 2) }).await;
+    hotel.outlet(p, "BAR", "Bar").await;
+    let closed = compute(&hotel).await;
+    let closed_day = audit::compute(&mut hotel.tx().await, p, yesterday).await.unwrap();
+
+    let settled = bill("BAR", "L1", Some(yesterday), 0, 2_500, PosTarget::Settled { method: Method::Cash });
+    let posted = bill("BAR", "L2", Some(yesterday), 0, 4_000, PosTarget::Stay(stay.id));
+    let PosOutcome::Posted(settled_row) = post_bill(&hotel, settled.clone()).await else { panic!("a new bill") };
+    let PosOutcome::Posted(posted_row) = post_bill(&hotel, posted).await else { panic!("a new bill") };
+
+    assert_eq!((settled_row.business_date, posted_row.business_date), (yesterday, yesterday), "the bill's own date");
+    let line_dates: Vec<time::Date> =
+        sqlx::query_scalar("select business_date from folio_line where starts_with(posting_key, $1)")
+            .bind(format!("pos:{}:", posted_row.id))
+            .fetch_all(&mut *hotel.tx().await)
+            .await
+            .unwrap();
+    assert_eq!(line_dates, vec![d, d]);
+    let paid_on: time::Date = sqlx::query_scalar("select business_date from payment where pos_bill_id = $1")
+        .bind(settled_row.id)
+        .fetch_one(&mut *hotel.tx().await)
+        .await
+        .unwrap();
+    assert_eq!(paid_on, d);
+
+    let review = hotel.night_audit(p).await;
+    let listed: Vec<(String, time::Date)> =
+        review.pos_bills[0].bills.iter().map(|bill| (bill.bill_no.clone(), bill.bill_date)).collect();
+    assert_eq!(listed, vec![("L1".into(), yesterday), ("L2".into(), yesterday)]);
+    assert!(review.pos_bills[0].bills.iter().all(|bill| bill.total_base > 0));
+
+    let today = compute(&hotel).await;
+    assert_eq!(today.pos_revenue - closed.pos_revenue, 2_500 + 4_000);
+    assert_eq!(today.payments.get("cash").copied().unwrap_or(0) - closed.payments.get("cash").copied().unwrap_or(0), {
+        settled_row.lines.iter().map(|line| line.total).sum::<i64>()
+    });
+    assert_eq!(audit::compute(&mut hotel.tx().await, p, yesterday).await.unwrap(), closed_day);
+    assert_invariants(&today);
+
+    let replayed = post_bill(&hotel, settled.clone()).await;
+    assert_eq!(replayed, PosOutcome::Replayed(settled_row));
+    let mut changed = settled;
+    changed.items[1].unit_net = 2_600;
+    let mut tx = hotel.tx().await;
+    let refused = folio::post_pos_bill(&mut tx, hotel.tenant, Some(hotel.user), p, changed).await.unwrap_err();
+    assert!(matches!(refused, folio::FolioError::Conflict(_)), "{refused:?}");
+}
+
+/// A night the audit missed, posted at check-out after its day closed, is dated today and counts in today's figures.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_missed_night_posted_at_check_out_counts_today(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let (p, d) = (hotel.property, hotel.business_date);
+    let stay = hotel.stay(Stay { room: Some("101"), ..Stay::new(p, "checked_in", -1, 1) }).await;
+
+    let mut tx = hotel.tx().await;
+    let posted = folio::post_unposted_nights(&mut tx, hotel.tenant, None, stay.id, hotel.day(1)).await.unwrap();
+    tx.commit().await.unwrap();
+    hotel.check_out(stay.id).await;
+
+    assert_eq!(posted, 2, "D − 1's missed night and D's");
+    let dates: Vec<(String, time::Date)> =
+        sqlx::query_as("select posting_key, business_date from folio_line order by posting_key")
+            .fetch_all(&mut *hotel.tx().await)
+            .await
+            .unwrap();
+    assert_eq!(
+        dates,
+        vec![(format!("room:{}:{}", stay.id, hotel.day(-1)), d), (format!("room:{}:{d}", stay.id), d)],
+        "the key keeps the night's date"
+    );
+    let today = compute(&hotel).await;
+    assert_eq!(today.room_revenue, 20_000);
+    let closed_day = audit::compute(&mut hotel.tx().await, p, hotel.day(-1)).await.unwrap();
+    assert_eq!(closed_day.room_revenue, 0);
 }

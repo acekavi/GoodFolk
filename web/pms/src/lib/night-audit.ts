@@ -49,6 +49,7 @@ export const NightAuditDocument = graphql(`
 				bills {
 					id
 					billNo
+					billDate
 					currency
 					total
 					totalBase

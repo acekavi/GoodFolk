@@ -279,7 +279,12 @@
 					<tbody>
 						{#each outlet.bills as bill (bill.id)}
 							<tr class:highlight={bill.highlight}>
-								<td>{bill.billNo}</td>
+								<td>
+									{bill.billNo}
+									{#if bill.billDate !== data.businessDate}
+										<span class="note">dated {bill.billDate}</span>
+									{/if}
+								</td>
 								<td>{money(bill.total, bill.currency)}</td>
 								<td>
 									{bill.settled
@@ -430,5 +435,10 @@
 	}
 	tr.highlight td {
 		color: var(--danger);
+	}
+	.note {
+		display: block;
+		color: var(--muted);
+		font-size: 0.85em;
 	}
 </style>

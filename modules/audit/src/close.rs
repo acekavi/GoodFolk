@@ -420,6 +420,12 @@ async fn execute_locked(
             Step::Resolve => close.resolve().await,
             Step::PostCharges => close.post_charges().await,
             Step::LockFx => close.lock_fx().await,
+            // A run resuming after post_charges posts D again first: a stay checked in since has its night posted
+            // (the posting keys make the rest no-ops).
+            _ if done(Step::PostCharges) => match close.post(Step::SnapshotStats).await {
+                Ok(_) => close.roll().await,
+                Err(stop) => Err(stop),
+            },
             _ => close.roll().await,
         };
         if let Err(stop) = result {
@@ -615,34 +621,77 @@ impl Close<'_> {
 
     /// Posts D's room and meal-plan charges; any stay that fails fails the step, listed in its failure.
     async fn post_charges(&self) -> Result<(), Stop> {
-        let report =
-            folio::post_business_date_charges(self.pool, self.tenant, None, self.property(), self.date()).await?;
-        let mut tx = self.begin().await?;
-        if !report.failures.is_empty() {
-            let ids: Vec<Uuid> = report.failures.iter().map(|(stay, _)| *stay).collect();
-            let rooms: Vec<(Uuid, Option<String>)> = sqlx::query_as(
-                "select rr.id, room.number from reservation_room rr left join room on room.id = rr.room_id
-                 where rr.id = any($1)",
-            )
-            .bind(&ids)
-            .fetch_all(&mut *tx)
-            .await?;
-            let stays: Vec<serde_json::Value> = report
-                .failures
-                .iter()
-                .map(|(stay, error)| {
-                    let room = rooms.iter().find(|(id, _)| id == stay).and_then(|(_, number)| number.clone());
-                    json!({ "reservation_room": stay, "room": room, "error": error })
-                })
-                .collect();
-            return Err(Stop::Failed {
-                error: format!("{} stays could not be posted", stays.len()),
-                failure: json!({ "step": Step::PostCharges.as_str(), "stays": stays }),
-            });
-        }
+        let report = self.post(Step::PostCharges).await?;
+        let tx = self.begin().await?;
         let detail =
             json!({ "stays": report.stays, "lines": report.lines, "skipped_existing": report.skipped_existing });
         self.finish(tx, &[(Step::PostCharges, detail)], vec![audit_key(self.property())]).await
+    }
+
+    /// Posts D's room and meal-plan charges; stays that fail stop `step` with them listed in its failure.
+    async fn post(&self, step: Step) -> Result<folio::PostReport, Stop> {
+        let report =
+            folio::post_business_date_charges(self.pool, self.tenant, None, self.property(), self.date()).await?;
+        if report.failures.is_empty() {
+            return Ok(report);
+        }
+        let mut tx = self.begin().await?;
+        let ids: Vec<Uuid> = report.failures.iter().map(|(stay, _)| *stay).collect();
+        let rooms = room_numbers(&mut tx, &ids).await?;
+        tx.commit().await?;
+        let stays: Vec<serde_json::Value> = report
+            .failures
+            .iter()
+            .map(|(stay, error)| {
+                let room = rooms.iter().find(|(id, _)| id == stay).and_then(|(_, number)| number.clone());
+                json!({ "reservation_room": stay, "room": room, "error": error })
+            })
+            .collect();
+        Err(Stop::Failed {
+            error: format!("{} stays could not be posted", stays.len()),
+            failure: json!({ "step": step.as_str(), "stays": stays }),
+        })
+    }
+
+    /// Fails the roll when a stay in house on D has no room charge for D: it checked in after D was posted. A retry
+    /// posts it before rolling again.
+    async fn check_posted(&self, tx: &mut Tx) -> Result<(), Stop> {
+        let (property, date) = (self.property(), self.date());
+        let stays = folio::in_house_stays(tx, property, date).await?;
+        let keys: Vec<String> = stays.iter().map(|stay| format!("room:{stay}:{date}")).collect();
+        let used: Vec<String> = sqlx::query_scalar(
+            "select posting_key from folio_line
+             where posting_key = any($2) and folio_id in (select id from folio where property_id = $1)",
+        )
+        .bind(property)
+        .bind(&keys)
+        .fetch_all(&mut **tx)
+        .await?;
+        let unposted: Vec<Uuid> =
+            stays.into_iter().zip(&keys).filter(|(_, key)| !used.contains(key)).map(|(stay, _)| stay).collect();
+        if unposted.is_empty() {
+            return Ok(());
+        }
+        let rooms = room_numbers(tx, &unposted).await?;
+        let error = format!("{date}'s room charge is not posted");
+        let stays: Vec<serde_json::Value> = unposted
+            .iter()
+            .map(|stay| {
+                let room = rooms.iter().find(|(id, _)| id == stay).and_then(|(_, number)| number.clone());
+                json!({ "reservation_room": stay, "room": room, "error": error })
+            })
+            .collect();
+        let labels: Vec<String> = unposted
+            .iter()
+            .map(|stay| match rooms.iter().find(|(id, _)| id == stay).and_then(|(_, number)| number.as_ref()) {
+                Some(number) => format!("Room {number}"),
+                None => format!("Stay {stay}"),
+            })
+            .collect();
+        Err(Stop::Failed {
+            error: format!("Checked in after the posting, with no room charge for {date}: {}", labels.join(", ")),
+            failure: json!({ "step": Step::SnapshotStats.as_str(), "stays": stays }),
+        })
     }
 
     /// Stores, as D's own, each accepted currency's rate in effect on D that is dated earlier, so D's rates stay what
@@ -693,6 +742,7 @@ impl Close<'_> {
                 failure: json!({ "step": Step::SnapshotStats.as_str() }),
             });
         }
+        self.check_posted(&mut tx).await?;
         let stats = compute(&mut tx, property, date).await?;
         store(&mut tx, tenant, property, &stats).await?;
         let next = date + Duration::days(1);
@@ -720,6 +770,17 @@ impl Close<'_> {
         let keys = vec![audit_key(property), property::PROPERTIES_KEY.into(), reservations::reservations_key(property)];
         self.finish(tx, &steps, keys).await
     }
+}
+
+/// `(stay, room number)` of each of `stays`.
+async fn room_numbers(tx: &mut Tx, stays: &[Uuid]) -> Result<Vec<(Uuid, Option<String>)>, sqlx::Error> {
+    sqlx::query_as(
+        "select rr.id, room.number from reservation_room rr left join room on room.id = rr.room_id
+         where rr.id = any($1)",
+    )
+    .bind(stays)
+    .fetch_all(&mut **tx)
+    .await
 }
 
 async fn audit(

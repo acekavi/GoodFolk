@@ -297,7 +297,9 @@ struct Posted {
 /// outlet (held `for share` while the bill posts) and a currency the
 /// property accepts (each `Invalid`); an outlet or stay of another property is `NotFound`. An item's category is the
 /// outlet's `pos:<OUTLET>` unless it names `misc`. The business date is the bill's, or the property's when it names
-/// none, and must be within the 7 days up to the property's (`Invalid`). Each item has a quantity of at least 1 and
+/// none, and must be within the 7 days up to the property's (`Invalid`). The bill keeps that date, but its folio
+/// lines and its payment are dated the property's business date: a bill dated a day the night audit has closed counts
+/// in today's figures, never on the closed day. Each item has a quantity of at least 1 and
 /// a unit price of at least 0 (`Invalid`). Items are taxed with the property's rules, without the service charge when
 /// the outlet's is off.
 ///
@@ -362,11 +364,12 @@ pub async fn post_pos_bill(
         )));
     }
     let id = Uuid::now_v7();
+    // A late bill keeps its own date, but its lines and payment post today: a closed day takes nothing new.
     let charges = bill
         .items
         .iter()
         .enumerate()
-        .map(|(index, item)| charge(&outlet, id, index + 1, item, &bill.currency, business_date))
+        .map(|(index, item)| charge(&outlet, id, index + 1, item, &bill.currency, today))
         .collect::<Result<Vec<_>, _>>()?;
 
     let lines = match &bill.target {
@@ -454,8 +457,7 @@ pub async fn post_pos_bill(
         PosTarget::Settled { method } => {
             let total = lines.iter().try_fold(0_i64, |sum, line| sum.checked_add(line.total)).ok_or_else(too_large)?;
             let payment =
-                pay_pos_bill(tx, tenant, user, property, posted.id, method, total, &bill.currency, business_date)
-                    .await?;
+                pay_pos_bill(tx, tenant, user, property, posted.id, method, total, &bill.currency, today).await?;
             data["target"] = "settled".into();
             data["payment"] = serde_json::json!(payment.id);
             data["method"] = payment.method.into();

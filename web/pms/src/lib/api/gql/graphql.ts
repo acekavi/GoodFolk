@@ -328,7 +328,7 @@ export type NightAuditQueryVariables = Exact<{
 }>;
 
 
-export type NightAuditQuery = { nightAudit: { businessDate: string, blocking: number, arrivals: Array<{ reservationRoomId: string, reservationId: string, confirmation: string, guest: string, roomNumber: string | null, arrival: string, departure: string, status: RoomStatus, total: number, currency: string, noShowPenalty: number, version: number }>, departures: Array<{ reservationRoomId: string, reservationId: string, confirmation: string, guest: string, roomNumber: string | null, departure: string, version: number, balances: Array<{ currency: string, amount: number }> }>, posBills: Array<{ outlet: string, totalBase: number, bills: Array<{ id: string, billNo: string, currency: string, total: number, totalBase: number, roomNumber: string | null, settled: boolean, highlight: boolean }> }>, bookingBills: { nights: Array<{ reservationRoomId: string, roomNumber: string | null, date: string, roomAmount: number, mealAmount: number, currency: string, problem: string | null, alreadyPosted: number }>, posted: Array<{ category: string, lines: number, totalBase: number }> }, payments: Array<{ method: string, currency: string, count: number, amount: number, baseAmount: number, refunds: number, flagged: Array<string> }> } };
+export type NightAuditQuery = { nightAudit: { businessDate: string, blocking: number, arrivals: Array<{ reservationRoomId: string, reservationId: string, confirmation: string, guest: string, roomNumber: string | null, arrival: string, departure: string, status: RoomStatus, total: number, currency: string, noShowPenalty: number, version: number }>, departures: Array<{ reservationRoomId: string, reservationId: string, confirmation: string, guest: string, roomNumber: string | null, departure: string, version: number, balances: Array<{ currency: string, amount: number }> }>, posBills: Array<{ outlet: string, totalBase: number, bills: Array<{ id: string, billNo: string, billDate: string, currency: string, total: number, totalBase: number, roomNumber: string | null, settled: boolean, highlight: boolean }> }>, bookingBills: { nights: Array<{ reservationRoomId: string, roomNumber: string | null, date: string, roomAmount: number, mealAmount: number, currency: string, problem: string | null, alreadyPosted: number }>, posted: Array<{ category: string, lines: number, totalBase: number }> }, payments: Array<{ method: string, currency: string, count: number, amount: number, baseAmount: number, refunds: number, flagged: Array<string> }> } };
 
 export type AuditRunsQueryVariables = Exact<{
   propertyId: string;
@@ -819,6 +819,7 @@ export const NightAuditDocument = new TypedDocumentString(`
       bills {
         id
         billNo
+        billDate
         currency
         total
         totalBase
@@ -855,7 +856,7 @@ export const NightAuditDocument = new TypedDocumentString(`
     }
   }
 }
-    `, {"hash":"sha256:7fe9b19cd9f2f445f7e26ba01d65d4a5f6894608ae56c46428a82c047181f23c"}) as unknown as TypedDocumentString<NightAuditQuery, NightAuditQueryVariables>;
+    `, {"hash":"sha256:3b28da9286aa04a2a4e656a69abe59027a3f9d27da56ac7ee4e839c0dafb28d8"}) as unknown as TypedDocumentString<NightAuditQuery, NightAuditQueryVariables>;
 export const AuditRunsDocument = new TypedDocumentString(`
     query AuditRuns($propertyId: UUID!, $first: Int!) {
   auditRuns(propertyId: $propertyId, first: $first) {

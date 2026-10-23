@@ -83,8 +83,9 @@ pub const DAY_LINES_SQL: &str = "select l.id, l.category, l.currency::text as cu
 /// - **Counts:** arrivals (checked in on D), departures (checked out, leaving D), no-shows and cancellations (on D),
 ///   and walk-ins (arrivals booked on D).
 /// - **Revenue:** each of D's lines, net (its base total less its on-bill taxes, each converted at the line's rate),
-///   by category: `room`, `meal_plan`, `pos:*`, `fee`, and the rest as other. The items of the POS bills of D settled
-///   at their outlet are POS revenue, converted at their payment's rate.
+///   by category: `room`, `meal_plan`, `pos:*`, `fee`, and the rest as other. The items of the POS bills settled at
+///   their outlet with a payment dated D (a late bill's own date may be earlier) are POS revenue, converted at their
+///   payment's rate.
 /// - **Taxes** by code, on-bill and absorbed; **payments** by method in base, refunds in, transfers out.
 /// - **Breakdown:** per stay dimension (`segment`, `source`, `residency`, `room_type`), the sold stays and the room
 ///   and meal-plan revenue of the stay each line's posting key names (through a reversal to the line it reverses, and
@@ -235,22 +236,27 @@ pub async fn compute(tx: &mut Tx, property: Uuid, date: Date) -> Result<DailySta
         }
     }
 
+    // The bills settled on D: by their payment's date, so a late bill counts on the day it posted.
     let settled: Vec<SettledBill> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select o.code as outlet, b.lines, paid.currency, paid.rate
          from pos_bill b
          join outlet o on o.id = b.outlet_id
          join lateral ({SETTLED_PAYMENT}) paid on true
-         where b.property_id = $1 and b.business_date = $2 and b.settled"
+         where b.property_id = $1 and b.settled
+           and b.id in (select pos_bill_id from payment
+                        where business_date = $2 and pos_bill_id is not null and refund_of is null)
+           and paid.business_date = $2"
     )))
     .bind(property)
     .bind(date)
     .fetch_all(&mut **tx)
     .await?;
     for bill in &settled {
+        let (currency, rate) = (&bill.currency, bill.rate);
         for line in &bill.lines.0 {
-            let mut net = convert(line.total, &bill.currency, bill.rate)?;
+            let mut net = convert(line.total, currency, rate)?;
             for tax in &line.taxes {
-                let amount = convert(tax.amount, &bill.currency, bill.rate)?;
+                let amount = convert(tax.amount, currency, rate)?;
                 *stats.taxes.entry(tax.code.clone()).or_default() += amount;
                 if tax.presentation == "on_bill" {
                     net -= amount;

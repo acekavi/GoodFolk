@@ -158,6 +158,7 @@ async fn every_list_of_the_seeded_day_is_exact(_: PgPoolOptions, opts: PgConnect
                 PosBillRow {
                     id: day.posted_bill,
                     bill_no: "B1".into(),
+                    bill_date: d,
                     currency: "LKR".into(),
                     total: posted_total,
                     total_base: posted_base,
@@ -168,6 +169,7 @@ async fn every_list_of_the_seeded_day_is_exact(_: PgPoolOptions, opts: PgConnect
                 PosBillRow {
                     id: day.settled_bill,
                     bill_no: "B2".into(),
+                    bill_date: d,
                     currency: "LKR".into(),
                     total: day.settled_total,
                     total_base: day.settled_total,

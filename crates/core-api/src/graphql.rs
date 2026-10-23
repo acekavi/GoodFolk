@@ -1683,6 +1683,8 @@ impl From<audit::DepartureRow> for AuditDepartureNode {
 pub struct AuditPosBillNode {
     pub id: Uuid,
     pub bill_no: String,
+    /// The bill's own business date: before the review's for a bill posted late, which counts on the day it posted.
+    pub bill_date: Date,
     pub currency: String,
     pub total: i64,
     pub total_base: i64,
@@ -1712,6 +1714,7 @@ impl From<audit::OutletBills> for AuditOutletBillsNode {
                 .map(|b| AuditPosBillNode {
                     id: b.id,
                     bill_no: b.bill_no,
+                    bill_date: b.bill_date,
                     currency: b.currency,
                     total: b.total,
                     total_base: b.total_base,

@@ -315,6 +315,22 @@ async fn check_out_posts_the_missing_nights_exactly_once(_: PgPoolOptions, opts:
     assert_eq!(hotel.keys().await, sorted(expected));
     assert_eq!(hotel.lines().await.len(), 6, "each night once");
     assert_eq!(report, PostReport::default());
+    // Days 1 and 2 never closed here, but a missed night of a closed day posts on the business date, keeping its own
+    // date in its key and description.
+    let dated: Vec<(String, String, Date)> = sqlx::query_as(
+        "select posting_key, description, business_date from folio_line
+         where posting_key like 'room:%' order by posting_key",
+    )
+    .fetch_all(&mut *hotel.tx().await)
+    .await
+    .unwrap();
+    assert_eq!(dated.len(), 3);
+    assert_eq!((dated[0].0.clone(), dated[0].2), (room_key(stay, hotel.day(0)), hotel.day(0)));
+    for (day, (key, description, posted_on)) in dated.iter().enumerate().skip(1) {
+        let night = hotel.day(i64::try_from(day).unwrap());
+        assert_eq!((key, *posted_on), (&room_key(stay, night), hotel.day(3)));
+        assert!(description.ends_with(&night.to_string()), "{description}");
+    }
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

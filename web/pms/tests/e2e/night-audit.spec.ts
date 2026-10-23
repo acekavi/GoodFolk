@@ -234,3 +234,23 @@ test('a stay without an exchange rate fails the close, which completes once the 
 			.getByText(`Business date is now ${addDays(owner.businessDate, 1)}`)
 	).toBeVisible();
 });
+
+test('a POS bill dated a closed day is listed today with its own date', async ({ page }) => {
+	const owner = await hotel(page, 'NAL');
+	await post(page.request, `${owner.path}/outlets`, { code: 'BAR', name: 'Bar' });
+	rollBusinessDate(owner.tenant, owner.propertyId);
+	await post(page.request, `${owner.path}/pos-bills`, {
+		outlet: 'BAR',
+		bill_no: 'L-1',
+		business_date: owner.businessDate,
+		currency: 'LKR',
+		items: [{ description: 'Late drinks', quantity: 1, unit_net: 100_000 }],
+		target: { settled: { method: 'cash' } }
+	});
+
+	await page.goto(`/p/${owner.propertyId}/night-audit`);
+	await expect(page.getByText(`Business date ${addDays(owner.businessDate, 1)}`)).toBeVisible();
+	const bill = page.getByRole('row').filter({ hasText: 'L-1' });
+	await expect(bill).toContainText(`dated ${owner.businessDate}`);
+	await expect(bill).toContainText('Settled at the outlet');
+});

@@ -358,8 +358,8 @@ pub async fn take_payment(
 }
 
 /// Records the payment of the POS bill `pos_bill`, settled at its outlet: `amount` (more than 0) in `currency`, on no
-/// folio, with its base amount at the rate in force on the bill's `business_date` (`Conflict`, "No exchange rate for
-/// <CUR> on <YYYY-MM-DD>", when there is none). The currency must be one the property accepts (`Invalid`), and the
+/// folio, dated `business_date` (the property's, for a late bill too), with its base amount at the rate in force then
+/// (`Conflict`, "No exchange rate for <CUR> on <YYYY-MM-DD>", when there is none). The currency must be one the property accepts (`Invalid`), and the
 /// method can't be [`Method::Account`] (`Invalid`: there is no stay to charge from). Card details never hold a card
 /// number (`Invalid`). The caller audits the bill.
 #[allow(clippy::too_many_arguments)]
