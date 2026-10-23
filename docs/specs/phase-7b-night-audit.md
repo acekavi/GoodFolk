@@ -42,7 +42,7 @@ One GraphQL query, `nightAudit(propertyId)`, returns five lists for the property
      - The night must be sellable and the room neither blocked nor taken on D (`409` otherwise, with the server's reason).
      - `modify_room` is not used, because it quotes added nights afresh.
    - An overdue departure (due out before D) can only be checked out: it needs a person, and an automatic close fails on it.
-3. **POS bills of D**, grouped by outlet. Each bill shows its number, its total, and either the stay it posted to (with the room number) or "settled at the outlet", with a total per outlet. A bill posted to a stay that has since checked out with a non-zero balance is highlighted.
+3. **POS bills of D**, grouped by outlet: the bills whose folio lines or settled payment are dated D (D's lines are matched to their bills by posting key, `pos:<bill>:<n>`, in one pass). Each bill shows its number, its total, and either the stay it posted to (with the room number) or "settled at the outlet", with a total per outlet. A bill posted to a stay that has since checked out with a non-zero balance is highlighted. A bill posted late (its own date before D; see "Nothing lands on a closed day") is listed on D with a small "dated <date>" note giving its own date.
 4. **Booking bills.**
    - **Preview of tonight's room and meal-plan lines** per in-house stay. It is computed by a dry run of the code `post_business_date_charges` uses, so it skips keys already posted, and it flags a stay that would fail (for example, for a missing rate).
    - **The day's manual and fee lines** already posted, by category.
@@ -74,7 +74,11 @@ Each step runs in one transaction, which also inserts the step's `audit_run_step
    - inserts both step rows;
    - marks the run `completed`.
 
-   Nothing dated D can therefore land after its statistics are taken.
+   Nothing dated D can therefore land after its statistics are taken. Before taking them, under that lock, the roll checks that every stay in house on D has its `room:<stay>:<D>` key used. A stay checked in after `post_charges` has none, and the step fails naming it (it never posts inside the roll); a run resuming after `post_charges` (a retry, or a resumed crash) first runs `post_business_date_charges(D)` again, which posts only what is missing, so the retry counts that night in D.
+
+**Nothing lands on a closed day.** Every posting is dated the property's business date or later:
+- **A missed night** that check-out posts (`post_unposted_nights`), for a day already closed, posts on the business date (`max(night, business date)`, read `for share`). Its posting key and description keep the night's date, and its revenue counts on the day it posts.
+- **A late POS bill** (owner ruling R14): a bill dated before the business date, up to 7 days back, is still accepted, and `pos_bill.business_date` keeps the bill's own date for reference. Its folio lines and its settled payment are dated the current business date, so it counts in today's figures, never on the closed day. A replay with the same body still returns the first copy, and a changed body is still `409`.
 
 **Running a close.**
 - **One run at a time per property.** A run executes under the session advisory lock `hashtext('audit:' || property)`.
@@ -138,7 +142,7 @@ These are taken in the snapshot transaction for D, as base-currency (LKR) figure
   - Two new columns, both backfilled from their timestamps in the property's time zone, make "on D" exact: `reservation.booked_business_date` and `reservation_room.cancelled_business_date`.
 - **Revenue, net of tax:** `room_revenue`, `meal_plan_revenue`, `pos_revenue`, `fee_revenue` (cancellation and no-show) and `other_revenue`.
   - These are summed from `folio_line.base_amount` with `business_date = D`, reversals included. Revenue is recognised on the posting business date. Lines with source `adjustment` are ledger moves, not revenue.
-  - A POS bill settled at the outlet has no folio lines; its items count by their own category, as a posted bill's would: a `pos:<outlet>` item is POS revenue under its outlet, a `misc` item other revenue.
+  - A POS bill settled at the outlet has no folio lines; it counts on its payment's business date (a late bill's own date may be earlier), and its items count by their own category, as a posted bill's would: a `pos:<outlet>` item is POS revenue under its outlet, a `misc` item other revenue. A settled bill with no payment is an error, never silently left out.
   - `adr = room_revenue / rooms_sold` and `revpar = room_revenue / rooms_available`, in minor units, rounded half-up, 0 when the divisor is 0.
 - **`taxes`:** jsonb `{code: base amount}` from `folio_line_tax` of D's lines.
 - **`payments`:** jsonb `{method: base amount}` of D's payments, refunds included.

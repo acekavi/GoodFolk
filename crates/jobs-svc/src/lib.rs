@@ -53,12 +53,17 @@ pub fn router(svc: JobsSvc, verifier: Arc<Verifier>) -> axum::Router {
         .route("/healthz", get(|| async { "ok" }))
 }
 
-/// `POST /tick`: the tick's report as JSON, with the fields of `TickResponse`.
-async fn tick_http(State(svc): State<JobsSvc>) -> Json<Value> {
-    let response = tick::tick(&svc).await;
+/// `POST /tick`: the tick's report as JSON, with the fields of `TickResponse`. The tick runs on the tracker, so a
+/// caller that hangs up (Cloud Scheduler's deadline) doesn't cancel it mid-way, and shutdown waits for it.
+async fn tick_http(State(svc): State<JobsSvc>) -> Result<Json<Value>, StatusCode> {
+    let ticking = svc.clone();
+    let response = svc.tracker.spawn(async move { tick::tick(&ticking).await }).await.map_err(|error| {
+        tracing::error!(%error, "the tick stopped");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     let jobs: Vec<Value> =
         response.jobs.into_iter().map(|job| json!({"job": job.job, "key": job.key, "outcome": job.outcome})).collect();
-    Json(json!({ "jobs": jobs }))
+    Ok(Json(json!({ "jobs": jobs })))
 }
 
 /// `tcp` with Nagle's algorithm turned off on every connection it accepts; serve the [`router`] on this. A gRPC

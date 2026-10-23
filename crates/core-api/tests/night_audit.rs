@@ -377,6 +377,24 @@ async fn a_failed_close_is_retried_after_the_rate_is_set(_: PgPoolOptions, opts:
     assert_eq!(again.status, StatusCode::CONFLICT, "a completed run: {:?}", again.body);
 }
 
+/// Another tenant's failed run, retried through this tenant's property, is not found, and stays failed.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn another_tenant_s_run_cannot_be_retried(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = common::jobs::app(opts.clone()).await;
+    let ours = Hotel::new(&app, opts.clone(), "owner@example.com", "GAL", true).await;
+    let theirs = Hotel::new(&app, opts, "other@example.com", "KDY", false).await;
+    let stay = theirs.book(&app, 0, 2).await;
+    theirs.check_in(&app, stay).await;
+    let run = theirs.start_close(&app).await;
+    theirs.wait_for(&app, run, "FAILED").await;
+
+    let retry = format!("{}/night-audit/runs/{run}/retry", ours.path);
+    let refused = app.send(Method::POST, &retry, Some(&ours.owner), None).await;
+
+    assert_eq!(refused.status, StatusCode::NOT_FOUND, "{:?}", refused.body);
+    theirs.wait_for(&app, run, "FAILED").await;
+}
+
 /// `audit:` keys reach a front desk stream and not a housekeeping one.
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn audit_keys_reach_only_those_who_audit_or_view_folios(_: PgPoolOptions, opts: PgConnectOptions) {
