@@ -17,9 +17,16 @@ pub struct SessionInfo {
     pub tenant: Option<TenantId>,
 }
 
-/// Only the SHA-256 of a token is stored, so a database leak does not leak live sessions.
-fn token_hash(token: &str) -> Vec<u8> {
+/// Only the SHA-256 of a token is stored, so a database leak does not leak live sessions or invitations.
+pub(crate) fn token_hash(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
+}
+
+/// 32 bytes from the OS random number generator, base64url without padding.
+pub(crate) fn new_token() -> String {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).expect("OS random number generator available");
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// Creates a session and returns the opaque token for the cookie.
@@ -28,9 +35,7 @@ pub async fn create_session(
     user: UserId,
     tenant: Option<TenantId>,
 ) -> Result<(String, OffsetDateTime), sqlx::Error> {
-    let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).expect("OS random number generator available");
-    let token = URL_SAFE_NO_PAD.encode(bytes);
+    let token = new_token();
     let expires_at = OffsetDateTime::now_utc() + SESSION_TTL;
     sqlx::query(
         "insert into session (id, token_hash, user_id, active_tenant_id, expires_at) values ($1, $2, $3, $4, $5)",

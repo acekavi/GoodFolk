@@ -1,8 +1,8 @@
 use db::{Tx, UserId};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Owner,
@@ -316,6 +316,58 @@ pub fn allows(grants: &[Grant], permission: Permission, property: Option<Uuid>) 
         let in_scope = grant.property_id.is_none() || grant.property_id == property;
         in_scope && grant.role.permits(permission)
     })
+}
+
+/// The manager rules for giving `given`: nobody grants `owner`; owners give any other role; a manager gives only
+/// junior roles, at properties where they hold `manager`, or anywhere (and tenant-wide) with a tenant-wide `manager`
+/// grant. A refusal names the role or property.
+pub fn check_may_give(actor: &[Grant], given: &[Grant]) -> Result<(), String> {
+    let tenant_wide_manager = actor.iter().any(|g| g.role == Role::Manager && g.property_id.is_none());
+    for grant in given {
+        let role = grant.role.as_str();
+        if grant.role == Role::Owner {
+            return Err("nobody can grant the owner role".into());
+        }
+        if is_owner(actor) {
+            continue;
+        }
+        if !JUNIOR_ROLES.contains(&grant.role) {
+            return Err(format!("only owners can grant the {role} role"));
+        }
+        match grant.property_id {
+            None if !tenant_wide_manager => {
+                return Err(format!("a tenant-wide {role} grant needs a tenant-wide manager"));
+            }
+            Some(property)
+                if !tenant_wide_manager
+                    && !actor.iter().any(|g| g.role == Role::Manager && g.property_id == Some(property)) =>
+            {
+                return Err(format!("you do not manage property {property}"));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The manager rules for acting on a member holding `member`: owners act on anyone; a manager only on members whose
+/// every grant is a junior role.
+pub fn check_may_act_on(actor: &[Grant], member: &[Grant]) -> Result<(), String> {
+    if is_owner(actor) {
+        return Ok(());
+    }
+    if !actor.iter().any(|g| g.role == Role::Manager) {
+        return Err("only owners and managers manage staff".into());
+    }
+    match member.iter().find(|g| !JUNIOR_ROLES.contains(&g.role)) {
+        Some(grant) => Err(format!("only owners can manage a member with the {} role", grant.role.as_str())),
+        None => Ok(()),
+    }
+}
+
+/// Owners are always tenant-wide.
+fn is_owner(grants: &[Grant]) -> bool {
+    grants.iter().any(|g| g.role == Role::Owner && g.property_id.is_none())
 }
 
 /// Loads `user`'s grants in the tenant that `tx` is scoped to.

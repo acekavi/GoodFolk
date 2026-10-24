@@ -1,4 +1,7 @@
-use identity::{ALL_PERMISSIONS, ALL_ROLES, Grant, JUNIOR_ROLES, Permission, Role, allows, describe};
+use identity::{
+    ALL_PERMISSIONS, ALL_ROLES, Grant, JUNIOR_ROLES, Permission, Role, allows, check_may_act_on, check_may_give,
+    describe,
+};
 use uuid::Uuid;
 
 const HOTEL: Uuid = Uuid::from_u128(1);
@@ -334,4 +337,63 @@ fn all_permissions_lists_every_permission_once() {
     for (index, permission) in ALL_PERMISSIONS.into_iter().enumerate() {
         assert_eq!(slot(permission), index, "{permission:?}");
     }
+}
+
+fn grant(role: Role, property_id: Option<Uuid>) -> Grant {
+    Grant { property_id, role }
+}
+
+#[test]
+fn an_owner_gives_any_role_but_owner() {
+    let owner = [grant(Role::Owner, None)];
+
+    assert!(check_may_give(&owner, &[grant(Role::Manager, None), grant(Role::FrontDesk, Some(HOTEL))]).is_ok());
+    assert_eq!(check_may_give(&owner, &[grant(Role::Owner, None)]), Err("nobody can grant the owner role".into()));
+}
+
+#[test]
+fn a_manager_gives_only_junior_roles() {
+    let manager = [grant(Role::Manager, None)];
+
+    for role in JUNIOR_ROLES {
+        assert!(check_may_give(&manager, &[grant(role, None), grant(role, Some(HOTEL))]).is_ok(), "{role:?}");
+    }
+    assert_eq!(
+        check_may_give(&manager, &[grant(Role::Manager, Some(HOTEL))]),
+        Err("only owners can grant the manager role".into())
+    );
+}
+
+#[test]
+fn a_property_manager_gives_only_at_their_properties_and_never_tenant_wide() {
+    let manager = [grant(Role::Manager, Some(HOTEL))];
+
+    assert!(check_may_give(&manager, &[grant(Role::FrontDesk, Some(HOTEL))]).is_ok());
+    assert_eq!(
+        check_may_give(&manager, &[grant(Role::FrontDesk, Some(OTHER_HOTEL))]),
+        Err(format!("you do not manage property {OTHER_HOTEL}"))
+    );
+    assert_eq!(
+        check_may_give(&manager, &[grant(Role::Pos, None)]),
+        Err("a tenant-wide pos grant needs a tenant-wide manager".into())
+    );
+}
+
+#[test]
+fn a_junior_gives_nothing() {
+    let front_desk = [grant(Role::FrontDesk, None)];
+
+    assert!(check_may_give(&front_desk, &[grant(Role::Housekeeping, Some(HOTEL))]).is_err());
+    assert!(check_may_act_on(&front_desk, &[grant(Role::Housekeeping, Some(HOTEL))]).is_err());
+}
+
+#[test]
+fn a_manager_acts_only_on_members_whose_every_grant_is_junior() {
+    let manager = [grant(Role::Manager, Some(HOTEL))];
+    let owner = [grant(Role::Owner, None)];
+    let mixed = [grant(Role::FrontDesk, Some(HOTEL)), grant(Role::Manager, Some(OTHER_HOTEL))];
+
+    assert!(check_may_act_on(&manager, &[grant(Role::Accountant, None), grant(Role::Pos, Some(HOTEL))]).is_ok());
+    assert_eq!(check_may_act_on(&manager, &mixed), Err("only owners can manage a member with the manager role".into()));
+    assert!(check_may_act_on(&owner, &mixed).is_ok());
 }

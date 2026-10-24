@@ -1,6 +1,6 @@
 use crate::rbac::{Grant, Role, load_grants};
 use crate::{hash_password, verify_password};
-use db::{Scope, TenantId, UserId};
+use db::{Scope, TenantId, Tx, UserId};
 use serde::Serialize;
 use sqlx::PgPool;
 use std::sync::LazyLock;
@@ -25,24 +25,11 @@ pub enum SignupError {
 pub async fn signup(pool: &PgPool, input: SignupInput) -> Result<(UserId, TenantId), SignupError> {
     let user = UserId(Uuid::now_v7());
     let tenant = TenantId(Uuid::now_v7());
-    let password = input.password;
-    let hash =
-        tokio::task::spawn_blocking(move || hash_password(&password)).await.expect("hashing task does not panic");
+    let hash = hash_in_background(input.password).await;
 
     let mut tx = db::begin(pool, Scope { tenant: Some(tenant), user: Some(user) }).await?;
-    let inserted = sqlx::query("insert into app_user (id, email, password_hash, display_name) values ($1, $2, $3, $4)")
-        .bind(user.0)
-        .bind(&input.email)
-        .bind(&hash)
-        .bind(&input.display_name)
-        .execute(&mut *tx)
-        .await;
-    if let Err(err) = inserted {
-        let taken = err
-            .as_database_error()
-            .and_then(|db_err| db_err.constraint())
-            .is_some_and(|constraint| constraint == "app_user_email_key");
-        return Err(if taken { SignupError::EmailTaken } else { err.into() });
+    if !insert_user(&mut tx, user, &input.email, &hash, &input.display_name).await? {
+        return Err(SignupError::EmailTaken);
     }
     sqlx::query("insert into tenant (id, name) values ($1, $2)")
         .bind(tenant.0)
@@ -69,6 +56,38 @@ pub async fn signup(pool: &PgPool, input: SignupInput) -> Result<(UserId, Tenant
         .await?;
     tx.commit().await?;
     Ok((user, tenant))
+}
+
+/// The password rules, the same as sign-up's request validation: 12 to 128 characters.
+pub(crate) fn password_is_valid(password: &str) -> bool {
+    (12..=128).contains(&password.chars().count())
+}
+
+/// Hashes `password` on the blocking pool.
+pub(crate) async fn hash_in_background(password: String) -> String {
+    tokio::task::spawn_blocking(move || hash_password(&password)).await.expect("hashing task does not panic")
+}
+
+/// Creates the `app_user` as sign-up does. Returns `false` if the email is taken; `tx` is then aborted.
+pub(crate) async fn insert_user(
+    tx: &mut Tx,
+    user: UserId,
+    email: &str,
+    password_hash: &str,
+    display_name: &str,
+) -> Result<bool, sqlx::Error> {
+    let inserted = sqlx::query("insert into app_user (id, email, password_hash, display_name) values ($1, $2, $3, $4)")
+        .bind(user.0)
+        .bind(email)
+        .bind(password_hash)
+        .bind(display_name)
+        .execute(&mut **tx)
+        .await;
+    match inserted {
+        Ok(_) => Ok(true),
+        Err(err) if crate::violates(&err, "app_user_email_key") => Ok(false),
+        Err(err) => Err(err),
+    }
 }
 
 /// Verified against when an email is unknown, so response time does not reveal which emails exist.
