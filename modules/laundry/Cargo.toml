@@ -6,18 +6,21 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+audit.workspace = true
 db.workspace = true
 folio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+time.workspace = true
 utoipa.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 db = { workspace = true, features = ["testing"] }
 property.workspace = true
+rand.workspace = true
 rooms.workspace = true
 tokio.workspace = true
 

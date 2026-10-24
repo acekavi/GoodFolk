@@ -1,14 +1,17 @@
-//! Linen items, where they are kept and the par each room type needs, and guests' laundry.
+//! Linen items, where they are kept, the par each room type needs and the stock that moves between them, and guests'
+//! laundry.
 //!
 //! Every function takes a transaction scoped to the caller's tenant. Writes record an audit entry in the same
 //! transaction and queue a change event.
 
 mod linen;
+mod stock;
 
 pub use linen::{
     LinenItem, LinenLocation, LocationKind, ParRow, create_item, create_location, list_items, list_locations, list_par,
     set_par, update_item, update_location,
 };
+pub use stock::{Movement, MovementKind, NewMovement, StockCell, movements, record, stock};
 
 use db::{Event, TenantId, Tx, UserId};
 use uuid::Uuid;
