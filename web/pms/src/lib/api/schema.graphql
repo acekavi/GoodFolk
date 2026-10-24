@@ -2003,6 +2003,7 @@ What the property's invoices and taxes depend on.
 type TaxSettingsNode {
 	vatRegistered: Boolean!
 	tin: String
+	sltdaLicence: String
 	"""
 	The tourism development levy's small-turnover band, used when the preset is applied.
 	"""

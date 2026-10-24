@@ -197,6 +197,9 @@ pub struct Supplier {
     pub legal_name: String,
     pub address: Option<String>,
     pub tin: Option<String>,
+    /// The SLTDA licence number, printed under the TIN; invoices issued before it existed have none.
+    #[serde(default)]
+    pub sltda_licence: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,6 +239,13 @@ pub struct InvoicePayment {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_supplier_stored_before_the_licence_existed_still_decodes() {
+        let stored = r#"{"legal_name":"Galle Ltd","address":null,"tin":"123456789"}"#;
+        let supplier: Supplier = serde_json::from_str(stored).unwrap();
+        assert_eq!(supplier.sltda_licence, None);
+    }
 
     #[test]
     fn a_ready_result_round_trips_with_its_wire_shape() {
@@ -294,7 +304,12 @@ mod tests {
     fn credit_note() -> InvoiceData {
         InvoiceData {
             kind: InvoiceKind::CreditNote,
-            supplier: Supplier { legal_name: "Galle Ltd".into(), address: None, tin: Some("123456789".into()) },
+            supplier: Supplier {
+                legal_name: "Galle Ltd".into(),
+                address: None,
+                tin: Some("123456789".into()),
+                sltda_licence: None,
+            },
             purchaser: Purchaser { name: "Acme".into(), tin: None },
             serial: "CN-GAL-2026-000001".into(),
             title: "CREDIT NOTE".into(),

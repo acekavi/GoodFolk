@@ -3636,6 +3636,8 @@ export interface components {
             legal_name?: string | null;
             /** Format: uuid */
             property_id: string;
+            /** @description The SLTDA licence number printed under the TIN on invoices. */
+            sltda_licence?: string | null;
             /** @description The tourism development levy's small-turnover band (0.5% instead of 1%), used when the preset is applied. */
             tdl_small_turnover: boolean;
             /** @description The taxpayer identification number printed on invoices. */
@@ -3866,12 +3868,14 @@ export interface components {
             /** Format: int32 */
             sequence?: number | null;
         };
-        /** @description Fields left out keep their value; `null` clears `tin`, `legal_name` or `address`. */
+        /** @description Fields left out keep their value; `null` clears `tin`, `sltda_licence`, `legal_name` or `address`. */
         UpdateTaxSettingsRequest: {
             /** @description ISO 4217 codes, 1 to 20, including the base currency. */
             accepted_currencies?: string[] | null;
             address?: string | null;
             legal_name?: string | null;
+            /** @description 1 to 50 characters, with no whitespace around them. */
+            sltda_licence?: string | null;
             /** @description The tourism development levy's small-turnover band; takes effect on the rules when the preset is applied. */
             tdl_small_turnover?: boolean | null;
             /** @description 5 to 20 digits, capital letters or `-`. */

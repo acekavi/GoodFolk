@@ -228,6 +228,8 @@ pub struct TaxSettings {
     pub vat_registered: bool,
     /// The taxpayer identification number printed on invoices.
     pub tin: Option<String>,
+    /// The SLTDA licence number printed under the TIN on invoices.
+    pub sltda_licence: Option<String>,
     /// The tourism development levy's small-turnover band (0.5% instead of 1%), used when the preset is applied.
     pub tdl_small_turnover: bool,
     /// The supplier's name on invoices; the property's name when `null`.
@@ -240,7 +242,8 @@ pub struct TaxSettings {
     pub version: i32,
 }
 
-const TAX_SETTINGS_COLUMNS: &str = "id as property_id, vat_registered, tin, tdl_small_turnover, legal_name, address, \
+const TAX_SETTINGS_COLUMNS: &str = "id as property_id, vat_registered, tin, sltda_licence, tdl_small_turnover, legal_name, \
+     address, \
      base_currency::text as base_currency, accepted_currencies::text[] as accepted_currencies, version";
 
 /// Tax settings changes; `None` leaves a field as it is, and `Some(None)` clears an optional one. Formats (TIN,
@@ -249,6 +252,7 @@ const TAX_SETTINGS_COLUMNS: &str = "id as property_id, vat_registered, tin, tdl_
 pub struct TaxSettingsChanges {
     pub vat_registered: Option<bool>,
     pub tin: Option<Option<String>>,
+    pub sltda_licence: Option<Option<String>>,
     pub tdl_small_turnover: Option<bool>,
     pub legal_name: Option<Option<String>>,
     pub address: Option<Option<String>>,
@@ -334,6 +338,7 @@ pub async fn update_tax_settings(
     let after = TaxSettings {
         vat_registered: changes.vat_registered.unwrap_or(before.vat_registered),
         tin: changes.tin.unwrap_or_else(|| before.tin.clone()),
+        sltda_licence: changes.sltda_licence.unwrap_or_else(|| before.sltda_licence.clone()),
         tdl_small_turnover: changes.tdl_small_turnover.unwrap_or(before.tdl_small_turnover),
         legal_name: changes.legal_name.unwrap_or_else(|| before.legal_name.clone()),
         address: changes.address.unwrap_or_else(|| before.address.clone()),
@@ -343,7 +348,7 @@ pub async fn update_tax_settings(
     };
     let updated: TaxSettings = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "update property set vat_registered = $2, tin = $3, tdl_small_turnover = $4, legal_name = $5, address = $6,
-                accepted_currencies = $7::text[]::char(3)[], version = version + 1
+                sltda_licence = $8, accepted_currencies = $7::text[]::char(3)[], version = version + 1
          where id = $1
          returning {TAX_SETTINGS_COLUMNS}"
     )))
@@ -354,6 +359,7 @@ pub async fn update_tax_settings(
     .bind(&after.legal_name)
     .bind(&after.address)
     .bind(&after.accepted_currencies)
+    .bind(&after.sltda_licence)
     .fetch_one(&mut **tx)
     .await?;
     let data = serde_json::json!({ "before": settings_audit(&before), "after": settings_audit(&updated) });
@@ -377,6 +383,7 @@ fn settings_audit(settings: &TaxSettings) -> serde_json::Value {
     serde_json::json!({
         "vat_registered": settings.vat_registered,
         "tin": settings.tin,
+        "sltda_licence": settings.sltda_licence,
         "tdl_small_turnover": settings.tdl_small_turnover,
         "legal_name": settings.legal_name,
         "address": settings.address,

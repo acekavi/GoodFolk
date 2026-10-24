@@ -1586,6 +1586,7 @@ pub struct FxAlertNode {
 pub struct TaxSettingsNode {
     pub vat_registered: bool,
     pub tin: Option<String>,
+    pub sltda_licence: Option<String>,
     /// The tourism development levy's small-turnover band, used when the preset is applied.
     pub tdl_small_turnover: bool,
     /// The supplier's name on invoices; the property's name when `null`.
@@ -1602,6 +1603,7 @@ impl From<property::TaxSettings> for TaxSettingsNode {
         Self {
             vat_registered: s.vat_registered,
             tin: s.tin,
+            sltda_licence: s.sltda_licence,
             tdl_small_turnover: s.tdl_small_turnover,
             legal_name: s.legal_name,
             address: s.address,

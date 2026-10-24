@@ -10390,6 +10390,13 @@
             "type": "string",
             "format": "uuid"
           },
+          "sltda_licence": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The SLTDA licence number printed under the TIN on invoices."
+          },
           "tdl_small_turnover": {
             "type": "boolean",
             "description": "The tourism development levy's small-turnover band (0.5% instead of 1%), used when the preset is applied."
@@ -11205,7 +11212,7 @@
       },
       "UpdateTaxSettingsRequest": {
         "type": "object",
-        "description": "Fields left out keep their value; `null` clears `tin`, `legal_name` or `address`.",
+        "description": "Fields left out keep their value; `null` clears `tin`, `sltda_licence`, `legal_name` or `address`.",
         "properties": {
           "accepted_currencies": {
             "type": [
@@ -11228,6 +11235,13 @@
               "string",
               "null"
             ]
+          },
+          "sltda_licence": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "1 to 50 characters, with no whitespace around them."
           },
           "tdl_small_turnover": {
             "type": [

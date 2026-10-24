@@ -87,6 +87,7 @@
     #text(14pt, weight: "bold", d.supplier.legal_name)
     #if d.supplier.address != none [ \ #lines-of(d.supplier.address) ]
     #if d.supplier.tin != none [ \ TIN: #d.supplier.tin ]
+    #if d.supplier.sltda_licence != none [ \ SLTDA licence: #d.supplier.sltda_licence ]
   ],
   align(right)[
     #text(18pt, weight: "bold", tracking: 0.04em, d.title)
