@@ -78,6 +78,25 @@ pub fn deposit_lines(booked: Date, rooms: &[DepositRoom], paid: &[(String, i64)]
     lines
 }
 
+/// The rooms of a reservation that count towards its deposit, as a condition on the stay `rr`: booked with deposit
+/// terms, and neither cancelled nor a no-show.
+pub const COUNTED_ROOM_SQL: &str = "rr.deposit_terms is not null and rr.status not in ('cancelled', 'no_show')";
+
+/// The nights of the stay `rr` in date order, as `dates`, `rooms` (room amounts) and `meals` (meal amounts) arrays
+/// (null when it has none), for a lateral join.
+pub const STAY_NIGHTS_SQL: &str = "select array_agg(date order by date) as dates,
+                                          array_agg(room_amount order by date) as rooms,
+                                          array_agg(meal_amount order by date) as meals
+                                   from reservation_night where reservation_room_id = rr.id";
+
+/// What the reservation `r` has paid towards its deposit, one row per `currency` with its `amount`: its deposit
+/// folio's payments net of refunds, without transfers (check-in moving the deposit to a guest folio does not unpay
+/// it), for a lateral join.
+pub const DEPOSIT_PAID_SQL: &str = "select p.currency::text as currency, sum(p.amount)::bigint as amount
+                                    from payment p join folio f on f.id = p.folio_id
+                                    where f.reservation_id = r.id and f.kind = 'deposit' and p.method <> 'transfer'
+                                    group by p.currency";
+
 #[derive(sqlx::FromRow)]
 struct Room {
     currency: String,
@@ -97,26 +116,22 @@ pub async fn deposit_due(tx: &mut Tx, reservation: Uuid) -> Result<Vec<DepositDu
         .fetch_optional(&mut **tx)
         .await?
         .ok_or(ReservationsError::NotFound("reservation"))?;
-    let rows: Vec<Room> = sqlx::query_as(
+    let rows: Vec<Room> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select rr.currency::text as currency, rr.arrival, rr.deposit_terms,
-                coalesce(n.dates, '{}') as dates, coalesce(n.rooms, '{}') as rooms, coalesce(n.meals, '{}') as meals
+                coalesce(n.dates, '{{}}') as dates, coalesce(n.rooms, '{{}}') as rooms,
+                coalesce(n.meals, '{{}}') as meals
          from reservation_room rr
-         left join lateral (select array_agg(date order by date) as dates,
-                                   array_agg(room_amount order by date) as rooms,
-                                   array_agg(meal_amount order by date) as meals
-                            from reservation_night where reservation_room_id = rr.id) n on true
-         where rr.reservation_id = $1 and rr.deposit_terms is not null and rr.status not in ('cancelled', 'no_show')
-         order by rr.arrival, rr.id",
-    )
+         left join lateral ({STAY_NIGHTS_SQL}) n on true
+         where rr.reservation_id = $1 and {COUNTED_ROOM_SQL}
+         order by rr.arrival, rr.id"
+    )))
     .bind(reservation)
     .fetch_all(&mut **tx)
     .await?;
-    let paid: Vec<(String, i64)> = sqlx::query_as(
-        "select p.currency::text, sum(p.amount)::bigint
-         from payment p join folio f on f.id = p.folio_id
-         where f.reservation_id = $1 and f.kind = 'deposit' and p.method <> 'transfer'
-         group by p.currency",
-    )
+    let paid: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select paid.currency, paid.amount from reservation r cross join lateral ({DEPOSIT_PAID_SQL}) paid
+         where r.id = $1"
+    )))
     .bind(reservation)
     .fetch_all(&mut **tx)
     .await?;

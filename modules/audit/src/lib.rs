@@ -1,8 +1,9 @@
 //! The night audit: the review of a property's business date before it closes.
 //!
-//! [`night_audit`] reads the five review lists for the business date D: the arrivals not checked in, the departures
+//! [`night_audit`] reads the six review lists for the business date D: the arrivals not checked in, the departures
 //! not checked out, D's POS bills by outlet, the booking bills (a dry run of tonight's room and meal-plan postings
-//! and the day's manual, fee and laundry lines) and D's payments. Its blocking count, and [`blocking`]'s, is the
+//! and the day's manual, fee and laundry lines), D's payments and the deposits outstanding (advisory, never
+//! blocking). Its blocking count, and [`blocking`]'s, is the
 //! unresolved arrivals plus the unresolved departures: the close waits until both are resolved.
 //!
 //! The review only reads, so it takes no locks.
@@ -28,8 +29,8 @@ pub use close::{
 pub use stats::{BreakdownRow, DAY_LINES_SQL, DailyStats, compute, daily_stats, store};
 
 pub use review::{
-    ARRIVALS_SQL, ArrivalRow, BookingBills, CategoryTotal, DEPARTURES_SQL, DepartureRow, DepositRow, NightAudit,
-    OutletBills, PaymentGroup, PosBillRow, blocking, night_audit,
+    ARRIVALS_SQL, ArrivalRow, BookingBills, CategoryTotal, DEPARTURES_SQL, DEPOSITS_SQL, DepartureRow, DepositRow,
+    NightAudit, OutletBills, PaymentGroup, PosBillRow, blocking, night_audit,
 };
 
 use uuid::Uuid;

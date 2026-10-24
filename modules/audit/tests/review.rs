@@ -518,11 +518,32 @@ async fn deposits_due_by_the_business_date_and_still_owed_are_listed_outside_blo
     hotel.pay(p, owed.deposit, Method::Cash, 4_000, "LKR", None).await;
     // Due on D + 13.
     hotel.stay(Stay { deposit_terms: deposit("nights", 1, Some(7)), ..Stay::new(p, "confirmed", 20, 22) }).await;
-    // Paid in full, net of a refund.
+    // Paid in full.
     let paid =
         hotel.stay(Stay { deposit_terms: deposit("amount", 5_000, None), ..Stay::new(p, "confirmed", 3, 4) }).await;
-    let payment = hotel.pay(p, paid.deposit, Method::Cash, 6_000, "LKR", None).await;
+    hotel.pay(p, paid.deposit, Method::Cash, 5_000, "LKR", None).await;
+    // Paid in full, then partly refunded.
+    let refunded =
+        hotel.stay(Stay { deposit_terms: deposit("amount", 5_000, None), ..Stay::new(p, "confirmed", 3, 5) }).await;
+    let payment = hotel.pay(p, refunded.deposit, Method::Cash, 5_000, "LKR", None).await;
     hotel.refund(p, payment.id, 1_000).await;
+    // One room checked in, its share of the deposit moved to its guest folio, and one still to arrive.
+    let moved = hotel.stay(Stay { deposit_terms: deposit("nights", 1, None), ..Stay::new(p, "confirmed", 1, 3) }).await;
+    let arrived = hotel
+        .stay(Stay { deposit_terms: deposit("nights", 1, None), of: Some(&moved), ..Stay::new(p, "checked_in", -1, 2) })
+        .await;
+    hotel.pay(p, moved.deposit, Method::Cash, 15_000, "LKR", None).await;
+    let mut tx = hotel.tx().await;
+    folio::move_deposit(&mut tx, hotel.tenant, Some(hotel.user), p, moved.reservation, arrived.id).await.unwrap();
+    tx.commit().await.unwrap();
+    let transferred: i64 = sqlx::query_scalar(
+        "select coalesce(sum(amount), 0)::bigint from payment where folio_id = $1 and method = 'transfer'",
+    )
+    .bind(moved.deposit)
+    .fetch_one(&mut *hotel.tx().await)
+    .await
+    .unwrap();
+    assert_eq!(transferred, -15_000, "the deposit moved out as a transfer");
     // Arrived, so no room left to arrive.
     hotel.stay(Stay { deposit_terms: deposit("nights", 1, None), ..Stay::new(p, "checked_in", -1, 2) }).await;
     let cancelled =
@@ -575,7 +596,9 @@ async fn deposits_due_by_the_business_date_and_still_owed_are_listed_outside_blo
     assert_eq!(
         review.deposits_outstanding,
         vec![
+            row(&moved, "Ada Silva", -1, "LKR", 20_000, 15_000, hotel.day(-30)),
             row(&early, "Kamal Perera", 2, "LKR", 10_000, 0, d),
+            row(&refunded, "Ada Silva", 3, "LKR", 5_000, 4_000, hotel.day(-30)),
             row(&owed, "Ada Silva", 5, "LKR", 10_000, 4_000, hotel.day(-30)),
             row(&mixed, "Fernando", 8, "LKR", 3_000, 0, hotel.day(-30)),
             row(&mixed, "Fernando", 8, "USD", 12_000, 2_000, hotel.day(-30)),
@@ -584,4 +607,39 @@ async fn deposits_due_by_the_business_date_and_still_owed_are_listed_outside_blo
     assert_eq!(review.blocking, 0, "an owed deposit blocks nothing");
     assert!(review.arrivals.is_empty() && review.departures.is_empty());
     assert_eq!(audit::blocking(&mut hotel.tx().await, p, d).await.unwrap(), 0);
+}
+
+/// The deposits list starts from the open rooms through `reservation_room_open_idx`, as the application role under
+/// row-level security, when the property also holds a long history of stays checked out (analyzed).
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn deposits_start_from_the_open_rooms_index(_: PgPoolOptions, opts: PgConnectOptions) {
+    let owner = PgPoolOptions::new().max_connections(1).connect_with(opts.clone()).await.unwrap();
+    let hotel = Hotel::new(opts).await;
+    let p = hotel.property;
+    let past = hotel.stay(Stay::new(p, "checked_in", -1, 0)).await;
+    hotel.stay(Stay { deposit_terms: deposit("nights", 1, None), ..Stay::new(p, "confirmed", 2, 3) }).await;
+    sqlx::query(
+        "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, stay, adults,
+                                       children, rate_plan_id, meal_plan, status, primary_guest_id, currency,
+                                       checked_in_at, checked_in_business_date, checked_out_at)
+         select gen_random_uuid(), tenant_id, property_id, reservation_id, room_type_id,
+                daterange(arrival - 3 * g, arrival - 3 * g + 2), 2, 0, rate_plan_id, meal_plan, 'checked_out',
+                primary_guest_id, currency, now(), arrival - 3 * g, now()
+         from reservation_room, generate_series(1, 2000) as g
+         where id = $1",
+    )
+    .bind(past.id)
+    .execute(&owner)
+    .await
+    .unwrap();
+    sqlx::query("analyze reservation_room").execute(&owner).await.unwrap();
+
+    let mut tx = hotel.tx().await;
+    let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("explain {}", *audit::DEPOSITS_SQL)))
+        .bind(p)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    let plan = plan.join("\n");
+    assert!(plan.contains("reservation_room_open_idx"), "{plan}");
 }

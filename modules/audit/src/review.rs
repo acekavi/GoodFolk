@@ -6,6 +6,7 @@ use domain::RoomStatus;
 use rates::DepositRule;
 use reservations::{CancellationTerms, DepositRoom};
 use sqlx::types::Json;
+use std::sync::LazyLock;
 use time::Date;
 use uuid::Uuid;
 
@@ -485,34 +486,34 @@ struct DepositStay {
     paid: i64,
 }
 
-/// The deposits outstanding on D, by arrival then confirmation and currency: one statement reads the rooms with booked
-/// deposit terms, neither cancelled nor no-shows, of the reservations with a room still tentative or confirmed; each
-/// reservation's lines are [`reservations::deposit_lines`], kept when due by D with something still owed.
-async fn deposits_outstanding(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<DepositRow>, AuditError> {
-    let rows: Vec<DepositStay> = sqlx::query_as(
+/// The deposits list's rooms: those of the property's (`$1`) reservations with a room still tentative or confirmed
+/// that count towards the deposit ([`reservations::COUNTED_ROOM_SQL`]), with their nights and what their reservation
+/// has paid in their currency ([`reservations::DEPOSIT_PAID_SQL`]), grouped by reservation. Public so a test can
+/// `EXPLAIN` it: it starts from the open rooms through `reservation_room_open_idx`, not from every booking ever made.
+pub static DEPOSITS_SQL: LazyLock<String> = LazyLock::new(|| {
+    let (counted, nights, paid) =
+        (reservations::COUNTED_ROOM_SQL, reservations::STAY_NIGHTS_SQL, reservations::DEPOSIT_PAID_SQL);
+    format!(
         "select r.id as reservation_id, r.confirmation_no, g.first_name, g.last_name, r.booked_business_date,
                 rr.currency::text as currency, rr.arrival, rr.deposit_terms,
-                coalesce(n.dates, '{}') as dates, coalesce(n.rooms, '{}') as rooms, coalesce(n.meals, '{}') as meals,
-                coalesce(paid.amount, 0)::bigint as paid
-         from reservation r
+                coalesce(n.dates, '{{}}') as dates, coalesce(n.rooms, '{{}}') as rooms,
+                coalesce(n.meals, '{{}}') as meals, coalesce(paid.amount, 0)::bigint as paid
+         from (select distinct o.reservation_id from reservation_room o
+               where o.property_id = $1 and o.status in ('tentative', 'confirmed')) open
+         join reservation r on r.id = open.reservation_id
          join guest g on g.id = r.booker_guest_id
-         join reservation_room rr on rr.reservation_id = r.id
-         left join lateral (select array_agg(date order by date) as dates,
-                                   array_agg(room_amount order by date) as rooms,
-                                   array_agg(meal_amount order by date) as meals
-                            from reservation_night where reservation_room_id = rr.id) n on true
-         left join lateral (select sum(p.amount) as amount
-                            from payment p join folio f on f.id = p.folio_id
-                            where f.reservation_id = r.id and f.kind = 'deposit' and p.method <> 'transfer'
-                              and p.currency = rr.currency) paid on true
-         where r.property_id = $1 and rr.deposit_terms is not null and rr.status not in ('cancelled', 'no_show')
-           and exists (select 1 from reservation_room open
-                       where open.reservation_id = r.id and open.status in ('tentative', 'confirmed'))
-         order by r.id, rr.arrival, rr.id",
+         join reservation_room rr on rr.reservation_id = r.id and {counted}
+         left join lateral ({nights}) n on true
+         left join lateral (select d.amount from ({paid}) d where d.currency = rr.currency::text) paid on true
+         order by r.id, rr.arrival, rr.id"
     )
-    .bind(property)
-    .fetch_all(&mut **tx)
-    .await?;
+});
+
+/// The deposits outstanding on D, by arrival then confirmation and currency: each reservation of [`DEPOSITS_SQL`]
+/// priced by [`reservations::deposit_lines`], kept when due by D with something still owed.
+async fn deposits_outstanding(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<DepositRow>, AuditError> {
+    let rows: Vec<DepositStay> =
+        sqlx::query_as(sqlx::AssertSqlSafe(DEPOSITS_SQL.as_str())).bind(property).fetch_all(&mut **tx).await?;
     let mut list: Vec<DepositRow> = Vec::new();
     let mut rows = rows.into_iter().peekable();
     while let Some(first) = rows.next() {
