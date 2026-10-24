@@ -192,7 +192,9 @@ The owner chose to have it in 8a, advisory, 2026-10-25.
   - `PUT /api/v1/members/{user}/grants` (`If-Match`);
   - `DELETE /api/v1/members/{user}`;
   - the property `PATCH` takes `name`;
-  - the tax settings `PATCH` takes `sltda_licence`.
+  - the tax settings `PATCH` takes `sltda_licence`;
+  - the rate plan create and `PATCH` take `deposit_rule` (`null` clears it).
+- **GraphQL deposits:** `depositDue { currency, amount, dueDate, paid, outstanding }` on the reservation, and the night audit's `depositsOutstanding` list.
 - **GraphQL:** `members`, `invitations(status)`, `permissionMatrix`, and the existing settings reads.
 - **Events:** `staff:<tenant>` for members and invitations.
 - **Audit:** `invitation.created`, `invitation.resent`, `invitation.revoked`, `invitation.accepted`,
