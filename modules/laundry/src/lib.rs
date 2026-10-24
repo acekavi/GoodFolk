@@ -6,6 +6,7 @@
 
 mod batches;
 mod linen;
+mod orders;
 mod prices;
 mod stock;
 
@@ -14,6 +15,7 @@ pub use linen::{
     LinenItem, LinenLocation, LocationKind, ParRow, create_item, create_location, list_items, list_locations, list_par,
     set_par, update_item, update_location,
 };
+pub use orders::{Order, OrderLine, OrderStatus, create_order, list_orders, orders_for_stay, set_status, update_lines};
 pub use prices::{Price, Service, create_price, list_prices, update_price};
 pub use stock::{Movement, MovementKind, NewMovement, StockCell, movements, record, stock};
 

@@ -2,8 +2,8 @@
 //!
 //! [`night_audit`] reads the five review lists for the business date D: the arrivals not checked in, the departures
 //! not checked out, D's POS bills by outlet, the booking bills (a dry run of tonight's room and meal-plan postings
-//! and the day's manual and fee lines) and D's payments. Its blocking count, and [`blocking`]'s, is the unresolved
-//! arrivals plus the unresolved departures: the close waits until both are resolved.
+//! and the day's manual, fee and laundry lines) and D's payments. Its blocking count, and [`blocking`]'s, is the
+//! unresolved arrivals plus the unresolved departures: the close waits until both are resolved.
 //!
 //! The review only reads, so it takes no locks.
 //!

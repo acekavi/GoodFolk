@@ -19,9 +19,11 @@ uuid.workspace = true
 
 [dev-dependencies]
 db = { workspace = true, features = ["testing"] }
+fx.workspace = true
 property.workspace = true
 rand.workspace = true
 rooms.workspace = true
+rust_decimal.workspace = true
 tokio.workspace = true
 
 [lints]
