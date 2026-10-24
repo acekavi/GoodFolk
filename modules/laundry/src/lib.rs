@@ -6,6 +6,7 @@
 
 mod batches;
 mod linen;
+mod prices;
 mod stock;
 
 pub use batches::{Batch, BatchLine, BatchStatus, Settle, list_batches, receive, send, settle};
@@ -13,6 +14,7 @@ pub use linen::{
     LinenItem, LinenLocation, LocationKind, ParRow, create_item, create_location, list_items, list_locations, list_par,
     set_par, update_item, update_location,
 };
+pub use prices::{Price, Service, create_price, list_prices, update_price};
 pub use stock::{Movement, MovementKind, NewMovement, StockCell, movements, record, stock};
 
 use db::{Event, TenantId, Tx, UserId};

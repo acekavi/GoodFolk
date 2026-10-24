@@ -43,12 +43,12 @@ pub struct ParRow {
 }
 
 /// Whether `code` is 1 to 20 characters of `A-Z`, `0-9` and `_`.
-fn valid_code(code: &str) -> bool {
+pub(crate) fn valid_code(code: &str) -> bool {
     (1..=20).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
 }
 
 /// A name once trimmed, 1 to 100 characters.
-fn clean_name(name: &str) -> Result<&str, LaundryError> {
+pub(crate) fn clean_name(name: &str) -> Result<&str, LaundryError> {
     let name = name.trim();
     if (1..=100).contains(&name.chars().count()) {
         Ok(name)
@@ -366,7 +366,7 @@ pub async fn list_par(tx: &mut Tx, property: Uuid) -> Result<Vec<ParRow>, sqlx::
     .await
 }
 
-async fn ensure_property(tx: &mut Tx, property: Uuid) -> Result<(), LaundryError> {
+pub(crate) async fn ensure_property(tx: &mut Tx, property: Uuid) -> Result<(), LaundryError> {
     let found: bool = sqlx::query_scalar("select exists (select 1 from property where id = $1)")
         .bind(property)
         .fetch_one(&mut **tx)
