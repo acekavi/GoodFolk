@@ -5,8 +5,11 @@ import {
 	cellText,
 	countDifferences,
 	countItems,
+	countSnapshot,
+	defaultBackTo,
 	moveLocations,
 	stockGrid,
+	type LaundryBatch,
 	type LinenItem,
 	type LinenLocation
 } from './linen';
@@ -133,5 +136,67 @@ describe('batchStatusText', () => {
 		expect(batchStatusText({ status: 'SENT', outstanding: 10 })).toBe('Sent');
 		expect(batchStatusText({ status: 'RECEIVED', outstanding: 2 })).toBe('Received, 2 outstanding');
 		expect(batchStatusText({ status: 'RECEIVED', outstanding: 0 })).toBe('Settled');
+	});
+});
+
+describe('countSnapshot', () => {
+	const batch = (status: LaundryBatch['status'], version: number): LaundryBatch => ({
+		id: 'b1',
+		fromLocationId: 's',
+		toLocationId: 'l',
+		status,
+		note: null,
+		sentAt: '2026-10-24T08:00:00Z',
+		receivedAt: null,
+		lines: [
+			{ itemId: 'a', sent: 10, returned: 8, writtenOff: 0, outstanding: 2 },
+			{ itemId: 'b', sent: 4, returned: 4, writtenOff: 0, outstanding: 0 }
+		],
+		outstanding: 2,
+		settled: false,
+		version
+	});
+
+	it('keeps the version it was taken at, with the lines still out', () => {
+		const snapshot = countSnapshot(batch('SENT', 3), 'receive');
+		expect(snapshot).toEqual({
+			id: 'b1',
+			version: 3,
+			fromLocationId: 's',
+			lines: [{ itemId: 'a', outstanding: 2 }],
+			counts: { a: 2 }
+		});
+	});
+
+	it('starts found items at none and write-offs at what is out', () => {
+		expect(countSnapshot(batch('RECEIVED', 4), 'return')?.counts).toEqual({ a: 0 });
+		expect(countSnapshot(batch('RECEIVED', 4), 'write_off')?.counts).toEqual({ a: 2 });
+	});
+
+	it('is null once the batch can no longer be counted that way', () => {
+		expect(countSnapshot(batch('RECEIVED', 4), 'receive')).toBeNull();
+		expect(countSnapshot(batch('SENT', 3), 'return')).toBeNull();
+		expect(countSnapshot({ ...batch('RECEIVED', 5), outstanding: 0 }, 'write_off')).toBeNull();
+		expect(countSnapshot(undefined, 'receive')).toBeNull();
+	});
+});
+
+describe('defaultBackTo', () => {
+	const locations = [
+		location('p', 'Pantry', 'PANTRY'),
+		location('s', 'Store', 'STORE'),
+		location('x', 'Old pantry', 'PANTRY', false)
+	];
+
+	it('sends linen back where the batch came from while it is active', () => {
+		expect(defaultBackTo('p', locations)).toBe('p');
+	});
+
+	it('falls back to the active store when the source is switched off', () => {
+		expect(defaultBackTo('x', locations)).toBe('s');
+	});
+
+	it('leaves the choice open when there is no active store', () => {
+		expect(defaultBackTo('x', [location('p', 'Pantry', 'PANTRY')])).toBe('');
 	});
 });

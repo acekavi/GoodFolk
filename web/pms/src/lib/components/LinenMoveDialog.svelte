@@ -86,19 +86,16 @@
 			reason: form.kind === 'write_off' ? form.reason.trim() : null
 		};
 		try {
-			unwrap(
-				await rest.POST('/api/v1/properties/{property}/linen-movements', {
-					params: {
-						path: { property: propertyId },
-						header: { 'Idempotency-Key': keys.keyFor(body) }
-					},
-					body
-				})
+			await keys.submit(body, async (key) =>
+				unwrap(
+					await rest.POST('/api/v1/properties/{property}/linen-movements', {
+						params: { path: { property: propertyId }, header: { 'Idempotency-Key': key } },
+						body
+					})
+				)
 			);
-			keys.reset();
 			open = false;
 		} catch (err) {
-			keys.failed(err);
 			problem = errorMessage(err);
 		} finally {
 			busy = false;

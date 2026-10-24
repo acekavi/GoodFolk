@@ -6,16 +6,15 @@
 -->
 <script lang="ts">
 	import { page } from '$app/state';
-	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
-	import { ApiError, errorMessage } from '$lib/api/problem';
-	import { formKeys, ifMatch, rest, unwrap } from '$lib/api/rest';
+	import { createQuery } from '@tanstack/svelte-query';
+	import { errorMessage } from '$lib/api/problem';
 	import BatchReceiveDialog from '$lib/components/BatchReceiveDialog.svelte';
+	import BatchSendForm from '$lib/components/BatchSendForm.svelte';
 	import LinenMoveDialog from '$lib/components/LinenMoveDialog.svelte';
+	import LinenSetup from '$lib/components/LinenSetup.svelte';
 	import {
-		batchLocations,
 		batchStatusText,
 		cellText,
-		countItems,
 		fetchBatches,
 		fetchLinen,
 		fetchMovements,
@@ -24,17 +23,11 @@
 		MOVEMENTS_SHOWN,
 		movementKindLabel,
 		stockGrid,
-		type BatchCountMode,
-		type LinenItem,
-		type LinenLocation,
-		type LocationKind
+		type BatchCountMode
 	} from '$lib/linen';
-	import { Pending } from '$lib/pending.svelte';
-	import { fetchRooms, fetchRoomTypes, roomsKey, roomTypesKey } from '$lib/rooms';
 	import { can, fetchMe } from '$lib/session';
 
 	const propertyId = $derived(page.params.property ?? '');
-	const client = useQueryClient();
 	const me = createQuery(() => ({ queryKey: ['me'], queryFn: fetchMe }));
 	const canMove = $derived(!!me.data && can(me.data, 'linenMove', propertyId));
 	const manage = $derived(!!me.data && can(me.data, 'linenManage', propertyId));
@@ -52,30 +45,15 @@
 		queryKey: linenKey(propertyId, 'movements', movementsAt),
 		queryFn: ({ signal }) => fetchMovements(propertyId, movementsAt || null, signal)
 	}));
-	// The par table's room types and a pantry's section are for the Setup tab only.
-	const roomTypes = createQuery(() => ({
-		queryKey: roomTypesKey(propertyId),
-		queryFn: ({ signal }) => fetchRoomTypes(propertyId, signal),
-		enabled: manage
-	}));
-	const rooms = createQuery(() => ({
-		queryKey: roomsKey(propertyId),
-		queryFn: ({ signal }) => fetchRooms(propertyId, signal),
-		enabled: manage
-	}));
 
 	const data = $derived(linen.data);
 	const itemName = $derived(new Map((data?.linenItems ?? []).map((item) => [item.id, item.name])));
 	const locationName = $derived(
 		new Map((data?.linenLocations ?? []).map((location) => [location.id, location.name]))
 	);
-	const sectionName = $derived(
-		new Map((rooms.data?.sections ?? []).map((section) => [section.id, section.name]))
-	);
 	const grid = $derived(
 		stockGrid(data?.linenItems ?? [], data?.linenLocations ?? [], data?.linenStock ?? [])
 	);
-	const sendSides = $derived(batchLocations(data?.linenLocations ?? []));
 	const activeItems = $derived(
 		(data?.linenItems ?? [])
 			.filter((item) => item.active)
@@ -103,15 +81,9 @@
 		queueMicrotask(() => tabList?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus());
 	}
 
-	const pending = new Pending();
-	let problem = $state('');
-	let notice = $state('');
 	let moving = $state(false);
 
-	// Batches: send, then receive or settle in `BatchReceiveDialog`.
-	const sendKeys = formKeys();
-	const emptySend = () => ({ from: '', to: '', note: '', counts: {} as Record<string, number> });
-	let send = $state(emptySend());
+	// Receive or settle a batch in `BatchReceiveDialog`.
 	let counting = $state<{ batchId: string; mode: BatchCountMode } | null>(null);
 	let countOpen = $state(false);
 	const countedBatch = $derived(batches.data?.find((batch) => batch.id === counting?.batchId));
@@ -121,218 +93,8 @@
 		countOpen = true;
 	}
 
-	async function sendBatch(event: SubmitEvent) {
-		event.preventDefault();
-		problem = '';
-		notice = '';
-		const items = countItems(send.counts);
-		if (items.length === 0) {
-			problem = 'Enter a count for at least one item.';
-			return;
-		}
-		const body = {
-			from_location_id: send.from,
-			to_location_id: send.to,
-			items,
-			note: send.note.trim() || null
-		};
-		try {
-			await pending.run('send', async () => {
-				try {
-					unwrap(
-						await rest.POST('/api/v1/properties/{property}/laundry-batches', {
-							params: {
-								path: { property: propertyId },
-								header: { 'Idempotency-Key': sendKeys.keyFor(body) }
-							},
-							body
-						})
-					);
-				} catch (err) {
-					sendKeys.failed(err);
-					throw err;
-				}
-			});
-			sendKeys.reset();
-			send = emptySend();
-			notice = 'Batch sent.';
-		} catch (err) {
-			problem = errorMessage(err);
-		} finally {
-			await client.invalidateQueries({ queryKey: linenKey(propertyId) });
-		}
-	}
-
 	function sentAt(at: string) {
 		return new Date(at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-	}
-
-	// Setup: items, locations and the par table.
-	const itemKeys = formKeys();
-	const locationKeys = formKeys();
-	let itemDraft = $state({ code: '', name: '' });
-	let locationDraft = $state({ name: '', kind: 'STORE' as LocationKind, sectionId: '' });
-	let editingItem = $state<{ id: string; name: string } | null>(null);
-	let editingLocation = $state<{ id: string; name: string } | null>(null);
-	let editingPar = $state<{ roomTypeId: string; counts: Record<string, number> } | null>(null);
-	const parOf = $derived(
-		new Map((data?.linenPar ?? []).map((row) => [`${row.roomTypeId}|${row.itemId}`, row.quantity]))
-	);
-	const KINDS: LocationKind[] = ['STORE', 'PANTRY', 'LAUNDRY', 'VENDOR'];
-
-	async function refresh() {
-		await client.invalidateQueries({ queryKey: linenKey(propertyId) });
-	}
-
-	async function addItem(event: SubmitEvent) {
-		event.preventDefault();
-		problem = '';
-		const body = { code: itemDraft.code.trim().toUpperCase(), name: itemDraft.name.trim() };
-		try {
-			await pending.run('add-item', async () => {
-				try {
-					unwrap(
-						await rest.POST('/api/v1/properties/{property}/linen-items', {
-							params: {
-								path: { property: propertyId },
-								header: { 'Idempotency-Key': itemKeys.keyFor(body) }
-							},
-							body
-						})
-					);
-				} catch (err) {
-					itemKeys.failed(err);
-					throw err;
-				}
-			});
-			itemKeys.reset();
-			itemDraft = { code: '', name: '' };
-		} catch (err) {
-			problem = errorMessage(err);
-		} finally {
-			await refresh();
-		}
-	}
-
-	async function addLocation(event: SubmitEvent) {
-		event.preventDefault();
-		problem = '';
-		const body = {
-			name: locationDraft.name.trim(),
-			kind: locationDraft.kind.toLowerCase() as 'store' | 'pantry' | 'laundry' | 'vendor',
-			section_id: locationDraft.kind === 'PANTRY' ? locationDraft.sectionId : null
-		};
-		try {
-			await pending.run('add-location', async () => {
-				try {
-					unwrap(
-						await rest.POST('/api/v1/properties/{property}/linen-locations', {
-							params: {
-								path: { property: propertyId },
-								header: { 'Idempotency-Key': locationKeys.keyFor(body) }
-							},
-							body
-						})
-					);
-				} catch (err) {
-					locationKeys.failed(err);
-					throw err;
-				}
-			});
-			locationKeys.reset();
-			locationDraft = { name: '', kind: 'STORE', sectionId: '' };
-		} catch (err) {
-			problem = errorMessage(err);
-		} finally {
-			await refresh();
-		}
-	}
-
-	/** A stale `If-Match` (412) reloads the list rather than overwrite someone else's change. */
-	function updateProblem(err: unknown, what: string): string {
-		return err instanceof ApiError && err.status === 412
-			? `Someone else changed this ${what}. The list now shows the latest version; make your change again.`
-			: errorMessage(err);
-	}
-
-	async function updateItem(item: LinenItem, body: { name?: string; active?: boolean }) {
-		problem = '';
-		try {
-			await pending.run(item.id, async () =>
-				unwrap(
-					await rest.PATCH('/api/v1/properties/{property}/linen-items/{item}', {
-						params: {
-							path: { property: propertyId, item: item.id },
-							header: ifMatch(item.version)
-						},
-						body
-					})
-				)
-			);
-			if (editingItem?.id === item.id) editingItem = null;
-		} catch (err) {
-			if (err instanceof ApiError && err.status === 412) editingItem = null;
-			problem = updateProblem(err, 'item');
-		} finally {
-			await refresh();
-		}
-	}
-
-	async function updateLocation(
-		location: LinenLocation,
-		body: { name?: string; active?: boolean }
-	) {
-		problem = '';
-		try {
-			await pending.run(location.id, async () =>
-				unwrap(
-					await rest.PATCH('/api/v1/properties/{property}/linen-locations/{location}', {
-						params: {
-							path: { property: propertyId, location: location.id },
-							header: ifMatch(location.version)
-						},
-						body
-					})
-				)
-			);
-			if (editingLocation?.id === location.id) editingLocation = null;
-		} catch (err) {
-			if (err instanceof ApiError && err.status === 412) editingLocation = null;
-			problem = updateProblem(err, 'location');
-		} finally {
-			await refresh();
-		}
-	}
-
-	function editPar(roomTypeId: string) {
-		editingPar = {
-			roomTypeId,
-			counts: Object.fromEntries(
-				activeItems.map((item) => [item.id, parOf.get(`${roomTypeId}|${item.id}`) ?? 0])
-			)
-		};
-	}
-
-	/** Replaces the room type's whole par table; an item at 0 needs none. */
-	async function savePar() {
-		if (!editingPar) return;
-		problem = '';
-		const { roomTypeId, counts } = editingPar;
-		try {
-			await pending.run(`par-${roomTypeId}`, async () =>
-				unwrap(
-					await rest.PUT('/api/v1/properties/{property}/linen-par/{room_type}', {
-						params: { path: { property: propertyId, room_type: roomTypeId } },
-						body: { items: countItems(counts) }
-					})
-				)
-			);
-			editingPar = null;
-		} catch (err) {
-			problem = errorMessage(err);
-		} finally {
-			await refresh();
-		}
 	}
 </script>
 
@@ -349,19 +111,12 @@
 			tabindex={entry.id === tab ? 0 : -1}
 			class:secondary={entry.id !== tab}
 			onkeydown={tabKeydown}
-			onclick={() => {
-				chosenTab = entry.id;
-				problem = '';
-				notice = '';
-			}}>{entry.label}</button
+			onclick={() => (chosenTab = entry.id)}>{entry.label}</button
 		>
 	{/each}
 </div>
 
 <div id="linen-panel" role="tabpanel" aria-labelledby="linen-tab-{tab}">
-	{#if problem}<p class="error" role="alert">{problem}</p>{/if}
-	{#if notice}<p role="status">{notice}</p>{/if}
-
 	{#if linen.error && !data}
 		<p class="error" role="alert">{errorMessage(linen.error)}</p>
 		<button onclick={() => linen.refetch()}>Retry</button>
@@ -413,54 +168,7 @@
 		/>
 	{:else if tab === 'batches'}
 		{#if canMove}
-			<section aria-labelledby="send-batch">
-				<h2 id="send-batch">Send a batch</h2>
-				<form class="send" aria-label="Send a batch" onsubmit={sendBatch}>
-					<div class="inline-form">
-						<label>
-							From
-							<select required bind:value={send.from}>
-								<option value="" disabled>Choose a store or pantry</option>
-								{#each sendSides.from as location (location.id)}
-									<option value={location.id}>{location.name}</option>
-								{/each}
-							</select>
-						</label>
-						<label>
-							To
-							<select required bind:value={send.to}>
-								<option value="" disabled>Choose a laundry</option>
-								{#each sendSides.to as location (location.id)}
-									<option value={location.id}>{location.name}</option>
-								{/each}
-							</select>
-						</label>
-						<label>Note <input maxlength="500" bind:value={send.note} /></label>
-					</div>
-					<table aria-label="Counts to send">
-						<thead><tr><th>Item</th><th>Count</th></tr></thead>
-						<tbody>
-							{#each activeItems as item (item.id)}
-								<tr>
-									<td>{item.name}</td>
-									<td>
-										<input
-											type="number"
-											min="0"
-											max="100000"
-											aria-label="{item.name} to send"
-											bind:value={send.counts[item.id]}
-										/>
-									</td>
-								</tr>
-							{:else}
-								<tr><td colspan="2">No linen items yet.</td></tr>
-							{/each}
-						</tbody>
-					</table>
-					<button disabled={pending.has('send')}>Send</button>
-				</form>
-			</section>
+			<BatchSendForm {propertyId} items={activeItems} locations={data.linenLocations} />
 		{/if}
 
 		<section aria-labelledby="batch-list">
@@ -593,238 +301,12 @@
 			</div>
 		{/if}
 	{:else if tab === 'setup'}
-		<section aria-labelledby="setup-items">
-			<h2 id="setup-items">Items</h2>
-			<table aria-label="Linen items">
-				<thead>
-					<tr>
-						<th>Code</th>
-						<th>Name</th>
-						<th>Active</th>
-						<th><span class="visually-hidden">Actions</span></th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each data.linenItems as item (item.id)}
-						<tr class:inactive={!item.active}>
-							<td>{item.code}</td>
-							{#if editingItem?.id === item.id}
-								<td>
-									<input
-										class="name"
-										aria-label="Name for {item.code}"
-										required
-										maxlength="100"
-										bind:value={editingItem.name}
-									/>
-								</td>
-								<td>{item.active ? 'Active' : 'Inactive'}</td>
-								<td class="actions">
-									<button
-										aria-label="Save {item.code}"
-										disabled={pending.has(item.id) || !editingItem.name.trim()}
-										onclick={() =>
-											editingItem && updateItem(item, { name: editingItem.name.trim() })}
-										>Save</button
-									>
-									<button class="secondary" onclick={() => (editingItem = null)}>Cancel</button>
-								</td>
-							{:else}
-								<td>{item.name}</td>
-								<td>{item.active ? 'Active' : 'Inactive'}</td>
-								<td class="actions">
-									<button
-										class="secondary"
-										aria-label="Edit {item.code}"
-										disabled={pending.has(item.id)}
-										onclick={() => (editingItem = { id: item.id, name: item.name })}>Edit</button
-									>
-									<button
-										class="secondary"
-										aria-label="{item.active ? 'Deactivate' : 'Activate'} {item.code}"
-										disabled={pending.has(item.id)}
-										onclick={() => updateItem(item, { active: !item.active })}
-										>{item.active ? 'Deactivate' : 'Activate'}</button
-									>
-								</td>
-							{/if}
-						</tr>
-					{:else}
-						<tr><td colspan="4">No linen items yet.</td></tr>
-					{/each}
-				</tbody>
-			</table>
-			<form class="inline-form" aria-label="New linen item" onsubmit={addItem}>
-				<label>
-					Code
-					<input
-						required
-						maxlength="20"
-						pattern={'[A-Za-z0-9_]{1,20}'}
-						placeholder="BATH_TOWEL"
-						bind:value={itemDraft.code}
-					/>
-				</label>
-				<label>Name <input required maxlength="100" bind:value={itemDraft.name} /></label>
-				<button disabled={pending.has('add-item')}>Add item</button>
-			</form>
-			<p class="hint">The code can't be changed later.</p>
-		</section>
-
-		<section aria-labelledby="setup-locations">
-			<h2 id="setup-locations">Locations</h2>
-			<table aria-label="Linen locations">
-				<thead>
-					<tr>
-						<th>Name</th>
-						<th>Kind</th>
-						<th>Section</th>
-						<th>Active</th>
-						<th><span class="visually-hidden">Actions</span></th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each data.linenLocations as location (location.id)}
-						<tr class:inactive={!location.active}>
-							{#if editingLocation?.id === location.id}
-								<td>
-									<input
-										class="name"
-										aria-label="Name for {location.name}"
-										required
-										maxlength="100"
-										bind:value={editingLocation.name}
-									/>
-								</td>
-							{:else}
-								<td>{location.name}</td>
-							{/if}
-							<td>{locationKindLabel(location.kind)}</td>
-							<td>{location.sectionId ? (sectionName.get(location.sectionId) ?? '…') : ''}</td>
-							<td>{location.active ? 'Active' : 'Inactive'}</td>
-							<td class="actions">
-								{#if editingLocation?.id === location.id}
-									<button
-										aria-label="Save {location.name}"
-										disabled={pending.has(location.id) || !editingLocation.name.trim()}
-										onclick={() =>
-											editingLocation &&
-											updateLocation(location, { name: editingLocation.name.trim() })}>Save</button
-									>
-									<button class="secondary" onclick={() => (editingLocation = null)}>Cancel</button>
-								{:else}
-									<button
-										class="secondary"
-										aria-label="Edit {location.name}"
-										disabled={pending.has(location.id)}
-										onclick={() => (editingLocation = { id: location.id, name: location.name })}
-										>Edit</button
-									>
-									<button
-										class="secondary"
-										aria-label="{location.active ? 'Deactivate' : 'Activate'} {location.name}"
-										disabled={pending.has(location.id)}
-										onclick={() => updateLocation(location, { active: !location.active })}
-										>{location.active ? 'Deactivate' : 'Activate'}</button
-									>
-								{/if}
-							</td>
-						</tr>
-					{:else}
-						<tr><td colspan="5">No locations yet.</td></tr>
-					{/each}
-				</tbody>
-			</table>
-			<form class="inline-form" aria-label="New linen location" onsubmit={addLocation}>
-				<label>Name <input required maxlength="100" bind:value={locationDraft.name} /></label>
-				<label>
-					Kind
-					<select bind:value={locationDraft.kind}>
-						{#each KINDS as kind (kind)}
-							<option value={kind}>{locationKindLabel(kind)}</option>
-						{/each}
-					</select>
-				</label>
-				{#if locationDraft.kind === 'PANTRY'}
-					<label>
-						Section
-						<select required bind:value={locationDraft.sectionId}>
-							<option value="" disabled>Choose a section</option>
-							{#each rooms.data?.sections ?? [] as section (section.id)}
-								<option value={section.id}>{section.name}</option>
-							{/each}
-						</select>
-					</label>
-				{/if}
-				<button disabled={pending.has('add-location')}>Add location</button>
-			</form>
-			<p class="hint">
-				A pantry serves one section's rooms; the store serves the rooms of sections with no pantry.
-				A location holding stock can't be switched off.
-			</p>
-		</section>
-
-		<section aria-labelledby="setup-par">
-			<h2 id="setup-par">Par per room</h2>
-			{#if roomTypes.error && !roomTypes.data}
-				<p class="error" role="alert">{errorMessage(roomTypes.error)}</p>
-				<button onclick={() => roomTypes.refetch()}>Retry</button>
-			{:else if !roomTypes.data}
-				<p>Loading…</p>
-			{:else if activeItems.length === 0}
-				<p class="hint">Add linen items to set their par.</p>
-			{:else}
-				<div class="scroll">
-					<table aria-label="Par per room">
-						<thead>
-							<tr>
-								<th>Room type</th>
-								{#each activeItems as item (item.id)}<th>{item.name}</th>{/each}
-								<th><span class="visually-hidden">Actions</span></th>
-							</tr>
-						</thead>
-						<tbody>
-							{#each roomTypes.data.filter((type) => type.active) as roomType (roomType.id)}
-								<tr>
-									<th scope="row">{roomType.name}</th>
-									{#each activeItems as item (item.id)}
-										<td>
-											{#if editingPar?.roomTypeId === roomType.id}
-												<input
-													type="number"
-													min="0"
-													max="100"
-													aria-label="{item.name} per {roomType.name} room"
-													bind:value={editingPar.counts[item.id]}
-												/>
-											{:else}
-												{parOf.get(`${roomType.id}|${item.id}`) ?? 0}
-											{/if}
-										</td>
-									{/each}
-									<td class="actions">
-										{#if editingPar?.roomTypeId === roomType.id}
-											<button
-												aria-label="Save par for {roomType.name}"
-												disabled={pending.has(`par-${roomType.id}`)}
-												onclick={savePar}>Save</button
-											>
-											<button class="secondary" onclick={() => (editingPar = null)}>Cancel</button>
-										{:else}
-											<button
-												class="secondary"
-												aria-label="Edit par for {roomType.name}"
-												onclick={() => editPar(roomType.id)}>Edit</button
-											>
-										{/if}
-									</td>
-								</tr>
-							{/each}
-						</tbody>
-					</table>
-				</div>
-			{/if}
-		</section>
+		<LinenSetup
+			{propertyId}
+			items={data.linenItems}
+			locations={data.linenLocations}
+			par={data.linenPar}
+		/>
 	{/if}
 </div>
 
@@ -856,8 +338,5 @@
 	}
 	.filter {
 		max-width: 16rem;
-	}
-	td input.name {
-		width: 12rem;
 	}
 </style>

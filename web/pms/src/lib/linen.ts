@@ -242,6 +242,54 @@ export function countDifferences(
 		});
 }
 
+/**
+ * What a batch dialog counts against, fixed when it opens: the batch's version (its `If-Match`), where it came
+ * from, and each line still out with its starting count (what is out, or none for items found). `null` when the
+ * batch can no longer be counted that way: a receive needs a batch still `SENT`, a settle a received one with
+ * something outstanding.
+ */
+export interface CountSnapshot {
+	id: string;
+	version: number;
+	fromLocationId: string;
+	lines: { itemId: string; outstanding: number }[];
+	counts: Record<string, number>;
+}
+
+export function countSnapshot(
+	batch: LaundryBatch | undefined,
+	mode: BatchCountMode
+): CountSnapshot | null {
+	if (!batch) return null;
+	const countable =
+		mode === 'receive'
+			? batch.status === 'SENT'
+			: batch.status === 'RECEIVED' && batch.outstanding > 0;
+	if (!countable) return null;
+	const lines = batch.lines
+		.filter((line) => line.outstanding > 0)
+		.map((line) => ({ itemId: line.itemId, outstanding: line.outstanding }));
+	return {
+		id: batch.id,
+		version: batch.version,
+		fromLocationId: batch.fromLocationId,
+		lines,
+		counts: Object.fromEntries(
+			lines.map((line) => [line.itemId, mode === 'return' ? 0 : line.outstanding])
+		)
+	};
+}
+
+/**
+ * Where counted linen goes back to by default: the batch's source while it is an active store or pantry, else the
+ * first active store; `''` (a choice to make) when there is neither.
+ */
+export function defaultBackTo(fromLocationId: string, locations: readonly LinenLocation[]): string {
+	const destinations = batchLocations(locations).from;
+	if (destinations.some((location) => location.id === fromLocationId)) return fromLocationId;
+	return destinations.find((location) => location.kind === 'STORE')?.id ?? '';
+}
+
 /** The counts a request sends, `{item_id, quantity}` for every item counted above zero. */
 export function countItems(
 	counts: Readonly<Record<string, number>>

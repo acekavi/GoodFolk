@@ -93,3 +93,43 @@ describe('formKeys failed()', () => {
 		expect(second).not.toBe(first);
 	});
 });
+
+describe('formKeys submit()', () => {
+	const body = { code: 'STD', name: 'Standard' };
+
+	it('sends the key for the body and starts afresh after a success', async () => {
+		const keys = formKeys();
+		const sent: string[] = [];
+		await keys.submit(body, async (key) => sent.push(key));
+		await keys.submit(body, async (key) => sent.push(key));
+		expect(sent[0]).not.toBe(sent[1]);
+	});
+
+	it('rethrows a failure, keeping the key after a network error', async () => {
+		const keys = formKeys();
+		const sent: string[] = [];
+		const failure = new TypeError('Failed to fetch');
+		await expect(
+			keys.submit(body, async (key) => {
+				sent.push(key);
+				throw failure;
+			})
+		).rejects.toBe(failure);
+		await keys.submit(body, async (key) => sent.push(key));
+		expect(sent[1]).toBe(sent[0]);
+	});
+
+	it('rotates the key after a definitive client error', async () => {
+		const keys = formKeys();
+		const sent: string[] = [];
+		const failure = new ApiError({ type: 'about:blank', title: 'Error', status: 422 });
+		await expect(
+			keys.submit(body, async (key) => {
+				sent.push(key);
+				throw failure;
+			})
+		).rejects.toBe(failure);
+		await keys.submit(body, async (key) => sent.push(key));
+		expect(sent[1]).not.toBe(sent[0]);
+	});
+});

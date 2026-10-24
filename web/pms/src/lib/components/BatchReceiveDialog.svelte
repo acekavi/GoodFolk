@@ -2,10 +2,11 @@
 	Counts a laundry batch back in. `receive` counts what came back (each item defaulting to what is out), showing the
 	difference from what was sent before confirming; what is short stays at the laundry. A received batch with items
 	still out is settled later: `return` counts items found (to the store or pantry chosen), `write_off` writes items
-	off with a reason (`LinenManage`). A stale version (412) reloads the batch and its counts.
+	off with a reason (`LinenManage`). The dialog counts against the batch as it was when opened, and sends that
+	version: a stale one (412) reloads the batch and starts the counts again from the latest.
 -->
 <script lang="ts">
-	import { tick } from 'svelte';
+	import { tick, untrack } from 'svelte';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { ApiError, errorMessage } from '$lib/api/problem';
 	import { ifMatch, rest, unwrap } from '$lib/api/rest';
@@ -13,8 +14,11 @@
 		batchLocations,
 		countDifferences,
 		countItems,
+		countSnapshot,
+		defaultBackTo,
 		linenKey,
 		type BatchCountMode,
+		type CountSnapshot,
 		type LaundryBatch,
 		type LinenItem,
 		type LinenLocation
@@ -22,7 +26,7 @@
 
 	interface Props {
 		propertyId: string;
-		/** The batch, from the latest list, so a refetch brings its new version. */
+		/** The batch from the latest list; the dialog snapshots it on opening and after a 412. */
 		batch: LaundryBatch | undefined;
 		mode: BatchCountMode;
 		items: readonly LinenItem[];
@@ -34,6 +38,7 @@
 
 	const client = useQueryClient();
 	let dialog = $state<HTMLDialogElement>();
+	let snapshot = $state.raw<CountSnapshot | null>(null);
 	let counts = $state<Record<string, number>>({});
 	let backTo = $state('');
 	let reason = $state('');
@@ -42,7 +47,7 @@
 
 	const names = $derived(new Map(items.map((item) => [item.id, item.name])));
 	const destinations = $derived(batchLocations(locations).from);
-	const lines = $derived(countDifferences(batch?.lines ?? [], counts));
+	const lines = $derived(countDifferences(snapshot?.lines ?? [], counts));
 	const short = $derived(lines.reduce((sum, line) => sum + Math.max(0, -line.difference), 0));
 	const counted = $derived(lines.reduce((sum, line) => sum + line.counted, 0));
 	const titles: Record<BatchCountMode, string> = {
@@ -56,20 +61,18 @@
 		write_off: 'Write off'
 	};
 
-	/** Counts start at what is out, except found items, which start at none. */
+	/** Takes the batch as it now is: its version, its lines still out and their starting counts. */
 	function reset() {
-		counts = Object.fromEntries(
-			(batch?.lines ?? [])
-				.filter((line) => line.outstanding > 0)
-				.map((line) => [line.itemId, mode === 'return' ? 0 : line.outstanding])
-		);
-		backTo = batch?.fromLocationId ?? '';
+		snapshot = countSnapshot(batch, mode);
+		counts = { ...(snapshot?.counts ?? {}) };
+		backTo = snapshot ? defaultBackTo(snapshot.fromLocationId, locations) : '';
 	}
 
 	$effect(() => {
 		if (!dialog) return;
 		if (open && !dialog.open) {
-			reset();
+			// The snapshot is taken here only: a refetch while the dialog is open must not move its version.
+			untrack(reset);
 			reason = '';
 			problem = '';
 			dialog.showModal();
@@ -78,7 +81,7 @@
 		}
 	});
 
-	function request(current: LaundryBatch) {
+	function request(current: CountSnapshot) {
 		const params = {
 			path: { property: propertyId, batch: current.id },
 			header: ifMatch(current.version)
@@ -102,7 +105,7 @@
 
 	async function submit(event: SubmitEvent) {
 		event.preventDefault();
-		if (!batch) return;
+		if (!snapshot) return;
 		if (mode !== 'receive' && counted === 0) {
 			problem = 'Enter at least one item.';
 			return;
@@ -110,7 +113,7 @@
 		busy = true;
 		problem = '';
 		try {
-			unwrap(await request(batch));
+			unwrap(await request(snapshot));
 			open = false;
 			void client.invalidateQueries({ queryKey: linenKey(propertyId) });
 		} catch (err) {
@@ -118,8 +121,9 @@
 				await client.invalidateQueries({ queryKey: linenKey(propertyId) });
 				await tick();
 				reset();
-				problem =
-					'Someone else changed this batch. The counts now show what is still out; check them and confirm again.';
+				problem = snapshot
+					? 'Someone else changed this batch. The counts now show what is still out; check them and confirm again.'
+					: 'Someone else changed this batch.';
 			} else {
 				problem = errorMessage(err);
 			}
@@ -137,8 +141,13 @@
 >
 	<form class="form" onsubmit={submit}>
 		<h2 id="batch-count-title">{titles[mode]}</h2>
-		{#if lines.length === 0}
-			<p>Nothing of this batch is still out.</p>
+		{#if !snapshot}
+			{#if problem}<p class="error" role="alert">{problem}</p>{/if}
+			<p>
+				{mode === 'receive'
+					? 'This batch is already received.'
+					: 'Nothing of this batch is still out.'}
+			</p>
 			<div class="actions">
 				<button type="button" class="secondary" onclick={() => (open = false)}>Close</button>
 			</div>
@@ -184,7 +193,8 @@
 			{#if mode !== 'write_off'}
 				<label>
 					Back to
-					<select bind:value={backTo}>
+					<select required bind:value={backTo}>
+						<option value="" disabled>Choose a store or pantry</option>
 						{#each destinations as location (location.id)}
 							<option value={location.id}>{location.name}</option>
 						{/each}
