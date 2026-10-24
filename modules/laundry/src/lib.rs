@@ -4,9 +4,11 @@
 //! Every function takes a transaction scoped to the caller's tenant. Writes record an audit entry in the same
 //! transaction and queue a change event.
 
+mod batches;
 mod linen;
 mod stock;
 
+pub use batches::{Batch, BatchLine, BatchStatus, Settle, list_batches, receive, send, settle};
 pub use linen::{
     LinenItem, LinenLocation, LocationKind, ParRow, create_item, create_location, list_items, list_locations, list_par,
     set_par, update_item, update_location,

@@ -77,7 +77,8 @@ pub async fn record(
 
 /// Applies `movements` in order, all or none, against `batch` when given: checks each against its locations and item,
 /// refuses one that would take a location below zero (`Conflict`), updates the stock, records the movements, then
-/// re-checks the property's linen alert.
+/// re-checks the property's linen alert. The alert's advisory lock is held until commit, so this must be the
+/// transaction's last locking step.
 pub(crate) async fn apply(
     tx: &mut Tx,
     tenant: TenantId,
