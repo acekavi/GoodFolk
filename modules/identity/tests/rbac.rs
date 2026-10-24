@@ -390,10 +390,36 @@ fn a_junior_gives_nothing() {
 #[test]
 fn a_manager_acts_only_on_members_whose_every_grant_is_junior() {
     let manager = [grant(Role::Manager, Some(HOTEL))];
+    let tenant_wide_manager = [grant(Role::Manager, None)];
     let owner = [grant(Role::Owner, None)];
     let mixed = [grant(Role::FrontDesk, Some(HOTEL)), grant(Role::Manager, Some(OTHER_HOTEL))];
 
-    assert!(check_may_act_on(&manager, &[grant(Role::Accountant, None), grant(Role::Pos, Some(HOTEL))]).is_ok());
+    assert!(check_may_act_on(&manager, &[grant(Role::Accountant, Some(HOTEL)), grant(Role::Pos, Some(HOTEL))]).is_ok());
     assert_eq!(check_may_act_on(&manager, &mixed), Err("only owners can manage a member with the manager role".into()));
+    assert_eq!(
+        check_may_act_on(&tenant_wide_manager, &[grant(Role::Owner, None)]),
+        Err("only owners can manage a member with the owner role".into())
+    );
     assert!(check_may_act_on(&owner, &mixed).is_ok());
+}
+
+#[test]
+fn a_property_manager_acts_only_on_members_at_their_properties() {
+    let manager = [grant(Role::Manager, Some(HOTEL))];
+    let elsewhere = [grant(Role::FrontDesk, Some(HOTEL)), grant(Role::Housekeeping, Some(OTHER_HOTEL))];
+
+    assert_eq!(check_may_act_on(&manager, &elsewhere), Err(format!("you do not manage property {OTHER_HOTEL}")));
+    assert!(check_may_act_on(&[grant(Role::Manager, Some(OTHER_HOTEL)), manager[0]], &elsewhere).is_ok());
+}
+
+#[test]
+fn a_tenant_wide_junior_needs_a_tenant_wide_manager() {
+    let member = [grant(Role::Accountant, None)];
+
+    assert_eq!(
+        check_may_act_on(&[grant(Role::Manager, Some(HOTEL))], &member),
+        Err("a member with a tenant-wide accountant grant needs a tenant-wide manager".into())
+    );
+    assert!(check_may_act_on(&[grant(Role::Manager, None)], &member).is_ok());
+    assert!(check_may_act_on(&[grant(Role::Manager, None)], &[grant(Role::Pos, Some(OTHER_HOTEL))]).is_ok());
 }

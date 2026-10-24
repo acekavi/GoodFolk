@@ -32,7 +32,7 @@ impl Role {
     }
 
     /// Anything not listed is denied, so a new permission is granted only where it is added.
-    fn permits(self, permission: Permission) -> bool {
+    pub(crate) fn permits(self, permission: Permission) -> bool {
         use Permission::*;
         match self {
             Role::Owner => true,
@@ -204,6 +204,47 @@ pub enum Permission {
     StaffManage,
 }
 
+impl Permission {
+    /// The permission's name as the permission matrix shows it, such as `StaffManage`.
+    pub fn name(self) -> &'static str {
+        use Permission::*;
+        match self {
+            PropertiesView => "PropertiesView",
+            PropertiesCreate => "PropertiesCreate",
+            PropertiesManage => "PropertiesManage",
+            RoomsView => "RoomsView",
+            RoomsManage => "RoomsManage",
+            InventoryView => "InventoryView",
+            InventoryBlock => "InventoryBlock",
+            RatesView => "RatesView",
+            RatesManage => "RatesManage",
+            ReservationsView => "ReservationsView",
+            ReservationsManage => "ReservationsManage",
+            FrontDeskCheckIn => "FrontDeskCheckIn",
+            HousekeepingView => "HousekeepingView",
+            HousekeepingUpdate => "HousekeepingUpdate",
+            HousekeepingSupervise => "HousekeepingSupervise",
+            RoomIssuesReport => "RoomIssuesReport",
+            MediaManage => "MediaManage",
+            GuestDocumentsManage => "GuestDocumentsManage",
+            FolioView => "FolioView",
+            FolioPost => "FolioPost",
+            FolioAdjust => "FolioAdjust",
+            InvoiceIssue => "InvoiceIssue",
+            TaxSettingsManage => "TaxSettingsManage",
+            FxOverride => "FxOverride",
+            PosPost => "PosPost",
+            NightAudit => "NightAudit",
+            LinenView => "LinenView",
+            LinenMove => "LinenMove",
+            LinenManage => "LinenManage",
+            LaundryOrders => "LaundryOrders",
+            LaundryPricesManage => "LaundryPricesManage",
+            StaffManage => "StaffManage",
+        }
+    }
+}
+
 /// Every permission, in declaration order.
 pub const ALL_PERMISSIONS: [Permission; 32] = [
     Permission::PropertiesView,
@@ -351,7 +392,8 @@ pub fn check_may_give(actor: &[Grant], given: &[Grant]) -> Result<(), String> {
 }
 
 /// The manager rules for acting on a member holding `member`: owners act on anyone; a manager only on members whose
-/// every grant is a junior role.
+/// every grant is a junior role at a property they manage (any property, with a tenant-wide `manager` grant). A
+/// member's tenant-wide grant needs a tenant-wide manager. A refusal names the role or property.
 pub fn check_may_act_on(actor: &[Grant], member: &[Grant]) -> Result<(), String> {
     if is_owner(actor) {
         return Ok(());
@@ -359,10 +401,28 @@ pub fn check_may_act_on(actor: &[Grant], member: &[Grant]) -> Result<(), String>
     if !actor.iter().any(|g| g.role == Role::Manager) {
         return Err("only owners and managers manage staff".into());
     }
-    match member.iter().find(|g| !JUNIOR_ROLES.contains(&g.role)) {
-        Some(grant) => Err(format!("only owners can manage a member with the {} role", grant.role.as_str())),
-        None => Ok(()),
+    if let Some(grant) = member.iter().find(|g| !JUNIOR_ROLES.contains(&g.role)) {
+        return Err(format!("only owners can manage a member with the {} role", grant.role.as_str()));
     }
+    let tenant_wide_manager = actor.iter().any(|g| g.role == Role::Manager && g.property_id.is_none());
+    if tenant_wide_manager {
+        return Ok(());
+    }
+    for grant in member {
+        match grant.property_id {
+            None => {
+                return Err(format!(
+                    "a member with a tenant-wide {} grant needs a tenant-wide manager",
+                    grant.role.as_str()
+                ));
+            }
+            Some(property) if !actor.iter().any(|g| g.role == Role::Manager && g.property_id == Some(property)) => {
+                return Err(format!("you do not manage property {property}"));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
 }
 
 /// Owners are always tenant-wide.

@@ -433,3 +433,60 @@ async fn a_user_with_no_memberships_can_sign_in(_: PgPoolOptions, opts: PgConnec
     assert!(profile.grants.is_empty());
     assert_eq!(profile.current_tenant, None);
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_token_used_while_a_new_user_accept_waits_is_gone(_: PgPoolOptions, opts: PgConnectOptions) {
+    let t = Tenant::new(opts).await;
+    let (kamala, _) = signup(&t.pool, signup_input("kamala@example.com", "Her Own Hotel")).await.unwrap();
+    let invitation = t.invite("kamala@example.com", &[grant(Role::FrontDesk, Some(t.hotel))]).await;
+    let token = t.token(invitation.id).await;
+    // Stands in for Kamala's own accept, signed in, holding the invitation until it commits.
+    let mut winner = t.superuser.begin().await.unwrap();
+    sqlx::query("select 1 from invitation where id = $1 for update")
+        .bind(invitation.id)
+        .execute(&mut *winner)
+        .await
+        .unwrap();
+
+    let loser = {
+        let (pool, token) = (t.pool.clone(), token.clone());
+        tokio::spawn(async move { accept(&pool, &token, Acceptor::NewUser { password: PASSWORD.into() }).await })
+    };
+    for _ in 0..500 {
+        let waiting: bool = sqlx::query_scalar("select exists (select 1 from pg_locks where not granted)")
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+        if waiting || loser.is_finished() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    sqlx::query("update invitation set status = 'accepted', accepted_user_id = $2, accepted_at = now() where id = $1")
+        .bind(invitation.id)
+        .bind(kamala.0)
+        .execute(&mut *winner)
+        .await
+        .unwrap();
+    winner.commit().await.unwrap();
+
+    let result = loser.await.unwrap();
+    assert!(matches!(result, Err(StaffError::Gone)), "{result:?}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_invitation_to_a_deleted_property_is_gone(_: PgPoolOptions, opts: PgConnectOptions) {
+    let t = Tenant::new(opts).await;
+    let grants = [grant(Role::FrontDesk, Some(t.hotel)), grant(Role::Housekeeping, Some(t.other_hotel))];
+    let invitation = t.invite("kamala@example.com", &grants).await;
+    let token = t.token(invitation.id).await;
+    sqlx::query("delete from property where id = $1").bind(t.other_hotel).execute(&t.superuser).await.unwrap();
+
+    let result = t.accept_new(&token).await;
+
+    assert!(matches!(result, Err(StaffError::Gone)), "{result:?}");
+    // Nothing was kept: no account, and no membership.
+    assert_eq!(authenticate(&t.pool, "kamala@example.com", PASSWORD).await.unwrap(), None);
+    let members: i64 = sqlx::query_scalar("select count(*) from membership").fetch_one(&t.superuser).await.unwrap();
+    assert_eq!(members, 1);
+}

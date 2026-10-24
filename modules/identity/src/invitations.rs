@@ -15,7 +15,7 @@ use uuid::Uuid;
 /// How long an invitation's link works.
 pub const INVITATION_TTL: Duration = Duration::days(7);
 
-/// Most grants one invitation may give.
+/// Most grants one invitation may give, or one member may hold.
 const MAX_GRANTS: usize = 50;
 
 /// Cache key for a tenant's members and invitations.
@@ -163,12 +163,12 @@ fn normalize_email(email: &str) -> Result<String, StaffError> {
 }
 
 /// Checks the grants' shape and that their properties are the tenant's; the manager rules are checked separately.
-async fn validate_grants(tx: &mut Tx, grants: &[GrantSpec]) -> Result<(), StaffError> {
+pub(crate) async fn validate_grants(tx: &mut Tx, grants: &[GrantSpec]) -> Result<(), StaffError> {
     if grants.is_empty() || grants.len() > MAX_GRANTS {
-        return Err(StaffError::Invalid(format!("an invitation gives 1 to {MAX_GRANTS} grants")));
+        return Err(StaffError::Invalid(format!("give 1 to {MAX_GRANTS} grants")));
     }
-    if grants.iter().any(|g| g.role == Role::Owner) {
-        return Err(StaffError::Invalid("the owner role cannot be given by invitation".into()));
+    if grants.iter().any(|g| g.role == Role::Owner && g.property_id.is_some()) {
+        return Err(StaffError::Invalid("the owner role is always tenant-wide".into()));
     }
     for (index, grant) in grants.iter().enumerate() {
         if grants[..index].contains(grant) {
@@ -197,6 +197,31 @@ async fn enqueue_mail(tx: &mut Tx, tenant: TenantId, invitation: Uuid, token: St
     Ok(())
 }
 
+/// Audits `action` on `entity` with `data` and notifies the tenant's staff key.
+pub(crate) async fn audit(
+    tx: &mut Tx,
+    tenant: TenantId,
+    actor: UserId,
+    action: &str,
+    entity: (&str, Uuid),
+    data: serde_json::Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into audit_log (id, tenant_id, actor_user_id, action, entity, entity_id, data)
+         values ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(tenant.0)
+    .bind(actor.0)
+    .bind(action)
+    .bind(entity.0)
+    .bind(entity.1)
+    .bind(data)
+    .execute(&mut **tx)
+    .await?;
+    db::notify(tx, &Event { tenant_id: tenant, property_id: None, keys: vec![staff_key(tenant)] }).await
+}
+
 /// Audits `action` on `invitation` (never with its token) and notifies the tenant's staff key.
 async fn record(
     tx: &mut Tx,
@@ -210,19 +235,7 @@ async fn record(
         "display_name": invitation.display_name,
         "grants": invitation.grants,
     });
-    sqlx::query(
-        "insert into audit_log (id, tenant_id, actor_user_id, action, entity, entity_id, data)
-         values ($1, $2, $3, $4, 'invitation', $5, $6)",
-    )
-    .bind(Uuid::now_v7())
-    .bind(tenant.0)
-    .bind(actor.0)
-    .bind(action)
-    .bind(invitation.id)
-    .bind(data)
-    .execute(&mut **tx)
-    .await?;
-    db::notify(tx, &Event { tenant_id: tenant, property_id: None, keys: vec![staff_key(tenant)] }).await
+    audit(tx, tenant, actor, action, ("invitation", invitation.id), data).await
 }
 
 /// Invites `email` to the tenant with `grants`, which `actor_grants` must be allowed to give (the manager rules).
@@ -240,6 +253,9 @@ pub async fn invite(
     let display_name = display_name.trim();
     if !(1..=200).contains(&display_name.chars().count()) {
         return Err(StaffError::Invalid("the display name is 1 to 200 characters".into()));
+    }
+    if grants.iter().any(|g| g.role == Role::Owner) {
+        return Err(StaffError::Invalid("the owner role cannot be given by invitation".into()));
     }
     validate_grants(tx, grants).await?;
     check_rules(actor_grants, grants)?;
@@ -443,9 +459,8 @@ pub async fn accept(pool: &PgPool, token: &str, acceptor: Acceptor) -> Result<(U
             if !password_is_valid(&password) {
                 return Err(StaffError::Invalid("the password is 12 to 128 characters".into()));
             }
-            if account_exists(pool, &live.email).await?.is_some() {
-                return Err(sign_in());
-            }
+            // An existing account is found by `insert_user` after the liveness re-check below, so a token used by a
+            // racing accept is always Gone, never "Sign in as …".
             (UserId(Uuid::now_v7()), Some(hash_in_background(password).await))
         }
         Acceptor::SignedIn(user) => {
@@ -496,14 +511,22 @@ pub async fn accept(pool: &PgPool, token: &str, acceptor: Acceptor) -> Result<(U
         .execute(&mut *tx)
         .await?;
     for grant in &live.grants {
-        sqlx::query("insert into role_grant (id, tenant_id, user_id, property_id, role) values ($1, $2, $3, $4, $5)")
-            .bind(Uuid::now_v7())
-            .bind(tenant.0)
-            .bind(user.0)
-            .bind(grant.property_id)
-            .bind(grant.role.as_str())
-            .execute(&mut *tx)
-            .await?;
+        let inserted = sqlx::query(
+            "insert into role_grant (id, tenant_id, user_id, property_id, role) values ($1, $2, $3, $4, $5)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(tenant.0)
+        .bind(user.0)
+        .bind(grant.property_id)
+        .bind(grant.role.as_str())
+        .execute(&mut *tx)
+        .await;
+        match inserted {
+            Ok(_) => {}
+            // The property was deleted after the invitation was sent, so it can no longer be honoured as issued.
+            Err(err) if crate::violates(&err, "role_grant_property_id_fkey") => return Err(StaffError::Gone),
+            Err(err) => return Err(err.into()),
+        }
     }
     let accepted: bool = sqlx::query_scalar("select app.accept_invitation_row($1, $2)")
         .bind(live.id)
@@ -514,18 +537,7 @@ pub async fn accept(pool: &PgPool, token: &str, acceptor: Acceptor) -> Result<(U
         return Err(StaffError::Gone);
     }
     let data = serde_json::json!({ "email": live.email, "grants": live.grants, "new_account": new_account.is_some() });
-    sqlx::query(
-        "insert into audit_log (id, tenant_id, actor_user_id, action, entity, entity_id, data)
-         values ($1, $2, $3, 'invitation.accepted', 'invitation', $4, $5)",
-    )
-    .bind(Uuid::now_v7())
-    .bind(tenant.0)
-    .bind(user.0)
-    .bind(live.id)
-    .bind(data)
-    .execute(&mut *tx)
-    .await?;
-    db::notify(&mut tx, &Event { tenant_id: tenant, property_id: None, keys: vec![staff_key(tenant)] }).await?;
+    audit(&mut tx, tenant, user, "invitation.accepted", ("invitation", live.id), data).await?;
     tx.commit().await?;
     Ok((user, tenant))
 }
