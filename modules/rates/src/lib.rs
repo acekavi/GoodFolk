@@ -71,8 +71,18 @@ pub fn rates_keys(property: Uuid, plan: Uuid, from: Date, to: Date) -> Vec<Strin
     rooms::months(from, to).into_iter().map(|month| format!("rates:{property}:{plan}:{month}")).collect()
 }
 
-/// The property's business date. `NotFound` if the property is not in this tenant.
+/// The property's business date, for a writer. `NotFound` if the property is not in this tenant.
+/// Read `for share`: writers wait for the night audit's roll (see "Locking" in `docs/specs/phase-7b-night-audit.md`).
 async fn business_date(tx: &mut Tx, property: Uuid) -> Result<Date, RatesError> {
+    sqlx::query_scalar("select business_date from property where id = $1 for share")
+        .bind(property)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(RatesError::NotFound("property"))
+}
+
+/// The property's business date, for a query: unlocked, so a reader never waits for the night audit.
+async fn read_business_date(tx: &mut Tx, property: Uuid) -> Result<Date, RatesError> {
     sqlx::query_scalar("select business_date from property where id = $1")
         .bind(property)
         .fetch_optional(&mut **tx)

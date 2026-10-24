@@ -1,5 +1,6 @@
 #![allow(dead_code)] // each test binary uses a different subset
 
+pub mod jobs;
 pub mod media;
 
 use axum::Router;

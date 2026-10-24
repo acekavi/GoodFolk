@@ -222,7 +222,7 @@ async fn a_cancelled_booking_frees_its_room(_: PgPoolOptions, opts: PgConnectOpt
     let cancelled = hotel.stay(&booker, &plans, 1, 4).await.rooms[0].id;
     hotel.try_assign(cancelled, 2, r101.id).await.unwrap();
     let mut tx = hotel.tx().await;
-    reservations::cancel_room(&mut tx, hotel.tenant, hotel.user, hotel.property, cancelled, 3).await.unwrap();
+    reservations::cancel_room(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, cancelled, 3).await.unwrap();
     tx.commit().await.unwrap();
     let stay = hotel.stay(&booker, &plans, 1, 4).await.rooms[0].id;
 
@@ -469,7 +469,7 @@ async fn free_rooms_leave_out_assigned_blocked_and_inactive_rooms(_: PgPoolOptio
     let cancelled = hotel.stay(&booker, &plans, 1, 4).await.rooms[0].id;
     hotel.try_assign(cancelled, 2, r102.id).await.unwrap();
     let mut tx = hotel.tx().await;
-    reservations::cancel_room(&mut tx, hotel.tenant, hotel.user, hotel.property, cancelled, 3).await.unwrap();
+    reservations::cancel_room(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, cancelled, 3).await.unwrap();
     tx.commit().await.unwrap();
     hotel.block(&hotel.numbered("103").await, 3, 5, BlockKind::OutOfService).await;
     let mut tx = hotel.tx().await;

@@ -9,7 +9,7 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use db::{Scope, Tx};
+use db::Scope;
 use folio::{FolioError, InvoiceSummary, LineRow, Method, NewCharge, PaymentRow, Source};
 use garde::Validate;
 use identity::Permission;
@@ -33,15 +33,6 @@ pub(crate) fn folio_error(err: FolioError) -> ApiError {
         FolioError::Invalid(message) => ApiError::unprocessable(message),
         FolioError::Database(db_err) => db_err.into(),
     }
-}
-
-/// The property's business date; 404 for a property not in the tenant.
-pub(crate) async fn business_date(tx: &mut Tx, property: Uuid) -> Result<Date, ApiError> {
-    property::list_properties(tx, Some(&[property]))
-        .await?
-        .pop()
-        .map(|found| found.business_date)
-        .ok_or_else(|| ApiError::not_found("property not found"))
 }
 
 fn one() -> i32 {
@@ -92,7 +83,7 @@ pub async fn post_charge(
         quantity: body.quantity,
         unit_net: body.unit_net,
         currency: body.currency,
-        business_date: business_date(&mut tx, property).await?,
+        business_date: folio::business_date(&mut tx, property).await.map_err(folio_error)?,
         posting_key: None,
         inclusive: false,
     };
@@ -369,7 +360,7 @@ pub async fn post_charges(
 ) -> Result<Json<PostChargesResponse>, ApiError> {
     ctx.require(Permission::FolioAdjust, Some(property))?;
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
-    let date = business_date(&mut tx, property).await?;
+    let date = folio::business_date(&mut tx, property).await.map_err(folio_error)?;
     tx.commit().await?;
     let report = folio::post_business_date_charges(&state.pool, ctx.tenant, Some(ctx.user), property, date)
         .await

@@ -120,11 +120,12 @@ pub async fn create_reservation(
     if input.rooms.iter().any(|room| room.check_out <= room.check_in) {
         return Err(invalid("check-out is after check-in".into()));
     }
-    let (code, today): (String, Date) = sqlx::query_as("select code, business_date from property where id = $1")
-        .bind(property)
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or(ReservationsError::NotFound("property"))?;
+    let (code, today): (String, Date) =
+        sqlx::query_as("select code, business_date from property where id = $1 for share")
+            .bind(property)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or(ReservationsError::NotFound("property"))?;
     for room in &input.rooms {
         check_window(today, room.check_in, room.check_out)?;
     }
@@ -180,8 +181,8 @@ pub async fn create_reservation(
     let id = Uuid::now_v7();
     let version: i32 = sqlx::query_scalar(
         "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id, notes,
-                                  created_by, account_id)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                                  created_by, account_id, booked_business_date)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          returning version",
     )
     .bind(id)
@@ -193,6 +194,7 @@ pub async fn create_reservation(
     .bind(notes)
     .bind(actor.0)
     .bind(input.account_id)
+    .bind(today)
     .fetch_one(&mut **tx)
     .await?;
     folio::ensure_deposit_folio(tx, tenant, property, id).await?;
@@ -290,7 +292,7 @@ pub async fn create_reservation(
         "rooms": created.iter().map(|room| room.id).collect::<Vec<_>>(),
         "assigned": assigned,
     });
-    audit(tx, tenant, actor, "reservation.created", "reservation", id, data).await?;
+    audit(tx, tenant, Some(actor), "reservation.created", "reservation", id, data).await?;
     let months: BTreeSet<String> =
         input.rooms.iter().flat_map(|room| rooms::month_keys(property, room.check_in, room.check_out)).collect();
     let tape: BTreeSet<String> =
@@ -384,7 +386,7 @@ pub async fn update_reservation(
     if !routing.is_empty() {
         data["routing"] = serde_json::json!(routing);
     }
-    audit(tx, tenant, actor, "reservation.updated", "reservation", id, data).await?;
+    audit(tx, tenant, Some(actor), "reservation.updated", "reservation", id, data).await?;
     notify(tx, tenant, property, vec![reservations_key(property), reservation_key(id)]).await?;
     Ok(UpdatedReservation { id, version: updated_version, account_id, notes: notes_value })
 }

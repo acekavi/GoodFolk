@@ -413,7 +413,7 @@ pub async fn modify_room(
         "unassigned": unassigned,
         "room_id": new_room_id,
     });
-    audit(tx, tenant, actor, "reservation_room.modified", "reservation_room", id, data).await?;
+    audit(tx, tenant, Some(actor), "reservation_room.modified", "reservation_room", id, data).await?;
     let months: BTreeSet<String> = rooms::month_keys(property, check_in, check_out)
         .into_iter()
         .chain(rooms::month_keys(property, new_check_in, new_check_out))
@@ -445,7 +445,7 @@ pub async fn modify_room(
 }
 
 /// Refuses with `Conflict` if `room` is blocked on any night of `[check_in, check_out)`, naming the first block.
-async fn check_not_blocked(
+pub(crate) async fn check_not_blocked(
     tx: &mut Tx,
     room: Uuid,
     number: &str,

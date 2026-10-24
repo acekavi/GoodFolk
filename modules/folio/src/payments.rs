@@ -1,5 +1,5 @@
 //! Payments: desk payments and their refunds, charges to account, a reservation's deposit moving to its first stay,
-//! and the cancellation penalty posted to the deposit folio. Payments are never changed: a refund is a new, negative
+//! and the cancellation and no-show penalties posted to the deposit folio. Payments are never changed: a refund is a new, negative
 //! payment.
 
 use crate::folios::{
@@ -193,7 +193,7 @@ async fn conversion(
     on: Option<Date>,
 ) -> Result<Conversion, FolioError> {
     let (business_date, base_currency, accepted): (Date, String, Vec<String>) = sqlx::query_as(
-        "select business_date, base_currency::text, accepted_currencies::text[] from property where id = $1",
+        "select business_date, base_currency::text, accepted_currencies::text[] from property where id = $1 for share",
     )
     .bind(property)
     .fetch_optional(&mut **tx)
@@ -358,8 +358,8 @@ pub async fn take_payment(
 }
 
 /// Records the payment of the POS bill `pos_bill`, settled at its outlet: `amount` (more than 0) in `currency`, on no
-/// folio, with its base amount at the rate in force on the bill's `business_date` (`Conflict`, "No exchange rate for
-/// <CUR> on <YYYY-MM-DD>", when there is none). The currency must be one the property accepts (`Invalid`), and the
+/// folio, dated `business_date` (the property's, for a late bill too), with its base amount at the rate in force then
+/// (`Conflict`, "No exchange rate for <CUR> on <YYYY-MM-DD>", when there is none). The currency must be one the property accepts (`Invalid`), and the
 /// method can't be [`Method::Account`] (`Invalid`: there is no stay to charge from). Card details never hold a card
 /// number (`Invalid`). The caller audits the bill.
 #[allow(clippy::too_many_arguments)]
@@ -766,27 +766,61 @@ pub async fn undo_deposit_move(
     Ok(())
 }
 
-/// Posts the cancellation penalty `amount` of the stay `reservation_room` in the property, in `currency`, on its
-/// reservation's deposit folio: a `cancellation_fee` line in category `fee`, taxed by the property's rules (a penalty
-/// is a supply) on the business date. `inclusive` when the stay's rate plan prices include tax, so the line totals
-/// exactly the penalty. Nothing for a zero penalty; `Invalid` for a negative one; `NotFound` unless the stay is in the
-/// property. A system posting of the stay's own currency: it need not be one the property accepts today, but a rate
-/// on the business date is needed (`Conflict`), and an open deposit folio (`Conflict`).
+/// A penalty a stay's booked terms charge on the deposit folio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeeKind {
+    /// Cancelling the stay.
+    Cancellation,
+    /// The guest not arriving.
+    NoShow,
+}
+
+impl FeeKind {
+    fn source(self) -> Source {
+        match self {
+            FeeKind::Cancellation => Source::CancellationFee,
+            FeeKind::NoShow => Source::NoShowFee,
+        }
+    }
+
+    /// The line's posting key for the stay `reservation_room`.
+    fn key(self, reservation_room: Uuid) -> String {
+        match self {
+            FeeKind::Cancellation => format!("cancellation:{reservation_room}"),
+            FeeKind::NoShow => format!("no_show:{reservation_room}"),
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            FeeKind::Cancellation => "Cancellation fee",
+            FeeKind::NoShow => "No-show fee",
+        }
+    }
+}
+
+/// Posts the penalty `amount` of the stay `reservation_room` in the property, in `currency`, on its reservation's
+/// deposit folio: a line of `kind`'s source (`cancellation_fee` or `no_show_fee`) in category `fee`, taxed by the
+/// property's rules (a penalty is a supply) on the business date. `inclusive` when the stay's rate plan prices include
+/// tax, so the line totals exactly the penalty. Nothing for a zero penalty; `Invalid` for a negative one; `NotFound`
+/// unless the stay is in the property. A system posting of the stay's own currency: it need not be one the property
+/// accepts today, but a rate on the business date is needed (`Conflict`), and an open deposit folio (`Conflict`).
 ///
-/// Posted once under the key `cancellation:<reservation_room>`, so a replay is a no-op.
+/// Posted once under the key `cancellation:<reservation_room>` or `no_show:<reservation_room>`, so a replay is a no-op.
 #[allow(clippy::too_many_arguments)]
-pub async fn post_cancellation_fee(
+pub async fn post_stay_fee(
     tx: &mut Tx,
     tenant: TenantId,
     user: Option<UserId>,
     property: Uuid,
     reservation_room: Uuid,
+    kind: FeeKind,
     amount: i64,
     currency: &str,
     inclusive: bool,
 ) -> Result<(), FolioError> {
     if amount < 0 {
-        return Err(FolioError::Invalid("a cancellation penalty is not negative".into()));
+        return Err(FolioError::Invalid("a penalty is not negative".into()));
     }
     if amount == 0 {
         return Ok(());
@@ -794,7 +828,8 @@ pub async fn post_cancellation_fee(
     let (reservation, business_date): (Uuid, Date) = sqlx::query_as(
         "select rr.reservation_id, p.business_date
          from reservation_room rr join property p on p.id = rr.property_id
-         where rr.id = $1 and rr.property_id = $2",
+         where rr.id = $1 and rr.property_id = $2
+         for share of p",
     )
     .bind(reservation_room)
     .bind(property)
@@ -802,11 +837,11 @@ pub async fn post_cancellation_fee(
     .await?
     .ok_or(FolioError::NotFound("reservation room"))?;
     let deposit = ensure_deposit_folio(tx, tenant, property, reservation).await?;
-    let key = format!("cancellation:{reservation_room}");
+    let key = kind.key(reservation_room);
     let charge = NewCharge {
-        source: Source::CancellationFee,
+        source: kind.source(),
         category: "fee".into(),
-        description: "Cancellation fee".into(),
+        description: kind.description().into(),
         quantity: 1,
         unit_net: amount,
         currency: currency.to_owned(),
@@ -822,6 +857,37 @@ pub async fn post_cancellation_fee(
     post_locked(tx, tenant, user, &locked, charge, description, Posting { internal: true, ..Posting::default() })
         .await?;
     Ok(())
+}
+
+/// [`post_stay_fee`] of a cancellation penalty: a `cancellation_fee` line under the key `cancellation:<reservation_room>`.
+#[allow(clippy::too_many_arguments)]
+pub async fn post_cancellation_fee(
+    tx: &mut Tx,
+    tenant: TenantId,
+    user: Option<UserId>,
+    property: Uuid,
+    reservation_room: Uuid,
+    amount: i64,
+    currency: &str,
+    inclusive: bool,
+) -> Result<(), FolioError> {
+    post_stay_fee(tx, tenant, user, property, reservation_room, FeeKind::Cancellation, amount, currency, inclusive)
+        .await
+}
+
+/// [`post_stay_fee`] of a no-show penalty: a `no_show_fee` line under the key `no_show:<reservation_room>`.
+#[allow(clippy::too_many_arguments)]
+pub async fn post_no_show_fee(
+    tx: &mut Tx,
+    tenant: TenantId,
+    user: Option<UserId>,
+    property: Uuid,
+    reservation_room: Uuid,
+    amount: i64,
+    currency: &str,
+    inclusive: bool,
+) -> Result<(), FolioError> {
+    post_stay_fee(tx, tenant, user, property, reservation_room, FeeKind::NoShow, amount, currency, inclusive).await
 }
 
 #[cfg(test)]

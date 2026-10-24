@@ -1,0 +1,31 @@
+[package]
+name = "audit"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+db.workspace = true
+domain.workspace = true
+folio.workspace = true
+fx.workspace = true
+property.workspace = true
+reservations.workspace = true
+rooms.workspace = true
+rust_decimal.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx = { workspace = true, features = ["rust_decimal"] }
+thiserror.workspace = true
+time.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+db = { workspace = true, features = ["testing"] }
+rand.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

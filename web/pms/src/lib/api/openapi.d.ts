@@ -355,7 +355,7 @@ export interface paths {
         /**
          * Sets the rate of `currency` for `date` by hand, replacing the imported (or an earlier manual) rate for that day; a
          *     later import does not undo it. The currency must be one the property accepts, other than its base currency (422).
-         *     Audited as `fx.overridden` with the previous rate.
+         *     A day before the business date is closed (409). Audited as `fx.overridden` with the previous rate.
          */
         put: operations["set_fx_rate"];
         post?: never;
@@ -612,6 +612,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/properties/{property}/night-audit/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Starts the close of the property's business date, which runs in the background: `auditRuns` shows its steps.
+         *     Starting it again returns the same run. It is 409, naming how many are left, while an arrival or departure of the
+         *     date is unresolved, and 503 when the jobs service cannot be reached.
+         */
+        post: operations["start_night_audit_close"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/night-audit/runs/{run}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Runs a failed close again from the step it failed at, in the background. A run that is not failed is 409, and one
+         *     of another property 404.
+         */
+        post: operations["retry_night_audit_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/outlets": {
         parameters: {
             query?: never;
@@ -855,6 +896,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/properties/{property}/reservation-rooms/{room}/delay-arrival": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Moves a tentative or confirmed stay due by the business date to arrive a night later, releasing that night. A
+         *     one-night stay is 409: change its dates with modify.
+         */
+        post: operations["delay_reservation_room_arrival"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reservation-rooms/{room}/extend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Extends a checked-in stay due out by one night, at its last night's room and meal amounts. A night that is not
+         *     sellable, or a room taken that night, is 409 with the reason.
+         */
+        post: operations["extend_reservation_room"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/reservation-rooms/{room}/guests": {
         parameters: {
             query?: never;
@@ -900,6 +981,26 @@ export interface paths {
         put?: never;
         /** Changes a booked room's dates, type or occupancy, keeping booked prices unless the caller asks to reprice. */
         post: operations["modify_reservation_room"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reservation-rooms/{room}/no-show": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Marks a confirmed room due by the business date a no-show: its nights from the business date on go back on sale,
+         *     and its booked terms' no-show penalty posts to the reservation's deposit folio.
+         */
+        post: operations["no_show_reservation_room"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1571,6 +1672,25 @@ export interface components {
          * @enum {string}
          */
         ChangeMode: "percent" | "amount";
+        /** @description A stay after its arrival was delayed or its departure extended. */
+        ChangedStay: {
+            /** Format: date */
+            check_in: string;
+            /** Format: date */
+            check_out: string;
+            currency: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            reservation_id: string;
+            /**
+             * Format: int64
+             * @description The stay's room and meal amounts, all nights.
+             */
+            total: number;
+            /** Format: int32 */
+            version: number;
+        };
         /** @description The optional body of a check-in. */
         CheckInRequest: {
             /**
@@ -2172,6 +2292,18 @@ export interface components {
             /** Format: uuid */
             room_type_id?: string | null;
         };
+        /** @description A room marked a no-show and what not arriving cost, in its currency. */
+        NoShowRoom: {
+            currency: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            penalty: number;
+            /** Format: uuid */
+            reservation_id: string;
+            /** Format: int32 */
+            version: number;
+        };
         OutletRow: {
             /** @description An inactive outlet takes no new bills; its past bills stay. */
             active: boolean;
@@ -2452,6 +2584,11 @@ export interface components {
             user_id: string;
         };
         Property: {
+            /**
+             * @description Local time the night audit closes the business date by itself, `HH:MM`: on the date at 12:00 or later, on the
+             *     next morning when earlier.
+             */
+            audit_time: string;
             base_currency: string;
             /**
              * Format: date
@@ -2802,6 +2939,11 @@ export interface components {
              */
             target_id: string;
         };
+        /** @description A close started or retried: it runs in the background, and `auditRuns` shows how it goes. */
+        StartedClose: {
+            /** Format: uuid */
+            run_id: string;
+        };
         StartedUpload: {
             /**
              * Format: date-time
@@ -3010,6 +3152,11 @@ export interface components {
             service_charge?: boolean | null;
         };
         UpdatePropertyRequest: {
+            /**
+             * @description `HH:MM` (24-hour), local time: when the night audit closes the business date if nobody has. At 12:00 or later
+             *     it is on the business date itself, earlier it is the next morning.
+             */
+            audit_time?: string | null;
             /** @description `HH:MM` (24-hour), local time. */
             check_in_time?: string | null;
             /** @description `HH:MM` (24-hour), local time. */
@@ -4092,6 +4239,12 @@ export interface operations {
                 };
                 content?: never;
             };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -4732,6 +4885,97 @@ export interface operations {
                 content?: never;
             };
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    start_night_audit_close: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartedClose"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    retry_night_audit_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                run: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartedClose"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5452,6 +5696,118 @@ export interface operations {
             };
         };
     };
+    delay_reservation_room_arrival: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    /** @description the reservation room's version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChangedStay"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    extend_reservation_room: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    /** @description the reservation room's version, e.g. "4" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChangedStay"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     add_reservation_room_guest: {
         parameters: {
             query?: never;
@@ -5622,6 +5978,62 @@ export interface operations {
                 content?: never;
             };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    no_show_reservation_room: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                room: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    /** @description the reservation room's version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoShowRoom"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
                 headers: {
                     [name: string]: unknown;
                 };

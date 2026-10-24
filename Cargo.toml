@@ -8,6 +8,7 @@ rust-version = "1.99"
 publish = false
 
 [workspace.dependencies]
+audit = { path = "modules/audit" }
 db = { path = "crates/db" }
 domain = { path = "crates/domain" }
 events = { path = "crates/events" }
@@ -16,6 +17,7 @@ fx = { path = "modules/fx" }
 housekeeping = { path = "modules/housekeeping" }
 identity = { path = "modules/identity" }
 imaging = { path = "crates/imaging" }
+jobs-svc = { path = "crates/jobs-svc" }
 media = { path = "modules/media" }
 media-svc = { path = "crates/media-svc" }
 media-types = { path = "crates/media-types" }
@@ -52,6 +54,7 @@ moxcms = "0.8"
 proptest = "1"
 prost = "0.14"
 protox = "0.10"
+rand = { version = "0.9", default-features = false, features = ["std", "std_rng"] }
 rayon = "1"
 rust_decimal = { version = "1", default-features = false, features = ["std"] }
 # rustls without a bundled crypto provider: the tree already has ring (through sqlx), and rustls picks the only one built.

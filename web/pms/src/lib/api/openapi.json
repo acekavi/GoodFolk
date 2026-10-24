@@ -1041,7 +1041,7 @@
         "tags": [
           "crate::routes::fx"
         ],
-        "summary": "Sets the rate of `currency` for `date` by hand, replacing the imported (or an earlier manual) rate for that day; a\nlater import does not undo it. The currency must be one the property accepts, other than its base currency (422).\nAudited as `fx.overridden` with the previous rate.",
+        "summary": "Sets the rate of `currency` for `date` by hand, replacing the imported (or an earlier manual) rate for that day; a\nlater import does not undo it. The currency must be one the property accepts, other than its base currency (422).\nA day before the business date is closed (409). Audited as `fx.overridden` with the previous rate.",
         "operationId": "set_fx_rate",
         "parameters": [
           {
@@ -1086,6 +1086,7 @@
           "204": {},
           "403": {},
           "404": {},
+          "409": {},
           "422": {}
         }
       }
@@ -1769,6 +1770,85 @@
           "409": {},
           "422": {},
           "502": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/night-audit/close": {
+      "post": {
+        "tags": [
+          "crate::routes::night_audit"
+        ],
+        "summary": "Starts the close of the property's business date, which runs in the background: `auditRuns` shows its steps.\nStarting it again returns the same run. It is 409, naming how many are left, while an arrival or departure of the\ndate is unresolved, and 503 when the jobs service cannot be reached.",
+        "operationId": "start_night_audit_close",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartedClose"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "503": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/night-audit/runs/{run}/retry": {
+      "post": {
+        "tags": [
+          "crate::routes::night_audit"
+        ],
+        "summary": "Runs a failed close again from the step it failed at, in the background. A run that is not failed is 409, and one\nof another property 404.",
+        "operationId": "retry_night_audit_run",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "run",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartedClose"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "503": {}
         }
       }
     },
@@ -2582,6 +2662,128 @@
         }
       }
     },
+    "/api/v1/properties/{property}/reservation-rooms/{room}/delay-arrival": {
+      "post": {
+        "tags": [
+          "crate::routes::reservations"
+        ],
+        "summary": "Moves a tentative or confirmed stay due by the business date to arrive a night later, releasing that night. A\none-night stay is 409: change its dates with modify.",
+        "operationId": "delay_reservation_room_arrival",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the reservation room's version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangedStay"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/reservation-rooms/{room}/extend": {
+      "post": {
+        "tags": [
+          "crate::routes::reservations"
+        ],
+        "summary": "Extends a checked-in stay due out by one night, at its last night's room and meal amounts. A night that is not\nsellable, or a room taken that night, is 409 with the reason.",
+        "operationId": "extend_reservation_room",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the reservation room's version, e.g. \"4\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangedStay"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "428": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/reservation-rooms/{room}/guests": {
       "post": {
         "tags": [
@@ -2791,6 +2993,67 @@
           "409": {},
           "412": {},
           "422": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/reservation-rooms/{room}/no-show": {
+      "post": {
+        "tags": [
+          "crate::routes::reservations"
+        ],
+        "summary": "Marks a confirmed room due by the business date a no-show: its nights from the business date on go back on sale,\nand its booked terms' no-show penalty posts to the reservation's deposit folio.",
+        "operationId": "no_show_reservation_room",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the reservation room's version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoShowRoom"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
           "428": {}
         }
       }
@@ -4932,6 +5195,49 @@
           "amount"
         ]
       },
+      "ChangedStay": {
+        "type": "object",
+        "description": "A stay after its arrival was delayed or its departure extended.",
+        "required": [
+          "id",
+          "reservation_id",
+          "version",
+          "check_in",
+          "check_out",
+          "total",
+          "currency"
+        ],
+        "properties": {
+          "check_in": {
+            "type": "string",
+            "format": "date"
+          },
+          "check_out": {
+            "type": "string",
+            "format": "date"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reservation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The stay's room and meal amounts, all nights."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
       "CheckInRequest": {
         "type": "object",
         "description": "The optional body of a check-in.",
@@ -6392,6 +6698,38 @@
           }
         }
       },
+      "NoShowRoom": {
+        "type": "object",
+        "description": "A room marked a no-show and what not arriving cost, in its currency.",
+        "required": [
+          "id",
+          "reservation_id",
+          "version",
+          "penalty",
+          "currency"
+        ],
+        "properties": {
+          "currency": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "penalty": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "reservation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
       "OutletRow": {
         "type": "object",
         "required": [
@@ -7070,10 +7408,15 @@
           "base_currency",
           "check_in_time",
           "check_out_time",
+          "audit_time",
           "business_date",
           "version"
         ],
         "properties": {
+          "audit_time": {
+            "type": "string",
+            "description": "Local time the night audit closes the business date by itself, `HH:MM`: on the date at 12:00 or later, on the\nnext morning when earlier."
+          },
           "base_currency": {
             "type": "string"
           },
@@ -7976,6 +8319,19 @@
           }
         }
       },
+      "StartedClose": {
+        "type": "object",
+        "description": "A close started or retried: it runs in the background, and `auditRuns` shows how it goes.",
+        "required": [
+          "run_id"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
       "StartedUpload": {
         "type": "object",
         "required": [
@@ -8631,6 +8987,13 @@
       "UpdatePropertyRequest": {
         "type": "object",
         "properties": {
+          "audit_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`HH:MM` (24-hour), local time: when the night audit closes the business date if nobody has. At 12:00 or later\nit is on the business date itself, earlier it is the next morning."
+          },
           "check_in_time": {
             "type": [
               "string",

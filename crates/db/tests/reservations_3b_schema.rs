@@ -39,8 +39,9 @@ async fn hotel(pool: &PgPool, code: &str) -> Hotel {
         "insert into rate_plan (id, tenant_id, property_id, code, name, kind, segment, currency)
          values ($5, $1, $2, 'BAR', 'Best available', 'standard', 'IBE', 'USD')",
         "insert into guest (id, tenant_id, first_name, last_name, residency) values ($6, $1, 'Ada', 'Silva', 'resident')",
-        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id)
-         values ($7, $1, $2, $8 || '-000001', 'front_desk', $6)",
+        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id,
+                                  booked_business_date)
+         values ($7, $1, $2, $8 || '-000001', 'front_desk', $6, current_date)",
         "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, room_id, stay, adults,
                                        children, rate_plan_id, meal_plan, status, primary_guest_id, currency)
          values ($9, $1, $2, $7, $3, $4, daterange(current_date, current_date + 2), 2, 0, $5, 'RO', 'confirmed', $6, 'USD')",
@@ -381,7 +382,8 @@ async fn set_checkin(
          set status = $2,
              checked_in_at = case when $3 then now() end,
              checked_in_business_date = case when $4 then current_date end,
-             checked_out_at = case when $5 then now() end
+             checked_out_at = case when $5 then now() end,
+             cancelled_business_date = case when $2 in ('cancelled', 'no_show') then current_date end
          where id = $1",
     )
     .bind(hotel.reservation_room)

@@ -61,6 +61,7 @@ impl Role {
                     | InvoiceIssue
                     | FxOverride
                     | PosPost
+                    | NightAudit
             ),
             Role::FrontDesk => matches!(
                 permission,
@@ -78,6 +79,7 @@ impl Role {
                     | FolioView
                     | FolioPost
                     | InvoiceIssue
+                    | NightAudit
             ),
             Role::Housekeeping => matches!(
                 permission,
@@ -169,6 +171,8 @@ pub enum Permission {
     FxOverride,
     /// POS bills.
     PosPost,
+    /// Allows: the night-audit review, starting and retrying the close, and the audit history.
+    NightAudit,
 }
 
 /// A role held tenant-wide (`property_id: None`) or for one property.

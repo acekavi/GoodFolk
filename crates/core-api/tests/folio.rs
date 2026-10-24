@@ -421,7 +421,7 @@ async fn a_replayed_pos_bill_posts_once(_: PgPoolOptions, opts: PgConnectOptions
     assert_eq!(codes, ["SC", "SSCL", "TDL"], "a POS line carries the service charge");
 }
 
-/// A manual rate is set by an owner or manager only, replaces the day's rate and is audited.
+/// A manual rate is set by an owner or manager only, for an open day, replaces the day's rate and is audited.
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn a_rate_override_is_audited(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
@@ -437,6 +437,9 @@ async fn a_rate_override_is_audited(_: PgPoolOptions, opts: PgConnectOptions) {
     let base = format!("{}/fx-rates/{}/LKR", hotel.path, hotel.day(0));
     let base = app.send(Method::PUT, &base, Some(&manager), Some(json!({"rate": "2"}))).await;
     assert_eq!(base.status, StatusCode::UNPROCESSABLE_ENTITY, "the base currency's rate is always 1");
+    let closed = format!("{}/fx-rates/{}/USD", hotel.path, hotel.day(-1));
+    let closed = app.send(Method::PUT, &closed, Some(&manager), Some(json!({"rate": "301.5"}))).await;
+    assert_eq!(closed.status, StatusCode::CONFLICT, "a day before the business date is closed");
 
     let set = app.send(Method::PUT, &path, Some(&manager), Some(json!({"rate": "301.5"}))).await;
     assert_eq!(set.status, StatusCode::NO_CONTENT, "{:?}", set.body);
@@ -603,46 +606,6 @@ async fn a_reservations_folios_are_read_at_once_and_charges_are_live(_: PgPoolOp
     let refused = graphql(&app, &housekeeper, FOLIOS, json!({"p": hotel.id, "r": reservation})).await;
     assert!(refused["data"].is_null() || refused["data"]["folios"].is_null(), "{refused:?}");
     assert!(!refused["errors"].as_array().unwrap().is_empty());
-}
-
-/// A rate source that quotes USD at 300 for any day, and counts its calls.
-struct FixedSource(std::sync::atomic::AtomicU32);
-
-#[async_trait::async_trait]
-impl fx::RateSource for FixedSource {
-    async fn tt_selling(
-        &self,
-        currencies: &[String],
-        on: Date,
-    ) -> Result<Vec<(String, Date, rust_decimal::Decimal)>, fx::FxError> {
-        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(currencies
-            .iter()
-            .filter(|c| *c == "USD")
-            .map(|c| (c.clone(), on, rust_decimal::Decimal::from(300)))
-            .collect())
-    }
-}
-
-/// The import runs under its advisory lock: while another session holds it, an instance skips the import.
-#[sqlx::test(migrator = "db::MIGRATOR")]
-async fn the_exchange_rate_import_runs_under_its_advisory_lock(_: PgPoolOptions, opts: PgConnectOptions) {
-    use sqlx::Connection;
-    let app = TestApp::new(opts.clone()).await;
-    let source = FixedSource(Default::default());
-    let today = time::macros::date!(2026 - 10 - 17);
-    let mut holder = sqlx::PgConnection::connect_with(&opts).await.unwrap();
-    let locked: bool =
-        sqlx::query_scalar("select pg_try_advisory_lock(hashtext('fx_import'))").fetch_one(&mut holder).await.unwrap();
-    assert!(locked);
-
-    let skipped = core_api::tasks::fx_import_once(&app.pool, &opts, &source, today).await.unwrap();
-    assert!(skipped.is_none(), "another session holds the lock");
-    assert_eq!(source.0.load(std::sync::atomic::Ordering::SeqCst), 0);
-
-    holder.close().await.unwrap();
-    let report = core_api::tasks::fx_import_once(&app.pool, &opts, &source, today).await.unwrap();
-    assert!(report.is_some(), "the lock is free again");
 }
 
 /// Staff never post a credit: a negative quantity or unit price, as a charge or a POS item, is 422.

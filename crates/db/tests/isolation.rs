@@ -492,6 +492,7 @@ enum Seed {
     Housekeeping,
     Media,
     Folio,
+    NightAudit,
 }
 
 impl Seed {
@@ -503,6 +504,7 @@ impl Seed {
             Seed::Housekeeping => seed_housekeeping(pool, tenant).await,
             Seed::Media => seed_media(pool, tenant).await,
             Seed::Folio => seed_folio(pool, tenant).await,
+            Seed::NightAudit => seed_night_audit(pool, tenant).await,
         }
     }
 }
@@ -605,8 +607,9 @@ async fn seed_reservations(pool: &PgPool, tenant: TenantId) {
     let statements = [
         "insert into guest (id, tenant_id, first_name, last_name, residency) values ($2, $1, 'Ada', 'Silva', 'resident')",
         "insert into property_counter (tenant_id, property_id, name, value) select $1, id, 'confirmation', 1 from property",
-        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id)
-         select $3, $1, id, 'MAIN-000001', 'front_desk', $2 from property",
+        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id,
+                                  booked_business_date)
+         select $3, $1, id, 'MAIN-000001', 'front_desk', $2, current_date from property",
         "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, room_id, stay, adults,
                                        children, rate_plan_id, meal_plan, status, primary_guest_id, currency)
          select gen_random_uuid(), $1, r.property_id, $3, r.room_type_id, r.id, daterange(current_date, current_date + 2),
@@ -651,8 +654,10 @@ async fn reservations_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOp
     assert_table_isolated(
         opts,
         "reservation",
-        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id)
-         select gen_random_uuid(), $1, property_id, 'MAIN-000002', 'phone', booker_guest_id from reservation",
+        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id,
+                                  booked_business_date)
+         select gen_random_uuid(), $1, property_id, 'MAIN-000002', 'phone', booker_guest_id, booked_business_date
+         from reservation",
         Seed::Reservations,
     )
     .await;
@@ -1114,4 +1119,96 @@ async fn a_lowercase_currency_is_refused(_: PgPoolOptions, opts: PgConnectOption
     )
     .await;
     assert!(err.contains("fx_rate_currency_check"), "unexpected error: {err}");
+}
+
+/// For `tenant`: one row in every Phase 7b tenant table, for its property's first business date: a completed audit run
+/// with one step, that date's statistics with one breakdown row, and an ops alert.
+async fn seed_night_audit(pool: &PgPool, tenant: TenantId) {
+    let run = Uuid::now_v7();
+    let mut tx = begin(pool, Scope::tenant(tenant)).await.unwrap();
+    let statements = [
+        "insert into audit_run (id, tenant_id, property_id, business_date, mode, status, finished_at)
+         select $2, $1, id, business_date, 'manual', 'completed', now() from property",
+        "insert into audit_run_step (tenant_id, run_id, step) values ($1, $2, 'resolve')",
+        "insert into daily_stats (tenant_id, property_id, business_date, rooms_total, rooms_out_of_order,
+                                  rooms_available, rooms_sold, complimentary_rooms, occupancy_bp, adults, children,
+                                  arrivals, departures, no_shows, cancellations, walk_ins, room_revenue,
+                                  meal_plan_revenue, pos_revenue, fee_revenue, other_revenue, adr, revpar, taxes,
+                                  payments)
+         select $1, id, business_date, 10, 0, 10, 5, 0, 5000, 10, 0, 2, 1, 0, 0, 0, 100000, 0, 0, 0, 0, 20000, 10000,
+                '{}', '{}'
+         from property",
+        "insert into daily_stats_breakdown (tenant_id, property_id, business_date, dimension, key, room_nights,
+                                            room_revenue, revenue)
+         select $1, property_id, business_date, 'segment', 'IBE', 5, 100000, 100000 from daily_stats",
+        "insert into ops_alert (tenant_id, property_id, kind, message) select $1, id, 'audit', 'Close failed' from property",
+    ];
+    for statement in statements {
+        sqlx::query(statement).bind(tenant.0).bind(run).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn audit_runs_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "audit_run",
+        "insert into audit_run (id, tenant_id, property_id, business_date, mode, status, finished_at)
+         select gen_random_uuid(), $1, property_id, business_date + 1, 'manual', 'completed', now() from audit_run",
+        Seed::NightAudit,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn audit_run_steps_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "audit_run_step",
+        "insert into audit_run_step (tenant_id, run_id, step) select $1, run_id, 'post_charges' from audit_run_step",
+        Seed::NightAudit,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn daily_stats_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "daily_stats",
+        "insert into daily_stats (tenant_id, property_id, business_date, rooms_total, rooms_out_of_order,
+                                  rooms_available, rooms_sold, complimentary_rooms, occupancy_bp, adults, children,
+                                  arrivals, departures, no_shows, cancellations, walk_ins, room_revenue,
+                                  meal_plan_revenue, pos_revenue, fee_revenue, other_revenue, adr, revpar, taxes,
+                                  payments)
+         select $1, property_id, business_date + 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '{}', '{}'
+         from daily_stats",
+        Seed::NightAudit,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn daily_stats_breakdowns_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "daily_stats_breakdown",
+        "insert into daily_stats_breakdown (tenant_id, property_id, business_date, dimension, key, room_nights,
+                                            room_revenue, revenue)
+         select $1, property_id, business_date, 'source', 'Direct', 1, 1, 1 from daily_stats_breakdown",
+        Seed::NightAudit,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn ops_alerts_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "ops_alert",
+        "insert into ops_alert (tenant_id, property_id, kind, message) select $1, property_id, 'drift', 'x' from ops_alert",
+        Seed::NightAudit,
+    )
+    .await;
 }

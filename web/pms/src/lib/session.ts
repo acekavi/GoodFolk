@@ -24,6 +24,8 @@ type Role = Profile['grants'][number]['role'];
 
 /** Roles allowed each action, mirroring `identity::Permission` on the server. */
 const ACTIONS = {
+	/** A property's settings, such as its check-in, check-out and audit times, and its ops alerts; mirrors `PropertiesManage`. */
+	propertiesManage: ['owner', 'manager'],
 	manageRooms: ['owner', 'manager'],
 	blockRooms: ['owner', 'manager', 'front_desk'],
 	manageRates: ['owner', 'manager'],
@@ -54,7 +56,9 @@ const ACTIONS = {
 	/** Manual exchange rates; mirrors `FxOverride`. */
 	fxOverride: ['owner', 'manager'],
 	/** POS bills; mirrors `PosPost`. */
-	posPost: ['owner', 'manager']
+	posPost: ['owner', 'manager'],
+	/** The night-audit review, starting and retrying the close, and the audit history; mirrors `NightAudit`. */
+	nightAudit: ['owner', 'manager', 'front_desk']
 } satisfies Record<string, Role[]>;
 
 /** UI hint only; the API enforces permissions. A grant counts tenant-wide or for `propertyId`. */

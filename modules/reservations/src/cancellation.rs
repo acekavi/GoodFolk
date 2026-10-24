@@ -1,7 +1,10 @@
 //! Cancelling a reservation room: its unused nights go back on sale and it records what cancelling cost under
 //! the terms the booking kept, whatever its plan's policy says now.
 
-use crate::{ReservationsError, audit, business_date, notify, reservation_key, reservations_key};
+use crate::{
+    ReservationsError, audit, bump_reservation, business_date, decode_error, mode, notify, reservation_key,
+    reservations_key,
+};
 use db::{TenantId, Tx, UserId};
 use domain::{Action, RoomStatus};
 use rates::{CancellationRule, Penalty, PenaltyKind};
@@ -34,10 +37,8 @@ pub struct CancelledRoom {
 ///
 /// `nights` are the stay's nights in date order, each with its room and meal amounts. The days left are
 /// `check_in - today`, 0 once the guest was due. The rule with the fewest `days_before_arrival` that is still
-/// at or above the days left applies: `nights` costs the room amounts of the first that many nights (all of
-/// them if the stay is shorter), `percent` costs that many basis points of the stay's total (room and meals),
-/// rounded half up, and `amount` costs the amount. The penalty never exceeds the stay's total. Without terms,
-/// or when no rule reaches the days left, cancelling is free.
+/// at or above the days left applies, as [`penalty_amount`] prices it. Without terms, or when no rule reaches the
+/// days left, cancelling is free.
 pub fn cancellation_penalty(
     terms: Option<&CancellationTerms>,
     nights: &[(Date, i64, i64)],
@@ -51,21 +52,33 @@ pub fn cancellation_penalty(
         .iter()
         .filter(|rule| i64::from(rule.days_before_arrival) >= days_left)
         .min_by_key(|rule| rule.days_before_arrival);
-    let Some(rule) = rule else { return 0 };
+    rule.map_or(0, |rule| penalty_amount(rule.penalty, nights))
+}
+
+/// What not arriving for a stay of `nights` costs under `terms`: their `no_show` penalty, as [`penalty_amount`]
+/// prices it. Without terms, nothing.
+pub fn no_show_penalty(terms: Option<&CancellationTerms>, nights: &[(Date, i64, i64)]) -> i64 {
+    terms.map_or(0, |terms| penalty_amount(terms.no_show, nights))
+}
+
+/// What `penalty` costs against `nights` (room, meal): `nights` = the first N nights' room amounts, `percent` = basis
+/// points of the stay's total, half up, `amount` = the amount; never above the stay's total. Shared by cancelling
+/// and no-show.
+pub(crate) fn penalty_amount(penalty: Penalty, nights: &[(Date, i64, i64)]) -> i64 {
     let total: i64 = nights.iter().map(|&(_, room, meal)| room + meal).sum();
-    let penalty = match rule.penalty.kind {
+    let amount = match penalty.kind {
         PenaltyKind::Nights => {
-            let count = usize::try_from(rule.penalty.value).unwrap_or(0);
+            let count = usize::try_from(penalty.value).unwrap_or(0);
             nights.iter().take(count).map(|&(_, room, _)| room).sum()
         }
         PenaltyKind::Percent => {
-            let exact = i128::from(total) * i128::from(rule.penalty.value);
+            let exact = i128::from(total) * i128::from(penalty.value);
             let rounded = ((exact + 5_000) / 10_000).min(i128::from(total));
             i64::try_from(rounded).expect("at most the stay's total")
         }
-        PenaltyKind::Amount => rule.penalty.value,
+        PenaltyKind::Amount => penalty.value,
     };
-    penalty.min(total)
+    amount.min(total)
 }
 
 /// Cancels the room `id` of the property, which must be at `expected_version` (`VersionMismatch`) and
@@ -79,12 +92,74 @@ pub fn cancellation_penalty(
 pub async fn cancel_room(
     tx: &mut Tx,
     tenant: TenantId,
-    actor: UserId,
+    actor: Option<UserId>,
     property: Uuid,
     id: Uuid,
     expected_version: i32,
 ) -> Result<CancelledRoom, ReservationsError> {
-    let row: Option<StayRow> = sqlx::query_as(
+    let (stay, current) = lock_closing_stay(tx, property, id, expected_version).await?;
+    let status =
+        domain::transition(current, Action::Cancel).map_err(|invalid| ReservationsError::Conflict(invalid.message))?;
+    let today = business_date(tx, property).await?;
+    let from = release_from(tx, property, &stay, today).await?;
+    let nights = stay_nights(tx, id).await?;
+    let terms = stay.cancellation_terms.as_ref().map(|terms| &terms.0);
+    let penalty = cancellation_penalty(terms, &nights, stay.check_in, today);
+    let version: i32 = sqlx::query_scalar(
+        "update reservation_room
+         set status = $2, cancelled_at = now(), cancelled_by = $3, cancellation_penalty = $4,
+             cancelled_business_date = $5, version = version + 1
+         where id = $1
+         returning version",
+    )
+    .bind(id)
+    .bind(status.as_str())
+    .bind(actor.map(|actor| actor.0))
+    .bind(penalty)
+    .bind(today)
+    .fetch_one(&mut **tx)
+    .await?;
+    // After this row and its counters, before the reservation: the deposit folio sits between them in the lock order.
+    folio::post_cancellation_fee(tx, tenant, actor, property, id, penalty, &stay.currency, stay.prices_include_tax)
+        .await?;
+    bump_reservation(tx, stay.reservation_id).await?;
+
+    let data = serde_json::json!({
+        "reservation_id": stay.reservation_id,
+        "penalty": penalty,
+        "currency": stay.currency,
+        "mode": mode(actor),
+    });
+    audit(tx, tenant, actor, "reservation_room.cancelled", "reservation_room", id, data).await?;
+    notify(tx, tenant, property, closed_keys(property, &stay, from)).await?;
+
+    Ok(CancelledRoom { id, reservation_id: stay.reservation_id, status, version, penalty, currency: stay.currency })
+}
+
+/// A stay being cancelled or marked a no-show: the parts of its `reservation_room` that closing it reads.
+#[derive(sqlx::FromRow)]
+pub(crate) struct ClosingStay {
+    pub(crate) reservation_id: Uuid,
+    pub(crate) room_type_id: Uuid,
+    pub(crate) status: String,
+    pub(crate) check_in: Date,
+    pub(crate) check_out: Date,
+    pub(crate) currency: String,
+    pub(crate) cancellation_terms: Option<Json<CancellationTerms>>,
+    pub(crate) version: i32,
+    /// The rate plan's: the penalty, priced from it, includes tax.
+    pub(crate) prices_include_tax: bool,
+}
+
+/// Locks the stay `id` of the property (`NotFound`) and checks it is at `expected_version` (`VersionMismatch`), with
+/// its status. First in the lock order of cancelling and of a no-show.
+pub(crate) async fn lock_closing_stay(
+    tx: &mut Tx,
+    property: Uuid,
+    id: Uuid,
+    expected_version: i32,
+) -> Result<(ClosingStay, RoomStatus), ReservationsError> {
+    let row: Option<ClosingStay> = sqlx::query_as(
         "select rr.reservation_id, rr.room_type_id, rr.status, lower(rr.stay) as check_in,
                 upper(rr.stay) as check_out, rr.currency, rr.cancellation_terms, rr.version, rp.prices_include_tax
          from reservation_room rr join rate_plan rp on rp.id = rr.rate_plan_id
@@ -99,16 +174,18 @@ pub async fn cancel_room(
     if stay.version != expected_version {
         return Err(ReservationsError::VersionMismatch("reservation room"));
     }
-    let current = RoomStatus::parse(&stay.status).ok_or_else(|| sqlx::Error::ColumnDecode {
-        index: "status".into(),
-        source: format!("unknown {:?}", stay.status).into(),
-    })?;
-    let status =
-        domain::transition(current, Action::Cancel).map_err(|invalid| ReservationsError::Conflict(invalid.message))?;
-    let today = business_date(tx, property).await?;
+    let status = RoomStatus::parse(&stay.status).ok_or_else(|| decode_error("status", &stay.status))?;
+    Ok((stay, status))
+}
 
-    // Counters before the business date are history, outside the counter window: only the nights from the
-    // business date on go back on sale.
+/// Puts the closed `stay`'s nights from the business date `today` on back on sale, and returns the first of them.
+/// Counters before the business date are history, outside the counter window.
+pub(crate) async fn release_from(
+    tx: &mut Tx,
+    property: Uuid,
+    stay: &ClosingStay,
+    today: Date,
+) -> Result<Date, ReservationsError> {
     let from = stay.check_in.max(today);
     if from < stay.check_out {
         rooms::lock_days(tx, property, &[stay.room_type_id], from, stay.check_out).await?;
@@ -123,80 +200,32 @@ pub async fn cancel_room(
         .execute(&mut **tx)
         .await?;
     }
+    Ok(from)
+}
 
-    let nights: Vec<(Date, i64, i64)> = sqlx::query_as(
+/// The stay `id`'s nights as `(date, room_amount, meal_amount)`, in date order: what its penalties are priced from.
+pub(crate) async fn stay_nights(tx: &mut Tx, id: Uuid) -> Result<Vec<(Date, i64, i64)>, sqlx::Error> {
+    sqlx::query_as(
         "select date, room_amount, meal_amount from reservation_night where reservation_room_id = $1 order by date",
     )
     .bind(id)
     .fetch_all(&mut **tx)
-    .await?;
-    let terms = stay.cancellation_terms.as_ref().map(|terms| &terms.0);
-    let penalty = cancellation_penalty(terms, &nights, stay.check_in, today);
-    let version: i32 = sqlx::query_scalar(
-        "update reservation_room
-         set status = $2, cancelled_at = now(), cancelled_by = $3, cancellation_penalty = $4, version = version + 1
-         where id = $1
-         returning version",
-    )
-    .bind(id)
-    .bind(status.as_str())
-    .bind(actor.0)
-    .bind(penalty)
-    .fetch_one(&mut **tx)
-    .await?;
-    // After this row and its counters, before the reservation: the deposit folio sits between them in the lock order.
-    folio::post_cancellation_fee(
-        tx,
-        tenant,
-        Some(actor),
-        property,
-        id,
-        penalty,
-        &stay.currency,
-        stay.prices_include_tax,
-    )
-    .await?;
-    sqlx::query("update reservation set version = version + 1 where id = $1")
-        .bind(stay.reservation_id)
-        .execute(&mut **tx)
-        .await?;
+    .await
+}
 
-    let data = serde_json::json!({
-        "reservation_id": stay.reservation_id,
-        "penalty": penalty,
-        "currency": stay.currency,
-    });
-    audit(tx, tenant, actor, "reservation_room.cancelled", "reservation_room", id, data).await?;
-    // The tape key covers the stay's whole range, not just the nights `from` released: the chart shows a
-    // cancelled stay's past nights too.
-    let keys = [reservations_key(property), reservation_key(stay.reservation_id), housekeeping::hk_key(property)]
+/// The cache keys a closed `stay` changes, its nights released from `from`. The tape keys cover the stay's whole
+/// range, not just the nights released: the chart shows a closed stay's past nights too.
+pub(crate) fn closed_keys(property: Uuid, stay: &ClosingStay, from: Date) -> Vec<String> {
+    [reservations_key(property), reservation_key(stay.reservation_id), housekeeping::hk_key(property)]
         .into_iter()
         .chain(rooms::month_keys(property, from, stay.check_out))
         .chain(rooms::tape_keys(property, stay.check_in, stay.check_out))
-        .collect();
-    notify(tx, tenant, property, keys).await?;
-
-    Ok(CancelledRoom { id, reservation_id: stay.reservation_id, status, version, penalty, currency: stay.currency })
-}
-
-/// The parts of a `reservation_room` that cancelling reads.
-#[derive(sqlx::FromRow)]
-struct StayRow {
-    reservation_id: Uuid,
-    room_type_id: Uuid,
-    status: String,
-    check_in: Date,
-    check_out: Date,
-    currency: String,
-    cancellation_terms: Option<Json<CancellationTerms>>,
-    version: i32,
-    /// The rate plan's: the penalty, priced from it, includes tax.
-    prices_include_tax: bool,
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CancellationTerms, cancellation_penalty};
+    use super::{CancellationTerms, cancellation_penalty, no_show_penalty};
     use rates::{CancellationRule, Penalty, PenaltyKind};
     use time::macros::date;
     use time::{Date, Duration};
@@ -284,5 +313,16 @@ mod tests {
         let only_no_show = terms(vec![]);
         assert_eq!(penalty(Some(&only_no_show), 0), 0);
         assert_eq!(penalty(Some(&only_no_show), -1), 0);
+    }
+
+    #[test]
+    fn a_no_show_costs_the_terms_no_show_penalty_priced_as_a_rule_would_be() {
+        assert_eq!(no_show_penalty(None, &nights()), 0);
+        assert_eq!(no_show_penalty(Some(&standard()), &nights()), 39_000, "the whole stay, meals too");
+        let one_night = CancellationTerms { no_show: Penalty { kind: PenaltyKind::Nights, value: 1 }, ..standard() };
+        assert_eq!(no_show_penalty(Some(&one_night), &nights()), 10_000);
+        let too_much =
+            CancellationTerms { no_show: Penalty { kind: PenaltyKind::Amount, value: 50_000 }, ..standard() };
+        assert_eq!(no_show_penalty(Some(&too_much), &nights()), 39_000);
     }
 }

@@ -7,6 +7,7 @@ mod health;
 pub(crate) mod housekeeping;
 mod internal;
 pub(crate) mod media;
+pub(crate) mod night_audit;
 pub(crate) mod pos;
 pub(crate) mod properties;
 pub(crate) mod rates;
@@ -44,6 +45,7 @@ pub use media::{
     CaptionRequest, CompleteUploadRequest, MediaAsset, ReorderMediaRequest, SignedLink, StartUploadRequest,
     StartedUpload, UploadPart, UploadedPart,
 };
+pub use night_audit::StartedClose;
 pub use pos::{
     CreateOutletRequest, PosBillRequest, PosItemRequest, PosTargetRequest, SettledRequest, UpdateOutletRequest,
 };
@@ -135,6 +137,9 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/check-in"), post(reservations::check_in))
         .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/undo-check-in"), post(reservations::undo_check_in))
         .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/check-out"), post(reservations::check_out))
+        .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/no-show"), post(reservations::no_show))
+        .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/delay-arrival"), post(reservations::delay_arrival))
+        .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/extend"), post(reservations::extend))
         .route(&format!("{PROPERTY}/reservation-rooms/{{room}}/guests"), post(reservations::add_occupant))
         .route(
             &format!("{PROPERTY}/reservation-rooms/{{room}}/guests/{{guest}}"),
@@ -155,6 +160,8 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/tax-rules/{{rule}}"), patch(taxes::update_rule).delete(taxes::end_rule))
         .route(&format!("{PROPERTY}/tax-settings"), patch(taxes::update_settings))
         .route(&format!("{PROPERTY}/fx-rates/{{date}}/{{currency}}"), put(fx::set_rate))
+        .route(&format!("{PROPERTY}/night-audit/close"), post(night_audit::close))
+        .route(&format!("{PROPERTY}/night-audit/runs/{{run}}/retry"), post(night_audit::retry))
         .route("/graphql", post(graphql::handler))
         .merge(commands)
         .layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)));

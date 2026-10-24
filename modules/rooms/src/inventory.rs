@@ -47,9 +47,10 @@ pub struct InventoryDrift {
     pub actual_out_of_order: Option<i32>,
 }
 
-/// The property's business date. `NotFound` if the property is not in this tenant.
+/// The property's business date, for a writer. `NotFound` if the property is not in this tenant.
+/// Read `for share`: writers wait for the night audit's roll (see "Locking" in `docs/specs/phase-7b-night-audit.md`).
 pub(crate) async fn business_date(tx: &mut Tx, property: Uuid) -> Result<Date, RoomsError> {
-    sqlx::query_scalar("select business_date from property where id = $1")
+    sqlx::query_scalar("select business_date from property where id = $1 for share")
         .bind(property)
         .fetch_optional(&mut **tx)
         .await?
@@ -58,7 +59,11 @@ pub(crate) async fn business_date(tx: &mut Tx, property: Uuid) -> Result<Date, R
 
 /// Creates missing counter rows up to the end of the window, computed from rooms and blocks. Cheap when
 /// nothing is missing. Until the nightly job exists (Phase 7), writers call it before changing counters.
+///
+/// Takes the property row `for share` before inserting, so the window follows the business date the night audit's
+/// roll leaves (see "Locking" in `docs/specs/phase-7b-night-audit.md`).
 pub async fn extend_window(tx: &mut Tx, property: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("select 1 from property where id = $1 for share").bind(property).execute(&mut **tx).await?;
     sqlx::query(
         "insert into inventory_day (tenant_id, property_id, room_type_id, date, physical, out_of_order)
          select rt.tenant_id, rt.property_id, rt.id, day.date,

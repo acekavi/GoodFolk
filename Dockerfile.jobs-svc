@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1
+# jobs-svc on glibc, like media-svc, on a distroless base (no shell, runs as non-root). It starts no subprocesses, so
+# it needs neither libjxl nor an init to reap them.
+FROM rust:1.99-bookworm AS build
+WORKDIR /src
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release -p jobs-svc --bin jobs-svc && cp target/release/jobs-svc /jobs-svc
+
+FROM gcr.io/distroless/cc-debian12:nonroot
+COPY --from=build /jobs-svc /jobs-svc
+# Cloud Scheduler drives the tick in production (POST /tick), so JOBS_TICK defaults to off there.
+ENV APP_ENV=production PORT=8091
+EXPOSE 8091
+ENTRYPOINT ["/jobs-svc"]

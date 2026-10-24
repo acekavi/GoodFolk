@@ -2,7 +2,9 @@
 //! same transaction, set-based, level by level.
 
 use crate::plans::{PlanKind, RatePlan, Tree, list_rate_plans};
-use crate::{MAX_AMOUNT, RatesError, audit, business_date, lock_rates, notify, rates_keys, violates};
+use crate::{
+    MAX_AMOUNT, RatesError, audit, business_date, lock_rates, notify, rates_keys, read_business_date, violates,
+};
 use db::{TenantId, Tx, UserId};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -410,7 +412,7 @@ pub async fn preview_bulk_change(
     change: &BulkChange,
     limit: i64,
 ) -> Result<BulkPreview, RatesError> {
-    let today = business_date(tx, property).await?;
+    let today = read_business_date(tx, property).await?;
     let tree = Tree(list_rate_plans(tx, property).await?);
     let plan = hand_priced(&tree, plan)?;
     let selection = select(today, plan, change)?;

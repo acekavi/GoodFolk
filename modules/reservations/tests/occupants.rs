@@ -191,7 +191,7 @@ async fn only_a_confirmed_or_checked_in_room_takes_occupants(_: PgPoolOptions, o
     let booked = hotel.try_book(&booker, vec![hotel.room(hotel.deluxe.id, &plans.bar, 2, 5)]).await.unwrap();
     let room = booked.rooms[0].id;
     let mut tx = hotel.tx().await;
-    reservations::cancel_room(&mut tx, hotel.tenant, hotel.user, hotel.property, room, 1).await.unwrap();
+    reservations::cancel_room(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, room, 1).await.unwrap();
     tx.commit().await.unwrap();
 
     let add_refused = hotel.try_add(room, 2, extra.id).await;

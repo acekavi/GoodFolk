@@ -1,4 +1,5 @@
 import type { QueryClient } from '@tanstack/svelte-query';
+import { auditKeys, nightAuditKey } from './night-audit';
 import { rangeTouchesMonth, tapeEventTiles } from './tape';
 
 /**
@@ -15,7 +16,15 @@ export function applyEvent(client: QueryClient, type: string, data: string): voi
 		for (const key of keys) {
 			if (key.startsWith('tape:')) invalidateTape(client, key);
 			else if (key.startsWith('folio:')) invalidateFolio(client, key.slice('folio:'.length));
-			else void client.invalidateQueries({ queryKey: [key] });
+			else if (key.startsWith('audit:')) invalidateAudit(client, key.slice('audit:'.length));
+			else {
+				void client.invalidateQueries({ queryKey: [key] });
+				// A reservation change can resolve, or add, an arrival or departure of the review.
+				if (key.startsWith('reservations:'))
+					void client.invalidateQueries({
+						queryKey: nightAuditKey(key.slice('reservations:'.length))
+					});
+			}
 		}
 	}
 }
@@ -55,6 +64,11 @@ function invalidateFolio(client: QueryClient, folioId: string): void {
 			(query.state.data as { id: string }[] | undefined)?.some((folio) => folio.id === folioId) ??
 			false
 	});
+}
+
+/** A property's night audit: its review, its runs, its statistics and its ops alerts. */
+function invalidateAudit(client: QueryClient, propertyId: string): void {
+	for (const queryKey of auditKeys(propertyId)) void client.invalidateQueries({ queryKey });
 }
 
 /** Keeps the cache fresh while the app is open. Returns a function that disconnects. */

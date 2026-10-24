@@ -66,6 +66,7 @@ fn each_role_has_exactly_its_permissions() {
         TaxSettingsManage,
         FxOverride,
         PosPost,
+        NightAudit,
     ];
     let expected: [(Role, &[Permission]); 6] = [
         (Role::Owner, &all),
@@ -95,6 +96,7 @@ fn each_role_has_exactly_its_permissions() {
                 InvoiceIssue,
                 FxOverride,
                 PosPost,
+                NightAudit,
             ],
         ),
         (
@@ -114,6 +116,7 @@ fn each_role_has_exactly_its_permissions() {
                 FolioView,
                 FolioPost,
                 InvoiceIssue,
+                NightAudit,
             ],
         ),
         (
@@ -228,6 +231,11 @@ fn invoices_are_issued_by_the_front_desk_and_the_accountant_too() {
         roles_allowed(Permission::InvoiceIssue),
         [Role::Owner, Role::Manager, Role::FrontDesk, Role::Accountant]
     );
+}
+
+#[test]
+fn owners_managers_and_the_front_desk_run_the_night_audit() {
+    assert_eq!(roles_allowed(Permission::NightAudit), [Role::Owner, Role::Manager, Role::FrontDesk]);
 }
 
 #[test]

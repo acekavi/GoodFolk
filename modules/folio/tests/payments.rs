@@ -394,7 +394,8 @@ async fn a_deposit_charged_to_account_moves_back_after_the_reservation_is_cancel
     let line = account_line(&hotel, &paid).await;
     let mut tx = hotel.tx().await;
     sqlx::query(
-        "update reservation_room set status = 'cancelled', cancelled_at = now(), cancellation_penalty = 0
+        "update reservation_room set status = 'cancelled', cancelled_at = now(), cancellation_penalty = 0,
+                 cancelled_business_date = current_date
              where reservation_id = $1",
     )
     .bind(booking.id)
@@ -540,8 +541,33 @@ async fn a_cancellation_posts_its_penalty_to_the_deposit_folio_once(_: PgPoolOpt
     assert!(hotel.view(free.deposit).await.lines.is_empty(), "a free cancellation posts nothing");
     assert_eq!(
         invalid(hotel.cancellation_fee_in(hotel.property, free.rooms[0], -1, "LKR").await),
-        "a cancellation penalty is not negative"
+        "a penalty is not negative"
     );
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_no_show_posts_its_penalty_to_the_deposit_folio_once_under_its_own_key(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts).await;
+    let booking = hotel.book(None).await;
+    let stay = booking.rooms[0];
+
+    for _ in 0..2 {
+        let mut tx = hotel.tx().await;
+        folio::post_no_show_fee(&mut tx, hotel.tenant, None, hotel.property, stay, 10_000, "LKR", false).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    hotel.cancellation_fee_in(hotel.property, stay, 5_000, "LKR").await.unwrap();
+
+    let deposit = hotel.view(booking.deposit).await;
+    let [no_show, cancellation] = &deposit.lines[..] else { panic!("two lines: {:?}", deposit.lines) };
+    assert_eq!((no_show.line.source, no_show.line.category.as_str()), (Source::NoShowFee, "fee"));
+    assert_eq!(no_show.line.description, "No-show fee");
+    assert_eq!(no_show.line.posting_key, Some(format!("no_show:{stay}")));
+    assert_eq!(no_show.line.total, 10_000 + 100 + 253, "taxed like a cancellation fee");
+    assert_eq!(cancellation.line.posting_key, Some(format!("cancellation:{stay}")), "its own key");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

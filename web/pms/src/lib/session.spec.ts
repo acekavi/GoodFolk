@@ -121,7 +121,7 @@ describe('can', () => {
 		}
 	});
 
-	it('mirrors the folio permissions exactly', () => {
+	it('mirrors the folio and night-audit permissions exactly', () => {
 		const roles = [
 			'owner',
 			'manager',
@@ -137,7 +137,8 @@ describe('can', () => {
 			invoiceIssue: ['owner', 'manager', 'front_desk', 'accountant'],
 			taxSettingsManage: ['owner'],
 			fxOverride: ['owner', 'manager'],
-			posPost: ['owner', 'manager']
+			posPost: ['owner', 'manager'],
+			nightAudit: ['owner', 'manager', 'front_desk']
 		} as const;
 		for (const [action, allowed] of Object.entries(expected)) {
 			for (const role of roles) {

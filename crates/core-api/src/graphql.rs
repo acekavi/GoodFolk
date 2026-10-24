@@ -89,6 +89,8 @@ pub struct PropertyNode {
     pub check_in_time: String,
     /// `HH:MM`, local time.
     pub check_out_time: String,
+    /// `HH:MM`, local time: when the night audit closes the business date if nobody has.
+    pub audit_time: String,
     pub business_date: Date,
     /// Send as `If-Match: "<version>"` when updating.
     pub version: i32,
@@ -1595,6 +1597,438 @@ impl From<property::TaxSettings> for TaxSettingsNode {
     }
 }
 
+/// A stay due by the business date and still tentative or confirmed.
+#[derive(SimpleObject)]
+pub struct AuditArrivalNode {
+    pub reservation_room_id: Uuid,
+    pub reservation_id: Uuid,
+    pub confirmation: String,
+    pub guest: String,
+    pub room_number: Option<String>,
+    pub arrival: Date,
+    pub departure: Date,
+    /// `TENTATIVE` (delay or cancel only) or `CONFIRMED`.
+    pub status: RoomStatusNode,
+    /// The stay's room and meal amounts, all nights, in minor units of `currency`.
+    pub total: i64,
+    pub currency: String,
+    /// What marking it a no-show would cost under its booked terms, in minor units of `currency`.
+    pub no_show_penalty: i64,
+    /// The reservation room's version: send it as `If-Match`.
+    pub version: i32,
+}
+
+impl From<audit::ArrivalRow> for AuditArrivalNode {
+    fn from(a: audit::ArrivalRow) -> Self {
+        Self {
+            reservation_room_id: a.reservation_room,
+            reservation_id: a.reservation_id,
+            confirmation: a.confirmation,
+            guest: a.guest,
+            room_number: a.room_number,
+            arrival: a.arrival,
+            departure: a.departure,
+            status: a.status.into(),
+            total: a.total,
+            currency: a.currency,
+            no_show_penalty: a.no_show_penalty,
+            version: a.version,
+        }
+    }
+}
+
+/// An amount in one currency, in its minor units.
+#[derive(SimpleObject)]
+pub struct CurrencyAmountNode {
+    pub currency: String,
+    pub amount: i64,
+}
+
+/// A stay due out by the business date and still checked in.
+#[derive(SimpleObject)]
+pub struct AuditDepartureNode {
+    pub reservation_room_id: Uuid,
+    pub reservation_id: Uuid,
+    pub confirmation: String,
+    pub guest: String,
+    pub room_number: Option<String>,
+    pub departure: Date,
+    /// The guest folio's balance per currency, by currency code.
+    pub balances: Vec<CurrencyAmountNode>,
+    /// The reservation room's version: send it as `If-Match`.
+    pub version: i32,
+}
+
+impl From<audit::DepartureRow> for AuditDepartureNode {
+    fn from(d: audit::DepartureRow) -> Self {
+        Self {
+            reservation_room_id: d.reservation_room,
+            reservation_id: d.reservation_id,
+            confirmation: d.confirmation,
+            guest: d.guest,
+            room_number: d.room_number,
+            departure: d.departure,
+            balances: d
+                .balances
+                .into_iter()
+                .map(|(currency, amount)| CurrencyAmountNode { currency, amount })
+                .collect(),
+            version: d.version,
+        }
+    }
+}
+
+/// A POS bill of the business date.
+#[derive(SimpleObject)]
+pub struct AuditPosBillNode {
+    pub id: Uuid,
+    pub bill_no: String,
+    /// The bill's own business date: before the review's for a bill posted late, which counts on the day it posted.
+    pub bill_date: Date,
+    pub currency: String,
+    pub total: i64,
+    pub total_base: i64,
+    /// The room of the stay it posted to; `null` when settled at the outlet.
+    pub room_number: Option<String>,
+    pub settled: bool,
+    /// Posted to a stay now checked out whose guest folio is not settled.
+    pub highlight: bool,
+}
+
+/// One outlet's POS bills of the business date.
+#[derive(SimpleObject)]
+pub struct AuditOutletBillsNode {
+    /// The outlet's name.
+    pub outlet: String,
+    pub bills: Vec<AuditPosBillNode>,
+    pub total_base: i64,
+}
+
+impl From<audit::OutletBills> for AuditOutletBillsNode {
+    fn from(o: audit::OutletBills) -> Self {
+        Self {
+            outlet: o.outlet,
+            bills: o
+                .bills
+                .into_iter()
+                .map(|b| AuditPosBillNode {
+                    id: b.id,
+                    bill_no: b.bill_no,
+                    bill_date: b.bill_date,
+                    currency: b.currency,
+                    total: b.total,
+                    total_base: b.total_base,
+                    room_number: b.room_number,
+                    settled: b.settled,
+                    highlight: b.highlight,
+                })
+                .collect(),
+            total_base: o.total_base,
+        }
+    }
+}
+
+/// Tonight's room and meal-plan charges of one in-house stay, as posting them would go.
+#[derive(SimpleObject)]
+pub struct NightPreviewNode {
+    pub reservation_room_id: Uuid,
+    pub room_number: Option<String>,
+    pub date: Date,
+    pub room_amount: i64,
+    pub meal_amount: i64,
+    pub currency: String,
+    /// Why posting would fail, such as a missing exchange rate; `null` when it would post.
+    pub problem: Option<String>,
+    /// How many of the night's charges are already posted: 0, 1 or 2.
+    pub already_posted: i32,
+}
+
+/// The business date's manual and fee lines in one category.
+#[derive(SimpleObject)]
+pub struct CategoryTotalNode {
+    pub category: String,
+    pub lines: i32,
+    pub total_base: i64,
+}
+
+#[derive(SimpleObject)]
+pub struct BookingBillsNode {
+    pub nights: Vec<NightPreviewNode>,
+    pub posted: Vec<CategoryTotalNode>,
+}
+
+impl From<audit::BookingBills> for BookingBillsNode {
+    fn from(b: audit::BookingBills) -> Self {
+        Self {
+            nights: b
+                .nights
+                .into_iter()
+                .map(|n| NightPreviewNode {
+                    reservation_room_id: n.reservation_room,
+                    room_number: n.room_number,
+                    date: n.date,
+                    room_amount: n.room_amount,
+                    meal_amount: n.meal_amount,
+                    currency: n.currency,
+                    problem: n.problem,
+                    already_posted: i32::from(n.already_posted),
+                })
+                .collect(),
+            posted: b
+                .posted
+                .into_iter()
+                .map(|c| CategoryTotalNode {
+                    category: c.category,
+                    lines: i32::try_from(c.lines).unwrap_or(i32::MAX),
+                    total_base: c.total_base,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The business date's payments in one method and currency, refunds netted into the amounts.
+#[derive(SimpleObject)]
+pub struct PaymentGroupNode {
+    /// `cash`, `card_terminal`, `bank_transfer`, or `account` (a charge to account: the city ledger).
+    pub method: String,
+    pub currency: String,
+    /// The payments, not the refunds.
+    pub count: i32,
+    pub amount: i64,
+    pub base_amount: i64,
+    /// The refunds' sum, at most 0.
+    pub refunds: i64,
+    /// LKR payments with no evidence on the folio of a stay sold to non-residents.
+    pub flagged: Vec<Uuid>,
+}
+
+impl From<audit::PaymentGroup> for PaymentGroupNode {
+    fn from(p: audit::PaymentGroup) -> Self {
+        Self {
+            method: p.method,
+            currency: p.currency,
+            count: i32::try_from(p.count).unwrap_or(i32::MAX),
+            amount: p.amount,
+            base_amount: p.base_amount,
+            refunds: p.refunds,
+            flagged: p.flagged,
+        }
+    }
+}
+
+/// The review of the property's business date before it closes.
+#[derive(SimpleObject)]
+pub struct NightAuditNode {
+    pub business_date: Date,
+    /// Unresolved arrivals plus unresolved departures: the close waits until it is 0.
+    pub blocking: i32,
+    pub arrivals: Vec<AuditArrivalNode>,
+    pub departures: Vec<AuditDepartureNode>,
+    pub pos_bills: Vec<AuditOutletBillsNode>,
+    pub booking_bills: BookingBillsNode,
+    pub payments: Vec<PaymentGroupNode>,
+}
+
+impl From<audit::NightAudit> for NightAuditNode {
+    fn from(n: audit::NightAudit) -> Self {
+        Self {
+            business_date: n.business_date,
+            blocking: i32::try_from(n.blocking).unwrap_or(i32::MAX),
+            arrivals: n.arrivals.into_iter().map(AuditArrivalNode::from).collect(),
+            departures: n.departures.into_iter().map(AuditDepartureNode::from).collect(),
+            pos_bills: n.pos_bills.into_iter().map(AuditOutletBillsNode::from).collect(),
+            booking_bills: n.booking_bills.into(),
+            payments: n.payments.into_iter().map(PaymentGroupNode::from).collect(),
+        }
+    }
+}
+
+mirror_enum!(AuditModeNode as "AuditMode" from audit::Mode { Manual, Auto });
+mirror_enum!(AuditRunStatusNode as "AuditRunStatus" from audit::RunStatus { Running, Failed, Completed });
+mirror_enum!(
+    /// The steps of a close, in the order they run.
+    AuditStepNode as "AuditStep" from audit::Step {
+        Resolve,
+        PostCharges,
+        LockFx,
+        SnapshotStats,
+        AdvanceBusinessDate,
+    }
+);
+
+/// A step a run has done.
+#[derive(SimpleObject)]
+pub struct AuditRunStepNode {
+    pub step: AuditStepNode,
+    pub completed_at: OffsetDateTime,
+    /// The step's report, such as the charges it posted.
+    pub detail: Json<serde_json::Value>,
+}
+
+/// The close of one business date.
+#[derive(SimpleObject)]
+pub struct AuditRunNode {
+    pub id: Uuid,
+    pub business_date: Date,
+    pub mode: AuditModeNode,
+    pub status: AuditRunStatusNode,
+    /// Who started it; `null` for the scheduled close.
+    pub started_by: Option<Uuid>,
+    pub attempts: i32,
+    pub error: Option<String>,
+    /// The failed step's report: `{"step": ...}`, with `"stays": [{reservation_room, room, error}]` when stays
+    /// failed.
+    pub failure: Option<Json<serde_json::Value>>,
+    pub started_at: OffsetDateTime,
+    pub finished_at: Option<OffsetDateTime>,
+    /// The steps done, in step order.
+    pub steps: Vec<AuditRunStepNode>,
+}
+
+impl From<audit::AuditRun> for AuditRunNode {
+    fn from(r: audit::AuditRun) -> Self {
+        Self {
+            id: r.id,
+            business_date: r.business_date,
+            mode: r.mode.into(),
+            status: r.status.into(),
+            started_by: r.started_by,
+            attempts: r.attempts,
+            error: r.error,
+            failure: r.failure.map(Json),
+            started_at: r.started_at,
+            finished_at: r.finished_at,
+            steps: r
+                .steps
+                .into_iter()
+                .map(|s| AuditRunStepNode { step: s.step.into(), completed_at: s.completed_at, detail: Json(s.detail) })
+                .collect(),
+        }
+    }
+}
+
+/// A base-currency amount under a key, such as a tax code or a payment method.
+#[derive(SimpleObject)]
+pub struct KeyedAmountNode {
+    pub key: String,
+    pub amount: i64,
+}
+
+/// One key of a statistics dimension on a closed day.
+#[derive(SimpleObject)]
+pub struct StatsBreakdownNode {
+    /// `segment`, `source`, `residency`, `room_type` or `outlet`.
+    pub dimension: String,
+    /// The dimension's value; `unattributed` for revenue no stay accounts for.
+    pub key: String,
+    pub room_nights: i32,
+    pub room_revenue: i64,
+    pub revenue: i64,
+}
+
+/// The statistics of a closed business date, in base-currency minor units, revenue net of tax.
+#[derive(SimpleObject)]
+pub struct DailyStatsNode {
+    pub business_date: Date,
+    pub rooms_total: i32,
+    pub rooms_out_of_order: i32,
+    pub rooms_available: i32,
+    pub rooms_sold: i32,
+    pub complimentary_rooms: i32,
+    /// Occupancy in basis points: 10000 is full.
+    pub occupancy_bp: i32,
+    pub adults: i32,
+    pub children: i32,
+    pub arrivals: i32,
+    pub departures: i32,
+    pub no_shows: i32,
+    pub cancellations: i32,
+    pub walk_ins: i32,
+    pub room_revenue: i64,
+    pub meal_plan_revenue: i64,
+    pub pos_revenue: i64,
+    pub fee_revenue: i64,
+    pub other_revenue: i64,
+    pub adr: i64,
+    pub revpar: i64,
+    /// By tax code.
+    pub taxes: Vec<KeyedAmountNode>,
+    /// By payment method, refunds included.
+    pub payments: Vec<KeyedAmountNode>,
+    /// Each dimension's rows sum to the day's totals.
+    pub breakdown: Vec<StatsBreakdownNode>,
+}
+
+impl From<audit::DailyStats> for DailyStatsNode {
+    fn from(d: audit::DailyStats) -> Self {
+        let keyed = |map: std::collections::BTreeMap<String, i64>| {
+            map.into_iter().map(|(key, amount)| KeyedAmountNode { key, amount }).collect()
+        };
+        Self {
+            business_date: d.business_date,
+            rooms_total: d.rooms_total,
+            rooms_out_of_order: d.rooms_out_of_order,
+            rooms_available: d.rooms_available,
+            rooms_sold: d.rooms_sold,
+            complimentary_rooms: d.complimentary_rooms,
+            occupancy_bp: d.occupancy_bp,
+            adults: d.adults,
+            children: d.children,
+            arrivals: d.arrivals,
+            departures: d.departures,
+            no_shows: d.no_shows,
+            cancellations: d.cancellations,
+            walk_ins: d.walk_ins,
+            room_revenue: d.room_revenue,
+            meal_plan_revenue: d.meal_plan_revenue,
+            pos_revenue: d.pos_revenue,
+            fee_revenue: d.fee_revenue,
+            other_revenue: d.other_revenue,
+            adr: d.adr,
+            revpar: d.revpar,
+            taxes: keyed(d.taxes),
+            payments: keyed(d.payments),
+            breakdown: d
+                .breakdown
+                .into_iter()
+                .map(|b| StatsBreakdownNode {
+                    dimension: b.dimension,
+                    key: b.key,
+                    room_nights: b.room_nights,
+                    room_revenue: b.room_revenue,
+                    revenue: b.revenue,
+                })
+                .collect(),
+        }
+    }
+}
+
+mirror_enum!(OpsAlertKindNode as "OpsAlertKind" from audit::AlertKind { Audit, Drift });
+
+/// A problem a person must look at: an automatic close that failed its third attempt (`AUDIT`), or inventory
+/// counters that drifted from the stays they count (`DRIFT`). Shown until what raised it is resolved.
+#[derive(SimpleObject)]
+pub struct OpsAlertNode {
+    pub kind: OpsAlertKindNode,
+    pub message: String,
+    pub raised_at: OffsetDateTime,
+}
+
+/// A night-audit rule the query broke, as a GraphQL error; database errors stay hidden.
+fn audit_error(err: audit::AuditError) -> async_graphql::Error {
+    match err {
+        audit::AuditError::Database(db_err) => internal(db_err),
+        audit::AuditError::Folio(folio_err) => folio_error(folio_err),
+        audit::AuditError::Reservations(reservations_err) => reservations_error(reservations_err),
+        audit::AuditError::Interrupted => {
+            tracing::error!("the night-audit close was interrupted");
+            async_graphql::Error::new("Internal error")
+        }
+        other => async_graphql::Error::new(other.to_string()),
+    }
+}
+
 /// A folio rule the query broke, as a GraphQL error; database errors stay hidden.
 fn folio_error(err: folio::FolioError) -> async_graphql::Error {
     match err {
@@ -1642,11 +2076,16 @@ fn rates_error(err: rates::RatesError) -> async_graphql::Error {
 
 /// Checks `permission` for `property` and opens a transaction in the caller's tenant.
 async fn scoped(ctx: &Context<'_>, permission: Permission, property: Uuid) -> async_graphql::Result<Tx> {
+    scoped_any(ctx, &[permission], property).await
+}
+
+/// Checks that the caller holds one of `permissions` for `property` and opens a transaction in their tenant.
+async fn scoped_any(ctx: &Context<'_>, permissions: &[Permission], property: Uuid) -> async_graphql::Result<Tx> {
     let pool = ctx.data::<PgPool>()?;
     let tenant = ctx.data::<TenantContext>()?;
-    tenant
-        .require(permission, Some(property))
-        .map_err(|_| async_graphql::Error::new("you do not have permission for this property"))?;
+    if !permissions.iter().any(|permission| tenant.require(*permission, Some(property)).is_ok()) {
+        return Err(async_graphql::Error::new("you do not have permission for this property"));
+    }
     db::begin(pool, Scope::tenant(tenant.tenant)).await.map_err(internal)
 }
 
@@ -1681,6 +2120,7 @@ impl Query {
                 base_currency: p.base_currency,
                 check_in_time: p.check_in_time,
                 check_out_time: p.check_out_time,
+                audit_time: p.audit_time,
                 business_date: p.business_date,
                 version: p.version,
             })
@@ -2439,11 +2879,62 @@ impl Query {
         tx.commit().await.map_err(internal)?;
         Ok(settings.into())
     }
+
+    /// The review of the property's business date: the arrivals not checked in, the departures not checked out, the
+    /// day's POS bills by outlet, the booking bills and the payments, with how many stays block the close.
+    async fn night_audit(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<NightAuditNode> {
+        let mut tx = scoped(ctx, Permission::NightAudit, property_id).await?;
+        let review = audit::night_audit(&mut tx, property_id).await.map_err(audit_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(review.into())
+    }
+
+    /// The property's closes, newest business date first, each with its steps: `first` of them (1 to 100) dated
+    /// before `after`, or the newest when `after` is left out.
+    async fn audit_runs(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        #[graphql(default = 20)] first: i32,
+        after: Option<Date>,
+    ) -> async_graphql::Result<Vec<AuditRunNode>> {
+        let first = u32::try_from(first).map_err(|_| async_graphql::Error::new("first is 1 to 100"))?;
+        let mut tx = scoped_any(ctx, &[Permission::NightAudit, Permission::FolioView], property_id).await?;
+        let runs = audit::list_runs(&mut tx, property_id, first, after).await.map_err(audit_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(runs.into_iter().map(AuditRunNode::from).collect())
+    }
+
+    /// The statistics of the property's closed business dates from `from` to `to`, both included (at most 366 days),
+    /// by date, each with its breakdowns. A day not yet closed has none.
+    async fn daily_stats(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        from: Date,
+        to: Date,
+    ) -> async_graphql::Result<Vec<DailyStatsNode>> {
+        let mut tx = scoped_any(ctx, &[Permission::NightAudit, Permission::FolioView], property_id).await?;
+        let days = audit::daily_stats(&mut tx, property_id, from, to).await.map_err(audit_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(days.into_iter().map(DailyStatsNode::from).collect())
+    }
+
+    /// The property's raised ops alerts, by kind; empty when all is well.
+    async fn ops_alerts(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<OpsAlertNode>> {
+        let mut tx = scoped(ctx, Permission::PropertiesManage, property_id).await?;
+        let alerts = audit::alerts::list(&mut tx, property_id).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(alerts
+            .into_iter()
+            .map(|a| OpsAlertNode { kind: a.kind.into(), message: a.message, raised_at: a.raised_at })
+            .collect())
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{internal, selected};
+    use super::{audit_error, internal, selected};
     use async_graphql::{Context, EmptyMutation, EmptySubscription, Object, Request, Schema, Variables};
     use serde_json::json;
 
@@ -2452,6 +2943,23 @@ mod tests {
         let err = internal(sqlx::Error::Protocol("relation \"property\" does not exist".into()));
 
         assert_eq!(err.message, "Internal error");
+    }
+
+    #[test]
+    fn night_audit_errors_hide_database_text_however_nested() {
+        let leak = || sqlx::Error::Protocol("relation \"audit_run\" does not exist".into());
+        for err in [
+            audit::AuditError::Database(leak()),
+            audit::AuditError::Folio(folio::FolioError::Database(leak())),
+            audit::AuditError::Reservations(reservations::ReservationsError::Database(leak())),
+            audit::AuditError::Interrupted,
+        ] {
+            assert_eq!(audit_error(err).message, "Internal error");
+        }
+        let refused = audit_error(audit::AuditError::Reservations(reservations::ReservationsError::Conflict(
+            "Room 101 is taken".into(),
+        )));
+        assert_eq!(refused.message, "Room 101 is taken");
     }
 
     struct Probe(bool);

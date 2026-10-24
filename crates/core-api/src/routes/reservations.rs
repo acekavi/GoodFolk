@@ -10,9 +10,10 @@ use garde::Validate;
 use identity::Permission;
 use rates::{MealPlan, Residency};
 use reservations::{
-    AssignedRoom, CancelledRoom, CheckInOverride, CheckedIn, CheckedOut, CreatedReservation, Guest, GuestChanges,
-    IdDocType, MAX_ROOMS_PER_RESERVATION, ModifiedRoom, NewGuest, NewReservation, NewReservationRoom, RemovedOccupant,
-    ReservationChanges, ReservationsError, RoomChanges, RoomOccupant, Source, UndoneCheckIn, UpdatedReservation,
+    AssignedRoom, CancelledRoom, ChangedStay, CheckInOverride, CheckedIn, CheckedOut, CreatedReservation, Guest,
+    GuestChanges, IdDocType, MAX_ROOMS_PER_RESERVATION, ModifiedRoom, NewGuest, NewReservation, NewReservationRoom,
+    NoShowRoom, RemovedOccupant, ReservationChanges, ReservationsError, RoomChanges, RoomOccupant, Source,
+    UndoneCheckIn, UpdatedReservation,
 };
 use serde::Deserialize;
 use std::fmt;
@@ -361,7 +362,7 @@ pub async fn cancel_room(
 ) -> Result<Versioned<CancelledRoom>, ApiError> {
     ctx.require(Permission::ReservationsManage, Some(property))?;
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
-    let cancelled = reservations::cancel_room(&mut tx, ctx.tenant, ctx.user, property, room, version)
+    let cancelled = reservations::cancel_room(&mut tx, ctx.tenant, Some(ctx.user), property, room, version)
         .await
         .map_err(reservations_error)?;
     tx.commit().await?;
@@ -544,6 +545,69 @@ pub async fn check_out(
         .map_err(reservations_error)?;
     tx.commit().await?;
     Ok(Versioned::ok(checked_out.version, checked_out))
+}
+
+/// Marks a confirmed room due by the business date a no-show: its nights from the business date on go back on sale,
+/// and its booked terms' no-show penalty posts to the reservation's deposit folio.
+#[utoipa::path(post, operation_id = "no_show_reservation_room", path = "/api/v1/properties/{property}/reservation-rooms/{room}/no-show",
+    params(("property" = Uuid, Path), ("room" = Uuid, Path), ("If-Match" = String, Header)),
+    responses((status = 200, body = NoShowRoom,
+        headers(("ETag" = String, description = "the reservation room's version, e.g. \"2\""))), (status = 403), (status = 404), (status = 409), (status = 412), (status = 428)))]
+pub async fn no_show(
+    State(state): State<AppState>,
+    ctx: TenantContext,
+    ApiPath((property, room)): ApiPath<(Uuid, Uuid)>,
+    IfMatch(version): IfMatch,
+) -> Result<Versioned<NoShowRoom>, ApiError> {
+    ctx.require(Permission::FrontDeskCheckIn, Some(property))?;
+    let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
+    let marked = reservations::mark_no_show(&mut tx, ctx.tenant, Some(ctx.user), property, room, version)
+        .await
+        .map_err(reservations_error)?;
+    tx.commit().await?;
+    Ok(Versioned::ok(marked.version, marked))
+}
+
+/// Moves a tentative or confirmed stay due by the business date to arrive a night later, releasing that night. A
+/// one-night stay is 409: change its dates with modify.
+#[utoipa::path(post, operation_id = "delay_reservation_room_arrival", path = "/api/v1/properties/{property}/reservation-rooms/{room}/delay-arrival",
+    params(("property" = Uuid, Path), ("room" = Uuid, Path), ("If-Match" = String, Header)),
+    responses((status = 200, body = ChangedStay,
+        headers(("ETag" = String, description = "the reservation room's version, e.g. \"2\""))), (status = 403), (status = 404), (status = 409), (status = 412), (status = 428)))]
+pub async fn delay_arrival(
+    State(state): State<AppState>,
+    ctx: TenantContext,
+    ApiPath((property, room)): ApiPath<(Uuid, Uuid)>,
+    IfMatch(version): IfMatch,
+) -> Result<Versioned<ChangedStay>, ApiError> {
+    ctx.require(Permission::FrontDeskCheckIn, Some(property))?;
+    let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
+    let changed = reservations::delay_arrival(&mut tx, ctx.tenant, Some(ctx.user), property, room, version)
+        .await
+        .map_err(reservations_error)?;
+    tx.commit().await?;
+    Ok(Versioned::ok(changed.version, changed))
+}
+
+/// Extends a checked-in stay due out by one night, at its last night's room and meal amounts. A night that is not
+/// sellable, or a room taken that night, is 409 with the reason.
+#[utoipa::path(post, operation_id = "extend_reservation_room", path = "/api/v1/properties/{property}/reservation-rooms/{room}/extend",
+    params(("property" = Uuid, Path), ("room" = Uuid, Path), ("If-Match" = String, Header)),
+    responses((status = 200, body = ChangedStay,
+        headers(("ETag" = String, description = "the reservation room's version, e.g. \"4\""))), (status = 403), (status = 404), (status = 409), (status = 412), (status = 428)))]
+pub async fn extend(
+    State(state): State<AppState>,
+    ctx: TenantContext,
+    ApiPath((property, room)): ApiPath<(Uuid, Uuid)>,
+    IfMatch(version): IfMatch,
+) -> Result<Versioned<ChangedStay>, ApiError> {
+    ctx.require(Permission::FrontDeskCheckIn, Some(property))?;
+    let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
+    let changed = reservations::extend_stay(&mut tx, ctx.tenant, Some(ctx.user), property, room, version)
+        .await
+        .map_err(reservations_error)?;
+    tx.commit().await?;
+    Ok(Versioned::ok(changed.version, changed))
 }
 
 /// Adds an additional occupant to a confirmed or checked-in room.

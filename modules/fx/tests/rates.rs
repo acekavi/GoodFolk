@@ -280,3 +280,31 @@ async fn manual_rates_for_every_currency_today_clear_the_alert(_: PgPoolOptions,
     set("GBP", today).await;
     assert_eq!(h.alert().await, None, "every accepted currency has today's rate");
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_closed_day_keeps_its_rates(_: PgPoolOptions, opts: PgConnectOptions) {
+    let h = Hotel::new(opts).await;
+    let today = date!(2026 - 10 - 16);
+    h.set_business_date(today).await;
+    let mut tx = h.tx().await;
+
+    let yesterday = set_manual(&mut tx, h.tenant, h.user, h.property, today.previous_day().unwrap(), "USD", dec("340"));
+    assert!(matches!(yesterday.await, Err(FxError::Conflict(message)) if message == "That day is closed"));
+    set_manual(&mut tx, h.tenant, h.user, h.property, today, "USD", dec("340")).await.unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(h.stored("USD").await, vec![(today, today, dec("340"), "manual".to_owned())]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_import_skips_a_property_whose_day_is_closed(_: PgPoolOptions, opts: PgConnectOptions) {
+    let h = Hotel::new(opts).await;
+    let today = date!(2026 - 10 - 16);
+    h.set_business_date(today.next_day().unwrap()).await;
+
+    let report = import(&h.pool, &full(today), today).await;
+
+    assert_eq!((report.stored, report.alerted), (0, 0));
+    assert_eq!(h.stored("EUR").await, vec![]);
+    assert_eq!(h.alert().await, None);
+}

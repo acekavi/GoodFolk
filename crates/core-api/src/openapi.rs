@@ -15,7 +15,7 @@ use crate::routes::{
 use crate::routes::{
     CreateOutletRequest, CreateTaxRuleRequest, PaymentDetails, PaymentMethod, PosBillRequest, PosItemRequest,
     PosTargetRequest, PostChargeRequest, PostChargesResponse, PostFailure, ReasonRequest, RefundRequest,
-    RoutingRequest, SetRateRequest, SettledRequest, TakePaymentRequest, TransferRequest, TransferredLine,
+    RoutingRequest, SetRateRequest, SettledRequest, StartedClose, TakePaymentRequest, TransferRequest, TransferredLine,
     UpdateOutletRequest, UpdateTaxRuleRequest, UpdateTaxSettingsRequest,
 };
 use utoipa::OpenApi;
@@ -66,6 +66,9 @@ use utoipa::OpenApi;
         crate::routes::reservations::check_in,
         crate::routes::reservations::undo_check_in,
         crate::routes::reservations::check_out,
+        crate::routes::reservations::no_show,
+        crate::routes::reservations::delay_arrival,
+        crate::routes::reservations::extend,
         crate::routes::reservations::add_occupant,
         crate::routes::reservations::remove_occupant,
         crate::routes::housekeeping::set_condition,
@@ -102,6 +105,8 @@ use utoipa::OpenApi;
         crate::routes::taxes::apply_preset,
         crate::routes::taxes::update_settings,
         crate::routes::fx::set_rate,
+        crate::routes::night_audit::close,
+        crate::routes::night_audit::retry,
     ),
     components(schemas(
         SignupRequest,
@@ -190,6 +195,8 @@ use utoipa::OpenApi;
         reservations::CheckedIn,
         reservations::UndoneCheckIn,
         reservations::CheckedOut,
+        reservations::NoShowRoom,
+        reservations::ChangedStay,
         reservations::RoomOccupant,
         reservations::RemovedOccupant,
         reservations::AccountKind,
@@ -246,6 +253,7 @@ use utoipa::OpenApi;
         folio::TaxConditionSchema,
         folio::PresetApplied,
         property::TaxSettings,
+        StartedClose,
     ))
 )]
 pub struct ApiDoc;

@@ -9,6 +9,7 @@ default-run = "core-api"
 [dependencies]
 anyhow.workspace = true
 async-graphql.workspace = true
+audit.workspace = true
 async-graphql-axum.workspace = true
 axum.workspace = true
 axum-extra.workspace = true
@@ -51,13 +52,15 @@ utoipa.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-async-trait.workspace = true
 db = { workspace = true, features = ["testing"] }
 flate2.workspace = true
 http-body-util.workspace = true
+jobs-svc.workspace = true
 media-svc.workspace = true
 reqwest.workspace = true
 tokio = { workspace = true, features = ["net"] }
+# TaskTracker, for the in-process jobs-svc.
+tokio-util = { workspace = true, features = ["rt"] }
 tower.workspace = true
 
 [lints]

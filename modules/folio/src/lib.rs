@@ -15,7 +15,8 @@
 //! [`post_charge`]: only `post_for_stay` applies the reservation's routing.
 //!
 //! A stay's nights post as `room` and `meal_plan` lines under their posting keys: a business date's for every
-//! in-house stay ([`post_business_date_charges`], one transaction per stay, a stay that fails reported and skipped),
+//! in-house stay ([`post_business_date_charges`], one transaction per stay, a stay that fails reported and skipped,
+//! a day the night audit has closed refused; [`preview_business_date_charges`] is its dry run),
 //! and at check-out every night before `min(departure, business date + 1)` still unposted ([`post_unposted_nights`]);
 //! an early check-out reverses the lines of the nights it releases, and undoing a check-in the night it posted
 //! ([`reverse_released_nights`]), each having locked every folio of the stay first ([`lock_stay_folios`]).
@@ -71,14 +72,18 @@ pub use invoices::{
     INVOICE_RENDER_TOPIC, InvoiceRow, InvoiceSummary, credit_note, invoice_link_key, invoice_summaries, issue_invoice,
     set_invoice_pdf,
 };
-pub use lines::{LineRow, NewCharge, post_charge, reverse, transfer};
-pub use payments::{Method, move_deposit, post_cancellation_fee, refund, take_payment, undo_deposit_move};
+pub use lines::{LineRow, NewCharge, business_date, post_charge, reverse, transfer};
+pub use payments::{
+    FeeKind, Method, move_deposit, post_cancellation_fee, post_no_show_fee, post_stay_fee, refund, take_payment,
+    undo_deposit_move,
+};
 pub use pos::{
     NewOutlet, OutletChanges, OutletRow, PosBillIn, PosBillRow, PosItem, PosLine, PosLineTax, PosOutcome, PosTarget,
     create_outlet, list_outlets, post_pos_bill, update_outlet,
 };
 pub use posting::{
-    PostReport, lock_stay_folios, post_business_date_charges, post_unposted_nights, reverse_released_nights,
+    NightPreview, PostReport, in_house_stays, lock_stay_folios, post_business_date_charges, post_unposted_nights,
+    preview_business_date_charges, reverse_released_nights,
 };
 pub use routing::{DEFAULT_ROUTING, follow_account_change, post_for_stay, routing, set_routing};
 pub use rules::{

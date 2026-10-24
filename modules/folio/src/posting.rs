@@ -3,10 +3,11 @@
 //! so a night is charged once however often it is posted.
 
 use crate::folios::{ensure_deposit_folio, ensure_guest_folio, lock_folios};
-use crate::lines::{NewCharge, line_by_key};
+use crate::lines::{NewCharge, business_date, line_by_key};
 use crate::{FolioError, Source, audit, post_for_stay, reverse};
 use db::{Scope, TenantId, Tx, UserId};
 use sqlx::PgPool;
+use std::collections::{HashMap, HashSet};
 use time::{Date, Duration};
 use uuid::Uuid;
 
@@ -23,6 +24,33 @@ pub struct PostReport {
     /// Stays that could not be posted, with the reason (such as a missing exchange rate). Nothing of theirs was
     /// posted; a rerun once the cause is fixed posts them.
     pub failures: Vec<(Uuid, String)>,
+}
+
+/// One in-house stay's night as [`post_business_date_charges`] would post it, from
+/// [`preview_business_date_charges`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NightPreview {
+    pub reservation_room: Uuid,
+    pub room_number: Option<String>,
+    pub date: Date,
+    pub room_amount: i64,
+    pub meal_amount: i64,
+    pub currency: String,
+    /// Why posting would fail: "No room assigned", "No exchange rate for USD on <date>", "No price for <date>".
+    pub problem: Option<String>,
+    /// Charges of this night already posted (their keys used): 0, 1 or 2.
+    pub already_posted: u8,
+}
+
+/// An in-house stay's room and, when priced, its night of the date [`preview_business_date_charges`] previews: the
+/// night's currency, or the stay's when it has none.
+#[derive(sqlx::FromRow)]
+struct PreviewNight {
+    id: Uuid,
+    room_number: Option<String>,
+    room_amount: Option<i64>,
+    meal_amount: Option<i64>,
+    currency: String,
 }
 
 /// One night of a stay, as [`post_night`] posts it.
@@ -53,6 +81,9 @@ struct Counts {
 ///
 /// Each stay posts in its own transaction, in stay id order, and re-checks there (holding its row `for share`, ahead
 /// of its folios in the lock order) that it is still in house, so a stay that checked out meanwhile is passed over.
+/// It first reads the property's business date `for share`: a `date` before it is a day the night audit has closed,
+/// and the stay is a failure ("That day is closed") with nothing posted, so a close that rolls the day while a run is
+/// under way never has a charge posted onto the closed day after it.
 /// A run that fails midway leaves the stays it finished posted, and a rerun skips them by their keys. One transaction
 /// per stay, not per batch: a batch would hold the folio locks of many stays in stay order, which can deadlock
 /// against a transfer locking two folios in id order.
@@ -74,7 +105,7 @@ pub async fn post_business_date_charges(
     let mut report = PostReport::default();
     for stay in stays {
         let mut tx = db::begin(pool, Scope::tenant(tenant)).await?;
-        match post_stay_date(&mut tx, tenant, user, stay, date).await {
+        match post_stay_date(&mut tx, tenant, user, property, stay, date).await {
             Ok(None) => {}
             Ok(Some(counts)) => {
                 tx.commit().await?;
@@ -113,7 +144,14 @@ pub async fn post_business_date_charges(
 /// partial index (see "A leakproof stored column for range queries" in `docs/design/api-conventions.md`).
 async fn in_house(pool: &PgPool, tenant: TenantId, property: Uuid, date: Date) -> Result<Vec<Uuid>, FolioError> {
     let mut tx = db::begin(pool, Scope::tenant(tenant)).await?;
-    let stays = sqlx::query_scalar(
+    let stays = in_house_stays(&mut tx, property, date).await?;
+    tx.commit().await?;
+    Ok(stays)
+}
+
+/// `in_house`, in the caller's transaction. The night audit counts these stays as the rooms sold on `date`.
+pub async fn in_house_stays(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar(
         "select id from reservation_room
          where property_id = $1 and status = 'checked_in'
            and ((arrival >= $2::date - 31 and arrival <= $2) or nights > 31)
@@ -122,20 +160,117 @@ async fn in_house(pool: &PgPool, tenant: TenantId, property: Uuid, date: Date) -
     )
     .bind(property)
     .bind(date)
-    .fetch_all(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(stays)
+    .fetch_all(&mut **tx)
+    .await
 }
 
-/// Posts `date`'s night of `stay` if it is still checked in and in house on that date (`None` when it is not).
+/// What [`post_business_date_charges`] would post for `date`, without posting: one entry per stay it would post, in
+/// the same order, with the same night and the same checks (a missing price, room or exchange rate is its `problem`,
+/// a key already used counts in `already_posted`). Reads only, so it takes no locks; a run that follows can still
+/// differ where the data changes in between.
+pub async fn preview_business_date_charges(
+    tx: &mut Tx,
+    property: Uuid,
+    date: Date,
+) -> Result<Vec<NightPreview>, FolioError> {
+    let stays = in_house_stays(tx, property, date).await?;
+    let keys: Vec<String> =
+        stays.iter().flat_map(|stay| [format!("room:{stay}:{date}"), format!("meal_plan:{stay}:{date}")]).collect();
+    let used: HashSet<String> = sqlx::query_scalar::<_, String>(
+        "select posting_key from folio_line
+         where posting_key = any($2) and folio_id in (select id from folio where property_id = $1)",
+    )
+    .bind(property)
+    .bind(&keys)
+    .fetch_all(&mut **tx)
+    .await?
+    .into_iter()
+    .collect();
+    // Each stay's room and its night of `date`, in one statement rather than one per stay.
+    let rows: Vec<PreviewNight> = sqlx::query_as(
+        "select rr.id, room.number as room_number, n.room_amount, n.meal_amount,
+                coalesce(n.currency, rr.currency)::text as currency
+         from reservation_room rr
+         left join room on room.id = rr.room_id
+         left join reservation_night n on n.reservation_room_id = rr.id and n.date = $2
+         where rr.id = any($1)",
+    )
+    .bind(&stays)
+    .bind(date)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut nights: HashMap<Uuid, PreviewNight> = rows.into_iter().map(|row| (row.id, row)).collect();
+    let mut rated: HashMap<String, bool> = HashMap::new();
+    let mut previews = Vec::with_capacity(stays.len());
+    for stay in stays {
+        let Some(night) = nights.remove(&stay) else { continue };
+        let (Some(room_amount), Some(meal_amount)) = (night.room_amount, night.meal_amount) else {
+            previews.push(NightPreview {
+                reservation_room: stay,
+                room_number: night.room_number,
+                date,
+                room_amount: 0,
+                meal_amount: 0,
+                currency: night.currency,
+                problem: Some(format!("No price for {date}")),
+                already_posted: 0,
+            });
+            continue;
+        };
+        let room_used = used.contains(&format!("room:{stay}:{date}"));
+        let meal_used = meal_amount > 0 && used.contains(&format!("meal_plan:{stay}:{date}"));
+        let charges = 1 + u8::from(meal_amount > 0);
+        let already_posted = u8::from(room_used) + u8::from(meal_used);
+        let problem = if night.room_number.is_none() {
+            Some("No room assigned".to_owned())
+        } else if already_posted < charges && !has_rate(tx, &mut rated, property, &night.currency, date).await? {
+            Some(format!("No exchange rate for {} on {date}", night.currency))
+        } else {
+            None
+        };
+        previews.push(NightPreview {
+            reservation_room: stay,
+            room_number: night.room_number,
+            date,
+            room_amount,
+            meal_amount,
+            currency: night.currency,
+            problem,
+            already_posted,
+        });
+    }
+    Ok(previews)
+}
+
+/// Whether a rate for `currency` is in force on `date`, looked up once per currency into `rated`.
+async fn has_rate(
+    tx: &mut Tx,
+    rated: &mut HashMap<String, bool>,
+    property: Uuid,
+    currency: &str,
+    date: Date,
+) -> Result<bool, FolioError> {
+    if let Some(&found) = rated.get(currency) {
+        return Ok(found);
+    }
+    let found = fx::rate_for(tx, property, currency, date).await?.is_some();
+    rated.insert(currency.to_owned(), found);
+    Ok(found)
+}
+
+/// Posts `date`'s night of `stay` if it is still checked in and in house on that date (`None` when it is not), unless
+/// the night audit has closed `date` (`Conflict`).
 async fn post_stay_date(
     tx: &mut Tx,
     tenant: TenantId,
     user: Option<UserId>,
+    property: Uuid,
     stay: Uuid,
     date: Date,
 ) -> Result<Option<Counts>, FolioError> {
+    if date < business_date(tx, property).await? {
+        return Err(FolioError::Conflict("That day is closed".into()));
+    }
     let in_house: Option<Uuid> = sqlx::query_scalar(
         "select id from reservation_room
          where id = $1 and status = 'checked_in' and arrival <= $2 and $2 < arrival + nights
@@ -153,7 +288,7 @@ async fn post_stay_date(
         .pop()
         .ok_or_else(|| FolioError::Conflict(format!("the stay has no price for {date}")))?;
     let mut counts = Counts::default();
-    post_night(tx, tenant, user, stay, &night, &mut counts).await?;
+    post_night(tx, tenant, user, stay, &night, date, &mut counts).await?;
     Ok(Some(counts))
 }
 
@@ -161,6 +296,10 @@ async fn post_stay_date(
 /// returns the number of lines posted. Check-out calls it, holding the stay's row, before marking the stay checked
 /// out, with `before` = `min(departure, business date + 1)`: the business date's own night is unposted until the
 /// night audit posts it. A stay arriving and departing the same day has no nights and posts nothing.
+///
+/// A night of a day the night audit has already closed (one it missed) posts on the property's business date, read
+/// `for share`, so nothing lands on a closed day: its key and description keep the night's date, and its revenue
+/// counts on the day it posts.
 pub async fn post_unposted_nights(
     tx: &mut Tx,
     tenant: TenantId,
@@ -169,8 +308,11 @@ pub async fn post_unposted_nights(
     before: Date,
 ) -> Result<u32, FolioError> {
     let mut counts = Counts::default();
-    for night in nights(tx, reservation_room, None, before).await? {
-        post_night(tx, tenant, user, reservation_room, &night, &mut counts).await?;
+    let nights = nights(tx, reservation_room, None, before).await?;
+    let Some(first) = nights.first() else { return Ok(0) };
+    let today = business_date(tx, first.property_id).await?;
+    for night in &nights {
+        post_night(tx, tenant, user, reservation_room, night, today, &mut counts).await?;
     }
     Ok(counts.lines)
 }
@@ -286,13 +428,15 @@ async fn nights(tx: &mut Tx, stay: Uuid, from: Option<Date>, before: Date) -> Re
     .await
 }
 
-/// Posts `night`'s room charge and, when it has one, its meal-plan charge, each unless its key is already used.
+/// Posts `night`'s room charge and, when it has one, its meal-plan charge, each unless its key is already used, on
+/// the later of the night's date and `today` (the property's business date): a closed day takes no new lines.
 async fn post_night(
     tx: &mut Tx,
     tenant: TenantId,
     user: Option<UserId>,
     stay: Uuid,
     night: &Night,
+    today: Date,
     counts: &mut Counts,
 ) -> Result<(), FolioError> {
     let room =
@@ -318,7 +462,7 @@ async fn post_night(
             quantity: 1,
             unit_net: amount,
             currency: night.currency.clone(),
-            business_date: date,
+            business_date: date.max(today),
             posting_key: Some(key),
             inclusive: night.inclusive,
         };

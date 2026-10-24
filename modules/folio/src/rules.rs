@@ -430,7 +430,7 @@ pub async fn apply_preset(
 ) -> Result<PresetApplied, FolioError> {
     lock_property(tx, property).await?;
     let (today, small_turnover): (Date, bool) =
-        sqlx::query_as("select business_date, tdl_small_turnover from property where id = $1")
+        sqlx::query_as("select business_date, tdl_small_turnover from property where id = $1 for share")
             .bind(property)
             .fetch_one(&mut **tx)
             .await?;

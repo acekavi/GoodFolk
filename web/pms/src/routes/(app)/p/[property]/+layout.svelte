@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { createQuery } from '@tanstack/svelte-query';
 	import { can, fetchMe } from '$lib/session';
+	import { fetchOpsAlerts, opsAlertLabel, opsAlertsKey, seesOpsAlerts } from '$lib/night-audit';
 	import { fetchFxAlert, fxAlertKey, seesFxBanner, settingsAccess } from '$lib/settings';
 
 	let { children } = $props();
@@ -11,6 +12,7 @@
 	const property = $derived(page.params.property ?? '');
 	// The profile is cached by the app layout; until it loads, the link is not offered.
 	const seesHousekeeping = $derived(!!me.data && can(me.data, 'housekeepingView', property));
+	const seesNightAudit = $derived(!!me.data && can(me.data, 'nightAudit', property));
 	const links = $derived([
 		{ href: resolve('/(app)/p/[property]', { property }), label: 'Overview' },
 		{ href: resolve('/(app)/p/[property]/tape', { property }), label: 'Tape chart' },
@@ -20,6 +22,9 @@
 		},
 		...(seesHousekeeping
 			? [{ href: resolve('/(app)/p/[property]/housekeeping', { property }), label: 'Housekeeping' }]
+			: []),
+		...(seesNightAudit
+			? [{ href: resolve('/(app)/p/[property]/night-audit', { property }), label: 'Night audit' }]
 			: []),
 		{ href: resolve('/(app)/p/[property]/accounts', { property }), label: 'Accounts' },
 		{ href: resolve('/(app)/p/[property]/room-types', { property }), label: 'Room types' },
@@ -45,6 +50,14 @@
 		queryFn: ({ signal }) => fetchFxAlert(property, signal),
 		enabled: fxBanner
 	}));
+	// Owners and managers see what needs a person: a failed automatic close, or drifted inventory counts.
+	const opsBanner = $derived(!!me.data && seesOpsAlerts(me.data, property));
+	const opsAlerts = createQuery(() => ({
+		queryKey: opsAlertsKey(property),
+		queryFn: ({ signal }) => fetchOpsAlerts(property, signal),
+		enabled: opsBanner
+	}));
+	const nightAudit = $derived(resolve('/(app)/p/[property]/night-audit', { property }));
 	const exchangeRates = $derived(
 		resolve('/(app)/p/[property]/settings/exchange-rates', { property })
 	);
@@ -71,6 +84,16 @@
 		<span>Exchange rates: {fxAlert.data.message}</span>
 		<a href={exchangeRates}>Go to exchange rates</a>
 	</div>
+{/if}
+{#if opsBanner}
+	{#each opsAlerts.data ?? [] as alert (alert.kind)}
+		<div class="banner" role="alert">
+			<span>{opsAlertLabel(alert.kind)}: {alert.message}</span>
+			{#if alert.kind === 'AUDIT' && seesNightAudit && page.url.pathname !== nightAudit}
+				<a href={nightAudit}>Go to the night audit</a>
+			{/if}
+		</div>
+	{/each}
 {/if}
 {@render children()}
 
