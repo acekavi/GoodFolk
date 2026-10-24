@@ -7185,6 +7185,75 @@
           }
         }
       },
+      "DepositDue": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "at_booking"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "days",
+              "type"
+            ],
+            "properties": {
+              "days": {
+                "type": "integer",
+                "format": "int32"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "days_before_arrival"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "When a deposit is due: on the business date of the booking, or `days` (0 to 365) before arrival."
+      },
+      "DepositKind": {
+        "type": "string",
+        "description": "How a deposit is priced: `percent` = basis points of the stay's total, `nights` = the first N nights' room\namounts, `amount` = minor units in the plan's currency.",
+        "enum": [
+          "percent",
+          "nights",
+          "amount"
+        ]
+      },
+      "DepositRule": {
+        "type": "object",
+        "description": "What a plan asks for in advance. Advisory: it is shown and listed, never enforced. Copied onto each room at\nbooking (`reservation_room.deposit_terms`), so a later change leaves existing bookings alone.",
+        "required": [
+          "kind",
+          "value",
+          "due"
+        ],
+        "properties": {
+          "due": {
+            "$ref": "#/components/schemas/DepositDue"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/DepositKind"
+          },
+          "value": {
+            "type": "integer",
+            "format": "int64",
+            "description": "1 to 10000 basis points (`percent`), 1 to 30 nights (`nights`) or 1 to 100000000000 minor units (`amount`)."
+          }
+        }
+      },
       "DocumentKind": {
         "type": "string",
         "description": "The kind of ID document a guest document is.",
@@ -9004,6 +9073,17 @@
           },
           "currency": {
             "type": "string"
+          },
+          "deposit_rule": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DepositRule",
+                "description": "The plan's own deposit rule; a derived plan never takes its parent's."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "depth": {
             "type": "integer",

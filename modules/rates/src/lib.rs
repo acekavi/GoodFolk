@@ -19,8 +19,8 @@ pub use meals::{
 };
 pub use offers::{Offer, OfferRequest, load_offers};
 pub use plans::{
-    ChangeMode, MealPlan, NewRatePlan, PlanKind, RatePlan, RatePlanChanges, Residency, Segment, create_rate_plan,
-    list_rate_plans, update_rate_plan,
+    ChangeMode, DepositDue, DepositKind, DepositRule, MealPlan, NewRatePlan, PlanKind, RatePlan, RatePlanChanges,
+    Residency, Segment, create_rate_plan, list_rate_plans, update_rate_plan,
 };
 pub use policies::{
     CancellationPolicy, CancellationPolicyChanges, CancellationRule, NewCancellationPolicy, Penalty, PenaltyKind,

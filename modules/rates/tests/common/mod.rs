@@ -93,6 +93,7 @@ impl Hotel {
             inherit_restrictions: false,
             allowed_meal_plans: vec![MealPlan::Ro, MealPlan::Bb],
             cancellation_policy_id: None,
+            deposit_rule: None,
             room_type_ids: vec![self.deluxe.id, self.standard.id],
         }
     }

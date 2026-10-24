@@ -28,8 +28,8 @@ pub use close::{
 pub use stats::{BreakdownRow, DAY_LINES_SQL, DailyStats, compute, daily_stats, store};
 
 pub use review::{
-    ARRIVALS_SQL, ArrivalRow, BookingBills, CategoryTotal, DEPARTURES_SQL, DepartureRow, NightAudit, OutletBills,
-    PaymentGroup, PosBillRow, blocking, night_audit,
+    ARRIVALS_SQL, ArrivalRow, BookingBills, CategoryTotal, DEPARTURES_SQL, DepartureRow, DepositRow, NightAudit,
+    OutletBills, PaymentGroup, PosBillRow, blocking, night_audit,
 };
 
 use uuid::Uuid;

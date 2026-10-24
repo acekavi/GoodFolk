@@ -334,6 +334,7 @@ pub async fn create_plan(
         inherit_restrictions: body.inherit_restrictions,
         allowed_meal_plans: body.allowed_meal_plans,
         cancellation_policy_id: body.cancellation_policy_id,
+        deposit_rule: None,
         room_type_ids: body.room_type_ids,
     };
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
@@ -367,6 +368,7 @@ pub async fn update_plan(
         inherit_restrictions: body.inherit_restrictions,
         allowed_meal_plans: body.allowed_meal_plans,
         cancellation_policy_id: body.cancellation_policy_id,
+        deposit_rule: None,
         room_type_ids: body.room_type_ids,
         active: body.active,
     };

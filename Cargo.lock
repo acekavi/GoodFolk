@@ -328,6 +328,7 @@ dependencies = [
  "fx",
  "property",
  "rand 0.9.5",
+ "rates",
  "reservations",
  "rooms",
  "rust_decimal",

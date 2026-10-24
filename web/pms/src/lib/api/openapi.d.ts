@@ -2379,6 +2379,35 @@ export interface components {
              */
             version: number;
         };
+        /** @description When a deposit is due: on the business date of the booking, or `days` (0 to 365) before arrival. */
+        DepositDue: {
+            /** @enum {string} */
+            type: "at_booking";
+        } | {
+            /** Format: int32 */
+            days: number;
+            /** @enum {string} */
+            type: "days_before_arrival";
+        };
+        /**
+         * @description How a deposit is priced: `percent` = basis points of the stay's total, `nights` = the first N nights' room
+         *     amounts, `amount` = minor units in the plan's currency.
+         * @enum {string}
+         */
+        DepositKind: "percent" | "nights" | "amount";
+        /**
+         * @description What a plan asks for in advance. Advisory: it is shown and listed, never enforced. Copied onto each room at
+         *     booking (`reservation_room.deposit_terms`), so a later change leaves existing bookings alone.
+         */
+        DepositRule: {
+            due: components["schemas"]["DepositDue"];
+            kind: components["schemas"]["DepositKind"];
+            /**
+             * Format: int64
+             * @description 1 to 10000 basis points (`percent`), 1 to 30 nights (`nights`) or 1 to 100000000000 minor units (`amount`).
+             */
+            value: number;
+        };
         /**
          * @description The kind of ID document a guest document is.
          * @enum {string}
@@ -3106,6 +3135,7 @@ export interface components {
             cancellation_policy_id?: string | null;
             code: string;
             currency: string;
+            deposit_rule?: components["schemas"]["DepositRule"] | null;
             /**
              * Format: int32
              * @description Levels of plans above this one: 0 for standard and custom plans.

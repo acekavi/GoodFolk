@@ -407,6 +407,7 @@ mod tests {
             inherit_restrictions: false,
             allowed_meal_plans: vec![MealPlan::Ro, MealPlan::Bb],
             cancellation_policy_id: None,
+            deposit_rule: None,
             room_type_ids: vec![DELUXE],
             active: true,
             version: 1,

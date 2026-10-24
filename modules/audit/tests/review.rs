@@ -3,7 +3,7 @@
 
 mod common;
 
-use audit::{ArrivalRow, BookingBills, CategoryTotal, DepartureRow, OutletBills, PaymentGroup, PosBillRow};
+use audit::{ArrivalRow, BookingBills, CategoryTotal, DepartureRow, DepositRow, OutletBills, PaymentGroup, PosBillRow};
 use common::{Booked, Hotel, Stay};
 use domain::RoomStatus;
 use folio::{Method, NewCharge, NightPreview, PosTarget, PostReport, Source};
@@ -484,4 +484,104 @@ async fn a_deposit_without_evidence_for_a_non_resident_stay_is_flagged(_: PgPool
     assert_eq!(payments.len(), 1);
     assert_eq!((payments[0].count, payments[0].amount), (3, 8_000));
     assert_eq!(payments[0].flagged, vec![flagged.id]);
+}
+
+/// A deposit rule of `kind` and `value`, due at booking (`None`) or `days` before arrival.
+fn deposit(kind: &str, value: i64, days: Option<i32>) -> Option<serde_json::Value> {
+    let due = match days {
+        None => serde_json::json!({ "type": "at_booking" }),
+        Some(days) => serde_json::json!({ "type": "days_before_arrival", "days": days }),
+    };
+    Some(serde_json::json!({ "kind": kind, "value": value, "due": due }))
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn deposits_due_by_the_business_date_and_still_owed_are_listed_outside_blocking(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts).await;
+    let p = hotel.property;
+    let d = hotel.business_date;
+    hotel.rate(p, "USD", Decimal::new(300, 0)).await;
+    // Due on D, two days before arrival: the whole 10000.
+    let early = hotel
+        .stay(Stay {
+            deposit_terms: deposit("percent", 10_000, Some(2)),
+            first_name: "Kamal",
+            last_name: "Perera",
+            ..Stay::new(p, "confirmed", 2, 3)
+        })
+        .await;
+    // Due at booking (D − 30): one night, part paid.
+    let owed = hotel.stay(Stay { deposit_terms: deposit("nights", 1, None), ..Stay::new(p, "confirmed", 5, 7) }).await;
+    hotel.pay(p, owed.deposit, Method::Cash, 4_000, "LKR", None).await;
+    // Due on D + 13.
+    hotel.stay(Stay { deposit_terms: deposit("nights", 1, Some(7)), ..Stay::new(p, "confirmed", 20, 22) }).await;
+    // Paid in full, net of a refund.
+    let paid =
+        hotel.stay(Stay { deposit_terms: deposit("amount", 5_000, None), ..Stay::new(p, "confirmed", 3, 4) }).await;
+    let payment = hotel.pay(p, paid.deposit, Method::Cash, 6_000, "LKR", None).await;
+    hotel.refund(p, payment.id, 1_000).await;
+    // Arrived, so no room left to arrive.
+    hotel.stay(Stay { deposit_terms: deposit("nights", 1, None), ..Stay::new(p, "checked_in", -1, 2) }).await;
+    let cancelled =
+        hotel.stay(Stay { deposit_terms: deposit("nights", 1, None), ..Stay::new(p, "confirmed", 4, 5) }).await;
+    let mut tx = hotel.tx().await;
+    sqlx::query(
+        "update reservation_room set status = 'cancelled', cancelled_at = now(), cancellation_penalty = 0,
+                cancelled_business_date = $2
+         where id = $1",
+    )
+    .bind(cancelled.id)
+    .bind(d)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    hotel.stay(Stay::new(p, "confirmed", 1, 2)).await;
+    // Two rooms in two currencies, one with a part payment.
+    let mixed = hotel
+        .stay(Stay {
+            deposit_terms: deposit("amount", 3_000, None),
+            last_name: "Fernando",
+            first_name: "",
+            ..Stay::new(p, "tentative", 8, 9)
+        })
+        .await;
+    hotel
+        .stay(Stay {
+            deposit_terms: deposit("nights", 1, None),
+            currency: "USD",
+            room_amount: 12_000,
+            of: Some(&mixed),
+            ..Stay::new(p, "confirmed", 9, 11)
+        })
+        .await;
+    hotel.pay(p, mixed.deposit, Method::Cash, 2_000, "USD", None).await;
+
+    let review = hotel.night_audit(p).await;
+
+    let row = |booked: &Booked, guest: &str, arrival, currency: &str, due, paid, due_date| DepositRow {
+        reservation_id: booked.reservation,
+        confirmation: booked.confirmation.clone(),
+        guest: guest.into(),
+        arrival: hotel.day(arrival),
+        currency: currency.into(),
+        due,
+        paid,
+        due_date,
+    };
+    assert_eq!(
+        review.deposits_outstanding,
+        vec![
+            row(&early, "Kamal Perera", 2, "LKR", 10_000, 0, d),
+            row(&owed, "Ada Silva", 5, "LKR", 10_000, 4_000, hotel.day(-30)),
+            row(&mixed, "Fernando", 8, "LKR", 3_000, 0, hotel.day(-30)),
+            row(&mixed, "Fernando", 8, "USD", 12_000, 2_000, hotel.day(-30)),
+        ]
+    );
+    assert_eq!(review.blocking, 0, "an owed deposit blocks nothing");
+    assert!(review.arrivals.is_empty() && review.departures.is_empty());
+    assert_eq!(audit::blocking(&mut hotel.tx().await, p, d).await.unwrap(), 0);
 }
