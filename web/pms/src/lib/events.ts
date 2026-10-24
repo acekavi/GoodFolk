@@ -1,4 +1,5 @@
 import type { QueryClient } from '@tanstack/svelte-query';
+import { laundryKey } from './laundry';
 import { linenKey } from './linen';
 import { auditKeys, nightAuditKey, opsAlertsKey } from './night-audit';
 import { rangeTouchesMonth, tapeEventTiles } from './tape';
@@ -19,6 +20,8 @@ export function applyEvent(client: QueryClient, type: string, data: string): voi
 			else if (key.startsWith('folio:')) invalidateFolio(client, key.slice('folio:'.length));
 			else if (key.startsWith('audit:')) invalidateAudit(client, key.slice('audit:'.length));
 			else if (key.startsWith('linen:')) invalidateLinen(client, key.slice('linen:'.length));
+			else if (key.startsWith('laundry:'))
+				void client.invalidateQueries({ queryKey: laundryKey(key.slice('laundry:'.length)) });
 			else {
 				void client.invalidateQueries({ queryKey: [key] });
 				// A reservation change can resolve, or add, an arrival or departure of the review.

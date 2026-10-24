@@ -14,6 +14,7 @@
 	const seesHousekeeping = $derived(!!me.data && can(me.data, 'housekeepingView', property));
 	const seesNightAudit = $derived(!!me.data && can(me.data, 'nightAudit', property));
 	const seesLinen = $derived(!!me.data && can(me.data, 'linenView', property));
+	const seesLaundry = $derived(!!me.data && can(me.data, 'laundryOrders', property));
 	const links = $derived([
 		{ href: resolve('/(app)/p/[property]', { property }), label: 'Overview' },
 		{ href: resolve('/(app)/p/[property]/tape', { property }), label: 'Tape chart' },
@@ -26,6 +27,9 @@
 			: []),
 		...(seesLinen
 			? [{ href: resolve('/(app)/p/[property]/linen', { property }), label: 'Linen' }]
+			: []),
+		...(seesLaundry
+			? [{ href: resolve('/(app)/p/[property]/laundry', { property }), label: 'Guest laundry' }]
 			: []),
 		...(seesNightAudit
 			? [{ href: resolve('/(app)/p/[property]/night-audit', { property }), label: 'Night audit' }]

@@ -92,19 +92,21 @@ describe('settingsAccess', () => {
 			({ page, edit }) => `${page}:${edit ? 'edit' : 'view'}`
 		);
 
-	it('lets the owner change taxes, outlets and exchange rates', () => {
+	it('lets the owner change taxes, outlets, exchange rates and laundry prices', () => {
 		expect(pages([{ role: 'owner' }])).toEqual([
 			'taxes:edit',
 			'outlets:edit',
-			'exchange-rates:edit'
+			'exchange-rates:edit',
+			'laundry-prices:edit'
 		]);
 	});
 
-	it('lets a manager set exchange rates and only read taxes and outlets', () => {
+	it('lets a manager set exchange rates and laundry prices and only read taxes and outlets', () => {
 		expect(pages([{ role: 'manager', property_id: 'p1' }])).toEqual([
 			'taxes:view',
 			'outlets:view',
-			'exchange-rates:edit'
+			'exchange-rates:edit',
+			'laundry-prices:edit'
 		]);
 	});
 

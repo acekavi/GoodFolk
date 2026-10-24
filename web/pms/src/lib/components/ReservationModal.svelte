@@ -47,6 +47,7 @@
 	const checkInAllowed = $derived(!!me.data && can(me.data, 'frontDeskCheckIn', propertyId));
 	const viewConditions = $derived(!!me.data && can(me.data, 'housekeepingView', propertyId));
 	const supervise = $derived(!!me.data && can(me.data, 'housekeepingSupervise', propertyId));
+	const laundry = $derived(!!me.data && can(me.data, 'laundryOrders', propertyId));
 	const manageDocuments = $derived(!!me.data && can(me.data, 'guestDocumentsManage', propertyId));
 	const viewFolios = $derived(!!me.data && can(me.data, 'folioView', propertyId));
 	const folioCan = $derived({
@@ -252,6 +253,7 @@
 						{checkInAllowed}
 						{viewConditions}
 						{supervise}
+						{laundry}
 					/>
 				{/each}
 

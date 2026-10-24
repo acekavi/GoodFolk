@@ -162,27 +162,33 @@ export function isValidRate(text: string): boolean {
 	return !!match && /[1-9]/.test(match[1] + (match[2] ?? ''));
 }
 
-export type SettingsPage = 'taxes' | 'outlets' | 'exchange-rates';
+export type SettingsPage = 'taxes' | 'outlets' | 'exchange-rates' | 'laundry-prices';
 
 /**
- * The settings pages a user sees at the property, and whether each can be changed there. Each is read with
- * `FolioView`; taxes and outlets are changed with `TaxSettingsManage`, exchange rates with `FxOverride`.
+ * The settings pages a user sees at the property, and whether each can be changed there. Taxes, outlets and
+ * exchange rates are read with `FolioView`; taxes and outlets are changed with `TaxSettingsManage`, exchange rates
+ * with `FxOverride`. Laundry prices are seen and changed with `LaundryPricesManage`.
  */
 export function settingsAccess(
 	profile: Profile,
 	propertyId: string
 ): { page: SettingsPage; label: string; edit: boolean }[] {
-	if (!can(profile, 'folioView', propertyId)) return [];
-	const taxes = can(profile, 'taxSettingsManage', propertyId);
-	return [
-		{ page: 'taxes', label: 'Taxes', edit: taxes },
-		{ page: 'outlets', label: 'Outlets', edit: taxes },
-		{
-			page: 'exchange-rates',
-			label: 'Exchange rates',
-			edit: can(profile, 'fxOverride', propertyId)
-		}
-	];
+	const pages: { page: SettingsPage; label: string; edit: boolean }[] = [];
+	if (can(profile, 'folioView', propertyId)) {
+		const taxes = can(profile, 'taxSettingsManage', propertyId);
+		pages.push(
+			{ page: 'taxes', label: 'Taxes', edit: taxes },
+			{ page: 'outlets', label: 'Outlets', edit: taxes },
+			{
+				page: 'exchange-rates',
+				label: 'Exchange rates',
+				edit: can(profile, 'fxOverride', propertyId)
+			}
+		);
+	}
+	if (can(profile, 'laundryPricesManage', propertyId))
+		pages.push({ page: 'laundry-prices', label: 'Laundry prices', edit: true });
+	return pages;
 }
 
 /** Whether the exchange-rate alert banner is shown: to those who can set a rate by hand. */
