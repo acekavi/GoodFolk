@@ -188,9 +188,9 @@ pub enum Permission {
     NightAudit,
     /// Allows: seeing linen items, locations, par levels, stock, the movement ledger and laundry batches.
     LinenView,
-    /// Allows: receiving, transferring and writing off linen, and sending a laundry batch out and back.
+    /// Allows: receiving, transferring, sending and returning linen (laundry batches out and back).
     LinenMove,
-    /// Allows: creating and changing linen items, locations and par levels.
+    /// Allows: linen items, locations, par levels and write-offs.
     LinenManage,
     /// Allows: seeing guests' laundry orders, collecting one from a stay, moving it along, delivering and cancelling it.
     LaundryOrders,

@@ -10,7 +10,7 @@ create table linen_item (
   code text not null check (code ~ '^[A-Z0-9_]{1,20}$'),
   name text not null check (length(name) between 1 and 100),
   active boolean not null default true, version integer not null default 1,
-  unique (property_id, code), unique (tenant_id, id), unique (property_id, id),
+  unique (property_id, code), unique (property_id, id),
   foreign key (tenant_id, property_id) references property (tenant_id, id) on delete cascade
 );
 
@@ -20,7 +20,7 @@ create table linen_location (
   kind text not null check (kind in ('store', 'pantry', 'laundry', 'vendor')),
   section_id uuid,
   active boolean not null default true, version integer not null default 1,
-  unique (property_id, name), unique (tenant_id, id), unique (property_id, id),
+  unique (property_id, name), unique (property_id, id),
   check ((kind = 'pantry') = (section_id is not null)),
   foreign key (tenant_id, property_id) references property (tenant_id, id) on delete cascade,
   foreign key (property_id, section_id) references housekeeping_section (property_id, id)
@@ -46,7 +46,8 @@ create table laundry_batch (
   received_by uuid, received_at timestamptz,
   version integer not null default 1,
   check ((status = 'received') = (received_at is not null)),
-  unique (tenant_id, id),
+  constraint laundry_batch_locations_check check (from_location_id <> to_location_id),
+  unique (property_id, id),
   foreign key (tenant_id, property_id) references property (tenant_id, id) on delete cascade,
   foreign key (property_id, to_location_id) references linen_location (property_id, id),
   foreign key (property_id, from_location_id) references linen_location (property_id, id)
@@ -71,7 +72,7 @@ create table linen_movement (
   foreign key (property_id, item_id) references linen_item (property_id, id),
   foreign key (property_id, from_location_id) references linen_location (property_id, id),
   foreign key (property_id, to_location_id) references linen_location (property_id, id),
-  foreign key (tenant_id, batch_id) references laundry_batch (tenant_id, id)
+  foreign key (property_id, batch_id) references laundry_batch (property_id, id)
 );
 create index linen_movement_property_idx on linen_movement (property_id, moved_at desc);
 create index linen_movement_batch_idx on linen_movement (batch_id) where batch_id is not null;
@@ -92,7 +93,7 @@ create table laundry_price (
   name text not null check (length(name) between 1 and 100),
   price bigint not null check (price > 0),
   active boolean not null default true, version integer not null default 1,
-  unique (property_id, item_code, service), unique (tenant_id, id), unique (property_id, id),
+  unique (property_id, item_code, service), unique (property_id, id),
   foreign key (tenant_id, property_id) references property (tenant_id, id) on delete cascade
 );
 
@@ -107,7 +108,7 @@ create table laundry_order (
   delivered_at timestamptz,
   version integer not null default 1,
   check ((status = 'delivered') = (delivered_at is not null)),
-  unique (tenant_id, id),
+  unique (property_id, id),
   foreign key (tenant_id, property_id) references property (tenant_id, id) on delete cascade,
   -- 0030 dropped reservation_room (tenant_id, id); the property key still keeps the stay in this property.
   foreign key (property_id, reservation_room_id) references reservation_room (property_id, id)
@@ -116,13 +117,14 @@ create index laundry_order_open_idx on laundry_order (property_id, status) where
 create index laundry_order_stay_idx on laundry_order (reservation_room_id);
 
 create table laundry_order_line (
-  tenant_id uuid not null, order_id uuid not null, position integer not null check (position between 1 and 50),
+  tenant_id uuid not null, property_id uuid not null, order_id uuid not null, position integer not null check (position between 1 and 50),
   price_id uuid not null, item_code text not null, service text not null, name text not null,
   unit_price bigint not null check (unit_price > 0),
   quantity integer not null check (quantity between 1 and 100),
   primary key (order_id, position),
-  foreign key (tenant_id, order_id) references laundry_order (tenant_id, id) on delete cascade,
-  foreign key (tenant_id, price_id) references laundry_price (tenant_id, id)
+  foreign key (tenant_id, property_id) references property (tenant_id, id) on delete cascade,
+  foreign key (property_id, order_id) references laundry_order (property_id, id) on delete cascade,
+  foreign key (property_id, price_id) references laundry_price (property_id, id)
 );
 
 do $$

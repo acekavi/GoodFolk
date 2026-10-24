@@ -159,10 +159,12 @@ async fn a_pantry_has_a_section_and_nothing_else_does(_: PgPoolOptions, opts: Pg
     };
 
     let pantry_without_section = location("Pantry", "pantry", None).await;
+    let store_with_section = location("Annex", "store", Some(section)).await;
     let laundry_with_section = location("Annex", "laundry", Some(section)).await;
 
     assert_eq!(constraint(pantry_without_section), "linen_location_check");
     assert_eq!(constraint(laundry_with_section), "linen_location_check");
+    assert_eq!(constraint(store_with_section), "linen_location_check");
     location("East pantry", "pantry", Some(section)).await.unwrap();
 }
 
@@ -222,4 +224,132 @@ async fn the_linen_alert_kind_is_accepted(_: PgPoolOptions, opts: PgConnectOptio
     )
     .await;
     assert_eq!(unknown.as_deref(), Some(CHECK_VIOLATION));
+}
+
+/// A second property of `hotel`'s tenant with two locations, a batch between them, a price and an order for a stay.
+/// Returns the property, batch, price and order.
+async fn other_property(pool: &PgPool, hotel: &Hotel) -> (Uuid, Uuid, Uuid, Uuid) {
+    let ids: [Uuid; 11] = std::array::from_fn(|_| Uuid::now_v7());
+    let [property, from, to, batch, price, order, room_type, plan, guest, reservation, stay] = ids;
+    let statements = [
+        "insert into property (id, tenant_id, code, name, timezone, base_currency, business_date)
+         values ($2, $1, 'OTH', 'Other', 'Asia/Colombo', 'LKR', current_date)",
+        "insert into linen_location (id, tenant_id, property_id, name, kind) values ($3, $1, $2, 'Store', 'store')",
+        "insert into linen_location (id, tenant_id, property_id, name, kind) values ($4, $1, $2, 'Laundry', 'laundry')",
+        "insert into laundry_batch (id, tenant_id, property_id, to_location_id, from_location_id, status)
+         values ($5, $1, $2, $4, $3, 'sent')",
+        "insert into laundry_price (id, tenant_id, property_id, item_code, service, name, price)
+         values ($6, $1, $2, 'SHIRT', 'wash', 'Shirt, wash', 25000)",
+        "insert into room_type (id, tenant_id, property_id, code, name, base_occupancy, max_adults, max_children, max_occupancy)
+         values ($8, $1, $2, 'DLX', 'Deluxe', 2, 2, 0, 2)",
+        "insert into rate_plan (id, tenant_id, property_id, code, name, kind, segment, currency)
+         values ($9, $1, $2, 'BAR', 'Best available', 'standard', 'IBE', 'USD')",
+        "insert into guest (id, tenant_id, first_name, last_name, residency) values ($10, $1, 'Ada', 'Silva', 'resident')",
+        "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id,
+                                  booked_business_date)
+         values ($11, $1, $2, 'OTH-000001', 'front_desk', $10, current_date)",
+        "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, stay, adults, children,
+                                       rate_plan_id, meal_plan, status, primary_guest_id, currency)
+         values ($12, $1, $2, $11, $8, daterange(current_date, current_date + 2), 2, 0, $9, 'RO', 'confirmed', $10, 'USD')",
+        "insert into laundry_order (id, tenant_id, property_id, reservation_room_id, room_number, status)
+         values ($7, $1, $2, $12, '101', 'collected')",
+    ];
+    for statement in statements {
+        sqlx::query(statement)
+            .bind(hotel.tenant)
+            .bind(property)
+            .bind(from)
+            .bind(to)
+            .bind(batch)
+            .bind(price)
+            .bind(order)
+            .bind(room_type)
+            .bind(plan)
+            .bind(guest)
+            .bind(reservation)
+            .bind(stay)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    (property, batch, price, order)
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_movement_cannot_name_another_propertys_batch(_: PgPoolOptions, opts: PgConnectOptions) {
+    let owner = PgPoolOptions::new().max_connections(1).connect_with(opts).await.unwrap();
+    let hotel = hotel(&owner).await;
+    let (_, batch, _, _) = other_property(&owner, &hotel).await;
+
+    let result = sqlx::query(
+        "insert into linen_movement (id, tenant_id, property_id, item_id, kind, quantity, from_location_id,
+                                     to_location_id, batch_id, business_date)
+         values (gen_random_uuid(), $1, $2, $3, 'send', 1, $4, $5, $6, current_date)",
+    )
+    .bind(hotel.tenant)
+    .bind(hotel.property)
+    .bind(hotel.item)
+    .bind(hotel.store)
+    .bind(hotel.laundry)
+    .bind(batch)
+    .execute(&owner)
+    .await;
+
+    assert_eq!(constraint(result), "linen_movement_property_id_batch_id_fkey");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_order_line_stays_within_its_orders_property(_: PgPoolOptions, opts: PgConnectOptions) {
+    let owner = PgPoolOptions::new().max_connections(1).connect_with(opts).await.unwrap();
+    let hotel = hotel(&owner).await;
+    let (other, _, price, order) = other_property(&owner, &hotel).await;
+    let own_price = Uuid::now_v7();
+    sqlx::query(
+        "insert into laundry_price (id, tenant_id, property_id, item_code, service, name, price)
+         values ($3, $1, $2, 'SHIRT', 'wash', 'Shirt, wash', 25000)",
+    )
+    .bind(hotel.tenant)
+    .bind(hotel.property)
+    .bind(own_price)
+    .execute(&owner)
+    .await
+    .unwrap();
+    let line = |property: Uuid, order: Uuid, price: Uuid| {
+        sqlx::query(
+            "insert into laundry_order_line (tenant_id, property_id, order_id, position, price_id, item_code, service,
+                                             name, unit_price, quantity)
+             values ($1, $2, $3, 1, $4, 'SHIRT', 'wash', 'Shirt, wash', 25000, 1)",
+        )
+        .bind(hotel.tenant)
+        .bind(property)
+        .bind(order)
+        .bind(price)
+        .execute(&owner)
+    };
+
+    let foreign_order = line(hotel.property, order, own_price).await;
+    let foreign_price = line(other, order, own_price).await;
+    let own = line(other, order, price).await;
+
+    assert_eq!(constraint(foreign_order), "laundry_order_line_property_id_order_id_fkey");
+    assert_eq!(constraint(foreign_price), "laundry_order_line_property_id_price_id_fkey");
+    own.unwrap();
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_batch_goes_between_two_locations(_: PgPoolOptions, opts: PgConnectOptions) {
+    let owner = PgPoolOptions::new().max_connections(1).connect_with(opts).await.unwrap();
+    let hotel = hotel(&owner).await;
+
+    let result = sqlx::query(
+        "insert into laundry_batch (id, tenant_id, property_id, to_location_id, from_location_id, status)
+         values (gen_random_uuid(), $1, $2, $3, $3, 'sent')",
+    )
+    .bind(hotel.tenant)
+    .bind(hotel.property)
+    .bind(hotel.laundry)
+    .execute(&owner)
+    .await;
+
+    assert_eq!(constraint(result), "laundry_batch_locations_check");
 }

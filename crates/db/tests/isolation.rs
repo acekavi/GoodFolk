@@ -1243,9 +1243,9 @@ async fn seed_laundry(pool: &PgPool, tenant: TenantId) {
          select $7, $1, id, 'SHIRT', 'wash', 'Shirt, wash', 25000 from property",
         "insert into laundry_order (id, tenant_id, property_id, reservation_room_id, room_number, status)
          select $8, $1, property_id, id, '101', 'collected' from reservation_room",
-        "insert into laundry_order_line (tenant_id, order_id, position, price_id, item_code, service, name, unit_price,
-                                         quantity)
-         values ($1, $8, 1, $7, 'SHIRT', 'wash', 'Shirt, wash', 25000, 3)",
+        "insert into laundry_order_line (tenant_id, property_id, order_id, position, price_id, item_code, service, name,
+                                         unit_price, quantity)
+         select $1, id, $8, 1, $7, 'SHIRT', 'wash', 'Shirt, wash', 25000, 3 from property",
     ];
     for statement in statements {
         sqlx::query(statement)
@@ -1378,8 +1378,8 @@ async fn laundry_order_lines_are_isolated_by_tenant(_: PgPoolOptions, opts: PgCo
     assert_table_isolated(
         opts,
         "laundry_order_line",
-        "insert into laundry_order_line (tenant_id, order_id, position, price_id, item_code, service, name, unit_price, quantity)
-         select $1, order_id, 2, price_id, item_code, service, name, unit_price, quantity from laundry_order_line",
+        "insert into laundry_order_line (tenant_id, property_id, order_id, position, price_id, item_code, service, name, unit_price, quantity)
+         select $1, property_id, order_id, 2, price_id, item_code, service, name, unit_price, quantity from laundry_order_line",
         Seed::Laundry,
     )
     .await;

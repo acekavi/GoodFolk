@@ -61,9 +61,9 @@ const ACTIONS = {
 	nightAudit: ['owner', 'manager', 'front_desk'],
 	/** Linen items, locations, par, stock, the movement ledger and laundry batches; mirrors `LinenView`. */
 	linenView: ['owner', 'manager', 'hk_supervisor', 'housekeeping'],
-	/** Receive, transfer and write off linen, and send laundry batches out and back; mirrors `LinenMove`. */
+	/** Receive, transfer, send and return linen (laundry batches out and back); mirrors `LinenMove`. */
 	linenMove: ['owner', 'manager', 'hk_supervisor', 'housekeeping'],
-	/** Linen items, locations and par levels; mirrors `LinenManage`. */
+	/** Linen items, locations, par levels and write-offs; mirrors `LinenManage`. */
 	linenManage: ['owner', 'manager', 'hk_supervisor'],
 	/** Guests' laundry orders; mirrors `LaundryOrders`. */
 	laundryOrders: ['owner', 'manager', 'front_desk', 'hk_supervisor', 'housekeeping'],
