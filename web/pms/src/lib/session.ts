@@ -58,7 +58,17 @@ const ACTIONS = {
 	/** POS bills; mirrors `PosPost`. */
 	posPost: ['owner', 'manager'],
 	/** The night-audit review, starting and retrying the close, and the audit history; mirrors `NightAudit`. */
-	nightAudit: ['owner', 'manager', 'front_desk']
+	nightAudit: ['owner', 'manager', 'front_desk'],
+	/** Linen items, locations, par, stock, the movement ledger and laundry batches; mirrors `LinenView`. */
+	linenView: ['owner', 'manager', 'hk_supervisor', 'housekeeping'],
+	/** Receive, transfer and write off linen, and send laundry batches out and back; mirrors `LinenMove`. */
+	linenMove: ['owner', 'manager', 'hk_supervisor', 'housekeeping'],
+	/** Linen items, locations and par levels; mirrors `LinenManage`. */
+	linenManage: ['owner', 'manager', 'hk_supervisor'],
+	/** Guests' laundry orders; mirrors `LaundryOrders`. */
+	laundryOrders: ['owner', 'manager', 'front_desk', 'hk_supervisor', 'housekeeping'],
+	/** The guest laundry price list; mirrors `LaundryPricesManage`. */
+	laundryPricesManage: ['owner', 'manager']
 } satisfies Record<string, Role[]>;
 
 /** UI hint only; the API enforces permissions. A grant counts tenant-wide or for `propertyId`. */

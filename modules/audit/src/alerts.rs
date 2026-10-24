@@ -14,6 +14,8 @@ pub enum AlertKind {
     Audit,
     /// Inventory counters that drifted from the stays they count.
     Drift,
+    /// Linen stock below par in a pantry or the store.
+    Linen,
 }
 
 impl AlertKind {
@@ -21,6 +23,7 @@ impl AlertKind {
         match self {
             AlertKind::Audit => "audit",
             AlertKind::Drift => "drift",
+            AlertKind::Linen => "linen",
         }
     }
 
@@ -28,6 +31,7 @@ impl AlertKind {
         match value {
             "audit" => Some(AlertKind::Audit),
             "drift" => Some(AlertKind::Drift),
+            "linen" => Some(AlertKind::Linen),
             _ => None,
         }
     }

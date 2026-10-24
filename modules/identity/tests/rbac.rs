@@ -67,6 +67,11 @@ fn each_role_has_exactly_its_permissions() {
         FxOverride,
         PosPost,
         NightAudit,
+        LinenView,
+        LinenMove,
+        LinenManage,
+        LaundryOrders,
+        LaundryPricesManage,
     ];
     let expected: [(Role, &[Permission]); 6] = [
         (Role::Owner, &all),
@@ -97,6 +102,11 @@ fn each_role_has_exactly_its_permissions() {
                 FxOverride,
                 PosPost,
                 NightAudit,
+                LinenView,
+                LinenMove,
+                LinenManage,
+                LaundryOrders,
+                LaundryPricesManage,
             ],
         ),
         (
@@ -117,6 +127,7 @@ fn each_role_has_exactly_its_permissions() {
                 FolioPost,
                 InvoiceIssue,
                 NightAudit,
+                LaundryOrders,
             ],
         ),
         (
@@ -130,6 +141,9 @@ fn each_role_has_exactly_its_permissions() {
                 HousekeepingView,
                 HousekeepingUpdate,
                 RoomIssuesReport,
+                LinenView,
+                LinenMove,
+                LaundryOrders,
             ],
         ),
         (
@@ -148,6 +162,10 @@ fn each_role_has_exactly_its_permissions() {
                 HousekeepingUpdate,
                 HousekeepingSupervise,
                 RoomIssuesReport,
+                LinenView,
+                LinenMove,
+                LinenManage,
+                LaundryOrders,
             ],
         ),
     ];
@@ -251,4 +269,25 @@ fn only_owners_and_managers_override_exchange_rates() {
 #[test]
 fn only_owners_and_managers_post_pos_bills() {
     assert_eq!(roles_allowed(Permission::PosPost), [Role::Owner, Role::Manager]);
+}
+
+#[test]
+fn linen_is_kept_by_housekeeping_and_managed_by_supervisors() {
+    let keepers = [Role::Owner, Role::Manager, Role::Housekeeping, Role::HkSupervisor];
+    assert_eq!(roles_allowed(Permission::LinenView), keepers);
+    assert_eq!(roles_allowed(Permission::LinenMove), keepers);
+    assert_eq!(roles_allowed(Permission::LinenManage), [Role::Owner, Role::Manager, Role::HkSupervisor]);
+}
+
+#[test]
+fn guest_laundry_orders_are_taken_by_the_front_desk_and_housekeeping() {
+    assert_eq!(
+        roles_allowed(Permission::LaundryOrders),
+        [Role::Owner, Role::Manager, Role::FrontDesk, Role::Housekeeping, Role::HkSupervisor]
+    );
+}
+
+#[test]
+fn only_owners_and_managers_manage_laundry_prices() {
+    assert_eq!(roles_allowed(Permission::LaundryPricesManage), [Role::Owner, Role::Manager]);
 }

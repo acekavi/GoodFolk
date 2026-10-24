@@ -493,6 +493,7 @@ enum Seed {
     Media,
     Folio,
     NightAudit,
+    Laundry,
 }
 
 impl Seed {
@@ -505,6 +506,7 @@ impl Seed {
             Seed::Media => seed_media(pool, tenant).await,
             Seed::Folio => seed_folio(pool, tenant).await,
             Seed::NightAudit => seed_night_audit(pool, tenant).await,
+            Seed::Laundry => seed_laundry(pool, tenant).await,
         }
     }
 }
@@ -1209,6 +1211,176 @@ async fn ops_alerts_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOpti
         "ops_alert",
         "insert into ops_alert (tenant_id, property_id, kind, message) select $1, property_id, 'drift', 'x' from ops_alert",
         Seed::NightAudit,
+    )
+    .await;
+}
+
+/// On top of [`seed_reservations`], for `tenant`: one row in every Phase 8 table. The stay's room type has a par of
+/// one item, which sits in the store, the pantry and the laundry; one batch is out at the laundry, with its send
+/// movement; one priced service is on an order.
+async fn seed_laundry(pool: &PgPool, tenant: TenantId) {
+    seed_reservations(pool, tenant).await;
+    let ids: [Uuid; 8] = std::array::from_fn(|_| Uuid::now_v7());
+    let [item, store, pantry, laundry, batch, price, order, section] = ids;
+    let mut tx = begin(pool, Scope::tenant(tenant)).await.unwrap();
+    let statements = [
+        "insert into housekeeping_section (id, tenant_id, property_id, name) select $9, $1, id, 'North' from property",
+        "insert into linen_item (id, tenant_id, property_id, code, name) select $2, $1, id, 'SHEET_K', 'King sheet' from property",
+        "insert into linen_location (id, tenant_id, property_id, name, kind) select $3, $1, id, 'Store', 'store' from property",
+        "insert into linen_location (id, tenant_id, property_id, name, kind, section_id)
+         select $4, $1, id, 'North pantry', 'pantry', $9 from property",
+        "insert into linen_location (id, tenant_id, property_id, name, kind) select $5, $1, id, 'Laundry', 'laundry' from property",
+        "insert into linen_par (tenant_id, property_id, room_type_id, item_id, quantity)
+         select $1, property_id, id, $2, 2 from room_type",
+        "insert into linen_stock (tenant_id, property_id, location_id, item_id, quantity)
+         select $1, id, $3, $2, 50 from property",
+        "insert into laundry_batch (id, tenant_id, property_id, to_location_id, from_location_id, status)
+         select $6, $1, id, $5, $3, 'sent' from property",
+        "insert into linen_movement (id, tenant_id, property_id, item_id, kind, quantity, from_location_id, to_location_id,
+                                     batch_id, business_date)
+         select gen_random_uuid(), $1, id, $2, 'send', 10, $3, $5, $6, business_date from property",
+        "insert into laundry_price (id, tenant_id, property_id, item_code, service, name, price)
+         select $7, $1, id, 'SHIRT', 'wash', 'Shirt, wash', 25000 from property",
+        "insert into laundry_order (id, tenant_id, property_id, reservation_room_id, room_number, status)
+         select $8, $1, property_id, id, '101', 'collected' from reservation_room",
+        "insert into laundry_order_line (tenant_id, order_id, position, price_id, item_code, service, name, unit_price,
+                                         quantity)
+         values ($1, $8, 1, $7, 'SHIRT', 'wash', 'Shirt, wash', 25000, 3)",
+    ];
+    for statement in statements {
+        sqlx::query(statement)
+            .bind(tenant.0)
+            .bind(item)
+            .bind(store)
+            .bind(pantry)
+            .bind(laundry)
+            .bind(batch)
+            .bind(price)
+            .bind(order)
+            .bind(section)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn linen_items_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "linen_item",
+        "insert into linen_item (id, tenant_id, property_id, code, name)
+         select gen_random_uuid(), $1, property_id, 'TOWEL_B', 'Bath towel' from linen_item",
+        Seed::Laundry,
+    )
+    .await;
+}
+
+/// [`seed_laundry`] gives each tenant three locations (store, pantry, laundry), so [`assert_table_isolated`]'s count of
+/// one does not fit.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn linen_locations_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts, 1).await;
+    let a = seed_tenant(&pool, "A").await;
+    let b = seed_tenant(&pool, "B").await;
+    seed_laundry(&pool, a).await;
+    seed_laundry(&pool, b).await;
+
+    let seen = visible_rows(&pool, b, "linen_location").await;
+    let err = foreign_insert_error(
+        &pool,
+        b,
+        a,
+        "insert into linen_location (id, tenant_id, property_id, name, kind)
+         select gen_random_uuid(), $1, property_id, 'Vendor', 'vendor' from linen_location where kind = 'store'",
+    )
+    .await;
+
+    assert_eq!(seen, 3, "B sees only its own linen_location rows");
+    assert!(err.contains("row-level security"), "unexpected error: {err}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn linen_pars_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "linen_par",
+        "insert into linen_par (tenant_id, property_id, room_type_id, item_id, quantity)
+         select $1, property_id, room_type_id, item_id, 3 from linen_par",
+        Seed::Laundry,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn laundry_batches_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "laundry_batch",
+        "insert into laundry_batch (id, tenant_id, property_id, to_location_id, from_location_id, status)
+         select gen_random_uuid(), $1, property_id, to_location_id, from_location_id, 'sent' from laundry_batch",
+        Seed::Laundry,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn linen_movements_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "linen_movement",
+        "insert into linen_movement (id, tenant_id, property_id, item_id, kind, quantity, to_location_id, business_date)
+         select gen_random_uuid(), $1, property_id, item_id, 'receive', 5, to_location_id, business_date from linen_movement",
+        Seed::Laundry,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn linen_stocks_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "linen_stock",
+        "insert into linen_stock (tenant_id, property_id, location_id, item_id, quantity)
+         select $1, property_id, location_id, item_id, 1 from linen_stock",
+        Seed::Laundry,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn laundry_prices_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "laundry_price",
+        "insert into laundry_price (id, tenant_id, property_id, item_code, service, name, price)
+         select gen_random_uuid(), $1, property_id, 'SHIRT', 'press', 'Shirt, press', 1 from laundry_price",
+        Seed::Laundry,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn laundry_orders_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "laundry_order",
+        "insert into laundry_order (id, tenant_id, property_id, reservation_room_id, room_number, status)
+         select gen_random_uuid(), $1, property_id, reservation_room_id, '101', 'collected' from laundry_order",
+        Seed::Laundry,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn laundry_order_lines_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "laundry_order_line",
+        "insert into laundry_order_line (tenant_id, order_id, position, price_id, item_code, service, name, unit_price, quantity)
+         select $1, order_id, 2, price_id, item_code, service, name, unit_price, quantity from laundry_order_line",
+        Seed::Laundry,
     )
     .await;
 }

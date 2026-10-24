@@ -117,7 +117,8 @@ export type Occupancy =
 
 export type OpsAlertKind =
   | 'AUDIT'
-  | 'DRIFT';
+  | 'DRIFT'
+  | 'LINEN';
 
 export type PenaltyKind =
   | 'AMOUNT'

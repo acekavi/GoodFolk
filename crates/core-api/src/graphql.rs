@@ -2004,10 +2004,10 @@ impl From<audit::DailyStats> for DailyStatsNode {
     }
 }
 
-mirror_enum!(OpsAlertKindNode as "OpsAlertKind" from audit::AlertKind { Audit, Drift });
+mirror_enum!(OpsAlertKindNode as "OpsAlertKind" from audit::AlertKind { Audit, Drift, Linen });
 
 /// A problem a person must look at: an automatic close that failed its third attempt (`AUDIT`), or inventory
-/// counters that drifted from the stays they count (`DRIFT`). Shown until what raised it is resolved.
+/// counters that drifted from the stays they count (`DRIFT`), or linen below par (`LINEN`). Shown until what raised it is resolved.
 #[derive(SimpleObject)]
 pub struct OpsAlertNode {
     pub kind: OpsAlertKindNode,
