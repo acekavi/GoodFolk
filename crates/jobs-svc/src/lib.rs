@@ -2,7 +2,8 @@
 //! through `db::begin`, and reads across tenants only through the `app.jobs_*` security-definer functions.
 //!
 //! One port serves gRPC (`goodfolk.jobs.v1.Jobs`, over cleartext HTTP/2) and HTTP (`POST /tick`, which Cloud
-//! Scheduler calls in production, and `GET /healthz`). Everything but the health check sits behind service auth.
+//! Scheduler calls in production; `POST /mail`, for `mail-send` pushes; and `GET /healthz`). Everything but the
+//! health check sits behind service auth.
 
 mod cleanup;
 pub mod config;
@@ -10,6 +11,7 @@ pub mod daily;
 mod drift;
 pub mod due;
 mod grpc;
+mod mail;
 pub mod tick;
 
 use std::sync::Arc;
@@ -40,16 +42,21 @@ pub struct JobsSvc {
     pub fx_source: Option<Arc<dyn RateSource>>,
     /// The closes running in the background, which shutdown waits for.
     pub tracker: TaskTracker,
+    /// Sends the `mail-send` jobs' emails.
+    pub mailer: Arc<dyn ::mail::Mailer>,
+    /// The web app's origin, which email links start with (`APP_BASE_URL`).
+    pub app_base_url: String,
 }
 
-/// gRPC (tonic) + HTTP (`/tick` behind svc-auth, `/healthz`) on one port (tonic's axum router).
+/// gRPC (tonic) + HTTP (`/tick` and `/mail` behind svc-auth, `/healthz`) on one port (tonic's axum router).
 pub fn router(svc: JobsSvc, verifier: Arc<Verifier>) -> axum::Router {
     let auth = svc_auth::layer(verifier);
     tonic::service::Routes::new(JobsServer::new(svc.clone()))
         .into_axum_router()
         .route_layer(auth.clone())
         .route_layer(axum::middleware::map_response(grpc_unauthenticated))
-        .route("/tick", post(tick_http).with_state(svc).layer(auth))
+        .route("/tick", post(tick_http).with_state(svc.clone()).layer(auth.clone()))
+        .route("/mail", post(mail::mail).with_state(svc).layer(auth))
         .route("/healthz", get(|| async { "ok" }))
 }
 

@@ -36,6 +36,8 @@ async fn main() -> anyhow::Result<()> {
         storage: Some(Arc::new(Storage::new(config.storage)?)),
         fx_source,
         tracker: TaskTracker::new(),
+        mailer: mail::from_env(config.production)?,
+        app_base_url: config.app_base_url,
     };
 
     let shutdown = CancellationToken::new();

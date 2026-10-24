@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use jobs_svc::JobsSvc;
+use mail::DevMailer;
 use proto::jobs::jobs_client::JobsClient;
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
@@ -31,10 +32,19 @@ fn authorise(mut request: Request<()>) -> Result<Request<()>, Status> {
     Ok(request)
 }
 
-/// The service over `pool` (acting as the app role), taking its locks on connections to `lock`, with no storage
-/// and no exchange-rate source.
+/// The service over `pool` (acting as the app role), taking its locks on connections to `lock`, with no storage,
+/// no exchange-rate source, and a dev mailer writing to a new directory under the system's temporary one.
 pub fn svc(pool: PgPool, lock: PgConnectOptions) -> JobsSvc {
-    JobsSvc { pool, lock, storage: None, fx_source: None, tracker: TaskTracker::new() }
+    let outbox = std::env::temp_dir().join(format!("goodfolk-jobs-svc-outbox-{}", Uuid::now_v7()));
+    JobsSvc {
+        pool,
+        lock,
+        storage: None,
+        fx_source: None,
+        tracker: TaskTracker::new(),
+        mailer: Arc::new(DevMailer { dir: outbox }),
+        app_base_url: "http://app.test".to_owned(),
+    }
 }
 
 /// Serves `svc`'s router on a random port; returns its address.

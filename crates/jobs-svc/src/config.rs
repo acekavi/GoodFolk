@@ -5,6 +5,9 @@ use storage::StorageConfig;
 
 pub const DEFAULT_PORT: u16 = 8091;
 
+/// The web app's origin outside production: the PMS's Vite dev server.
+pub const DEFAULT_APP_BASE_URL: &str = "http://localhost:5173";
+
 /// Pooled connections: a tick runs its jobs one at a time, and each background close holds at most one.
 pub const MAX_CONNECTIONS: u32 = 10;
 
@@ -24,6 +27,8 @@ pub struct Config {
     /// Object storage (`S3_*`, `MEDIA_PUBLIC_BASE_URL`), for the media sweep; outside production each falls back to
     /// the local RustFS.
     pub storage: StorageConfig,
+    /// The web app's origin, which email links start with.
+    pub app_base_url: String,
 }
 
 impl Config {
@@ -35,7 +40,10 @@ impl Config {
     /// - `JOBS_TICK`: `internal` or `off` (default `internal`, or `off` in production, where Cloud Scheduler calls
     ///   `POST /tick`);
     /// - `FX_IMPORT`: `on` or `off` (default `on`);
-    /// - the storage variables.
+    /// - the storage variables;
+    /// - `APP_BASE_URL` (required in production; else [`DEFAULT_APP_BASE_URL`]).
+    ///
+    /// The mailer reads its own variables (`mail::from_env`).
     pub fn from_env() -> anyhow::Result<Self> {
         Self::from_vars(|name| std::env::var(name).ok())
     }
@@ -63,7 +71,26 @@ impl Config {
             Some(_) => bail!("FX_IMPORT must be on or off"),
         };
         let storage = StorageConfig::from_vars(&var, production)?;
-        Ok(Self { port, database_url, database_direct_url, production, internal_tick, fx_import, storage })
+        let app_base_url = match var("APP_BASE_URL") {
+            Some(url) if url.starts_with("https://") || (!production && url.starts_with("http://")) => {
+                url.trim_end_matches('/').to_owned()
+            }
+            Some(_) => bail!("APP_BASE_URL must be an https:// origin (or http:// outside production)"),
+            None if production => {
+                bail!("APP_BASE_URL (the web app's origin, for email links) is required in production")
+            }
+            None => DEFAULT_APP_BASE_URL.to_owned(),
+        };
+        Ok(Self {
+            port,
+            database_url,
+            database_direct_url,
+            production,
+            internal_tick,
+            fx_import,
+            storage,
+            app_base_url,
+        })
     }
 }
 
@@ -83,6 +110,7 @@ mod tests {
         assert!(config.internal_tick);
         assert!(config.fx_import);
         assert!(!config.production);
+        assert_eq!(config.app_base_url, "http://localhost:5173");
     }
 
     #[test]
@@ -105,8 +133,16 @@ mod tests {
             "DATABASE_DIRECT_URL" => Some("postgres://direct/db".to_owned()),
             _ => vars(PROD)(name),
         };
-        let config = Config::from_vars(direct).unwrap();
+        let no_origin = Config::from_vars(direct).unwrap_err();
+        assert!(no_origin.to_string().contains("APP_BASE_URL"));
+
+        let complete = |name: &str| match name {
+            "APP_BASE_URL" => Some("https://app.example.com/".to_owned()),
+            _ => direct(name),
+        };
+        let config = Config::from_vars(complete).unwrap();
         assert_eq!(config.database_direct_url, "postgres://direct/db");
+        assert_eq!(config.app_base_url, "https://app.example.com");
         assert!(!config.internal_tick);
         assert!(config.production);
     }

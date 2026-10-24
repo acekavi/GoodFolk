@@ -1,0 +1,62 @@
+//! The dev mailer's outbox, and choosing a mailer from the environment.
+
+use mail::{DevMailer, MailJob, Mailer, Message};
+use uuid::Uuid;
+
+fn message() -> Message {
+    Message {
+        to: "kamala@example.com".into(),
+        subject: "Nimal invited you to Lagoon on GoodFolk".into(),
+        text: "Hello".into(),
+        html: "<p>Hello</p>".into(),
+    }
+}
+
+#[tokio::test]
+async fn the_dev_mailer_writes_each_message_as_a_json_file() {
+    let dir = std::env::temp_dir().join(format!("goodfolk-mail-test-{}", Uuid::now_v7()));
+    let mailer = DevMailer { dir: dir.clone() };
+
+    mailer.send(&message()).await.unwrap();
+
+    let files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().path()).collect();
+    assert_eq!(files.len(), 1, "one file, and no partial one left: {files:?}");
+    assert_eq!(files[0].extension().unwrap(), "json");
+    let written: serde_json::Value = serde_json::from_slice(&std::fs::read(&files[0]).unwrap()).unwrap();
+    assert_eq!(
+        written,
+        serde_json::json!({
+            "to": "kamala@example.com",
+            "subject": "Nimal invited you to Lagoon on GoodFolk",
+            "text": "Hello",
+            "html": "<p>Hello</p>",
+        })
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn production_needs_ses_and_development_uses_the_outbox() {
+    let none = |_: &str| None;
+    let missing = mail::from_vars(none, true).err().expect("production refuses the dev mailer");
+    assert!(missing.to_string().contains("is required in production"), "{missing}");
+
+    let ses = |name: &str| match name {
+        "MAIL_FROM" => Some("GoodFolk <hello@example.com>".to_owned()),
+        "AWS_REGION" => Some("ap-south-1".to_owned()),
+        "AWS_ACCESS_KEY_ID" => Some("AKIDEXAMPLE".to_owned()),
+        "AWS_SECRET_ACCESS_KEY" => Some("secret".to_owned()),
+        _ => None,
+    };
+    assert!(mail::from_vars(ses, true).is_ok());
+    assert!(mail::from_vars(none, false).is_ok());
+}
+
+#[test]
+fn a_mail_job_keeps_its_token_out_of_debug() {
+    let job = MailJob::Invitation { invitation_id: Uuid::nil(), tenant_id: Uuid::nil(), token: "s3cr3t-token".into() };
+
+    assert!(!format!("{job:?}").contains("s3cr3t-token"));
+    let json = serde_json::to_string(&job).unwrap();
+    assert_eq!(serde_json::from_str::<MailJob>(&json).unwrap(), job);
+}
