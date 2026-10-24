@@ -1504,6 +1504,21 @@ impl From<folio::TaxRuleRow> for TaxRuleNode {
     }
 }
 
+/// A checked-in stay, as a till lists it.
+#[derive(SimpleObject)]
+pub struct PosInHouseNode {
+    pub reservation_room_id: Uuid,
+    /// `null` until a room is assigned.
+    pub room_number: Option<String>,
+    pub guest_name: String,
+}
+
+impl From<folio::InHouseGuest> for PosInHouseNode {
+    fn from(g: folio::InHouseGuest) -> Self {
+        Self { reservation_room_id: g.reservation_room_id, room_number: g.room_number, guest_name: g.guest_name }
+    }
+}
+
 /// A POS outlet. Its bills' category is `pos:<code>`.
 #[derive(SimpleObject)]
 pub struct OutletNode {
@@ -3253,9 +3268,9 @@ impl Query {
         Ok(rules.into_iter().map(TaxRuleNode::from).collect())
     }
 
-    /// The property's POS outlets, active or not, by code.
+    /// The property's POS outlets, active or not, by code. Needs `FolioView` or `PosPost`.
     async fn outlets(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<OutletNode>> {
-        let mut tx = scoped(ctx, Permission::FolioView, property_id).await?;
+        let mut tx = scoped_any(ctx, &[Permission::FolioView, Permission::PosPost], property_id).await?;
         let outlets = folio::list_outlets(&mut tx, property_id).await.map_err(internal)?;
         tx.commit().await.map_err(internal)?;
         Ok(outlets.into_iter().map(OutletNode::from).collect())
@@ -3324,6 +3339,15 @@ impl Query {
         let runs = audit::list_runs(&mut tx, property_id, first, after).await.map_err(audit_error)?;
         tx.commit().await.map_err(internal)?;
         Ok(runs.into_iter().map(AuditRunNode::from).collect())
+    }
+
+    /// The stays checked in on the property's business date, by room number: what a till needs to charge a bill to a
+    /// room. Needs `PosPost`.
+    async fn pos_in_house(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<PosInHouseNode>> {
+        let mut tx = scoped(ctx, Permission::PosPost, property_id).await?;
+        let stays = folio::in_house_guests(&mut tx, property_id).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(stays.into_iter().map(PosInHouseNode::from).collect())
     }
 
     /// The statistics of the property's closed business dates from `from` to `to`, both included (at most 366 days),

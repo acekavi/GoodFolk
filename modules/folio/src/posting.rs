@@ -164,6 +164,45 @@ pub async fn in_house_stays(tx: &mut Tx, property: Uuid, date: Date) -> Result<V
     .await
 }
 
+/// A checked-in stay as a till lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InHouseGuest {
+    pub reservation_room_id: Uuid,
+    /// `None` until a room is assigned.
+    pub room_number: Option<String>,
+    pub guest_name: String,
+}
+
+/// The property's [`in_house_stays`] on its business date, with each stay's room number and primary guest, by room
+/// number then guest name.
+pub async fn in_house_guests(tx: &mut Tx, property: Uuid) -> Result<Vec<InHouseGuest>, sqlx::Error> {
+    let date: Date = sqlx::query_scalar("select business_date from property where id = $1")
+        .bind(property)
+        .fetch_one(&mut **tx)
+        .await?;
+    let stays = in_house_stays(tx, property, date).await?;
+    let rows: Vec<(Uuid, Option<String>, String)> = sqlx::query_as(
+        "select rr.id, room.number, trim(g.first_name || ' ' || g.last_name)
+         from reservation_room rr
+         join guest g on g.id = rr.primary_guest_id
+         left join room on room.id = rr.room_id
+         where rr.property_id = $1 and rr.id = any($2)
+         order by room.number nulls last, 3, rr.id",
+    )
+    .bind(property)
+    .bind(&stays)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(reservation_room_id, room_number, guest_name)| InHouseGuest {
+            reservation_room_id,
+            room_number,
+            guest_name,
+        })
+        .collect())
+}
+
 /// What [`post_business_date_charges`] would post for `date`, without posting: one entry per stay it would post, in
 /// the same order, with the same night and the same checks (a missing price, room or exchange rate is its `problem`,
 /// a key already used counts in `already_posted`). Reads only, so it takes no locks; a run that follows can still

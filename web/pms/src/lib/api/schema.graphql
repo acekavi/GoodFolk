@@ -1191,6 +1191,18 @@ enum PlanKind {
 }
 
 """
+A checked-in stay, as a till lists it.
+"""
+type PosInHouseNode {
+	reservationRoomId: UUID!
+	"""
+	`null` until a room is assigned.
+	"""
+	roomNumber: String
+	guestName: String!
+}
+
+"""
 One price a bulk change would change: `before` is `null` where `SET` adds a price.
 """
 type PriceChangeCellNode {
@@ -1428,7 +1440,7 @@ type Query {
 	"""
 	taxRules(propertyId: UUID!): [TaxRuleNode!]!
 	"""
-	The property's POS outlets, active or not, by code.
+	The property's POS outlets, active or not, by code. Needs `FolioView` or `PosPost`.
 	"""
 	outlets(propertyId: UUID!): [OutletNode!]!
 	"""
@@ -1455,6 +1467,11 @@ type Query {
 	before `after`, or the newest when `after` is left out.
 	"""
 	auditRuns(propertyId: UUID!, first: Int! = 20, after: Date): [AuditRunNode!]!
+	"""
+	The stays checked in on the property's business date, by room number: what a till needs to charge a bill to a
+	room. Needs `PosPost`.
+	"""
+	posInHouse(propertyId: UUID!): [PosInHouseNode!]!
 	"""
 	The statistics of the property's closed business dates from `from` to `to`, both included (at most 366 days),
 	by date, each with its breakdowns. A day not yet closed has none.
