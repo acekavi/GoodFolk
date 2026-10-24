@@ -100,4 +100,13 @@ impl Hotel {
             .await
             .unwrap()
     }
+
+    /// The data of every `action` audit entry, oldest first.
+    pub async fn audit_data(&self, action: &str) -> Vec<serde_json::Value> {
+        sqlx::query_scalar("select data from audit_log where action = $1 order by at, id")
+            .bind(action)
+            .fetch_all(&mut *self.tx().await)
+            .await
+            .unwrap()
+    }
 }

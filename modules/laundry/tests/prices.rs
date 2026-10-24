@@ -2,6 +2,7 @@ mod common;
 
 use common::Hotel;
 use laundry::{LaundryError, Price, Service, create_price, laundry_key, list_prices, update_price};
+use serde_json::json;
 use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions};
 use uuid::Uuid;
 
@@ -60,6 +61,10 @@ async fn prices_are_created_and_updated(_: PgPoolOptions, opts: PgConnectOptions
     let off = hotel.reprice(price.id, 2, None, None, Some(false)).await.unwrap();
     assert_eq!((off.active, off.version), (false, 3));
     assert_eq!(hotel.audited("laundry_price.updated").await, 2);
+    assert_eq!(
+        hotel.audit_data("laundry_price.updated").await[0]["previous"],
+        json!({ "name": "Shirt", "price": 500, "active": true })
+    );
     assert_eq!(
         message(hotel.reprice(price.id, 3, Some("Shirt wash"), Some(600), Some(false)).await),
         "Nothing to change"
@@ -136,4 +141,19 @@ async fn writes_notify_the_laundry_key(_: PgPoolOptions, opts: PgConnectOptions)
     hotel.price("SHIRT", Service::Wash, 500).await.unwrap();
     let payload = listener.recv().await.unwrap().payload().to_owned();
     assert!(payload.contains(&laundry_key(hotel.property)), "{payload}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn another_propertys_price_is_not_found(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let (other, _) = hotel.other_property().await;
+    let mut tx = hotel.tx().await;
+    let price =
+        create_price(&mut tx, hotel.tenant, hotel.user, other, "SHIRT", Service::Wash, "Shirt", 500).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(matches!(
+        hotel.reprice(price.id, price.version, None, Some(900), None).await,
+        Err(LaundryError::NotFound("price"))
+    ));
+    assert_eq!(hotel.audited("laundry_price.updated").await, 0);
 }

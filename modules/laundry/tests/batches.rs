@@ -5,6 +5,7 @@ use laundry::{
     Batch, BatchStatus, LaundryError, LinenItem, LinenLocation, LocationKind, MovementKind, NewMovement, Settle,
     create_item, create_location, list_batches, receive, record, send, settle, stock,
 };
+use serde_json::json;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use uuid::Uuid;
 
@@ -133,6 +134,12 @@ async fn receive_records_the_difference_and_it_is_settled_later(_: PgPoolOptions
     assert_eq!(s.hotel.held(s.store, s.sheet).await, 48);
     assert_eq!(s.hotel.held(s.laundry, s.towel).await, 0);
     assert_eq!(s.hotel.audited("laundry_batch.received").await, 1);
+    let data = &s.hotel.audit_data("laundry_batch.received").await[0];
+    assert_eq!(data["back_to_location_id"], json!(s.store));
+    let audited_line =
+        |item: Uuid| data["items"].as_array().unwrap().iter().find(|i| i["item_id"] == json!(item)).cloned();
+    assert_eq!(audited_line(s.sheet), Some(json!({ "item_id": s.sheet, "sent": 20, "received": 18, "difference": 2 })));
+    assert_eq!(audited_line(s.towel), Some(json!({ "item_id": s.towel, "sent": 30, "received": 30, "difference": 0 })));
 
     let found = s.hotel.settle(&received, Settle::Return { back_to: None, counts: vec![(s.sheet, 1)] }).await.unwrap();
     assert_eq!((found.version, found.outstanding()), (3, 1));
@@ -145,6 +152,15 @@ async fn receive_records_the_difference_and_it_is_settled_later(_: PgPoolOptions
     assert_eq!(line(&settled, s.sheet), (20, 19, 1));
     assert_eq!(s.hotel.held(s.laundry, s.sheet).await, 0);
     assert_eq!(s.hotel.audited("laundry_batch.settled").await, 2);
+    let data = s.hotel.audit_data("laundry_batch.settled").await;
+    assert_eq!(
+        data[0],
+        json!({ "how": "return", "back_to_location_id": s.store, "items": [{ "item_id": s.sheet, "quantity": 1 }] })
+    );
+    assert_eq!(
+        data[1],
+        json!({ "how": "write_off", "reason": "Lost", "items": [{ "item_id": s.sheet, "quantity": 1 }] })
+    );
 
     let again = s.hotel.settle(&settled, Settle::WriteOff { reason: reason(), counts: vec![(s.sheet, 1)] }).await;
     assert!(matches!(again, Err(LaundryError::Conflict(_))));

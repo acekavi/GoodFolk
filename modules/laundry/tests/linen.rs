@@ -5,6 +5,7 @@ use laundry::{
     LaundryError, LinenItem, LinenLocation, LocationKind, ParRow, create_item, create_location, laundry_key, linen_key,
     list_items, list_locations, list_par, set_par, update_item, update_location,
 };
+use serde_json::json;
 use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions};
 use std::time::Duration;
 use uuid::Uuid;
@@ -91,6 +92,10 @@ async fn items_are_created_and_updated(_: PgPoolOptions, opts: PgConnectOptions)
     let off = hotel.rename_item(item.id, 2, None, Some(false)).await.unwrap();
     assert_eq!((off.active, off.version), (false, 3));
     assert_eq!(hotel.audited("linen_item.updated").await, 2);
+    assert_eq!(
+        hotel.audit_data("linen_item.updated").await[0],
+        json!({ "name": "King sheet", "active": true, "previous": { "name": "Linen", "active": true } })
+    );
     assert_eq!(message(hotel.rename_item(item.id, 3, Some("King sheet"), Some(false)).await), "Nothing to change");
     assert!(matches!(hotel.rename_item(Uuid::now_v7(), 1, Some("x"), None).await, Err(LaundryError::NotFound("item"))));
 
@@ -132,6 +137,10 @@ async fn locations_are_created_and_updated(_: PgPoolOptions, opts: PgConnectOpti
     let off = hotel.change_location(store.id, 2, None, Some(false)).await.unwrap();
     assert!(!off.active);
     assert_eq!(hotel.audited("linen_location.updated").await, 2);
+    assert_eq!(
+        hotel.audit_data("linen_location.updated").await[1],
+        json!({ "name": "Store", "active": false, "previous": { "name": "Store", "active": true } })
+    );
 
     let mut tx = hotel.tx().await;
     assert_eq!(list_locations(&mut tx, hotel.property).await.unwrap().len(), 4);
@@ -234,6 +243,28 @@ async fn an_item_with_stock_stays_active(_: PgPoolOptions, opts: PgConnectOption
     sqlx::query("update linen_stock set quantity = 0").execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     assert!(!hotel.rename_item(item.id, renamed.version, None, Some(false)).await.unwrap().active);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn another_propertys_item_or_location_is_not_found(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let (other, _) = hotel.other_property().await;
+    let item = hotel.item_in(other, "SHEET_K").await.unwrap();
+    let mut tx = hotel.tx().await;
+    let location =
+        create_location(&mut tx, hotel.tenant, hotel.user, other, "Store", LocationKind::Store, None).await.unwrap();
+    tx.commit().await.unwrap();
+
+    assert!(matches!(
+        hotel.rename_item(item.id, item.version, Some("Mine"), None).await,
+        Err(LaundryError::NotFound("item"))
+    ));
+    assert!(matches!(
+        hotel.change_location(location.id, location.version, Some("Mine"), None).await,
+        Err(LaundryError::NotFound("location"))
+    ));
+    assert_eq!(hotel.audited("linen_item.updated").await, 0);
+    assert_eq!(hotel.audited("linen_location.updated").await, 0);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

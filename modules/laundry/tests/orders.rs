@@ -415,3 +415,32 @@ async fn an_edit_keeps_the_prices_already_taken(_: PgPoolOptions, opts: PgConnec
     let refused = update_lines(&mut tx, tenant, user, property, fresh.id, fresh.version, &[(tie, 1)], None).await;
     assert!(matches!(refused, Err(LaundryError::Invalid(_))), "{refused:?}");
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn another_propertys_price_or_order_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let shirt = hotel.price("SHIRT", Service::Wash, "Shirt", 500).await;
+    let stay = hotel.in_house("101").await;
+    let other = hotel.add_property("KAN").await;
+    let (tenant, user) = (hotel.tenant, hotel.user);
+    let mut tx = hotel.tx().await;
+    let foreign_price =
+        laundry::create_price(&mut tx, tenant, user, other, "SHIRT", Service::Wash, "Shirt", 400).await.unwrap().id;
+    tx.commit().await.unwrap();
+
+    let err = hotel.order(stay.id, &[(foreign_price, 1)]).await.unwrap_err();
+    assert!(matches!(err, LaundryError::Invalid(_)), "{err:?}");
+
+    let elsewhere = hotel.stay(Stay { room: Some("201"), ..Stay::new(other, "checked_in", -1, 2) }).await;
+    let mut tx = hotel.tx().await;
+    let foreign = create_order(&mut tx, tenant, user, other, elsewhere.id, &[(foreign_price, 1)], None).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = hotel.tx().await;
+    let moved =
+        set_status(&mut tx, tenant, user, hotel.property, foreign.id, foreign.version, OrderStatus::Processing).await;
+    assert!(matches!(moved, Err(LaundryError::NotFound("order"))), "{moved:?}");
+    let edited =
+        update_lines(&mut tx, tenant, user, hotel.property, foreign.id, foreign.version, &[(shirt, 1)], None).await;
+    assert!(matches!(edited, Err(LaundryError::NotFound("order"))), "{edited:?}");
+}
