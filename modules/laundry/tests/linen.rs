@@ -6,6 +6,7 @@ use laundry::{
     list_items, list_locations, list_par, set_par, update_item, update_location,
 };
 use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions};
+use std::time::Duration;
 use uuid::Uuid;
 
 impl Hotel {
@@ -233,6 +234,25 @@ async fn an_item_with_stock_stays_active(_: PgPoolOptions, opts: PgConnectOption
     sqlx::query("update linen_stock set quantity = 0").execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     assert!(!hotel.rename_item(item.id, renamed.version, None, Some(false)).await.unwrap().active);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_par_edit_does_not_block_bookings_of_the_type(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let sheet = hotel.item("SHEET_K").await.unwrap();
+    let mut held = hotel.tx().await;
+    set_par(&mut held, hotel.tenant, hotel.user, hotel.property, hotel.room_type, &[(sheet.id, 2)]).await.unwrap();
+
+    // A new stay's foreign key to its room type takes this lock; it must not wait on the par edit.
+    let shared = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut tx = hotel.tx().await;
+        sqlx::query("set local lock_timeout = '300ms'").execute(&mut *tx).await.unwrap();
+        sqlx::query("select 1 from room_type where id = $1 for key share").bind(hotel.room_type).execute(&mut *tx).await
+    })
+    .await
+    .unwrap();
+    assert!(shared.is_ok(), "{shared:?}");
+    held.commit().await.unwrap();
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

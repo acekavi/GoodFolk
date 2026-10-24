@@ -8,7 +8,7 @@ use laundry::{
 };
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -315,6 +315,22 @@ async fn par_totals_and_the_low_stock_alert(_: PgPoolOptions, opts: PgConnectOpt
     hotel.record(write_off(sheet, 1, pantry, Some("Torn"))).await.unwrap();
     assert_eq!(hotel.alert().await.as_deref(), Some("Pantry East: SHEET_K 3 of 4; Store: SHEET_K 2 of 4"));
 
+    // A movement that leaves the alert's text as it was neither raises it again nor notifies.
+    let raised_at = |alerts: Vec<alerts::OpsAlert>| {
+        alerts.into_iter().find(|alert| alert.kind == AlertKind::Linen).map(|alert| alert.raised_at)
+    };
+    let before = raised_at(alerts::list(&mut hotel.tx().await, hotel.property).await.unwrap());
+    let mut listener = PgListener::connect_with(&hotel.pool).await.unwrap();
+    listener.listen(db::CHANNEL).await.unwrap();
+    hotel.record(receive(towel, 3, store)).await.unwrap();
+    let after = raised_at(alerts::list(&mut hotel.tx().await, hotel.property).await.unwrap());
+    assert_eq!(before, after);
+    let mut keys = Vec::new();
+    while let Ok(received) = tokio::time::timeout(Duration::from_millis(500), listener.recv()).await {
+        let event: db::Event = serde_json::from_str(received.unwrap().payload()).unwrap();
+        keys.extend(event.keys);
+    }
+    assert_eq!(keys, [format!("linen:{}", hotel.property)]);
     hotel.record(receive(sheet, 2, store)).await.unwrap();
     hotel.record(receive(sheet, 1, pantry)).await.unwrap();
     assert!(hotel.alert().await.is_none());

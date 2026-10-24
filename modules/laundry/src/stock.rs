@@ -341,8 +341,9 @@ async fn lock_stock(
     Ok(rows.into_iter().map(|(location, item, quantity)| ((location, item), quantity)).collect())
 }
 
-/// Raises the property's linen alert listing every cell below par, or clears it when none is. Concurrent movements
-/// take turns here, so each one reads the stock the one before it committed and the last alert written is current.
+/// Raises the property's linen alert listing every cell below par (left alone, unnotified, when its text is unchanged),
+/// or clears it when none is. Concurrent movements take turns here, so each one reads the stock the one before it
+/// committed and the last alert written is current.
 async fn recheck_alert(tx: &mut Tx, tenant: TenantId, property: Uuid) -> Result<(), LaundryError> {
     sqlx::query("select pg_advisory_xact_lock(hashtextextended('linen:' || $1::text, 0))")
         .bind(property)
@@ -360,12 +361,18 @@ async fn recheck_alert(tx: &mut Tx, tenant: TenantId, property: Uuid) -> Result<
         alerts::clear(tx, property, AlertKind::Linen).await?;
     } else {
         let message = low.join("; ");
-        let message = if message.chars().count() > MAX_ALERT_CHARS {
+        let message: String = if message.chars().count() > MAX_ALERT_CHARS {
             message.chars().take(MAX_ALERT_CHARS - 1).chain(['…']).collect()
         } else {
             message
         };
-        alerts::raise(tx, tenant, property, AlertKind::Linen, &message).await?;
+        let unchanged = alerts::list(tx, property)
+            .await?
+            .iter()
+            .any(|alert| alert.kind == AlertKind::Linen && alert.message == message);
+        if !unchanged {
+            alerts::raise(tx, tenant, property, AlertKind::Linen, &message).await?;
+        }
     }
     Ok(())
 }

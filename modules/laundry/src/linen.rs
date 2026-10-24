@@ -290,12 +290,13 @@ pub async fn set_par(
     if rows.iter().map(|(item, _)| item).collect::<HashSet<_>>().len() != rows.len() {
         return Err(LaundryError::Invalid("an item appears once in a par".into()));
     }
-    let found: bool =
-        sqlx::query_scalar("select exists (select 1 from room_type where id = $1 and property_id = $2 for update)")
-            .bind(room_type)
-            .bind(property)
-            .fetch_one(&mut **tx)
-            .await?;
+    let found: bool = sqlx::query_scalar(
+        "select exists (select 1 from room_type where id = $1 and property_id = $2 for no key update)",
+    )
+    .bind(room_type)
+    .bind(property)
+    .fetch_one(&mut **tx)
+    .await?;
     if !found {
         return Err(LaundryError::NotFound("room type"));
     }
