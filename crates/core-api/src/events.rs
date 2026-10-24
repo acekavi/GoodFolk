@@ -114,6 +114,16 @@ fn is_audit_key(key: &str) -> bool {
     key.starts_with("audit:")
 }
 
+/// Whether `key` is a property's linen's (`linen:<property>`): its items, locations, par, stock and batches.
+fn is_linen_key(key: &str) -> bool {
+    key.starts_with("linen:")
+}
+
+/// Whether `key` is a property's guest laundry's (`laundry:<property>`): its prices and orders.
+fn is_laundry_key(key: &str) -> bool {
+    key.starts_with("laundry:")
+}
+
 #[derive(Debug, Deserialize)]
 pub struct EventsQuery {
     pub property: Option<Uuid>,
@@ -138,10 +148,18 @@ pub async fn stream(
             // The night audit's keys go to those who run it and to those who may view the folios it closes.
             let folio_viewer = allows(&grants, Permission::FolioView, event.property_id);
             let auditor = folio_viewer || allows(&grants, Permission::NightAudit, event.property_id);
+            // Linen keys go to those who may view the linen, and guest laundry keys to those who take the orders.
+            let linen_viewer = allows(&grants, Permission::LinenView, event.property_id);
+            let laundry_taker = allows(&grants, Permission::LaundryOrders, event.property_id);
             let keys: Vec<&String> = event
                 .keys
                 .iter()
-                .filter(|key| (folio_viewer || !is_money_key(key)) && (auditor || !is_audit_key(key)))
+                .filter(|key| {
+                    (folio_viewer || !is_money_key(key))
+                        && (auditor || !is_audit_key(key))
+                        && (linen_viewer || !is_linen_key(key))
+                        && (laundry_taker || !is_laundry_key(key))
+                })
                 .collect();
             (relevant && !keys.is_empty())
                 .then(|| Ok(SseEvent::default().event("invalidate").json_data(&keys).expect("keys serialize")))

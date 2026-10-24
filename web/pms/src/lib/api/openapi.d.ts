@@ -515,6 +515,275 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/properties/{property}/laundry-batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sends linen from a store or pantry to a laundry or vendor as one batch; more than the store holds is 409. Audited.
+         *     A retried request with the same `Idempotency-Key` is answered without sending another.
+         */
+        post: operations["send_laundry_batch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/laundry-batches/{batch}/receive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Counts a sent batch back in: the counted items return to `back_to` and the batch is `received`; what did not come
+         *     back stays outstanding at the laundry until settled. A batch already received is 409. Audited.
+         */
+        post: operations["receive_laundry_batch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/laundry-batches/{batch}/settle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Settles part of what a received batch still has out: a further return needs `LinenMove`, a write-off
+         *     `LinenManage`. A batch not yet received, or with nothing outstanding, is 409. Audited.
+         */
+        post: operations["settle_laundry_batch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/laundry-orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Takes a laundry order for a checked-in stay (else 422), priced from the price list, as `collected`. Nothing is
+         *     charged until delivery. Audited. A retried request with the same `Idempotency-Key` is answered without taking
+         *     another.
+         */
+        post: operations["create_laundry_order"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/laundry-orders/{order}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Replaces the lines (and optionally the note) of an order still `collected` (else 409). Audited. */
+        patch: operations["update_laundry_order"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/laundry-orders/{order}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Moves an order one step on, or cancels it before delivery; any other move is 409. Delivery charges each line to
+         *     the stay's bill (routed as its other charges, taxed by the folio), so the guest must still be checked in (409); a
+         *     charge the folio refuses refuses the delivery. Audited.
+         */
+        post: operations["set_laundry_order_status"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/laundry-prices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adds a price to the guest laundry price list. An item code and service the property already prices is 409.
+         *     Audited. A retried request with the same `Idempotency-Key` is answered without adding another.
+         */
+        post: operations["create_laundry_price"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/laundry-prices/{price}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Renames a price, changes its amount or switches it on or off. Audited. */
+        patch: operations["update_laundry_price"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/linen-items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adds a linen item to the property. A code the property already uses is 409. Audited. A retried request with the
+         *     same `Idempotency-Key` is answered without adding another.
+         */
+        post: operations["create_linen_item"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/linen-items/{item}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Renames a linen item or switches it on or off. Audited. */
+        patch: operations["update_linen_item"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/linen-locations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adds a place linen is kept. A pantry needs a section of the property, which has at most one active pantry, and
+         *     the property has at most one active store (409). Audited. A retried request with the same `Idempotency-Key` is
+         *     answered without adding another.
+         */
+        post: operations["create_linen_location"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/linen-locations/{location}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Renames a location or switches it on or off; one holding stock cannot be switched off (409). Audited. */
+        patch: operations["update_linen_location"];
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/linen-movements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Records one movement and updates the stock; one that would take a location below zero is 409. A `receive` or
+         *     `transfer` needs `LinenMove`, a `write_off` `LinenManage`. Audited. A retried request with the same
+         *     `Idempotency-Key` is answered without recording another.
+         */
+        post: operations["record_linen_movement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/linen-par/{room_type}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Replaces the room type's whole par table and returns it, by item. Audited. */
+        put: operations["set_linen_par"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/meal-supplements": {
         parameters: {
             query?: never;
@@ -1558,6 +1827,43 @@ export interface components {
              */
             user_id?: string | null;
         };
+        Batch: {
+            /** Format: uuid */
+            from_location_id: string;
+            /** Format: uuid */
+            id: string;
+            lines: components["schemas"]["BatchLine"][];
+            note?: string | null;
+            /** Format: date-time */
+            received_at?: string | null;
+            /** Format: uuid */
+            received_by?: string | null;
+            /** Format: date-time */
+            sent_at: string;
+            /** Format: uuid */
+            sent_by?: string | null;
+            status: components["schemas"]["BatchStatus"];
+            /** Format: uuid */
+            to_location_id: string;
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description One item of a batch. Outstanding is `sent - returned - written_off`. */
+        BatchLine: {
+            /** Format: uuid */
+            item_id: string;
+            /** Format: int32 */
+            returned: number;
+            /** Format: int32 */
+            sent: number;
+            /** Format: int32 */
+            written_off: number;
+        };
+        /**
+         * @description Where a batch is: out at the laundry, or counted back in (it may still have items outstanding).
+         * @enum {string}
+         */
+        BatchStatus: "sent" | "received";
         /** @description Beds of one kind in a room type, e.g. `{ "kind": "king", "count": 1 }`. */
         Bed: {
             /** Format: int32 */
@@ -1799,6 +2105,47 @@ export interface components {
             phone?: string | null;
             /** @description Prices the guest's stays: some plans sell only to residents or only to non-residents. */
             residency: components["schemas"]["Residency"];
+        };
+        CreateLaundryOrderRequest: {
+            /** @description 1 to 50 lines; a price may repeat. */
+            lines: components["schemas"]["LaundryOrderLineRequest"][];
+            /** @description Up to 500 characters. */
+            note?: string | null;
+            /**
+             * Format: uuid
+             * @description A stay checked in at the property.
+             */
+            reservation_room_id: string;
+        };
+        CreateLaundryPriceRequest: {
+            /** @description 1 to 20 of `A-Z`, `0-9` and `_`; with the service, unique in the property. Never changes. */
+            item_code: string;
+            /** @description 1 to 100 characters once trimmed. */
+            name: string;
+            /**
+             * Format: int64
+             * @description Net of tax, in minor units of the property's base currency; more than 0.
+             */
+            price: number;
+            /** @description `wash`, `press`, `dry_clean` or `express`. Never changes. */
+            service: components["schemas"]["Service"];
+        };
+        CreateLinenItemRequest: {
+            /** @description 1 to 20 of `A-Z`, `0-9` and `_`, unique in the property. Never changes. */
+            code: string;
+            /** @description 1 to 100 characters once trimmed. */
+            name: string;
+        };
+        CreateLinenLocationRequest: {
+            /** @description `store`, `pantry`, `laundry` or `vendor`. Never changes. */
+            kind: components["schemas"]["LocationKind"];
+            /** @description 1 to 100 characters once trimmed. */
+            name: string;
+            /**
+             * Format: uuid
+             * @description A pantry's section of the property; other kinds have none. Never changes.
+             */
+            section_id?: string | null;
         };
         CreateMealSupplementRequest: {
             /**
@@ -2128,6 +2475,16 @@ export interface components {
          * @enum {string}
          */
         IssueStatus: "open" | "resolved";
+        /** @description One line of an order: an active price of the property and how many items. */
+        LaundryOrderLineRequest: {
+            /** Format: uuid */
+            price_id: string;
+            /**
+             * Format: int32
+             * @description 1 to 100.
+             */
+            quantity: number;
+        };
         LineRow: {
             /**
              * Format: int64
@@ -2180,11 +2537,43 @@ export interface components {
              */
             transfer_id?: string | null;
         };
+        /** @description How many of one item. */
+        LinenCountRequest: {
+            /** Format: uuid */
+            item_id: string;
+            /** Format: int32 */
+            quantity: number;
+        };
+        LinenItem: {
+            active: boolean;
+            code: string;
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: int32 */
+            version: number;
+        };
+        LinenLocation: {
+            active: boolean;
+            /** Format: uuid */
+            id: string;
+            kind: components["schemas"]["LocationKind"];
+            name: string;
+            /** Format: uuid */
+            section_id?: string | null;
+            /** Format: int32 */
+            version: number;
+        };
         /**
          * @description The file a guest-document link points at: a rendition, or the archived original.
          * @enum {string}
          */
         LinkSize: "thumb" | "md" | "original";
+        /**
+         * @description What a place linen is kept in is for.
+         * @enum {string}
+         */
+        LocationKind: "store" | "pantry" | "laundry" | "vendor";
         LoginRequest: {
             email: string;
             password: string;
@@ -2292,6 +2681,33 @@ export interface components {
             /** Format: uuid */
             room_type_id?: string | null;
         };
+        Movement: {
+            /** Format: uuid */
+            batch_id?: string | null;
+            /** Format: date */
+            business_date: string;
+            /** Format: uuid */
+            from_location_id?: string | null;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            item_id: string;
+            kind: components["schemas"]["MovementKind"];
+            /** Format: date-time */
+            moved_at: string;
+            /** Format: uuid */
+            moved_by?: string | null;
+            /** Format: int32 */
+            quantity: number;
+            reason?: string | null;
+            /** Format: uuid */
+            to_location_id?: string | null;
+        };
+        /**
+         * @description What a movement does: stock bought in, moved between clean stores, sent out or back with a batch, or lost.
+         * @enum {string}
+         */
+        MovementKind: "receive" | "transfer" | "send" | "return" | "write_off";
         /** @description A room marked a no-show and what not arriving cost, in its currency. */
         NoShowRoom: {
             currency: string;
@@ -2304,6 +2720,56 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        Order: {
+            /** Format: date-time */
+            created_at: string;
+            /** @description The property's base currency. */
+            currency: string;
+            /** Format: date-time */
+            delivered_at?: string | null;
+            /** @description The stay's primary guest. */
+            guest: string;
+            /** Format: uuid */
+            id: string;
+            lines: components["schemas"]["OrderLine"][];
+            note?: string | null;
+            /** Format: uuid */
+            reservation_room_id: string;
+            /** @description The stay's room when the order was taken. */
+            room_number: string;
+            status: components["schemas"]["OrderStatus"];
+            /** Format: date-time */
+            status_at: string;
+            /**
+             * Format: int64
+             * @description The lines' unit prices times their quantities, net of tax.
+             */
+            total: number;
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description One line of an order, with the price row's code, service, name and price as they were when it was taken. */
+        OrderLine: {
+            item_code: string;
+            name: string;
+            /** Format: int32 */
+            position: number;
+            /** Format: uuid */
+            price_id: string;
+            /** Format: int32 */
+            quantity: number;
+            service: components["schemas"]["Service"];
+            /**
+             * Format: int64
+             * @description Net of tax, in minor units of the order's currency.
+             */
+            unit_price: number;
+        };
+        /**
+         * @description Where an order is. It moves one step at a time to `delivered`, or to `cancelled` from any step before it.
+         * @enum {string}
+         */
+        OrderStatus: "collected" | "processing" | "ready" | "delivered" | "cancelled";
         OutletRow: {
             /** @description An inactive outlet takes no new bills; its past bills stay. */
             active: boolean;
@@ -2317,6 +2783,14 @@ export interface components {
             service_charge: boolean;
             /** Format: int32 */
             version: number;
+        };
+        ParRow: {
+            /** Format: uuid */
+            item_id: string;
+            /** Format: int32 */
+            quantity: number;
+            /** Format: uuid */
+            room_type_id: string;
         };
         /**
          * @description A payment method's details: a card terminal's `approval`, `last4` and `brand` (never the card number), a bank
@@ -2540,6 +3014,19 @@ export interface components {
             /** @description The property's rules now, as [`list_tax_rules`] returns them. */
             rules: components["schemas"]["TaxRuleRow"][];
         };
+        /** @description A price, net of tax, in minor units of the property's base currency. */
+        Price: {
+            active: boolean;
+            /** Format: uuid */
+            id: string;
+            item_code: string;
+            name: string;
+            /** Format: int64 */
+            price: number;
+            service: components["schemas"]["Service"];
+            /** Format: int32 */
+            version: number;
+        };
         /**
          * @description A bulk change adds basis points (`percent`) or minor units (`amount`) to existing prices, rounded to
          *     the plan's step, or `set`s every selected price to the value.
@@ -2660,6 +3147,35 @@ export interface components {
         ReasonRequest: {
             /** @description 1 to 500 characters once trimmed. */
             reason: string;
+        };
+        ReceiveBatchRequest: {
+            /**
+             * Format: uuid
+             * @description Where the counted items go: a store or pantry; the location the batch was sent from when left out.
+             */
+            back_to?: string | null;
+            /** @description The count of each batch item that came back, 0 to what is outstanding; items left out count as 0. */
+            items: components["schemas"]["LinenCountRequest"][];
+        };
+        RecordMovementRequest: {
+            /** Format: uuid */
+            from_location_id?: string | null;
+            /** Format: uuid */
+            item_id: string;
+            /**
+             * @description `receive` (bought in, to a store or pantry), `transfer` (between stores and pantries) or `write_off` (lost,
+             *     from any location, with a reason). `send` and `return` go with a laundry batch.
+             */
+            kind: components["schemas"]["MovementKind"];
+            /**
+             * Format: int32
+             * @description 1 to 100000.
+             */
+            quantity: number;
+            /** @description Up to 500 characters; needed for a write-off. */
+            reason?: string | null;
+            /** Format: uuid */
+            to_location_id?: string | null;
         };
         RefundRequest: {
             /**
@@ -2858,6 +3374,27 @@ export interface components {
          * @enum {string}
          */
         Segment: "FIT_F" | "FIT_L" | "OTA" | "TA" | "IBE";
+        SendBatchRequest: {
+            /**
+             * Format: uuid
+             * @description A store or pantry of the property.
+             */
+            from_location_id: string;
+            /** @description 1 to 200 items, each once, each more than 0. */
+            items: components["schemas"]["LinenCountRequest"][];
+            /** @description Up to 500 characters. */
+            note?: string | null;
+            /**
+             * Format: uuid
+             * @description A laundry or vendor of the property.
+             */
+            to_location_id: string;
+        };
+        /**
+         * @description What is done to a guest's item.
+         * @enum {string}
+         */
+        Service: "wash" | "press" | "dry_clean" | "express";
         /** @description Replaces the business date's assignment of each room named, each once. */
         SetAssignmentsRequest: {
             assignments: components["schemas"]["AssignmentRequest"][];
@@ -2871,6 +3408,15 @@ export interface components {
             /** @description 1 to 500 rooms of the property. */
             room_ids: string[];
         };
+        SetLaundryOrderStatusRequest: {
+            /** @description The next step (`processing`, `ready`, then `delivered`), or `cancelled` from any step before `delivered`. */
+            status: components["schemas"]["OrderStatus"];
+        };
+        /** @description The whole par table of a room type: how many of each item one of its rooms needs. Items left out need none. */
+        SetParRequest: {
+            /** @description 0 to 50 items of the property, each once, each with a quantity of 1 to 100. */
+            items: components["schemas"]["LinenCountRequest"][];
+        };
         /** @description Prices for a standard or custom plan; derived plans are repriced from them in the same transaction. */
         SetPricesRequest: {
             prices: components["schemas"]["PriceRequest"][];
@@ -2881,6 +3427,25 @@ export interface components {
              *     exponent or `_`): positive, with at most 6 decimals and 12 digits before them.
              */
             rate: string;
+        };
+        /**
+         * @description What a received batch still has out: `{"how": "return", "items": [...]}` for items found and returned (to
+         *     `back_to`, else where the batch came from), or `{"how": "write_off", "reason": "...", "items": [...]}` for items
+         *     lost.
+         */
+        SettleBatchRequest: {
+            /** Format: uuid */
+            back_to?: string | null;
+            /** @enum {string} */
+            how: "return";
+            /** @description Up to 200 items, each at most what is outstanding; at least one more than 0. */
+            items: components["schemas"]["LinenCountRequest"][];
+        } | {
+            /** @enum {string} */
+            how: "write_off";
+            items: components["schemas"]["LinenCountRequest"][];
+            /** @description 1 to 500 characters once trimmed. */
+            reason: string;
         };
         /** @description How a bill settled at the outlet was paid. */
         SettledRequest: {
@@ -3133,6 +3698,32 @@ export interface components {
         UpdateIssueRequest: {
             /** @description Only `resolved` is accepted. */
             status: components["schemas"]["IssueStatus"];
+        };
+        /** @description Replaces a `collected` order's lines; the note is kept when left out and cleared when sent as `null`. */
+        UpdateLaundryOrderRequest: {
+            /** @description 1 to 50 lines; a price may repeat. */
+            lines: components["schemas"]["LaundryOrderLineRequest"][];
+            note?: string | null;
+        };
+        UpdateLaundryPriceRequest: {
+            /** @description An inactive price is left off new orders. */
+            active?: boolean | null;
+            name?: string | null;
+            /**
+             * Format: int64
+             * @description Applies to orders taken from now on; orders already taken keep the price they were taken at.
+             */
+            price?: number | null;
+        };
+        UpdateLinenItemRequest: {
+            /** @description An inactive item is left out of stock, par and new movements; its history stays. */
+            active?: boolean | null;
+            name?: string | null;
+        };
+        UpdateLinenLocationRequest: {
+            /** @description A location holding stock cannot be switched off. */
+            active?: boolean | null;
+            name?: string | null;
         };
         /** @description Fields left out stay as they are; `to` sent as `null` makes the supplement open-ended. */
         UpdateMealSupplementRequest: {
@@ -4607,6 +5198,810 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    send_laundry_batch: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendBatchRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Batch"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    receive_laundry_batch: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                batch: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReceiveBatchRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Batch"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    settle_laundry_batch: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                batch: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettleBatchRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "3" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Batch"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_laundry_order: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateLaundryOrderRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Order"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_laundry_order: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                order: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateLaundryOrderRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Order"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_laundry_order_status: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                order: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetLaundryOrderStatusRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Order"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_laundry_price: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateLaundryPriceRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Price"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_laundry_price: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                price: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateLaundryPriceRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Price"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_linen_item: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateLinenItemRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinenItem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_linen_item: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                item: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateLinenItemRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinenItem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_linen_location: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateLinenLocationRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinenLocation"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_linen_location: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+                location: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateLinenLocationRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "2" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinenLocation"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    record_linen_movement: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordMovementRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Movement"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_linen_par: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                room_type: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetParRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParRow"][];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

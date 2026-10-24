@@ -131,6 +131,18 @@ pub(crate) fn audit_error(err: audit::AuditError) -> ApiError {
     }
 }
 
+/// Maps the linen and laundry module's errors to problem details.
+pub(crate) fn laundry_error(err: laundry::LaundryError) -> ApiError {
+    match err {
+        laundry::LaundryError::NotFound(_) => ApiError::not_found(err.to_string()),
+        laundry::LaundryError::VersionMismatch(_) => ApiError::precondition_failed(err.to_string()),
+        laundry::LaundryError::Conflict(message) => ApiError::conflict(message),
+        laundry::LaundryError::Invalid(message) => ApiError::unprocessable(message),
+        laundry::LaundryError::Folio(folio_err) => crate::routes::folio::folio_error(folio_err),
+        laundry::LaundryError::Database(db_err) => db_err.into(),
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = Problem {

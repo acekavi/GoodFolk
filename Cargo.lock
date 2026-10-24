@@ -1044,6 +1044,7 @@ dependencies = [
  "http-body-util",
  "identity",
  "jobs-svc",
+ "laundry",
  "media",
  "media-svc",
  "media-types",
