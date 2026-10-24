@@ -10,7 +10,7 @@ pub use account::{
     Profile, SignupError, SignupInput, TenantSummary, authenticate, default_tenant, load_profile, signup,
 };
 pub use password::{hash_password, verify_password};
-pub use rbac::{Grant, Permission, Role, allows, load_grants};
+pub use rbac::{ALL_PERMISSIONS, ALL_ROLES, Grant, JUNIOR_ROLES, Permission, Role, allows, describe, load_grants};
 pub use session::{
     SESSION_TTL, SessionInfo, TenantAccess, create_session, delete_session, resolve_session, resolve_tenant_access,
     switch_tenant,

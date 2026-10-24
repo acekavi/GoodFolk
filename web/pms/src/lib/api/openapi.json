@@ -9409,7 +9409,8 @@
           "front_desk",
           "housekeeping",
           "accountant",
-          "hk_supervisor"
+          "hk_supervisor",
+          "pos"
         ]
       },
       "Room": {

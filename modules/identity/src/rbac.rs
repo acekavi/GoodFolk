@@ -11,6 +11,7 @@ pub enum Role {
     Housekeeping,
     Accountant,
     HkSupervisor,
+    Pos,
 }
 
 impl Role {
@@ -22,13 +23,12 @@ impl Role {
             Role::Housekeeping => "housekeeping",
             Role::Accountant => "accountant",
             Role::HkSupervisor => "hk_supervisor",
+            Role::Pos => "pos",
         }
     }
 
     pub fn parse(value: &str) -> Option<Role> {
-        [Role::Owner, Role::Manager, Role::FrontDesk, Role::Housekeeping, Role::Accountant, Role::HkSupervisor]
-            .into_iter()
-            .find(|role| role.as_str() == value)
+        ALL_ROLES.into_iter().find(|role| role.as_str() == value)
     }
 
     /// Anything not listed is denied, so a new permission is granted only where it is added.
@@ -67,6 +67,7 @@ impl Role {
                     | LinenManage
                     | LaundryOrders
                     | LaundryPricesManage
+                    | StaffManage
             ),
             Role::FrontDesk => matches!(
                 permission,
@@ -117,6 +118,7 @@ impl Role {
                     | LinenManage
                     | LaundryOrders
             ),
+            Role::Pos => matches!(permission, PosPost),
             Role::Accountant => {
                 matches!(
                     permission,
@@ -184,18 +186,115 @@ pub enum Permission {
     FxOverride,
     /// POS bills.
     PosPost,
-    /// Allows: the night-audit review, starting and retrying the close, and the audit history.
+    /// The night audit; see [`describe`].
     NightAudit,
-    /// Allows: seeing linen items, locations, par levels, stock, the movement ledger and laundry batches.
+    /// See linen. See [`describe`].
     LinenView,
-    /// Allows: receiving, transferring, sending and returning linen (laundry batches out and back).
+    /// Move linen. See [`describe`].
     LinenMove,
-    /// Allows: linen items, locations, par levels and write-offs.
+    /// Manage linen. See [`describe`].
     LinenManage,
-    /// Allows: seeing guests' laundry orders, collecting one from a stay, moving it along, delivering and cancelling it.
+    /// Guests' laundry orders. See [`describe`].
     LaundryOrders,
-    /// Allows: creating and changing the guest laundry price list.
+    /// The guest laundry price list. See [`describe`].
     LaundryPricesManage,
+    /// Inviting staff, changing their roles and removing them; see [`describe`].
+    StaffManage,
+}
+
+/// Every permission, in declaration order.
+pub const ALL_PERMISSIONS: [Permission; 32] = [
+    Permission::PropertiesView,
+    Permission::PropertiesCreate,
+    Permission::PropertiesManage,
+    Permission::RoomsView,
+    Permission::RoomsManage,
+    Permission::InventoryView,
+    Permission::InventoryBlock,
+    Permission::RatesView,
+    Permission::RatesManage,
+    Permission::ReservationsView,
+    Permission::ReservationsManage,
+    Permission::FrontDeskCheckIn,
+    Permission::HousekeepingView,
+    Permission::HousekeepingUpdate,
+    Permission::HousekeepingSupervise,
+    Permission::RoomIssuesReport,
+    Permission::MediaManage,
+    Permission::GuestDocumentsManage,
+    Permission::FolioView,
+    Permission::FolioPost,
+    Permission::FolioAdjust,
+    Permission::InvoiceIssue,
+    Permission::TaxSettingsManage,
+    Permission::FxOverride,
+    Permission::PosPost,
+    Permission::NightAudit,
+    Permission::LinenView,
+    Permission::LinenMove,
+    Permission::LinenManage,
+    Permission::LaundryOrders,
+    Permission::LaundryPricesManage,
+    Permission::StaffManage,
+];
+
+/// Every role.
+pub const ALL_ROLES: [Role; 7] =
+    [Role::Owner, Role::Manager, Role::FrontDesk, Role::Housekeeping, Role::Accountant, Role::HkSupervisor, Role::Pos];
+
+/// The roles a manager may grant and act on; owners and managers are not junior.
+pub const JUNIOR_ROLES: [Role; 5] =
+    [Role::FrontDesk, Role::Housekeeping, Role::HkSupervisor, Role::Accountant, Role::Pos];
+
+/// What `permission` allows, in plain words, for the permission matrix.
+pub fn describe(permission: Permission) -> &'static str {
+    use Permission::*;
+    match permission {
+        PropertiesView => "",
+        PropertiesCreate => "",
+        PropertiesManage => "Change a property's settings (name, check-in and check-out times).",
+        RoomsView => "See room types, rooms, sections and block reasons.",
+        RoomsManage => "Create, change, deactivate and reorder room types, rooms, sections and block reasons.",
+        InventoryView => "See inventory counts and room blocks.",
+        InventoryBlock => "Block rooms and release or shorten blocks.",
+        RatesView => {
+            "See rate plans, prices, restrictions, meal supplements and cancellation policies, and quote stays."
+        }
+        RatesManage => {
+            "Create and change rate plans, prices, restrictions, meal supplements and cancellation policies."
+        }
+        ReservationsView => "See reservations, what is free to sell, and guests.",
+        ReservationsManage => {
+            "Create guests and reservations, change guests, cancel reservation rooms, and assign and unassign rooms."
+        }
+        FrontDeskCheckIn => "Check a reservation room in, undo a same-day check-in, and check it out.",
+        HousekeepingView => "See room conditions, the housekeeping board, assignments and room issues.",
+        HousekeepingUpdate => "Move a room through its cleaning steps and resolve room issues.",
+        HousekeepingSupervise => {
+            "Assign rooms, inspect, set any condition, and override a check-in on a room that is not ready."
+        }
+        RoomIssuesReport => "Report a problem with a room, without changing its condition.",
+        MediaManage => "Upload, reorder, caption and remove room type gallery photos.",
+        GuestDocumentsManage => "Upload, view (through an audited signed link) and delete guests' ID documents.",
+        FolioView => "Folios, lines, payments, invoices.",
+        FolioPost => "Charges, payments.",
+        FolioAdjust => "Reversals, transfers, refunds, routing, credit notes, posting tonight's charges.",
+        InvoiceIssue => "Issue invoices, invoice links.",
+        TaxSettingsManage => "Tax rules, outlets, property tax settings.",
+        FxOverride => "Manual exchange rates.",
+        PosPost => "POS bills.",
+        NightAudit => "the night-audit review, starting and retrying the close, and the audit history.",
+        LinenView => "seeing linen items, locations, par levels, stock, the movement ledger and laundry batches.",
+        LinenMove => "receiving, transferring, sending and returning linen (laundry batches out and back).",
+        LinenManage => "linen items, locations, par levels and write-offs.",
+        LaundryOrders => {
+            "seeing guests' laundry orders, collecting one from a stay, moving it along, delivering and cancelling it."
+        }
+        LaundryPricesManage => "creating and changing the guest laundry price list.",
+        StaffManage => {
+            "Inviting staff, changing their roles and removing them; managers only for junior roles at their properties."
+        }
+    }
 }
 
 /// A role held tenant-wide (`property_id: None`) or for one property.

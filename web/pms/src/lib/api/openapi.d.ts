@@ -3270,7 +3270,7 @@ export interface components {
             weekdays?: number[];
         };
         /** @enum {string} */
-        Role: "owner" | "manager" | "front_desk" | "housekeeping" | "accountant" | "hk_supervisor";
+        Role: "owner" | "manager" | "front_desk" | "housekeeping" | "accountant" | "hk_supervisor" | "pos";
         Room: {
             active: boolean;
             floor?: string | null;

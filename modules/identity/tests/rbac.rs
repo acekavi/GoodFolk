@@ -1,4 +1,4 @@
-use identity::{Grant, Permission, Role, allows};
+use identity::{ALL_PERMISSIONS, ALL_ROLES, Grant, JUNIOR_ROLES, Permission, Role, allows, describe};
 use uuid::Uuid;
 
 const HOTEL: Uuid = Uuid::from_u128(1);
@@ -30,8 +30,7 @@ fn only_owners_create_properties() {
 
 #[test]
 fn roles_round_trip_through_their_database_names() {
-    for role in [Role::Owner, Role::Manager, Role::FrontDesk, Role::Housekeeping, Role::Accountant, Role::HkSupervisor]
-    {
+    for role in ALL_ROLES {
         assert_eq!(Role::parse(role.as_str()), Some(role));
     }
     assert_eq!(Role::parse("root"), None);
@@ -72,8 +71,9 @@ fn each_role_has_exactly_its_permissions() {
         LinenManage,
         LaundryOrders,
         LaundryPricesManage,
+        StaffManage,
     ];
-    let expected: [(Role, &[Permission]); 6] = [
+    let expected: [(Role, &[Permission]); 7] = [
         (Role::Owner, &all),
         (
             Role::Manager,
@@ -107,6 +107,7 @@ fn each_role_has_exactly_its_permissions() {
                 LinenManage,
                 LaundryOrders,
                 LaundryPricesManage,
+                StaffManage,
             ],
         ),
         (
@@ -168,6 +169,7 @@ fn each_role_has_exactly_its_permissions() {
                 LaundryOrders,
             ],
         ),
+        (Role::Pos, &[PosPost]),
     ];
 
     for (role, permitted) in expected {
@@ -183,7 +185,7 @@ fn each_role_has_exactly_its_permissions() {
 }
 
 fn roles_allowed(permission: Permission) -> Vec<Role> {
-    [Role::Owner, Role::Manager, Role::FrontDesk, Role::Housekeeping, Role::Accountant, Role::HkSupervisor]
+    ALL_ROLES
         .into_iter()
         .filter(|role| allows(&[Grant { property_id: None, role: *role }], permission, Some(HOTEL)))
         .collect()
@@ -267,8 +269,8 @@ fn only_owners_and_managers_override_exchange_rates() {
 }
 
 #[test]
-fn only_owners_and_managers_post_pos_bills() {
-    assert_eq!(roles_allowed(Permission::PosPost), [Role::Owner, Role::Manager]);
+fn owners_managers_and_the_pos_role_post_pos_bills() {
+    assert_eq!(roles_allowed(Permission::PosPost), [Role::Owner, Role::Manager, Role::Pos]);
 }
 
 #[test]
@@ -290,4 +292,32 @@ fn guest_laundry_orders_are_taken_by_the_front_desk_and_housekeeping() {
 #[test]
 fn only_owners_and_managers_manage_laundry_prices() {
     assert_eq!(roles_allowed(Permission::LaundryPricesManage), [Role::Owner, Role::Manager]);
+}
+
+#[test]
+fn only_owners_and_managers_manage_staff() {
+    assert_eq!(roles_allowed(Permission::StaffManage), [Role::Owner, Role::Manager]);
+}
+
+#[test]
+fn the_pos_role_posts_bills_and_nothing_else() {
+    let grants = [Grant { property_id: None, role: Role::Pos }];
+
+    for permission in ALL_PERMISSIONS {
+        assert_eq!(allows(&grants, permission, Some(HOTEL)), permission == Permission::PosPost, "{permission:?}");
+    }
+}
+
+#[test]
+fn junior_roles_are_every_role_but_owner_and_manager() {
+    let expected: Vec<Role> = ALL_ROLES.into_iter().filter(|r| !matches!(r, Role::Owner | Role::Manager)).collect();
+
+    assert_eq!(JUNIOR_ROLES.to_vec(), expected);
+}
+
+#[test]
+fn every_permission_is_described() {
+    for permission in ALL_PERMISSIONS {
+        assert!(!describe(permission).trim().is_empty(), "{permission:?}");
+    }
 }
