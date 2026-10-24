@@ -54,7 +54,11 @@ Written from the outline and ARCHITECTURE §7.4 (the owner asked for it to be wr
   | `transfer` | store or pantry | store or pantry | moving clean linen between locations |
   | `send` | store or pantry | laundry or vendor | part of a batch going out |
   | `return` | laundry or vendor | store or pantry | part of a batch coming back |
-  | `write_off` | any | — | damaged, lost or discarded; a reason is required |
+  | `write_off` | a store or pantry, or a laundry/vendor location against its batch | — | damaged, lost or discarded; a reason is required |
+
+  **Builder's call:** linen at a laundry or vendor is written off only against its batch (the batch's settle), and an
+  item with stock in any location can't be switched off ("Move or write off its stock first", `409`), as a location
+  can't. Both keep every short batch settleable; this narrows the earlier "a write-off from any location".
 
 - **`linen_stock`** `(location, item, quantity ≥ 0)` is kept in the same transaction as each movement. A movement that
   would take a location below zero is refused (`409`, naming the item and location). The stock rows are locked in
@@ -103,6 +107,9 @@ Written from the outline and ARCHITECTURE §7.4 (the owner asked for it to be wr
   at the time, a status, a note, a version, and who and when for each step.
 - **`laundry_order_line`**: the price row it was taken from, with the item code, service, name and unit price copied
   in (so later price changes do not alter an order), and a quantity of 1 to 100. An order has 1 to 50 lines.
+- **Editing** a `collected` order's lines keeps the copied code, service, name and price of every price row already
+  on the order, even if that price has since changed or been switched off. Only a price row new to the order must be
+  active, and it takes today's price.
 - **Creating** an order is idempotent on an `Idempotency-Key`. The stay must be checked in and of the property, and
   each price row must be active (`422` otherwise).
 - **Status** moves one step at a time: `collected → processing → ready → delivered`. `cancelled` is allowed from any
@@ -114,8 +121,9 @@ Written from the outline and ARCHITECTURE §7.4 (the owner asked for it to be wr
   - posted on the current business date, in the base currency, taxed;
   - posting key `laundry:<order>:<n>`.
 
-  The stay must still be checked in. A posting refusal, such as an invoiced folio, refuses the delivery (`409`) and
-  the order stays `ready`.
+  The delivery locks the order, then reads the stay `for share` (so a concurrent check-out finishes first), then the
+  business date `for share`; `post_for_stay` then takes the folio locks. The stay must still be checked in. A posting
+  refusal, such as an invoiced folio, refuses the delivery (`409`) and the order stays `ready`.
 - **Corrections** after delivery are folio reversals, as for any line. The order stays `delivered`.
 
 ## Night audit
@@ -155,7 +163,7 @@ Written from the outline and ARCHITECTURE §7.4 (the owner asked for it to be wr
   - `laundryBatches(propertyId, status?)`;
   - `laundryPrices(propertyId, includeInactive?)`;
   - `laundryOrders(propertyId, status?)`;
-  - `laundryOrdersForStay(reservationRoomId)`.
+  - `laundryOrdersForStay(propertyId, reservationRoomId)`.
 - **Events:** `linen:<p>` for every linen change, and `laundry:<p>` for every order and price change. A delivery also
   sends the folio keys it touches.
 - **Audit:**
