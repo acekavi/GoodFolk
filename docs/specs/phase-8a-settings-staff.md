@@ -23,6 +23,7 @@ until the system runs with real users (the owner, 2026-10-25).
   that user's sessions for the tenant at once; their next request gets `401`.
 - **A permissions matrix** shows what each role can do.
 - **A POS role** holds `PosPost` alone, so a POS no longer signs in as a manager.
+- **An advisory deposit rule per rate plan** shows what is due and is flagged in the night audit until paid.
 - **Every property setting this phase owns is editable in the UI:**
   - name;
   - check-in, check-out and audit times;
@@ -117,7 +118,16 @@ until the system runs with real users (the owner, 2026-10-25).
   the property's active outlets and GraphQL `posInHouse(propertyId)` (in-house stays with `reservation_room` id, room
   number and guest name, and nothing else). No SPA pages are shown to a `pos`-only user. "Nothing else" is tested
   against every other route group.
-- **The new permission `StaffManage`** goes to the owner only. **Builder's call;** see "Questions".
+- **The new permission `StaffManage`** goes to owners and managers (the owner, 2026-10-25). What a manager may do is
+  limited:
+  - A **junior role** is `front_desk`, `housekeeping`, `hk_supervisor`, `accountant` or `pos`.
+  - A **manager** may invite, re-grant and remove only members whose every grant is a junior role. Every grant they give
+    is a junior role at a property where they hold `manager` (any property, if their `manager` grant is tenant-wide).
+  - A tenant-wide junior grant needs a tenant-wide manager.
+  - A manager never sees the Resend or Revoke actions for an invitation that names `manager`, and the server refuses
+    them (`403`).
+  - **Owners** may do all of it, including granting `manager`. Nobody grants `owner` in 8a.
+  - Each refusal is a `403` naming the role or property.
 - **The permissions matrix** is a read-only page of roles × permissions, in the spec's own wording ("Allows: …"),
   generated from `rbac.rs` so it cannot drift. It is served by GraphQL `permissionMatrix` and is readable by every
   member. **Builder's call:** it reveals nothing tenant-specific.
@@ -139,6 +149,38 @@ until the system runs with real users (the owner, 2026-10-25).
   invoices under the TIN when set: the invoice template and `InvoiceData` gain the field.
 - **Block reasons** (`RoomsManage`): list, add, rename and deactivate, using the existing REST routes.
 - **Sections** keep their place on Rooms, and the index links there.
+
+## Deposit policy (advisory)
+
+The owner chose to have it in 8a, advisory, 2026-10-25.
+
+- **Each rate plan may have a deposit rule.**
+  - It has a `kind` of `percent` (basis points of the stay's total), `nights` (the first N nights' room amounts) or
+    `amount` (a fixed amount in the plan's currency).
+  - It has a `due`: `at_booking`, or `days_before_arrival` N (0–365).
+  - With no rule, nothing is due.
+  - It is edited with the plan's cancellation policy on Rate plans (`RatesManage`).
+- **The rule is copied onto each reservation room at booking**, as `deposit_terms`, as the cancellation terms are. A
+  later rule change does not alter existing bookings.
+- **What is due:**
+  - **Amount:** the reservation's deposit due is the sum of its rooms' amounts, each capped at the room's total, in the
+    reservation's currency. Mixed currencies are summed per currency.
+  - **Date:** the booking's business date, or arrival − N days.
+  - **Paid:** the reservation's deposit folio balance shows how much is paid. A reservation is "deposit outstanding"
+    when the payments on its deposit folio, net of refunds and in the same currency, are below what is due once the due
+    date has passed.
+- **It never blocks** a booking, a check-in or the close.
+- **Where it shows:**
+  - The new-reservation review step shows "Deposit due <amount> by <date>".
+  - The reservation modal shows due, paid and outstanding.
+  - The night audit's review gains a sixth list, **Deposits outstanding**: reservations past their due date with
+    deposit still owed, with guest, arrival, due and paid. It is not part of the blocking count.
+- **Tests:**
+  - due amounts for each kind, with the cap at the total;
+  - the due date for both `due` values;
+  - outstanding before and after a deposit payment;
+  - an existing booking unchanged by a rule edit;
+  - the night-audit list.
 
 ## API
 
@@ -175,10 +217,3 @@ until the system runs with real users (the owner, 2026-10-25).
 - **e2e:**
   - invite a front-desk clerk, open the link from the dev outbox, set a password and land in the property;
   - revoke them, and their open tab is signed out.
-
-## Questions (for the owner)
-
-1. Who may invite and manage staff: the owner only, or managers too (for example, managers inviting front desk and
-   housekeeping but not managers)?
-2. ARCHITECTURE §7.7 lists a deposit policy among property policies, and none exists yet. Is a deposit policy (such as
-   "take N% or N nights at booking") wanted in 8a, or later?
