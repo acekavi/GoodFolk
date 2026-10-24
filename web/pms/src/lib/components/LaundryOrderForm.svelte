@@ -1,6 +1,7 @@
 <!--
 	Takes a guest laundry order for an in-house stay, or changes the lines and note of one still collected: the
-	active price list by item, a quantity per service and a running total in the base currency (net of tax). A new
+	active price list by item, a quantity per service and a running total in the base currency (net of tax). An edit
+	also lists the prices already on the order at the prices they were taken at, which the server keeps. A new
 	order is sent with an Idempotency-Key. An edit counts against the order as it was when the form opened and sends
 	that version: a stale one (412) reloads the order and starts the form again from the latest.
 -->
@@ -13,12 +14,14 @@
 	import {
 		fetchLaundryPrices,
 		fetchStayLaundryOrders,
+		formPrices,
 		laundryKey,
 		orderLines,
 		orderQuantities,
 		orderTotal,
 		priceGroups,
-		serviceLabel
+		serviceLabel,
+		type LaundryOrder
 	} from '$lib/laundry';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
 
@@ -57,7 +60,11 @@
 
 	let dialog = $state<HTMLDialogElement>();
 	/** The order being changed as it was when the form opened; `null` for a new order. */
-	let snapshot = $state.raw<{ id: string; version: number; priceIds: string[] } | null>(null);
+	let snapshot = $state.raw<{
+		id: string;
+		version: number;
+		lines: LaundryOrder['lines'];
+	} | null>(null);
 	/** An edit of an order no longer collected (or gone): nothing can be changed. */
 	let closed = $state(false);
 	let quantities = $state<Record<string, number>>({});
@@ -66,11 +73,9 @@
 	let busy = $state(false);
 	const keys = formKeys();
 
-	const list = $derived(prices.data ?? []);
+	const list = $derived(formPrices(prices.data ?? [], snapshot?.lines ?? []));
 	const groups = $derived(priceGroups(list));
 	const total = $derived(orderTotal(list, quantities));
-	const offered = $derived(new Set(list.map((price) => price.id)));
-	const unlisted = $derived(snapshot?.priceIds.some((id) => !offered.has(id)) ?? false);
 
 	/** Starts the form from the order as it now is, or empty for a new one. */
 	function reset() {
@@ -88,7 +93,7 @@
 			? {
 					id: order.id,
 					version: order.version,
-					priceIds: order.lines.map((line) => line.priceId)
+					lines: order.lines
 				}
 			: null;
 		quantities = order ? orderQuantities(order.lines) : {};
@@ -223,11 +228,6 @@
 					</tbody>
 				{/each}
 			</table>
-			{#if unlisted}
-				<p class="hint">
-					Some items of this order are no longer on the price list; saving leaves them off.
-				</p>
-			{/if}
 			<p role="status">Total <strong>{base(total)}</strong> <span class="hint">before tax</span></p>
 			<label>Note <input maxlength="500" bind:value={note} /></label>
 			{#if problem}<p class="error" role="alert">{problem}</p>{/if}

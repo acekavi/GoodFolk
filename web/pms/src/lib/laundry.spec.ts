@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	boardColumns,
+	formPrices,
 	lineText,
 	localDate,
 	nextStep,
@@ -100,6 +101,34 @@ describe('orderQuantities', () => {
 				{ priceId: 'p1', quantity: 3 }
 			])
 		).toEqual({ p1: 5, p2: 1 });
+	});
+});
+
+describe('formPrices', () => {
+	it('offers the active list with the prices already on the order as they were taken', () => {
+		const active = [price('p1', 'SHIRT', 'WASH', 900), price('p2', 'SUIT', 'PRESS', 300)];
+		const taken = [
+			{
+				priceId: 'p1',
+				itemCode: 'SHIRT',
+				service: 'WASH' as const,
+				name: 'old shirt',
+				unitPrice: 500
+			},
+			{ priceId: 'p3', itemCode: 'TIE', service: 'PRESS' as const, name: 'tie', unitPrice: 200 }
+		];
+		const offered = formPrices(active, taken);
+		expect(offered.map((entry) => [entry.id, entry.name, entry.price])).toEqual([
+			['p1', 'old shirt', 500],
+			['p2', 'suit', 300],
+			['p3', 'tie', 200]
+		]);
+		expect(orderTotal(offered, { p1: 1, p2: 1, p3: 2 })).toBe(1_200);
+	});
+
+	it('is the active list for a new order', () => {
+		const active = [price('p1', 'SHIRT', 'WASH', 900)];
+		expect(formPrices(active, [])).toEqual(active);
 	});
 });
 

@@ -76,7 +76,9 @@
 		if (!next) return;
 		if (
 			next.status === 'delivered' &&
-			!confirm(`Post ${money(order.total, order.currency)} to Room ${order.roomNumber}'s folio?`)
+			!confirm(
+				`Post ${money(order.total, order.currency)} (before tax) to Room ${order.roomNumber}'s folio?`
+			)
 		)
 			return;
 		void move(order, next.status);

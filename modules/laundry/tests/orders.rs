@@ -7,6 +7,7 @@ use folio::{NewCharge, Source};
 use laundry::{LaundryError, Order, OrderStatus, Service, create_order, set_status, update_lines};
 use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions};
 use stays::{Booked, Hotel, Stay};
+use std::time::Duration;
 use uuid::Uuid;
 
 impl Hotel {
@@ -347,4 +348,70 @@ async fn lines_change_only_while_collected(_: PgPoolOptions, opts: PgConnectOpti
     drop(tx);
     assert_eq!(err.to_string(), "The order is processing; its lines can only be changed while it is collected");
     assert_eq!(hotel.reload(stay.id).await, vec![processing]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_delivery_waits_for_a_concurrent_check_out(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let shirt = hotel.price("SHIRT", Service::Wash, "Shirt", 500).await;
+    let stay = hotel.in_house("101").await;
+    let order = hotel.ready(hotel.order(stay.id, &[(shirt, 1)]).await.unwrap()).await;
+
+    // A check-out holding the stay's row.
+    let mut checking_out = hotel.tx().await;
+    sqlx::query("update reservation_room set status = 'checked_out', checked_out_at = now() where id = $1")
+        .bind(stay.id)
+        .execute(&mut *checking_out)
+        .await
+        .unwrap();
+
+    let delivery = hotel.move_to(&order, OrderStatus::Delivered);
+    tokio::pin!(delivery);
+    let waited = tokio::time::timeout(Duration::from_millis(300), &mut delivery).await;
+    assert!(waited.is_err(), "the delivery did not wait for the check-out: {waited:?}");
+    checking_out.commit().await.unwrap();
+
+    let err = tokio::time::timeout(Duration::from_secs(10), delivery).await.unwrap().unwrap_err();
+    assert_eq!(err.to_string(), "The guest has checked out; post the charge on their folio");
+    assert!(hotel.order_lines(order.id).await.is_empty());
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_edit_keeps_the_prices_already_taken(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let shirt = hotel.price("SHIRT", Service::Wash, "Shirt", 500).await;
+    let suit = hotel.price("SUIT", Service::DryClean, "Suit", 2_000).await;
+    let tie = hotel.price("TIE", Service::Press, "Tie", 300).await;
+    let stay = hotel.in_house("101").await;
+    let order = hotel.order(stay.id, &[(shirt, 1), (suit, 1)]).await.unwrap();
+    let (tenant, user, property) = (hotel.tenant, hotel.user, hotel.property);
+
+    let mut tx = hotel.tx().await;
+    laundry::update_price(&mut tx, tenant, user, property, shirt, 1, Some("Shirt wash".into()), Some(900), None)
+        .await
+        .unwrap();
+    laundry::update_price(&mut tx, tenant, user, property, suit, 1, None, None, Some(false)).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // The shirt keeps its old price and name, the switched-off suit stays, and the new tie takes today's price.
+    let mut tx = hotel.tx().await;
+    let lines = [(shirt, 1), (suit, 3), (tie, 2)];
+    let edited = update_lines(&mut tx, tenant, user, property, order.id, order.version, &lines, None).await.unwrap();
+    tx.commit().await.unwrap();
+    let priced: Vec<(i32, &str, &str, i64, i32)> = edited
+        .lines
+        .iter()
+        .map(|line| (line.position, line.item_code.as_str(), line.name.as_str(), line.unit_price, line.quantity))
+        .collect();
+    assert_eq!(priced, vec![(1, "SHIRT", "Shirt", 500, 1), (2, "SUIT", "Suit", 2_000, 3), (3, "TIE", "Tie", 300, 2)]);
+    assert_eq!(edited.total, 7_100);
+
+    // A switched-off price new to the order is still refused.
+    let mut tx = hotel.tx().await;
+    laundry::update_price(&mut tx, tenant, user, property, tie, 1, None, None, Some(false)).await.unwrap();
+    tx.commit().await.unwrap();
+    let fresh = hotel.order(stay.id, &[(shirt, 1)]).await.unwrap();
+    let mut tx = hotel.tx().await;
+    let refused = update_lines(&mut tx, tenant, user, property, fresh.id, fresh.version, &[(tie, 1)], None).await;
+    assert!(matches!(refused, Err(LaundryError::Invalid(_))), "{refused:?}");
 }

@@ -1,9 +1,9 @@
 //! Guest laundry orders: items collected from an in-house stay, priced from the price list, and charged to the
 //! guest's bill on delivery.
 //!
-//! A delivery locks the order row first, then reads the business date `for share`, then posts each line through
-//! `folio::post_for_stay`, which takes its own folio locks; it never locks the `reservation_room` row (the folio lock
-//! order puts it before the folios).
+//! A delivery locks the order row first, then reads the stay (`reservation_room`) `for share`, so a concurrent
+//! check-out finishes first and the delivery sees it, then reads the business date `for share`, then posts each line
+//! through `folio::post_for_stay`, which takes its own folio locks.
 
 use crate::prices::Service;
 use crate::{LaundryError, audit, laundry_key, notify};
@@ -151,7 +151,7 @@ pub async fn create_order(
     note: Option<String>,
 ) -> Result<Order, LaundryError> {
     let note = clean_note(note)?;
-    let priced = priced_lines(tx, property, lines).await?;
+    let priced = priced_lines(tx, property, lines, &BTreeMap::new()).await?;
     let room_number: Option<String> = sqlx::query_scalar(
         "select room.number from reservation_room rr join room on room.id = rr.room_id
          where rr.id = $1 and rr.property_id = $2 and rr.status = 'checked_in'",
@@ -194,7 +194,8 @@ pub async fn create_order(
 }
 
 /// Replaces a `collected` order's lines (as for [`create_order`]), and its note when `note` is given (`Some(None)`
-/// clears it).
+/// clears it). A line of a price already on the order keeps the code, service, name and price it was taken at, even
+/// if the price has since changed or been switched off; only prices new to the order must be active.
 #[allow(clippy::too_many_arguments)]
 pub async fn update_lines(
     tx: &mut Tx,
@@ -217,7 +218,14 @@ pub async fn update_lines(
         Some(note) => clean_note(note)?,
         None => current.note,
     };
-    let priced = priced_lines(tx, property, lines).await?;
+    let taken: BTreeMap<Uuid, OrderLine> = order_lines(tx, &[id])
+        .await?
+        .remove(&id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|line| (line.price_id, line))
+        .collect();
+    let priced = priced_lines(tx, property, lines, &taken).await?;
     sqlx::query("delete from laundry_order_line where order_id = $1").bind(id).execute(&mut **tx).await?;
     insert_lines(tx, tenant, property, id, &priced).await?;
     sqlx::query("update laundry_order set note = $2, version = version + 1 where id = $1")
@@ -262,15 +270,13 @@ pub async fn set_status(
 
     let mut keys = BTreeSet::from([laundry_key(property)]);
     if to == OrderStatus::Delivered {
-        let in_house: bool = sqlx::query_scalar(
-            "select exists (select 1 from reservation_room
-                            where id = $1 and property_id = $2 and status = 'checked_in')",
-        )
-        .bind(current.reservation_room_id)
-        .bind(property)
-        .fetch_one(&mut **tx)
-        .await?;
-        if !in_house {
+        let stay: Option<String> =
+            sqlx::query_scalar("select status from reservation_room where id = $1 and property_id = $2 for share")
+                .bind(current.reservation_room_id)
+                .bind(property)
+                .fetch_optional(&mut **tx)
+                .await?;
+        if stay.as_deref() != Some("checked_in") {
             return Err(LaundryError::Conflict("The guest has checked out; post the charge on their folio".into()));
         }
         let business_date = folio::business_date(tx, property).await?;
@@ -350,16 +356,21 @@ fn clean_note(note: Option<String>) -> Result<Option<String>, LaundryError> {
     Ok(note)
 }
 
-/// `lines` as order lines in their order, priced from the property's active prices (`Invalid` for a count out of
-/// range or a price that is not active in the property).
-async fn priced_lines(tx: &mut Tx, property: Uuid, lines: &[(Uuid, i32)]) -> Result<Vec<OrderLine>, LaundryError> {
+/// `lines` as order lines in their order: a price in `taken` as that line was taken, any other from the property's
+/// active prices (`Invalid` for a count out of range or a price that is not active in the property).
+async fn priced_lines(
+    tx: &mut Tx,
+    property: Uuid,
+    lines: &[(Uuid, i32)],
+    taken: &BTreeMap<Uuid, OrderLine>,
+) -> Result<Vec<OrderLine>, LaundryError> {
     if lines.is_empty() || lines.len() > MAX_LINES {
         return Err(LaundryError::Invalid(format!("an order has 1 to {MAX_LINES} lines")));
     }
     if lines.iter().any(|(_, quantity)| !(1..=MAX_QUANTITY).contains(quantity)) {
         return Err(LaundryError::Invalid(format!("a quantity is 1 to {MAX_QUANTITY}")));
     }
-    let ids: Vec<Uuid> = lines.iter().map(|(price, _)| *price).collect();
+    let ids: Vec<Uuid> = lines.iter().map(|(price, _)| *price).filter(|price| !taken.contains_key(price)).collect();
     let prices: Vec<(Uuid, String, String, String, i64)> = sqlx::query_as(
         "select id, item_code, service, name, price from laundry_price
          where property_id = $1 and id = any($2) and active",
@@ -374,6 +385,9 @@ async fn priced_lines(tx: &mut Tx, property: Uuid, lines: &[(Uuid, i32)]) -> Res
         .iter()
         .zip(1..)
         .map(|(&(price_id, quantity), position)| {
+            if let Some(line) = taken.get(&price_id) {
+                return Ok(OrderLine { position, quantity, ..line.clone() });
+            }
             let (item_code, service, name, unit_price) = prices
                 .get(&price_id)
                 .ok_or_else(|| LaundryError::Invalid("a price is not on the property's active price list".into()))?;

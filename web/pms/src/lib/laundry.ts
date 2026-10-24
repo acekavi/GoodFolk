@@ -182,6 +182,34 @@ export function orderQuantities(
 	return quantities;
 }
 
+/**
+ * The prices an order form offers: the active list, with each price already on the order (`taken`, its lines) at
+ * the code, service, name and price it was taken at, as the server keeps them on an edit, even if the price has
+ * since changed or been switched off.
+ */
+export function formPrices(
+	active: readonly LaundryPrice[],
+	taken: readonly Pick<
+		LaundryOrder['lines'][number],
+		'priceId' | 'itemCode' | 'service' | 'name' | 'unitPrice'
+	>[]
+): LaundryPrice[] {
+	const prices = new Map(active.map((price) => [price.id, price]));
+	for (const line of taken) {
+		const listed = prices.get(line.priceId);
+		prices.set(line.priceId, {
+			id: line.priceId,
+			itemCode: line.itemCode,
+			service: line.service,
+			name: line.name,
+			price: line.unitPrice,
+			active: listed?.active ?? false,
+			version: listed?.version ?? 0
+		});
+	}
+	return [...prices.values()];
+}
+
 /** The step after `status`, with its button label; `null` once delivered or cancelled. */
 export function nextStep(
 	status: LaundryOrderStatus
