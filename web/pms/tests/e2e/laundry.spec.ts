@@ -150,7 +150,9 @@ test('a linen batch is received short, then the missing items are written off', 
 	await page.getByRole('tab', { name: 'Movements' }).click();
 	const movements = page.getByRole('table', { name: 'Movements' });
 	await expect(movements).toContainText('Lost at the laundry');
-	await expect(movements.getByRole('row', { name: /Lost at the laundry/ })).toContainText('2');
+	const writtenOff = movements.getByRole('row', { name: /Lost at the laundry/ });
+	await expect(writtenOff.getByRole('cell').nth(1)).toHaveText('Write-off');
+	await expect(writtenOff.getByRole('cell').nth(3)).toHaveText('2');
 });
 
 test('a guest laundry order is taken, delivered and posted to the stay folio with its taxes', async ({
@@ -201,9 +203,40 @@ test('a guest laundry order is taken, delivered and posted to the stay folio wit
 	await expect(taxes).toContainText('LKR 10.00');
 });
 
-test('housekeeping sees the Linen page but cannot write off', async ({ page, browser }) => {
+test('housekeeping sees no write-off on a short batch', async ({ page, browser }) => {
 	const owner = await hotel(page, 'ACC');
-	await setUpLinen(page, owner.propertyId);
+	const api = page.request;
+	const path = `/api/v1/properties/${owner.propertyId}`;
+	const towel = await post(api, `${path}/linen-items`, { code: 'TOWEL', name: 'Bath towel' });
+	const store = await post(api, `${path}/linen-locations`, {
+		name: 'Main store',
+		kind: 'store',
+		section_id: null
+	});
+	const laundry = await post(api, `${path}/linen-locations`, {
+		name: 'In-house laundry',
+		kind: 'laundry',
+		section_id: null
+	});
+	await post(api, `${path}/linen-movements`, {
+		kind: 'receive',
+		item_id: towel.id,
+		quantity: 10,
+		from_location_id: null,
+		to_location_id: store.id,
+		reason: null
+	});
+	const batch = await post(api, `${path}/laundry-batches`, {
+		from_location_id: store.id,
+		to_location_id: laundry.id,
+		items: [{ item_id: towel.id, quantity: 6 }],
+		note: null
+	});
+	const received = await api.post(`${path}/laundry-batches/${batch.id}/receive`, {
+		headers: { 'x-goodfolk-csrf': '1', 'If-Match': `"${batch.version}"` },
+		data: { back_to: store.id, items: [{ item_id: towel.id, quantity: 4 }] }
+	});
+	expect(received.status(), await received.text()).toBe(200);
 	const { email } = addStaff(owner.email, 'housekeeping', 'Kumari Silva');
 
 	const context = await browser.newContext();
@@ -213,7 +246,17 @@ test('housekeeping sees the Linen page but cannot write off', async ({ page, bro
 	await expect(staff.getByRole('heading', { name: 'Linen' })).toBeVisible();
 	await expect(staff.getByRole('link', { name: 'Linen', exact: true })).toBeVisible();
 	await expect(staff.getByRole('tab', { name: 'Setup' })).toHaveCount(0);
+	await expect(
+		staff.getByRole('table', { name: 'Stock' }).getByRole('row', { name: /Bath towel/ })
+	).toContainText('8');
 
+	await staff.getByRole('tab', { name: 'Batches' }).click();
+	const batches = staff.getByRole('table', { name: 'Batches' });
+	await expect(batches).toContainText('2 out');
+	await expect(batches.getByRole('button', { name: 'Return found' })).toBeVisible();
+	await expect(staff.getByRole('button', { name: 'Write off' })).toHaveCount(0);
+
+	await staff.getByRole('tab', { name: 'Stock' }).click();
 	await staff.getByRole('button', { name: 'Move linen' }).click();
 	const move = staff.getByRole('dialog', { name: 'Move linen' });
 	await expect(move.getByLabel('Kind').getByRole('option')).toHaveText([
