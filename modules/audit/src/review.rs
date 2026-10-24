@@ -85,11 +85,11 @@ pub struct PosBillRow {
 pub struct BookingBills {
     /// Tonight's room and meal-plan charges, as posting them would go.
     pub nights: Vec<folio::NightPreview>,
-    /// The business date's manual and fee lines, by category.
+    /// The business date's manual, fee and laundry lines, by category.
     pub posted: Vec<CategoryTotal>,
 }
 
-/// The manual and fee lines of the business date in one category.
+/// The manual, fee and laundry lines of the business date in one category.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CategoryTotal {
     pub category: String,
@@ -360,13 +360,13 @@ async fn pos_bills(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<Outlet
     Ok(outlets)
 }
 
-/// D's manual and fee lines on the property's folios, by category.
+/// D's manual, fee and laundry lines on the property's folios, by category.
 async fn posted_lines(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<CategoryTotal>, AuditError> {
     let rows: Vec<(String, i64, i64)> = sqlx::query_as(
         "select l.category, count(*), sum(l.base_total)::bigint
          from folio_line l join folio f on f.id = l.folio_id
          where f.property_id = $1 and l.business_date = $2
-           and l.source in ('manual', 'cancellation_fee', 'no_show_fee')
+           and l.source in ('manual', 'cancellation_fee', 'no_show_fee', 'laundry')
          group by l.category
          order by l.category",
     )

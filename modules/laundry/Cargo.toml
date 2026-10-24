@@ -1,0 +1,30 @@
+[package]
+name = "laundry"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+audit.workspace = true
+db.workspace = true
+folio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+time.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+db = { workspace = true, features = ["testing"] }
+fx.workspace = true
+property.workspace = true
+rand.workspace = true
+rooms.workspace = true
+rust_decimal.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

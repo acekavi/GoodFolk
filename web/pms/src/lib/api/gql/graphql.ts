@@ -77,6 +77,26 @@ export type IssueStatus =
   | 'OPEN'
   | 'RESOLVED';
 
+/** Whether a laundry batch is still out or counted back in. */
+export type LaundryBatchStatus =
+  | 'RECEIVED'
+  | 'SENT';
+
+/** Where a guest laundry order is. */
+export type LaundryOrderStatus =
+  | 'CANCELLED'
+  | 'COLLECTED'
+  | 'DELIVERED'
+  | 'PROCESSING'
+  | 'READY';
+
+/** What is done to a guest's item. */
+export type LaundryService =
+  | 'DRY_CLEAN'
+  | 'EXPRESS'
+  | 'PRESS'
+  | 'WASH';
+
 /** What posted a line. */
 export type LineSource =
   | 'ADJUSTMENT'
@@ -87,6 +107,21 @@ export type LineSource =
   | 'NO_SHOW_FEE'
   | 'POS'
   | 'ROOM';
+
+/** What a place linen is kept in is for. */
+export type LinenLocationKind =
+  | 'LAUNDRY'
+  | 'PANTRY'
+  | 'STORE'
+  | 'VENDOR';
+
+/** What a linen movement does. */
+export type LinenMovementKind =
+  | 'RECEIVE'
+  | 'RETURN'
+  | 'SEND'
+  | 'TRANSFER'
+  | 'WRITE_OFF';
 
 export type MealPlan =
   | 'BB'
@@ -117,7 +152,8 @@ export type Occupancy =
 
 export type OpsAlertKind =
   | 'AUDIT'
-  | 'DRIFT';
+  | 'DRIFT'
+  | 'LINEN';
 
 export type PenaltyKind =
   | 'AMOUNT'
@@ -315,6 +351,52 @@ export type InventoryQueryVariables = Exact<{
 
 
 export type InventoryQuery = { inventory: Array<{ date: string, roomTypeId: string, physical: number, sold: number, outOfOrder: number, available: number, sellable: number }>, blocks: Array<{ id: string, roomId: string, from: string, to: string, kind: BlockKind, reasonId: string, note: string, version: number }> };
+
+export type LaundryPricesQueryVariables = Exact<{
+  propertyId: string;
+  includeInactive: boolean;
+}>;
+
+
+export type LaundryPricesQuery = { laundryPrices: Array<{ id: string, itemCode: string, service: LaundryService, name: string, price: number, active: boolean, version: number }> };
+
+export type LaundryOrdersQueryVariables = Exact<{
+  propertyId: string;
+}>;
+
+
+export type LaundryOrdersQuery = { laundryOrders: Array<{ id: string, reservationRoomId: string, roomNumber: string, guest: string, status: LaundryOrderStatus, note: string | null, total: number, currency: string, createdAt: string, statusAt: string, deliveredAt: string | null, version: number, lines: Array<{ position: number, priceId: string, itemCode: string, service: LaundryService, name: string, unitPrice: number, quantity: number }> }> };
+
+export type LaundryOrdersForStayQueryVariables = Exact<{
+  propertyId: string;
+  reservationRoomId: string;
+}>;
+
+
+export type LaundryOrdersForStayQuery = { laundryOrdersForStay: Array<{ id: string, reservationRoomId: string, roomNumber: string, guest: string, status: LaundryOrderStatus, note: string | null, total: number, currency: string, createdAt: string, statusAt: string, deliveredAt: string | null, version: number, lines: Array<{ position: number, priceId: string, itemCode: string, service: LaundryService, name: string, unitPrice: number, quantity: number }> }> };
+
+export type LinenQueryVariables = Exact<{
+  propertyId: string;
+}>;
+
+
+export type LinenQuery = { linenItems: Array<{ id: string, code: string, name: string, active: boolean, version: number }>, linenLocations: Array<{ id: string, name: string, kind: LinenLocationKind, sectionId: string | null, active: boolean, version: number }>, linenPar: Array<{ roomTypeId: string, itemId: string, quantity: number }>, linenStock: Array<{ locationId: string, itemId: string, quantity: number, par: number | null, low: boolean }> };
+
+export type LaundryBatchesQueryVariables = Exact<{
+  propertyId: string;
+}>;
+
+
+export type LaundryBatchesQuery = { laundryBatches: Array<{ id: string, fromLocationId: string, toLocationId: string, status: LaundryBatchStatus, note: string | null, sentAt: string, receivedAt: string | null, outstanding: number, settled: boolean, version: number, lines: Array<{ itemId: string, sent: number, returned: number, writtenOff: number, outstanding: number }> }> };
+
+export type LinenMovementsQueryVariables = Exact<{
+  propertyId: string;
+  first: number;
+  locationId?: string | null | undefined;
+}>;
+
+
+export type LinenMovementsQuery = { linenMovements: Array<{ id: string, itemId: string, kind: LinenMovementKind, quantity: number, fromLocationId: string | null, toLocationId: string | null, batchId: string | null, reason: string | null, businessDate: string, movedAt: string }> };
 
 export type RoomTypeGalleriesQueryVariables = Exact<{
   propertyId: string;
@@ -759,6 +841,146 @@ export const InventoryDocument = new TypedDocumentString(`
   }
 }
     `, {"hash":"sha256:17b30b76d3db9cfcb676c32ecfbe9846f2b10eee551be01de39ff387d20b4230"}) as unknown as TypedDocumentString<InventoryQuery, InventoryQueryVariables>;
+export const LaundryPricesDocument = new TypedDocumentString(`
+    query LaundryPrices($propertyId: UUID!, $includeInactive: Boolean!) {
+  laundryPrices(propertyId: $propertyId, includeInactive: $includeInactive) {
+    id
+    itemCode
+    service
+    name
+    price
+    active
+    version
+  }
+}
+    `, {"hash":"sha256:ef61ff4d58e0ac027c48a7678b373332a8a29338d36ac273ab285ddbd6295353"}) as unknown as TypedDocumentString<LaundryPricesQuery, LaundryPricesQueryVariables>;
+export const LaundryOrdersDocument = new TypedDocumentString(`
+    query LaundryOrders($propertyId: UUID!) {
+  laundryOrders(propertyId: $propertyId) {
+    id
+    reservationRoomId
+    roomNumber
+    guest
+    status
+    note
+    lines {
+      position
+      priceId
+      itemCode
+      service
+      name
+      unitPrice
+      quantity
+    }
+    total
+    currency
+    createdAt
+    statusAt
+    deliveredAt
+    version
+  }
+}
+    `, {"hash":"sha256:655cbd289747cb10c0437846c82d96b7f746a1b5b8e0e04f5110523a11d3c4df"}) as unknown as TypedDocumentString<LaundryOrdersQuery, LaundryOrdersQueryVariables>;
+export const LaundryOrdersForStayDocument = new TypedDocumentString(`
+    query LaundryOrdersForStay($propertyId: UUID!, $reservationRoomId: UUID!) {
+  laundryOrdersForStay(
+    propertyId: $propertyId
+    reservationRoomId: $reservationRoomId
+  ) {
+    id
+    reservationRoomId
+    roomNumber
+    guest
+    status
+    note
+    lines {
+      position
+      priceId
+      itemCode
+      service
+      name
+      unitPrice
+      quantity
+    }
+    total
+    currency
+    createdAt
+    statusAt
+    deliveredAt
+    version
+  }
+}
+    `, {"hash":"sha256:0d760c4b50149f94436696a1652a422e9d56d1f192ebfdb3d219432fcf9c4c88"}) as unknown as TypedDocumentString<LaundryOrdersForStayQuery, LaundryOrdersForStayQueryVariables>;
+export const LinenDocument = new TypedDocumentString(`
+    query Linen($propertyId: UUID!) {
+  linenItems(propertyId: $propertyId) {
+    id
+    code
+    name
+    active
+    version
+  }
+  linenLocations(propertyId: $propertyId) {
+    id
+    name
+    kind
+    sectionId
+    active
+    version
+  }
+  linenPar(propertyId: $propertyId) {
+    roomTypeId
+    itemId
+    quantity
+  }
+  linenStock(propertyId: $propertyId) {
+    locationId
+    itemId
+    quantity
+    par
+    low
+  }
+}
+    `, {"hash":"sha256:ec77277a15befdcfc7629021ce541344e6dec1fd9256d671804e122b5eefffa0"}) as unknown as TypedDocumentString<LinenQuery, LinenQueryVariables>;
+export const LaundryBatchesDocument = new TypedDocumentString(`
+    query LaundryBatches($propertyId: UUID!) {
+  laundryBatches(propertyId: $propertyId) {
+    id
+    fromLocationId
+    toLocationId
+    status
+    note
+    sentAt
+    receivedAt
+    lines {
+      itemId
+      sent
+      returned
+      writtenOff
+      outstanding
+    }
+    outstanding
+    settled
+    version
+  }
+}
+    `, {"hash":"sha256:7137ec3ad9c8ef3309011ad97a1ad431ba15d8b77e3940745807a1448d46302d"}) as unknown as TypedDocumentString<LaundryBatchesQuery, LaundryBatchesQueryVariables>;
+export const LinenMovementsDocument = new TypedDocumentString(`
+    query LinenMovements($propertyId: UUID!, $first: Int!, $locationId: UUID) {
+  linenMovements(propertyId: $propertyId, first: $first, locationId: $locationId) {
+    id
+    itemId
+    kind
+    quantity
+    fromLocationId
+    toLocationId
+    batchId
+    reason
+    businessDate
+    movedAt
+  }
+}
+    `, {"hash":"sha256:b3f8d8ba63679fbc42abb814026d01c81a4e6ea53c303eca9746bd45562de4f1"}) as unknown as TypedDocumentString<LinenMovementsQuery, LinenMovementsQueryVariables>;
 export const RoomTypeGalleriesDocument = new TypedDocumentString(`
     query RoomTypeGalleries($propertyId: UUID!) {
   roomTypes(propertyId: $propertyId) {

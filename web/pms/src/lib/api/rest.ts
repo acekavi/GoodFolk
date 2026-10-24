@@ -30,7 +30,8 @@ export function ifMatch(version: number) {
  * Call `reset()` after a success so the next create starts fresh, and `failed(err)` when a submit
  * fails: a definitive client error (4xx) rotates the key, so an unchanged resubmit is a new request
  * rather than a replay of the stored error; a network error, a 5xx or a 409 "still in progress"
- * keeps it, since the first request may yet succeed.
+ * keeps it, since the first request may yet succeed. `submit(body, send)` does all three around one
+ * request.
  */
 export function formKeys() {
 	let key = idempotencyKey();
@@ -39,18 +40,31 @@ export function formKeys() {
 		key = idempotencyKey();
 		last = '';
 	}
+	function keyFor(body: unknown): string {
+		const serialized = JSON.stringify(body);
+		if (last && serialized !== last) key = idempotencyKey();
+		last = serialized;
+		return key;
+	}
+	function failed(err: unknown) {
+		if (!(err instanceof ApiError) || err.status < 400 || err.status > 499) return;
+		if (err.status === 409 && err.problem.detail?.includes('in progress')) return;
+		reset();
+	}
 	return {
-		keyFor(body: unknown): string {
-			const serialized = JSON.stringify(body);
-			if (last && serialized !== last) key = idempotencyKey();
-			last = serialized;
-			return key;
-		},
+		keyFor,
 		reset,
-		failed(err: unknown) {
-			if (!(err instanceof ApiError) || err.status < 400 || err.status > 499) return;
-			if (err.status === 409 && err.problem.detail?.includes('in progress')) return;
-			reset();
+		failed,
+		/** Sends `body` with its key: a success resets the keys, a failure goes through `failed` and is rethrown. */
+		async submit<T>(body: unknown, send: (key: string) => Promise<T>): Promise<T> {
+			try {
+				const done = await send(keyFor(body));
+				reset();
+				return done;
+			} catch (err) {
+				failed(err);
+				throw err;
+			}
 		}
 	};
 }

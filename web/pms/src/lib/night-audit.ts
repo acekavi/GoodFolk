@@ -207,13 +207,22 @@ export async function fetchOpsAlerts(propertyId: string, signal?: AbortSignal) {
 	return (await query(OpsAlertsDocument, { propertyId }, signal)).opsAlerts;
 }
 
-/** Whether the ops-alert banner is shown: to owners and managers, who can read the alerts. */
+/**
+ * Whether the ops-alert banner is shown: to those who can read some alert. Owners and managers read every kind; a
+ * housekeeping supervisor (`LinenManage`) only the linen alert, which the server filters for them.
+ */
 export function seesOpsAlerts(profile: Profile, propertyId: string): boolean {
-	return can(profile, 'propertiesManage', propertyId);
+	return can(profile, 'propertiesManage', propertyId) || can(profile, 'linenManage', propertyId);
 }
 
+const OPS_ALERT_LABELS: Record<OpsAlert['kind'], string> = {
+	AUDIT: 'Night audit',
+	DRIFT: 'Inventory counts',
+	LINEN: 'Linen'
+};
+
 export function opsAlertLabel(kind: OpsAlert['kind']): string {
-	return kind === 'AUDIT' ? 'Night audit' : 'Inventory counts';
+	return OPS_ALERT_LABELS[kind];
 }
 
 /** The header's count of stays still blocking the close. */

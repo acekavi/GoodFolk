@@ -6,7 +6,7 @@ mod common;
 use audit::{ArrivalRow, BookingBills, CategoryTotal, DepartureRow, OutletBills, PaymentGroup, PosBillRow};
 use common::{Booked, Hotel, Stay};
 use domain::RoomStatus;
-use folio::{Method, NightPreview, PosTarget, PostReport};
+use folio::{Method, NewCharge, NightPreview, PosTarget, PostReport, Source};
 use rust_decimal::Decimal;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use uuid::Uuid;
@@ -366,6 +366,35 @@ async fn a_bill_on_a_stay_checked_out_with_a_balance_is_highlighted(_: PgPoolOpt
     let highlighted: Vec<(String, bool)> = bills.iter().map(|bill| (bill.bill_no.clone(), bill.highlight)).collect();
     assert_eq!(highlighted, vec![("B1".into(), true), ("B2".into(), false), ("B3".into(), false)]);
     assert_eq!(bills[0].id, owing_bill.id);
+}
+
+/// A guest laundry order's delivery posts `laundry` lines through `post_for_stay`: the review counts them in the
+/// `laundry` category with the manual laundry charges.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_review_lists_the_days_laundry_lines(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let p = hotel.property;
+    let stay = hotel.stay(Stay { room: Some("101"), ..Stay::new(p, "checked_in", -1, 1) }).await;
+    let mut tx = hotel.tx().await;
+    let charge = NewCharge {
+        source: Source::Laundry,
+        category: "laundry".into(),
+        description: "Laundry: Shirt × 2".into(),
+        quantity: 2,
+        unit_net: 500,
+        currency: "LKR".into(),
+        business_date: hotel.business_date,
+        posting_key: Some(format!("laundry:{}:1", Uuid::now_v7())),
+        inclusive: false,
+    };
+    let delivered = folio::post_for_stay(&mut tx, hotel.tenant, Some(hotel.user), stay.id, charge).await.unwrap();
+    tx.commit().await.unwrap();
+    let manual = hotel.charge(p, stay.guest_folio, "laundry", 1_000).await;
+
+    let review = hotel.night_audit(p).await;
+
+    let total_base = delivered.base_total + manual.base_total;
+    assert_eq!(review.booking_bills.posted, vec![CategoryTotal { category: "laundry".into(), lines: 2, total_base }]);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

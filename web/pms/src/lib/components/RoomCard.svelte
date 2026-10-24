@@ -1,6 +1,6 @@
 <!--
 	One booked room of the reservation detail modal: its facts, nights and total, and every action on
-	it (assign, unassign, cancel, modify, check in/undo/out, occupants). Self-contained: it runs its
+	it (assign, unassign, cancel, modify, check in/undo/out, occupants, guest laundry). Self-contained: it runs its
 	own commands and refreshes the reservation, every list and the free rooms afterwards, exactly as
 	the modal's other actions do (`command`'s 412-reload pattern included).
 -->
@@ -10,6 +10,7 @@
 	import { ApiError, errorMessage } from '$lib/api/problem';
 	import { ifMatch, rest, unwrap } from '$lib/api/rest';
 	import { conditionLabel, fetchBoard, hkKey, isConditionRefusal } from '$lib/housekeeping';
+	import { fetchStayLaundryOrders, laundryKey, lineText, orderStatusLabel } from '$lib/laundry';
 	import { Pending } from '$lib/pending.svelte';
 	import { formatMoney } from '$lib/rates';
 	import {
@@ -36,6 +37,7 @@
 	} from '$lib/reservations';
 	import type { RoomType } from '$lib/rooms';
 	import GuestSearch from './GuestSearch.svelte';
+	import LaundryOrderForm from './LaundryOrderForm.svelte';
 
 	interface Props {
 		propertyId: string;
@@ -52,6 +54,8 @@
 		viewConditions: boolean;
 		/** `housekeepingSupervise`: a dirty room's check-in may be overridden, with a reason. */
 		supervise: boolean;
+		/** `laundryOrders`: a checked-in room's guest laundry orders are listed and taken. */
+		laundry: boolean;
 	}
 
 	const {
@@ -63,7 +67,8 @@
 		manage,
 		checkInAllowed,
 		viewConditions,
-		supervise
+		supervise,
+		laundry
 	}: Props = $props();
 
 	const client = useQueryClient();
@@ -375,6 +380,22 @@
 					? `Checked out. Released ${done.released_nights.length} night${done.released_nights.length === 1 ? '' : 's'} (${done.released_nights.join(', ')}).`
 					: 'Checked out.';
 		}
+	}
+
+	// Guest laundry: the stay's orders, refetched on the server's `laundry:<property>` event.
+	const takesLaundry = $derived(laundry && room.status === 'CHECKED_IN');
+	const laundryOrders = createQuery(() => ({
+		queryKey: laundryKey(propertyId, 'stay', room.id),
+		queryFn: ({ signal }: { signal: AbortSignal }) =>
+			fetchStayLaundryOrders(propertyId, room.id, signal),
+		enabled: takesLaundry
+	}));
+	let laundryOpen = $state(false);
+	let laundryOrderId = $state<string | null>(null);
+
+	function openLaundry(orderId: string | null) {
+		laundryOrderId = orderId;
+		laundryOpen = true;
 	}
 
 	// Occupants.
@@ -721,7 +742,46 @@
 					>
 				{/if}
 			{/if}
+			{#if takesLaundry}
+				<button type="button" class="secondary" onclick={() => openLaundry(null)}>Laundry</button>
+			{/if}
 		</div>
+	{/if}
+
+	{#if takesLaundry}
+		<h4>Laundry orders</h4>
+		{#if laundryOrders.error && !laundryOrders.data}
+			<p class="error" role="alert">{errorMessage(laundryOrders.error)}</p>
+		{:else if !laundryOrders.data}
+			<p class="hint">Loading…</p>
+		{:else if laundryOrders.data.length === 0}
+			<p class="hint">No laundry orders for this stay.</p>
+		{:else}
+			<ul class="laundry" aria-label="Laundry orders">
+				{#each laundryOrders.data as order (order.id)}
+					<li>
+						<span
+							>{orderStatusLabel(order.status)} · {order.lines.map(lineText).join(', ')} · {money(
+								order.total,
+								order.currency
+							)}</span
+						>
+						{#if order.status === 'COLLECTED'}
+							<button type="button" class="secondary" onclick={() => openLaundry(order.id)}
+								>Change</button
+							>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		{/if}
+		<LaundryOrderForm
+			{propertyId}
+			reservationRoomId={room.id}
+			roomNumber={room.room?.number ?? '?'}
+			orderId={laundryOrderId}
+			bind:open={laundryOpen}
+		/>
 	{/if}
 
 	{#if manage}
@@ -797,14 +857,16 @@
 	h4 {
 		margin-bottom: 0.25rem;
 	}
-	.occupants {
+	.occupants,
+	.laundry {
 		list-style: none;
 		padding: 0;
 		display: grid;
 		gap: 0.25rem;
 		margin: 0 0 var(--space);
 	}
-	.occupants li {
+	.occupants li,
+	.laundry li {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;

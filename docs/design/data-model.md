@@ -88,15 +88,22 @@ Phase 3 ships in two slices. **3a** (`migrations/0007_reservations.sql`) creates
 | `room_status` | `room_id` (pk), `tenant_id`, `property_id`, `condition` (`dirty` \| `cleaning` \| `clean` \| `inspected`), `updated_by`, `updated_at`, `version` | Occupancy (vacant / occupied / due out / due in) is derived from reservations, not stored |
 | `hk_assignment` | `id`, `tenant_id`, `property_id`, `business_date`, `room_id`, `user_id` | `unique (room_id, business_date)` |
 | `room_issue` | `id`, `tenant_id`, `property_id`, `room_id`, `category`, `severity` (`low` \| `medium` \| `high`), `description`, `status` (`open` \| `in_progress` \| `resolved`), `reported_by`, `assigned_to null`, `created_at`, `resolved_at` | Photos via `media_link` |
-| `linen_item` | `id`, `tenant_id`, `property_id`, `code`, `name` | |
-| `linen_par` | `(room_type_id, linen_item_id)`, `tenant_id`, `quantity` | Par level per room of that type |
-| `linen_location` | `id`, `tenant_id`, `property_id`, `name`, `kind` (`store` \| `pantry` \| `laundry` \| `vendor`) | |
-| `linen_stock` | `(location_id, linen_item_id)`, `tenant_id`, `quantity` | Maintained from movements |
-| `linen_movement` | `id`, `tenant_id`, `property_id`, `linen_item_id`, `from_location_id null`, `to_location_id null`, `quantity`, `kind` (`transfer` \| `send` \| `receive` \| `write_off`), `batch_id null`, `note`, `by`, `at` | Append-only |
-| `laundry_batch` | `id`, `tenant_id`, `property_id`, `vendor_location_id`, `sent_at`, `received_at null`, `status` | Sent vs received counts come from its movements; differences are shown and logged |
-| `laundry_service_item` | `id`, `tenant_id`, `property_id`, `code`, `name`, `service` (`wash` \| `press` \| `dry_clean` \| `express`), `price`, `currency`, `active` | Guest laundry price list |
-| `laundry_order` | `id`, `tenant_id`, `property_id`, `reservation_room_id`, `room_id`, `status` (`collected` \| `processing` \| `ready` \| `delivered`), `folio_line_id null`, `created_at`, `delivered_at` | Charge posted to the folio on `delivered` |
-| `laundry_order_line` | `(order_id, service_item_id)`, `tenant_id`, `quantity`, `unit_price` | |
+
+### Linen and guest laundry
+
+Migrations `0033_laundry.sql` and `0034_linen_par_delete.sql` (the delete grant a par replacement needs). Every table is tenant-owned with forced row-level security and is in `crates/db/tests/isolation.rs`. Each foreign key to another property-scoped table is the composite `(property_id, id)`, so a row can name only rows of its own property; each such table carries `unique (property_id, id)` for it. Amounts are minor units of the property's base currency. `ops_alert.kind` gains `linen`.
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `linen_item` | `id`, `tenant_id`, `property_id`, `code` (`^[A-Z0-9_]{1,20}$`), `name`, `active`, `version` | `unique (property_id, code)`; names need not be unique |
+| `linen_location` | `id`, `tenant_id`, `property_id`, `name`, `kind` (`store` \| `pantry` \| `laundry` \| `vendor`), `section_id null`, `active`, `version` | `unique (property_id, name)`; `section_id` is set exactly for a `pantry`; a partial unique index allows one active `store` per property and one active location per section |
+| `linen_par` | `(room_type_id, item_id)`, `tenant_id`, `property_id`, `quantity` (1–100) | How many of an item one room of the type needs. `PUT` replaces a room type's rows, hence the delete grant |
+| `linen_stock` | `(location_id, item_id)`, `tenant_id`, `property_id`, `quantity` (≥ 0) | Kept in the transaction of each movement; locked in ascending `(location_id, item_id)` before any change |
+| `linen_movement` | `id`, `tenant_id`, `property_id`, `item_id`, `kind` (`receive` \| `transfer` \| `send` \| `return` \| `write_off`), `quantity` (1–100000), `from_location_id null`, `to_location_id null`, `batch_id null`, `reason null`, `business_date`, `moved_by`, `moved_at` | Append-only (select and insert only). Checks: `from` is null exactly for `receive`, `to` is null exactly for `write_off`, a `write_off` has a reason, `from` differs from `to`, a `send` or `return` has a batch |
+| `laundry_batch` | `id`, `tenant_id`, `property_id`, `to_location_id`, `from_location_id`, `status` (`sent` \| `received`), `note`, `sent_by`, `sent_at`, `received_by null`, `received_at null`, `version` | `from` differs from `to`; sent and received counts come from the batch's movements, and what is still out is sent − returned − written off |
+| `laundry_price` | `id`, `tenant_id`, `property_id`, `item_code`, `service` (`wash` \| `press` \| `dry_clean` \| `express`), `name`, `price` (> 0), `active`, `version` | `unique (property_id, item_code, service)`; the guest laundry price list, net of tax |
+| `laundry_order` | `id`, `tenant_id`, `property_id`, `reservation_room_id`, `room_number`, `status` (`collected` \| `processing` \| `ready` \| `delivered` \| `cancelled`), `note`, `created_by`, `created_at`, `status_by`, `status_at`, `delivered_at null`, `version` | `delivered_at` is set exactly when `delivered`; the stay's key is `(property_id, reservation_room_id)`. The charge goes to the folio on `delivered` (no folio reference is kept: the lines' posting keys find them) |
+| `laundry_order_line` | `(order_id, position)`, `tenant_id`, `property_id`, `price_id`, `item_code`, `service`, `name`, `unit_price`, `quantity` (1–100) | `position` is 1–50. The price row's item code, service, name and price are copied in; lines are replaced (select, insert, delete) while the order is `collected` |
 
 ## Phase 6: Media and events
 
@@ -139,7 +146,7 @@ Migrations `0031_night_audit.sql` and `0032_folio_line_business_date.sql`. Every
 | `audit_run_step` | `(run_id, step)`, `tenant_id`, `step` (`resolve` \| `post_charges` \| `lock_fx` \| `snapshot_stats` \| `advance_business_date`), `completed_at`, `detail jsonb` | Insert-only. A step is done exactly when its row exists: it is inserted in the step's own transaction |
 | `daily_stats` | `(property_id, business_date)`, `tenant_id`, `rooms_total`, `rooms_out_of_order`, `rooms_available`, `rooms_sold`, `complimentary_rooms`, `occupancy_bp`, `adults`, `children`, `arrivals`, `departures`, `no_shows`, `cancellations`, `walk_ins`, `room_revenue`, `meal_plan_revenue`, `pos_revenue`, `fee_revenue`, `other_revenue`, `adr`, `revpar`, `taxes jsonb` (`{code: amount}`), `payments jsonb` (`{method: amount}`), `taken_at` | Insert-only, taken in the roll's transaction: a closed day is never rewritten, and a later correction counts on the day it is posted. Revenue is net of tax, on the posting business date; `adjustment` lines are not revenue |
 | `daily_stats_breakdown` | `(property_id, business_date, dimension, key)`, `tenant_id`, `dimension` (`segment` \| `source` \| `residency` \| `room_type` \| `outlet`), `key`, `room_nights`, `room_revenue`, `revenue` | Insert-only, with its day. Each dimension's rows sum to the day's totals; revenue no stay accounts for is keyed `unattributed` |
-| `ops_alert` | `(property_id, kind)`, `tenant_id`, `kind` (`audit` \| `drift`), `message`, `raised_at` | One per property and kind: an automatic close that failed its third attempt, or drifted inventory counters. Cleared when the date completes, or by a clean drift check |
+| `ops_alert` | `(property_id, kind)`, `tenant_id`, `kind` (`audit` \| `drift` \| `linen`), `message`, `raised_at` | One per property and kind: an automatic close that failed its third attempt, drifted inventory counters, or linen stock below par (raised and cleared by the linen movements). Cleared when the date completes, or by a clean drift check |
 
 | Global table | Key columns | Notes |
 |---|---|---|

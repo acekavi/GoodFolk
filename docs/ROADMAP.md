@@ -188,7 +188,7 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
   - **Copy yesterday and assignments:** the room-active check of a copy takes no room lock, and its "lost the role" case is tested only by removing every grant; the assignments no-write check reads `room.unassigned` audit rows; replaying copy-yesterday returns `{copied: 0}` either way.
   - **Test gaps:** issue and block regressions would not trip the board gate (tiny tables), the block insert count is unchecked, the margin on `powersave` is about 7 ms; a `{roomId, condition}` read would be lighter than the full board query the tape rail and room card reuse; no e2e for `hk_supervisor` (who has supervise but not check-in); the `addStaff` e2e helper runs `cargo` on every call, which is slow; the two-window e2e's "101 stays Dirty" is weak and a blocked IndexedDB open can leave a stray connection; the override is detected from the refusal text (`room 101 is Dirty`), where a structured `condition` field in the problem would be sturdier.
   - **Left open by the final wave:** a lost response to a change the server committed queues it again, and the replay shows a stale-version conflict for the user's own tap; the `HousekeepingUpdate` doc comment in `rbac.rs` still says it resolves issues (that needs `HousekeepingSupervise`); copy-yesterday has no tests for released, expired and future blocks; the `/hk` screens keep an off-screen error banner, some duplicate accessible names and a weak stale-change e2e assertion; the board's `hk:` event now also fires for every reservation and room command (one refetch, about 20 ms on the server, per event on an open board); the service worker is registered origin-wide, so a staff-app visit also precaches the build.
-  - **Photos** on issues, and linen and guest laundry ([laundry.md](specs/laundry.md)), come later (Phase 6 and with or after Phase 7).
+  - **Photos** on issues come with Phase 6, and linen and guest laundry ([laundry.md](specs/laundry.md)) came after Phase 7 (see below).
 
 ## Phase 6a — Media engine: photos and documents ([spec](specs/phase-6-media.md), [plan](superpowers/plans/2026-10-14-phase-6a-media.md))
 
@@ -320,7 +320,33 @@ The owner split the original 7b in two (2026-10-20): the night audit, `jobs-svc`
 - Liability reports: TDL quarterly (SLTDA), SSCL monthly and quarterly, VAT per period, service charge collected.
 - The close gains a `render_reports` step that queues the day's PDFs from its committed snapshot, rendered by media-svc and stored privately.
 
-Linen and guest laundry (moved from Phase 5) stay a phase of their own: [spec](specs/laundry.md). Guest laundry charges post to the folio built in 7a.
+## Linen and guest laundry (moved from Phase 5) ([spec](specs/laundry.md), [plan](superpowers/plans/2026-10-24-laundry.md))
+
+Built after 7b, since guest laundry charges post to the folio. The owner asked for the spec to be written from the outline and ARCHITECTURE §7.4 without a design session (2026-10-24), so its "Builder's call" items were not discussed. Migrations `0033`–`0034`. New module `modules/laundry`; routes in `crates/core-api/src/routes/{linen,laundry}.rs`.
+
+- **Linen: done.** Items, locations (`store`, `pantry`, `laundry`, `vendor`) and a par per room type. Stock changes only through append-only movements (`receive`, `transfer`, `send`, `return`, `write_off`) in the same transaction, locked in ascending `(location, item)` order; a property test asserts stock equals the sum of movements after random sequences, refused ones included, and opposite transfers do not deadlock. Low stock is a stored `linen` ops alert recomputed after each movement.
+- **Batches: done.** Send with a count per item, receive with the counts that came back (differences are highlighted and audited, the missing items stay at the laundry), then settle later by a `return` or a `write_off` against the batch. `POST …/settle` takes `{"how": "return" | "write_off", …}`.
+- **Guest laundry: done.** A price list (item code × `wash`, `press`, `dry_clean`, `express`), orders for a checked-in stay that copy the prices, one status step at a time (`cancelled` before delivery). Delivery posts one taxed `laundry` line per order line through `folio::post_for_stay` under the key `laundry:<order>:<n>`, dated the business date; the review lists them and they count in `other_revenue`.
+- **Permissions and events: done.** `LinenView`, `LinenMove`, `LinenManage`, `LaundryOrders` and `LaundryPricesManage`; `linen:<property>` and `laundry:<property>` events, sent only to holders of `LinenView` and `LaundryOrders`.
+- **UI: done.** **Linen** (**Stock**, **Batches**, **Movements**, and **Setup** for `LinenManage`), **Guest laundry** (a status board), **Laundry** on a checked-in room's card in the reservation modal, **Settings: Laundry prices**, and the `linen` banner. The Playwright suite gains `laundry.spec.ts` (a batch received short and written off, an order delivered to the folio with its taxes, and what housekeeping may do), bringing the default suite to 98 tests.
+- **Deviations from the spec and plan** (the owner's rulings and the Builder's calls):
+  - **Builder's calls, as built:**
+    - One active `store` per property (a second is a `409`), so "the rest of the rooms" is well defined.
+    - The linen alert is stored, like FX and drift, not a separate job.
+    - `express` is a service with its own price, not a surcharge.
+  - **Ruling L1: property-consistent foreign keys.** Every foreign key between the new tables is the composite `(property_id, id)` (the plan had tenant-only keys for `linen_movement.batch_id` and the order lines), so a row cannot name another property's row; `laundry_order_line` carries `property_id`, and the unused `unique (tenant_id, id)` keys were dropped. The order's stay key is `(property_id, reservation_room_id)`, since `0030` dropped `reservation_room (tenant_id, id)`.
+  - **Ruling L2: migration `0034`** grants `delete` on `linen_par` (replacing a room type's par deletes rows) rather than editing `0033` again.
+  - **Ruling L3: delivery reads the stay `for share`.** The plan said delivery would not lock `reservation_room`; reading it before the folio locks follows the global order and closes the race where a charge could land after a check-out. Cost: a delivery may wait briefly behind a concurrent check-out.
+  - **The alert lock is last.** A movement takes a per-property advisory lock for the linen alert after its stock locks and holds it to commit, so each batch command calls `stock::apply` once, after locking the batch row.
+  - **Movements read their locations and item `for share`** and re-check `active`, so a concurrent switch-off cannot race stock into a location being deactivated.
+  - **The alert is re-raised on every movement while stock is low** (noisy, like drift) rather than only when its message changes.
+  - **Unrequested limits:** a movement's quantity is at most 100000, a reason or note at most 500 characters, a settlement at most 200 items, a par at most 50 items, and a movements page at most 100.
+  - **Settling a batch** needs `LinenMove` for a further return and `LinenManage` for a write-off, matching the movement kinds.
+  - **Who sees the alert.** The `linen` alert is shown to `LinenManage` holders; `opsAlerts` returns an error to a user with neither it nor `PropertiesManage`. The alert's own `audit:` event does not reach an `hk_supervisor`, so the SPA refetches ops alerts on `linen:` events too.
+  - **Orders.** Editing an order's lines is audited as `laundry_order.updated`. A stay with no room counts as not in house. `laundryOrdersForStay` takes `propertyId` as well as the stay. Cancel confirms on the board, and past orders show only on checked-in stays' cards. The board's **Delivered today** is the property's local calendar day.
+- Carried over from the laundry reviews (small, not blocking):
+  - **Tests to add:** audit `previous` and payload assertions (a batch's `difference` and `how`), cross-property update and scoping tests, a notify assertion for routed postings, front-desk settle `403` and movement-replay tests, and a test of a deactivated pantry's rooms falling to the store.
+  - **Behaviour:** an order is created without locking the stay (delivery re-checks it); a batch cannot be received while its item or return location is switched off; the board shows times in the browser's zone and "today" goes stale past midnight; **Deliver**'s confirmation shows the net amount, before tax; a `412` on the prices page drops a typed edit.
 
 ## Phase 7c — Online payment gateways and bank guides ([spec](specs/phase-7c-payment-gateways.md))
 

@@ -6,6 +6,8 @@ pub(crate) mod fx;
 mod health;
 pub(crate) mod housekeeping;
 mod internal;
+pub(crate) mod laundry;
+pub(crate) mod linen;
 pub(crate) mod media;
 pub(crate) mod night_audit;
 pub(crate) mod pos;
@@ -40,6 +42,14 @@ pub use fx::SetRateRequest;
 pub use housekeeping::{
     AssignmentRequest, CopiedAssignments, ReportIssueRequest, SetAssignmentsRequest, SetConditionRequest,
     SetConditionsRequest, UpdateIssueRequest,
+};
+pub use laundry::{
+    CreateLaundryOrderRequest, CreateLaundryPriceRequest, LaundryOrderLineRequest, SetLaundryOrderStatusRequest,
+    UpdateLaundryOrderRequest, UpdateLaundryPriceRequest,
+};
+pub use linen::{
+    CreateLinenItemRequest, CreateLinenLocationRequest, LinenCountRequest, ReceiveBatchRequest, RecordMovementRequest,
+    SendBatchRequest, SetParRequest, SettleBatchRequest, UpdateLinenItemRequest, UpdateLinenLocationRequest,
 };
 pub use media::{
     CaptionRequest, CompleteUploadRequest, MediaAsset, ReorderMediaRequest, SignedLink, StartUploadRequest,
@@ -89,6 +99,12 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/rooms/conditions"), post(housekeeping::set_conditions))
         .route(&format!("{PROPERTY}/hk-assignments/copy-yesterday"), post(housekeeping::copy_yesterday))
         .route(&format!("{PROPERTY}/room-issues"), post(housekeeping::report_issue))
+        .route(&format!("{PROPERTY}/linen-items"), post(linen::create_item))
+        .route(&format!("{PROPERTY}/linen-locations"), post(linen::create_location))
+        .route(&format!("{PROPERTY}/linen-movements"), post(linen::record_movement))
+        .route(&format!("{PROPERTY}/laundry-batches"), post(linen::send_batch))
+        .route(&format!("{PROPERTY}/laundry-prices"), post(laundry::create_price))
+        .route(&format!("{PROPERTY}/laundry-orders"), post(laundry::create_order))
         .route(&format!("{PROPERTY}/media/uploads"), post(media::start_upload))
         .route(&format!("{PROPERTY}/media/uploads/{{upload}}/complete"), post(media::complete_upload))
         .route(&format!("{PROPERTY}/folios/{{folio}}/charges"), post(folio::post_charge))
@@ -119,6 +135,14 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/rooms/{{room}}/condition"), put(housekeeping::set_condition))
         .route(&format!("{PROPERTY}/hk-assignments"), put(housekeeping::set_assignments))
         .route(&format!("{PROPERTY}/room-issues/{{issue}}"), patch(housekeeping::update_issue))
+        .route(&format!("{PROPERTY}/linen-items/{{item}}"), patch(linen::update_item))
+        .route(&format!("{PROPERTY}/linen-locations/{{location}}"), patch(linen::update_location))
+        .route(&format!("{PROPERTY}/linen-par/{{room_type}}"), put(linen::set_par))
+        .route(&format!("{PROPERTY}/laundry-batches/{{batch}}/receive"), post(linen::receive_batch))
+        .route(&format!("{PROPERTY}/laundry-batches/{{batch}}/settle"), post(linen::settle_batch))
+        .route(&format!("{PROPERTY}/laundry-prices/{{price}}"), patch(laundry::update_price))
+        .route(&format!("{PROPERTY}/laundry-orders/{{order}}"), patch(laundry::update_order))
+        .route(&format!("{PROPERTY}/laundry-orders/{{order}}/status"), post(laundry::set_order_status))
         .route(&format!("{PROPERTY}/sections/{{section}}"), patch(rooms::rename_section))
         .route(&format!("{PROPERTY}/block-reasons/{{reason}}"), patch(blocks::update_reason))
         .route(&format!("{PROPERTY}/blocks/{{block}}"), patch(blocks::shorten))

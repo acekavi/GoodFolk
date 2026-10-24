@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { applyEvent } from './events';
 import { foliosKey } from './folio';
 import { addDays } from './inventory';
+import { laundryKey } from './laundry';
+import { linenKey } from './linen';
 import { auditRunsKey, dailyStatsKey, nightAuditKey, opsAlertsKey } from './night-audit';
 import { tapeKey, tileStartFor, unassignedKey } from './tape';
 
@@ -142,6 +144,50 @@ describe('applyEvent', () => {
 			true,
 			true,
 			false,
+			false
+		]);
+	});
+
+	it("refetches the property's linen queries and ops alerts on a linen event", () => {
+		const client = new QueryClient();
+		const keys = [
+			linenKey('p1'),
+			linenKey('p1', 'batches'),
+			linenKey('p1', 'movements', 'l1'),
+			opsAlertsKey('p1'),
+			linenKey('p2'),
+			opsAlertsKey('p2')
+		];
+		for (const key of keys) client.setQueryData(key, []);
+
+		applyEvent(client, 'invalidate', '["linen:p1"]');
+
+		expect(keys.map((key) => client.getQueryState(key)?.isInvalidated)).toEqual([
+			true,
+			true,
+			true,
+			true,
+			false,
+			false
+		]);
+	});
+
+	it("refetches the property's laundry prices and orders on a laundry event", () => {
+		const client = new QueryClient();
+		const keys = [
+			laundryKey('p1', 'prices', 'active'),
+			laundryKey('p1', 'orders'),
+			laundryKey('p1', 'stay', 'rr1'),
+			laundryKey('p2', 'orders')
+		];
+		for (const key of keys) client.setQueryData(key, []);
+
+		applyEvent(client, 'invalidate', '["laundry:p1"]');
+
+		expect(keys.map((key) => client.getQueryState(key)?.isInvalidated)).toEqual([
+			true,
+			true,
+			true,
 			false
 		]);
 	});

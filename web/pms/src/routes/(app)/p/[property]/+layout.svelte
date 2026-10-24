@@ -13,6 +13,8 @@
 	// The profile is cached by the app layout; until it loads, the link is not offered.
 	const seesHousekeeping = $derived(!!me.data && can(me.data, 'housekeepingView', property));
 	const seesNightAudit = $derived(!!me.data && can(me.data, 'nightAudit', property));
+	const seesLinen = $derived(!!me.data && can(me.data, 'linenView', property));
+	const seesLaundry = $derived(!!me.data && can(me.data, 'laundryOrders', property));
 	const links = $derived([
 		{ href: resolve('/(app)/p/[property]', { property }), label: 'Overview' },
 		{ href: resolve('/(app)/p/[property]/tape', { property }), label: 'Tape chart' },
@@ -22,6 +24,12 @@
 		},
 		...(seesHousekeeping
 			? [{ href: resolve('/(app)/p/[property]/housekeeping', { property }), label: 'Housekeeping' }]
+			: []),
+		...(seesLinen
+			? [{ href: resolve('/(app)/p/[property]/linen', { property }), label: 'Linen' }]
+			: []),
+		...(seesLaundry
+			? [{ href: resolve('/(app)/p/[property]/laundry', { property }), label: 'Guest laundry' }]
 			: []),
 		...(seesNightAudit
 			? [{ href: resolve('/(app)/p/[property]/night-audit', { property }), label: 'Night audit' }]
@@ -50,7 +58,8 @@
 		queryFn: ({ signal }) => fetchFxAlert(property, signal),
 		enabled: fxBanner
 	}));
-	// Owners and managers see what needs a person: a failed automatic close, or drifted inventory counts.
+	// Owners and managers see what needs a person: a failed automatic close, drifted inventory counts, or linen
+	// below par; housekeeping supervisors see the linen alert.
 	const opsBanner = $derived(!!me.data && seesOpsAlerts(me.data, property));
 	const opsAlerts = createQuery(() => ({
 		queryKey: opsAlertsKey(property),
@@ -58,6 +67,7 @@
 		enabled: opsBanner
 	}));
 	const nightAudit = $derived(resolve('/(app)/p/[property]/night-audit', { property }));
+	const linen = $derived(resolve('/(app)/p/[property]/linen', { property }));
 	const exchangeRates = $derived(
 		resolve('/(app)/p/[property]/settings/exchange-rates', { property })
 	);
@@ -91,6 +101,8 @@
 			<span>{opsAlertLabel(alert.kind)}: {alert.message}</span>
 			{#if alert.kind === 'AUDIT' && seesNightAudit && page.url.pathname !== nightAudit}
 				<a href={nightAudit}>Go to the night audit</a>
+			{:else if alert.kind === 'LINEN' && seesLinen && page.url.pathname !== linen}
+				<a href={linen}>Go to linen</a>
 			{/if}
 		</div>
 	{/each}

@@ -8,6 +8,7 @@ import {
 	lastNightAmount,
 	nightPosting,
 	occupancyText,
+	opsAlertLabel,
 	owedText,
 	paymentsByMethod,
 	runDuration,
@@ -200,11 +201,21 @@ describe('seesOpsAlerts', () => {
 		grants: [{ role, property_id: null }]
 	});
 
-	it('shows the banner to owners and managers only', () => {
+	it('shows the banner to owners, managers and housekeeping supervisors only', () => {
 		expect(seesOpsAlerts(profile('owner'), 'p1')).toBe(true);
 		expect(seesOpsAlerts(profile('manager'), 'p1')).toBe(true);
+		expect(seesOpsAlerts(profile('hk_supervisor'), 'p1')).toBe(true);
+		expect(seesOpsAlerts(profile('housekeeping'), 'p1')).toBe(false);
 		expect(seesOpsAlerts(profile('front_desk'), 'p1')).toBe(false);
 		expect(seesOpsAlerts(profile('accountant'), 'p1')).toBe(false);
+	});
+});
+
+describe('opsAlertLabel', () => {
+	it('names each kind of alert', () => {
+		expect(opsAlertLabel('AUDIT')).toBe('Night audit');
+		expect(opsAlertLabel('DRIFT')).toBe('Inventory counts');
+		expect(opsAlertLabel('LINEN')).toBe('Linen');
 	});
 });
 

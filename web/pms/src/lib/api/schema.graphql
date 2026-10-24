@@ -301,7 +301,7 @@ type CancellationTermsNode {
 }
 
 """
-The business date's manual and fee lines in one category.
+The business date's manual, fee and laundry lines in one category.
 """
 type CategoryTotalNode {
 	category: String!
@@ -687,6 +687,146 @@ type KeyedAmountNode {
 }
 
 """
+One item of a laundry batch.
+"""
+type LaundryBatchLineNode {
+	itemId: UUID!
+	sent: Int!
+	returned: Int!
+	writtenOff: Int!
+	"""
+	Still at the laundry: sent, less returned and written off.
+	"""
+	outstanding: Int!
+}
+
+"""
+Linen sent to a laundry or vendor, and what came back.
+"""
+type LaundryBatchNode {
+	id: UUID!
+	fromLocationId: UUID!
+	toLocationId: UUID!
+	status: LaundryBatchStatus!
+	note: String
+	sentBy: UUID
+	sentAt: DateTime!
+	receivedBy: UUID
+	receivedAt: DateTime
+	lines: [LaundryBatchLineNode!]!
+	"""
+	Items still at the laundry, over every line.
+	"""
+	outstanding: Int!
+	"""
+	Received with nothing outstanding.
+	"""
+	settled: Boolean!
+	"""
+	Send as `If-Match: "<version>"` when receiving or settling.
+	"""
+	version: Int!
+}
+
+"""
+Whether a laundry batch is still out or counted back in.
+"""
+enum LaundryBatchStatus {
+	SENT
+	RECEIVED
+}
+
+"""
+One line of a guest laundry order, priced as it was when taken.
+"""
+type LaundryOrderLineNode {
+	"""
+	1-based.
+	"""
+	position: Int!
+	priceId: UUID!
+	itemCode: String!
+	service: LaundryService!
+	name: String!
+	"""
+	Net of tax, in minor units of the order's currency.
+	"""
+	unitPrice: Int!
+	quantity: Int!
+}
+
+"""
+A guest's laundry, collected from an in-house stay and charged to its bill on delivery.
+"""
+type LaundryOrderNode {
+	id: UUID!
+	reservationRoomId: UUID!
+	"""
+	The stay's room when the order was taken.
+	"""
+	roomNumber: String!
+	"""
+	The stay's primary guest.
+	"""
+	guest: String!
+	status: LaundryOrderStatus!
+	note: String
+	lines: [LaundryOrderLineNode!]!
+	"""
+	The lines' unit prices times their quantities, net of tax.
+	"""
+	total: Int!
+	"""
+	The property's base currency.
+	"""
+	currency: String!
+	createdAt: DateTime!
+	statusAt: DateTime!
+	deliveredAt: DateTime
+	"""
+	Send as `If-Match: "<version>"` with a change of lines or status.
+	"""
+	version: Int!
+}
+
+"""
+Where a guest laundry order is.
+"""
+enum LaundryOrderStatus {
+	COLLECTED
+	PROCESSING
+	READY
+	DELIVERED
+	CANCELLED
+}
+
+"""
+What one guest item costs for one service, net of tax, in minor units of the property's base currency.
+"""
+type LaundryPriceNode {
+	id: UUID!
+	itemCode: String!
+	service: LaundryService!
+	name: String!
+	price: Int!
+	active: Boolean!
+	"""
+	Send as `If-Match: "<version>"` with an update.
+	"""
+	version: Int!
+}
+
+"""
+What is done to a guest's item.
+"""
+enum LaundryService {
+	WASH
+	PRESS
+	DRY_CLEAN
+	EXPRESS
+}
+
+"""
 What posted a line.
 """
 enum LineSource {
@@ -712,6 +852,106 @@ type LineTaxNode {
 	base: Int!
 	amount: Int!
 	presentation: TaxPresentation!
+}
+
+"""
+A kind of linen the property keeps, such as bath towels.
+"""
+type LinenItemNode {
+	id: UUID!
+	code: String!
+	name: String!
+	active: Boolean!
+	"""
+	Send as `If-Match: "<version>"` with an update.
+	"""
+	version: Int!
+}
+
+"""
+What a place linen is kept in is for.
+"""
+enum LinenLocationKind {
+	STORE
+	PANTRY
+	LAUNDRY
+	VENDOR
+}
+
+"""
+A place linen is kept: the store, a section's pantry, a laundry or a vendor.
+"""
+type LinenLocationNode {
+	id: UUID!
+	name: String!
+	kind: LinenLocationKind!
+	"""
+	A pantry's section.
+	"""
+	sectionId: UUID
+	active: Boolean!
+	"""
+	Send as `If-Match: "<version>"` with an update.
+	"""
+	version: Int!
+}
+
+"""
+What a linen movement does.
+"""
+enum LinenMovementKind {
+	RECEIVE
+	TRANSFER
+	SEND
+	RETURN
+	WRITE_OFF
+}
+
+"""
+Linen moved in, between locations, out, or lost.
+"""
+type LinenMovementNode {
+	id: UUID!
+	itemId: UUID!
+	kind: LinenMovementKind!
+	quantity: Int!
+	fromLocationId: UUID
+	toLocationId: UUID
+	"""
+	The laundry batch a `SEND` or `RETURN` (or a batch's write-off) belongs to.
+	"""
+	batchId: UUID
+	reason: String
+	businessDate: Date!
+	movedBy: UUID
+	movedAt: DateTime!
+}
+
+"""
+How many of an item one room of a room type needs.
+"""
+type LinenParNode {
+	roomTypeId: UUID!
+	itemId: UUID!
+	quantity: Int!
+}
+
+"""
+One location's stock of one item.
+"""
+type LinenStockNode {
+	locationId: UUID!
+	itemId: UUID!
+	quantity: Int!
+	"""
+	What the location's rooms need: for a pantry, its section's active rooms; for the store, the active rooms in
+	no active pantry's section. `null` for a laundry or vendor.
+	"""
+	par: Int
+	"""
+	Below par.
+	"""
+	low: Boolean!
 }
 
 enum MealPlan {
@@ -840,11 +1080,13 @@ type OfferNode {
 enum OpsAlertKind {
 	AUDIT
 	DRIFT
+	LINEN
 }
 
 """
-A problem a person must look at: an automatic close that failed its third attempt (`AUDIT`), or inventory
-counters that drifted from the stays they count (`DRIFT`). Shown until what raised it is resolved.
+A problem a person must look at: an automatic close that failed its third attempt (`AUDIT`), inventory
+counters that drifted from the stays they count (`DRIFT`), or linen below par (`LINEN`). Shown until what raised it
+is resolved.
 """
 type OpsAlertNode {
 	kind: OpsAlertKind!
@@ -1120,6 +1362,45 @@ type Query {
 	"""
 	housekeepers(propertyId: UUID!): [HousekeeperNode!]!
 	"""
+	The property's linen items, by code.
+	"""
+	linenItems(propertyId: UUID!): [LinenItemNode!]!
+	"""
+	The places the property keeps linen, by name.
+	"""
+	linenLocations(propertyId: UUID!): [LinenLocationNode!]!
+	"""
+	Every par row of the property, by room type then item.
+	"""
+	linenPar(propertyId: UUID!): [LinenParNode!]!
+	"""
+	Every active location's stock of every active item, with its par and whether it is below, by location name
+	then item code.
+	"""
+	linenStock(propertyId: UUID!): [LinenStockNode!]!
+	"""
+	The property's linen movements, newest first: `first` of them (1 to 100) older than the movement `after`, or
+	the newest when `after` is left out; only those from or to `locationId` when given.
+	"""
+	linenMovements(propertyId: UUID!, first: Int! = 50, after: UUID, locationId: UUID): [LinenMovementNode!]!
+	"""
+	The property's laundry batches, newest first (at most 200); only those in `status` when given.
+	"""
+	laundryBatches(propertyId: UUID!, status: LaundryBatchStatus): [LaundryBatchNode!]!
+	"""
+	The guest laundry price list by item code, then service; active prices only unless `includeInactive`.
+	"""
+	laundryPrices(propertyId: UUID!, includeInactive: Boolean! = false): [LaundryPriceNode!]!
+	"""
+	The property's guest laundry orders, open ones first, each group newest first (at most 500); only those in
+	`status` when given.
+	"""
+	laundryOrders(propertyId: UUID!, status: LaundryOrderStatus): [LaundryOrderNode!]!
+	"""
+	One stay's guest laundry orders, newest first.
+	"""
+	laundryOrdersForStay(propertyId: UUID!, reservationRoomId: UUID!): [LaundryOrderNode!]!
+	"""
 	The guest's ID documents uploaded at the property, newest first, at most 50. Needs `GuestDocumentsManage` at
 	the property. Links to the files come only from the audited REST call.
 	"""
@@ -1180,7 +1461,8 @@ type Query {
 	"""
 	dailyStats(propertyId: UUID!, from: Date!, to: Date!): [DailyStatsNode!]!
 	"""
-	The property's raised ops alerts, by kind; empty when all is well.
+	The property's raised ops alerts that the caller may see, by kind; empty when all is well. The `AUDIT` and
+	`DRIFT` alerts need `PropertiesManage`, the `LINEN` alert `LinenManage`.
 	"""
 	opsAlerts(propertyId: UUID!): [OpsAlertNode!]!
 }

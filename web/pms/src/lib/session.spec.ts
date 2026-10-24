@@ -138,7 +138,12 @@ describe('can', () => {
 			taxSettingsManage: ['owner'],
 			fxOverride: ['owner', 'manager'],
 			posPost: ['owner', 'manager'],
-			nightAudit: ['owner', 'manager', 'front_desk']
+			nightAudit: ['owner', 'manager', 'front_desk'],
+			linenView: ['owner', 'manager', 'hk_supervisor', 'housekeeping'],
+			linenMove: ['owner', 'manager', 'hk_supervisor', 'housekeeping'],
+			linenManage: ['owner', 'manager', 'hk_supervisor'],
+			laundryOrders: ['owner', 'manager', 'front_desk', 'hk_supervisor', 'housekeeping'],
+			laundryPricesManage: ['owner', 'manager']
 		} as const;
 		for (const [action, allowed] of Object.entries(expected)) {
 			for (const role of roles) {

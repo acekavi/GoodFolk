@@ -62,6 +62,11 @@ impl Role {
                     | FxOverride
                     | PosPost
                     | NightAudit
+                    | LinenView
+                    | LinenMove
+                    | LinenManage
+                    | LaundryOrders
+                    | LaundryPricesManage
             ),
             Role::FrontDesk => matches!(
                 permission,
@@ -80,6 +85,7 @@ impl Role {
                     | FolioPost
                     | InvoiceIssue
                     | NightAudit
+                    | LaundryOrders
             ),
             Role::Housekeeping => matches!(
                 permission,
@@ -91,6 +97,9 @@ impl Role {
                     | HousekeepingView
                     | HousekeepingUpdate
                     | RoomIssuesReport
+                    | LinenView
+                    | LinenMove
+                    | LaundryOrders
             ),
             Role::HkSupervisor => matches!(
                 permission,
@@ -103,6 +112,10 @@ impl Role {
                     | HousekeepingUpdate
                     | HousekeepingSupervise
                     | RoomIssuesReport
+                    | LinenView
+                    | LinenMove
+                    | LinenManage
+                    | LaundryOrders
             ),
             Role::Accountant => {
                 matches!(
@@ -173,6 +186,16 @@ pub enum Permission {
     PosPost,
     /// Allows: the night-audit review, starting and retrying the close, and the audit history.
     NightAudit,
+    /// Allows: seeing linen items, locations, par levels, stock, the movement ledger and laundry batches.
+    LinenView,
+    /// Allows: receiving, transferring, sending and returning linen (laundry batches out and back).
+    LinenMove,
+    /// Allows: linen items, locations, par levels and write-offs.
+    LinenManage,
+    /// Allows: seeing guests' laundry orders, collecting one from a stay, moving it along, delivering and cancelling it.
+    LaundryOrders,
+    /// Allows: creating and changing the guest laundry price list.
+    LaundryPricesManage,
 }
 
 /// A role held tenant-wide (`property_id: None`) or for one property.

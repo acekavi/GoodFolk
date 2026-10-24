@@ -1489,6 +1489,921 @@
         }
       }
     },
+    "/api/v1/properties/{property}/laundry-batches": {
+      "post": {
+        "tags": [
+          "crate::routes::linen"
+        ],
+        "summary": "Sends linen from a store or pantry to a laundry or vendor as one batch; more than the store holds is 409. Audited.\nA retried request with the same `Idempotency-Key` is answered without sending another.",
+        "operationId": "send_laundry_batch",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Batch"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/laundry-batches/{batch}/receive": {
+      "post": {
+        "tags": [
+          "crate::routes::linen"
+        ],
+        "summary": "Counts a sent batch back in: the counted items return to `back_to` and the batch is `received`; what did not come\nback stays outstanding at the laundry until settled. A batch already received is 409. Audited.",
+        "operationId": "receive_laundry_batch",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "batch",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReceiveBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Batch"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/laundry-batches/{batch}/settle": {
+      "post": {
+        "tags": [
+          "crate::routes::linen"
+        ],
+        "summary": "Settles part of what a received batch still has out: a further return needs `LinenMove`, a write-off\n`LinenManage`. A batch not yet received, or with nothing outstanding, is 409. Audited.",
+        "operationId": "settle_laundry_batch",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "batch",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettleBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"3\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Batch"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/laundry-orders": {
+      "post": {
+        "tags": [
+          "crate::routes::laundry"
+        ],
+        "summary": "Takes a laundry order for a checked-in stay (else 422), priced from the price list, as `collected`. Nothing is\ncharged until delivery. Audited. A retried request with the same `Idempotency-Key` is answered without taking\nanother.",
+        "operationId": "create_laundry_order",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateLaundryOrderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/laundry-orders/{order}": {
+      "patch": {
+        "tags": [
+          "crate::routes::laundry"
+        ],
+        "summary": "Replaces the lines (and optionally the note) of an order still `collected` (else 409). Audited.",
+        "operationId": "update_laundry_order",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "order",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateLaundryOrderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/laundry-orders/{order}/status": {
+      "post": {
+        "tags": [
+          "crate::routes::laundry"
+        ],
+        "summary": "Moves an order one step on, or cancels it before delivery; any other move is 409. Delivery charges each line to\nthe stay's bill (routed as its other charges, taxed by the folio), so the guest must still be checked in (409); a\ncharge the folio refuses refuses the delivery. Audited.",
+        "operationId": "set_laundry_order_status",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "order",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetLaundryOrderStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/laundry-prices": {
+      "post": {
+        "tags": [
+          "crate::routes::laundry"
+        ],
+        "summary": "Adds a price to the guest laundry price list. An item code and service the property already prices is 409.\nAudited. A retried request with the same `Idempotency-Key` is answered without adding another.",
+        "operationId": "create_laundry_price",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateLaundryPriceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Price"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/laundry-prices/{price}": {
+      "patch": {
+        "tags": [
+          "crate::routes::laundry"
+        ],
+        "summary": "Renames a price, changes its amount or switches it on or off. Audited.",
+        "operationId": "update_laundry_price",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "price",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateLaundryPriceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Price"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/linen-items": {
+      "post": {
+        "tags": [
+          "crate::routes::linen"
+        ],
+        "summary": "Adds a linen item to the property. A code the property already uses is 409. Audited. A retried request with the\nsame `Idempotency-Key` is answered without adding another.",
+        "operationId": "create_linen_item",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateLinenItemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinenItem"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/linen-items/{item}": {
+      "patch": {
+        "tags": [
+          "crate::routes::linen"
+        ],
+        "summary": "Renames a linen item or switches it on or off. Audited.",
+        "operationId": "update_linen_item",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "item",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateLinenItemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinenItem"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/linen-locations": {
+      "post": {
+        "tags": [
+          "crate::routes::linen"
+        ],
+        "summary": "Adds a place linen is kept. A pantry needs a section of the property, which has at most one active pantry, and\nthe property has at most one active store (409). Audited. A retried request with the same `Idempotency-Key` is\nanswered without adding another.",
+        "operationId": "create_linen_location",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateLinenLocationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinenLocation"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/linen-locations/{location}": {
+      "patch": {
+        "tags": [
+          "crate::routes::linen"
+        ],
+        "summary": "Renames a location or switches it on or off; one holding stock cannot be switched off (409). Audited.",
+        "operationId": "update_linen_location",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "location",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateLinenLocationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"2\""
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinenLocation"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/linen-movements": {
+      "post": {
+        "tags": [
+          "crate::routes::linen"
+        ],
+        "summary": "Records one movement and updates the stock; one that would take a location below zero is 409. A `receive` or\n`transfer` needs `LinenMove`, a `write_off` `LinenManage`. Audited. A retried request with the same\n`Idempotency-Key` is answered without recording another.",
+        "operationId": "record_linen_movement",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordMovementRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Movement"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/linen-par/{room_type}": {
+      "put": {
+        "tags": [
+          "crate::routes::linen"
+        ],
+        "summary": "Replaces the room type's whole par table and returns it, by item. Audited.",
+        "operationId": "set_linen_par",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "room_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetParRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ParRow"
+                  }
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/meal-supplements": {
       "post": {
         "tags": [
@@ -4888,6 +5803,112 @@
           }
         }
       },
+      "Batch": {
+        "type": "object",
+        "required": [
+          "id",
+          "from_location_id",
+          "to_location_id",
+          "status",
+          "sent_at",
+          "version",
+          "lines"
+        ],
+        "properties": {
+          "from_location_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BatchLine"
+            }
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "received_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "received_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "sent_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "sent_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/BatchStatus"
+          },
+          "to_location_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "BatchLine": {
+        "type": "object",
+        "description": "One item of a batch. Outstanding is `sent - returned - written_off`.",
+        "required": [
+          "item_id",
+          "sent",
+          "returned",
+          "written_off"
+        ],
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "returned": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "sent": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "written_off": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "BatchStatus": {
+        "type": "string",
+        "description": "Where a batch is: out at the laundry, or counted back in (it may still have items outstanding).",
+        "enum": [
+          "sent",
+          "received"
+        ]
+      },
       "Bed": {
         "type": "object",
         "description": "Beds of one kind in a room type, e.g. `{ \"kind\": \"king\", \"count\": 1 }`.",
@@ -5526,6 +6547,104 @@
           "residency": {
             "$ref": "#/components/schemas/Residency",
             "description": "Prices the guest's stays: some plans sell only to residents or only to non-residents."
+          }
+        }
+      },
+      "CreateLaundryOrderRequest": {
+        "type": "object",
+        "required": [
+          "reservation_room_id",
+          "lines"
+        ],
+        "properties": {
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LaundryOrderLineRequest"
+            },
+            "description": "1 to 50 lines; a price may repeat."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Up to 500 characters."
+          },
+          "reservation_room_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "A stay checked in at the property."
+          }
+        }
+      },
+      "CreateLaundryPriceRequest": {
+        "type": "object",
+        "required": [
+          "item_code",
+          "service",
+          "name",
+          "price"
+        ],
+        "properties": {
+          "item_code": {
+            "type": "string",
+            "description": "1 to 20 of `A-Z`, `0-9` and `_`; with the service, unique in the property. Never changes."
+          },
+          "name": {
+            "type": "string",
+            "description": "1 to 100 characters once trimmed."
+          },
+          "price": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Net of tax, in minor units of the property's base currency; more than 0."
+          },
+          "service": {
+            "$ref": "#/components/schemas/Service",
+            "description": "`wash`, `press`, `dry_clean` or `express`. Never changes."
+          }
+        }
+      },
+      "CreateLinenItemRequest": {
+        "type": "object",
+        "required": [
+          "code",
+          "name"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "1 to 20 of `A-Z`, `0-9` and `_`, unique in the property. Never changes."
+          },
+          "name": {
+            "type": "string",
+            "description": "1 to 100 characters once trimmed."
+          }
+        }
+      },
+      "CreateLinenLocationRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/LocationKind",
+            "description": "`store`, `pantry`, `laundry` or `vendor`. Never changes."
+          },
+          "name": {
+            "type": "string",
+            "description": "1 to 100 characters once trimmed."
+          },
+          "section_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "A pantry's section of the property; other kinds have none. Never changes."
           }
         }
       },
@@ -6316,6 +7435,25 @@
           "resolved"
         ]
       },
+      "LaundryOrderLineRequest": {
+        "type": "object",
+        "description": "One line of an order: an active price of the property and how many items.",
+        "required": [
+          "price_id",
+          "quantity"
+        ],
+        "properties": {
+          "price_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "quantity": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 to 100."
+          }
+        }
+      },
       "LineRow": {
         "type": "object",
         "required": [
@@ -6428,6 +7566,89 @@
           }
         }
       },
+      "LinenCountRequest": {
+        "type": "object",
+        "description": "How many of one item.",
+        "required": [
+          "item_id",
+          "quantity"
+        ],
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "quantity": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "LinenItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "code",
+          "name",
+          "active",
+          "version"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "LinenLocation": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "active",
+          "version"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/LocationKind"
+          },
+          "name": {
+            "type": "string"
+          },
+          "section_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
       "LinkSize": {
         "type": "string",
         "description": "The file a guest-document link points at: a rendition, or the archived original.",
@@ -6435,6 +7656,16 @@
           "thumb",
           "md",
           "original"
+        ]
+      },
+      "LocationKind": {
+        "type": "string",
+        "description": "What a place linen is kept in is for.",
+        "enum": [
+          "store",
+          "pantry",
+          "laundry",
+          "vendor"
         ]
       },
       "LoginRequest": {
@@ -6698,6 +7929,87 @@
           }
         }
       },
+      "Movement": {
+        "type": "object",
+        "required": [
+          "id",
+          "item_id",
+          "kind",
+          "quantity",
+          "business_date",
+          "moved_at"
+        ],
+        "properties": {
+          "batch_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "business_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "from_location_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "item_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MovementKind"
+          },
+          "moved_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "moved_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "quantity": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to_location_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        }
+      },
+      "MovementKind": {
+        "type": "string",
+        "description": "What a movement does: stock bought in, moved between clean stores, sent out or back with a batch, or lost.",
+        "enum": [
+          "receive",
+          "transfer",
+          "send",
+          "return",
+          "write_off"
+        ]
+      },
       "NoShowRoom": {
         "type": "object",
         "description": "A room marked a no-show and what not arriving cost, in its currency.",
@@ -6729,6 +8041,135 @@
             "format": "int32"
           }
         }
+      },
+      "Order": {
+        "type": "object",
+        "required": [
+          "id",
+          "reservation_room_id",
+          "room_number",
+          "guest",
+          "status",
+          "lines",
+          "total",
+          "currency",
+          "created_at",
+          "status_at",
+          "version"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "currency": {
+            "type": "string",
+            "description": "The property's base currency."
+          },
+          "delivered_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "guest": {
+            "type": "string",
+            "description": "The stay's primary guest."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrderLine"
+            }
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reservation_room_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "room_number": {
+            "type": "string",
+            "description": "The stay's room when the order was taken."
+          },
+          "status": {
+            "$ref": "#/components/schemas/OrderStatus"
+          },
+          "status_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The lines' unit prices times their quantities, net of tax."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "OrderLine": {
+        "type": "object",
+        "description": "One line of an order, with the price row's code, service, name and price as they were when it was taken.",
+        "required": [
+          "position",
+          "price_id",
+          "item_code",
+          "service",
+          "name",
+          "unit_price",
+          "quantity"
+        ],
+        "properties": {
+          "item_code": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "price_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "quantity": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "service": {
+            "$ref": "#/components/schemas/Service"
+          },
+          "unit_price": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Net of tax, in minor units of the order's currency."
+          }
+        }
+      },
+      "OrderStatus": {
+        "type": "string",
+        "description": "Where an order is. It moves one step at a time to `delivered`, or to `cancelled` from any step before it.",
+        "enum": [
+          "collected",
+          "processing",
+          "ready",
+          "delivered",
+          "cancelled"
+        ]
       },
       "OutletRow": {
         "type": "object",
@@ -6767,6 +8208,28 @@
           "version": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "ParRow": {
+        "type": "object",
+        "required": [
+          "room_type_id",
+          "item_id",
+          "quantity"
+        ],
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "quantity": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "room_type_id": {
+            "type": "string",
+            "format": "uuid"
           }
         }
       },
@@ -7301,6 +8764,45 @@
           }
         }
       },
+      "Price": {
+        "type": "object",
+        "description": "A price, net of tax, in minor units of the property's base currency.",
+        "required": [
+          "id",
+          "item_code",
+          "service",
+          "name",
+          "price",
+          "active",
+          "version"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "item_code": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "price": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "service": {
+            "$ref": "#/components/schemas/Service"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
       "PriceChangeMode": {
         "type": "string",
         "description": "A bulk change adds basis points (`percent`) or minor units (`amount`) to existing prices, rounded to\nthe plan's step, or `set`s every selected price to the value.",
@@ -7598,6 +9100,73 @@
           "reason": {
             "type": "string",
             "description": "1 to 500 characters once trimmed."
+          }
+        }
+      },
+      "ReceiveBatchRequest": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "back_to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Where the counted items go: a store or pantry; the location the batch was sent from when left out."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinenCountRequest"
+            },
+            "description": "The count of each batch item that came back, 0 to what is outstanding; items left out count as 0."
+          }
+        }
+      },
+      "RecordMovementRequest": {
+        "type": "object",
+        "required": [
+          "item_id",
+          "kind",
+          "quantity"
+        ],
+        "properties": {
+          "from_location_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "item_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MovementKind",
+            "description": "`receive` (bought in, to a store or pantry), `transfer` (between stores and pantries) or `write_off` (lost,\nfrom any location, with a reason). `send` and `return` go with a laundry batch."
+          },
+          "quantity": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 to 100000."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Up to 500 characters; needed for a write-off."
+          },
+          "to_location_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
           }
         }
       },
@@ -8100,6 +9669,50 @@
           "IBE"
         ]
       },
+      "SendBatchRequest": {
+        "type": "object",
+        "required": [
+          "from_location_id",
+          "to_location_id",
+          "items"
+        ],
+        "properties": {
+          "from_location_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "A store or pantry of the property."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinenCountRequest"
+            },
+            "description": "1 to 200 items, each once, each more than 0."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Up to 500 characters."
+          },
+          "to_location_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "A laundry or vendor of the property."
+          }
+        }
+      },
+      "Service": {
+        "type": "string",
+        "description": "What is done to a guest's item.",
+        "enum": [
+          "wash",
+          "press",
+          "dry_clean",
+          "express"
+        ]
+      },
       "SetAssignmentsRequest": {
         "type": "object",
         "description": "Replaces the business date's assignment of each room named, each once.",
@@ -8147,6 +9760,34 @@
           }
         }
       },
+      "SetLaundryOrderStatusRequest": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/OrderStatus",
+            "description": "The next step (`processing`, `ready`, then `delivered`), or `cancelled` from any step before `delivered`."
+          }
+        }
+      },
+      "SetParRequest": {
+        "type": "object",
+        "description": "The whole par table of a room type: how many of each item one of its rooms needs. Items left out need none.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinenCountRequest"
+            },
+            "description": "0 to 50 items of the property, each once, each with a quantity of 1 to 100."
+          }
+        }
+      },
       "SetPricesRequest": {
         "type": "object",
         "description": "Prices for a standard or custom plan; derived plans are repriced from them in the same transaction.",
@@ -8173,6 +9814,66 @@
             "description": "Base currency per one unit of the currency, as a decimal string such as `\"301.25\"` (at most 20 characters, no\nexponent or `_`): positive, with at most 6 decimals and 12 digits before them."
           }
         }
+      },
+      "SettleBatchRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "items",
+              "how"
+            ],
+            "properties": {
+              "back_to": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "uuid"
+              },
+              "how": {
+                "type": "string",
+                "enum": [
+                  "return"
+                ]
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/LinenCountRequest"
+                },
+                "description": "Up to 200 items, each at most what is outstanding; at least one more than 0."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reason",
+              "items",
+              "how"
+            ],
+            "properties": {
+              "how": {
+                "type": "string",
+                "enum": [
+                  "write_off"
+                ]
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/LinenCountRequest"
+                }
+              },
+              "reason": {
+                "type": "string",
+                "description": "1 to 500 characters once trimmed."
+              }
+            }
+          }
+        ],
+        "description": "What a received batch still has out: `{\"how\": \"return\", \"items\": [...]}` for items found and returned (to\n`back_to`, else where the batch came from), or `{\"how\": \"write_off\", \"reason\": \"...\", \"items\": [...]}` for items\nlost."
       },
       "SettledRequest": {
         "type": "object",
@@ -8923,6 +10624,90 @@
           "status": {
             "$ref": "#/components/schemas/IssueStatus",
             "description": "Only `resolved` is accepted."
+          }
+        }
+      },
+      "UpdateLaundryOrderRequest": {
+        "type": "object",
+        "description": "Replaces a `collected` order's lines; the note is kept when left out and cleared when sent as `null`.",
+        "required": [
+          "lines"
+        ],
+        "properties": {
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LaundryOrderLineRequest"
+            },
+            "description": "1 to 50 lines; a price may repeat."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UpdateLaundryPriceRequest": {
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "An inactive price is left off new orders."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "price": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Applies to orders taken from now on; orders already taken keep the price they were taken at."
+          }
+        }
+      },
+      "UpdateLinenItemRequest": {
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "An inactive item is left out of stock, par and new movements; its history stays."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UpdateLinenLocationRequest": {
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "A location holding stock cannot be switched off."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

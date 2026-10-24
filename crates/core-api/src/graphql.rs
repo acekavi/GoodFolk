@@ -1743,7 +1743,7 @@ pub struct NightPreviewNode {
     pub already_posted: i32,
 }
 
-/// The business date's manual and fee lines in one category.
+/// The business date's manual, fee and laundry lines in one category.
 #[derive(SimpleObject)]
 pub struct CategoryTotalNode {
     pub category: String,
@@ -2004,15 +2004,325 @@ impl From<audit::DailyStats> for DailyStatsNode {
     }
 }
 
-mirror_enum!(OpsAlertKindNode as "OpsAlertKind" from audit::AlertKind { Audit, Drift });
+mirror_enum!(OpsAlertKindNode as "OpsAlertKind" from audit::AlertKind { Audit, Drift, Linen });
 
-/// A problem a person must look at: an automatic close that failed its third attempt (`AUDIT`), or inventory
-/// counters that drifted from the stays they count (`DRIFT`). Shown until what raised it is resolved.
+/// A problem a person must look at: an automatic close that failed its third attempt (`AUDIT`), inventory
+/// counters that drifted from the stays they count (`DRIFT`), or linen below par (`LINEN`). Shown until what raised it
+/// is resolved.
 #[derive(SimpleObject)]
 pub struct OpsAlertNode {
     pub kind: OpsAlertKindNode,
     pub message: String,
     pub raised_at: OffsetDateTime,
+}
+
+mirror_enum!(
+    /// What a place linen is kept in is for.
+    LinenLocationKindNode as "LinenLocationKind" from laundry::LocationKind { Store, Pantry, Laundry, Vendor }
+);
+mirror_enum!(
+    /// What a linen movement does.
+    LinenMovementKindNode as "LinenMovementKind" from laundry::MovementKind { Receive, Transfer, Send, Return, WriteOff }
+);
+mirror_enum!(
+    /// Whether a laundry batch is still out or counted back in.
+    LaundryBatchStatusNode as "LaundryBatchStatus" from laundry::BatchStatus { Sent, Received }
+);
+mirror_enum!(
+    /// What is done to a guest's item.
+    LaundryServiceNode as "LaundryService" from laundry::Service { Wash, Press, DryClean, Express }
+);
+mirror_enum!(
+    /// Where a guest laundry order is.
+    LaundryOrderStatusNode as "LaundryOrderStatus" from laundry::OrderStatus {
+        Collected, Processing, Ready, Delivered, Cancelled
+    }
+);
+
+/// A kind of linen the property keeps, such as bath towels.
+#[derive(SimpleObject)]
+pub struct LinenItemNode {
+    pub id: Uuid,
+    pub code: String,
+    pub name: String,
+    pub active: bool,
+    /// Send as `If-Match: "<version>"` with an update.
+    pub version: i32,
+}
+
+impl From<laundry::LinenItem> for LinenItemNode {
+    fn from(item: laundry::LinenItem) -> Self {
+        Self { id: item.id, code: item.code, name: item.name, active: item.active, version: item.version }
+    }
+}
+
+/// A place linen is kept: the store, a section's pantry, a laundry or a vendor.
+#[derive(SimpleObject)]
+pub struct LinenLocationNode {
+    pub id: Uuid,
+    pub name: String,
+    pub kind: LinenLocationKindNode,
+    /// A pantry's section.
+    pub section_id: Option<Uuid>,
+    pub active: bool,
+    /// Send as `If-Match: "<version>"` with an update.
+    pub version: i32,
+}
+
+impl From<laundry::LinenLocation> for LinenLocationNode {
+    fn from(location: laundry::LinenLocation) -> Self {
+        Self {
+            id: location.id,
+            name: location.name,
+            kind: location.kind.into(),
+            section_id: location.section_id,
+            active: location.active,
+            version: location.version,
+        }
+    }
+}
+
+/// How many of an item one room of a room type needs.
+#[derive(SimpleObject)]
+pub struct LinenParNode {
+    pub room_type_id: Uuid,
+    pub item_id: Uuid,
+    pub quantity: i32,
+}
+
+impl From<laundry::ParRow> for LinenParNode {
+    fn from(row: laundry::ParRow) -> Self {
+        Self { room_type_id: row.room_type_id, item_id: row.item_id, quantity: row.quantity }
+    }
+}
+
+/// One location's stock of one item.
+#[derive(SimpleObject)]
+pub struct LinenStockNode {
+    pub location_id: Uuid,
+    pub item_id: Uuid,
+    pub quantity: i32,
+    /// What the location's rooms need: for a pantry, its section's active rooms; for the store, the active rooms in
+    /// no active pantry's section. `null` for a laundry or vendor.
+    pub par: Option<i32>,
+    /// Below par.
+    pub low: bool,
+}
+
+impl From<laundry::StockCell> for LinenStockNode {
+    fn from(cell: laundry::StockCell) -> Self {
+        Self {
+            location_id: cell.location_id,
+            item_id: cell.item_id,
+            quantity: cell.quantity,
+            par: cell.par,
+            low: cell.low,
+        }
+    }
+}
+
+/// Linen moved in, between locations, out, or lost.
+#[derive(SimpleObject)]
+pub struct LinenMovementNode {
+    pub id: Uuid,
+    pub item_id: Uuid,
+    pub kind: LinenMovementKindNode,
+    pub quantity: i32,
+    pub from_location_id: Option<Uuid>,
+    pub to_location_id: Option<Uuid>,
+    /// The laundry batch a `SEND` or `RETURN` (or a batch's write-off) belongs to.
+    pub batch_id: Option<Uuid>,
+    pub reason: Option<String>,
+    pub business_date: Date,
+    pub moved_by: Option<Uuid>,
+    pub moved_at: OffsetDateTime,
+}
+
+impl From<laundry::Movement> for LinenMovementNode {
+    fn from(movement: laundry::Movement) -> Self {
+        Self {
+            id: movement.id,
+            item_id: movement.item_id,
+            kind: movement.kind.into(),
+            quantity: movement.quantity,
+            from_location_id: movement.from_location_id,
+            to_location_id: movement.to_location_id,
+            batch_id: movement.batch_id,
+            reason: movement.reason,
+            business_date: movement.business_date,
+            moved_by: movement.moved_by,
+            moved_at: movement.moved_at,
+        }
+    }
+}
+
+/// One item of a laundry batch.
+#[derive(SimpleObject)]
+pub struct LaundryBatchLineNode {
+    pub item_id: Uuid,
+    pub sent: i32,
+    pub returned: i32,
+    pub written_off: i32,
+    /// Still at the laundry: sent, less returned and written off.
+    pub outstanding: i32,
+}
+
+/// Linen sent to a laundry or vendor, and what came back.
+#[derive(SimpleObject)]
+pub struct LaundryBatchNode {
+    pub id: Uuid,
+    pub from_location_id: Uuid,
+    pub to_location_id: Uuid,
+    pub status: LaundryBatchStatusNode,
+    pub note: Option<String>,
+    pub sent_by: Option<Uuid>,
+    pub sent_at: OffsetDateTime,
+    pub received_by: Option<Uuid>,
+    pub received_at: Option<OffsetDateTime>,
+    pub lines: Vec<LaundryBatchLineNode>,
+    /// Items still at the laundry, over every line.
+    pub outstanding: i32,
+    /// Received with nothing outstanding.
+    pub settled: bool,
+    /// Send as `If-Match: "<version>"` when receiving or settling.
+    pub version: i32,
+}
+
+impl From<laundry::Batch> for LaundryBatchNode {
+    fn from(batch: laundry::Batch) -> Self {
+        let outstanding = batch.outstanding();
+        let settled = batch.settled();
+        Self {
+            id: batch.id,
+            from_location_id: batch.from_location_id,
+            to_location_id: batch.to_location_id,
+            status: batch.status.into(),
+            note: batch.note,
+            sent_by: batch.sent_by,
+            sent_at: batch.sent_at,
+            received_by: batch.received_by,
+            received_at: batch.received_at,
+            lines: batch
+                .lines
+                .into_iter()
+                .map(|line| LaundryBatchLineNode {
+                    item_id: line.item_id,
+                    sent: line.sent,
+                    returned: line.returned,
+                    written_off: line.written_off,
+                    outstanding: line.sent - line.returned - line.written_off,
+                })
+                .collect(),
+            outstanding,
+            settled,
+            version: batch.version,
+        }
+    }
+}
+
+/// What one guest item costs for one service, net of tax, in minor units of the property's base currency.
+#[derive(SimpleObject)]
+pub struct LaundryPriceNode {
+    pub id: Uuid,
+    pub item_code: String,
+    pub service: LaundryServiceNode,
+    pub name: String,
+    pub price: i64,
+    pub active: bool,
+    /// Send as `If-Match: "<version>"` with an update.
+    pub version: i32,
+}
+
+impl From<laundry::Price> for LaundryPriceNode {
+    fn from(price: laundry::Price) -> Self {
+        Self {
+            id: price.id,
+            item_code: price.item_code,
+            service: price.service.into(),
+            name: price.name,
+            price: price.price,
+            active: price.active,
+            version: price.version,
+        }
+    }
+}
+
+/// One line of a guest laundry order, priced as it was when taken.
+#[derive(SimpleObject)]
+pub struct LaundryOrderLineNode {
+    /// 1-based.
+    pub position: i32,
+    pub price_id: Uuid,
+    pub item_code: String,
+    pub service: LaundryServiceNode,
+    pub name: String,
+    /// Net of tax, in minor units of the order's currency.
+    pub unit_price: i64,
+    pub quantity: i32,
+}
+
+/// A guest's laundry, collected from an in-house stay and charged to its bill on delivery.
+#[derive(SimpleObject)]
+pub struct LaundryOrderNode {
+    pub id: Uuid,
+    pub reservation_room_id: Uuid,
+    /// The stay's room when the order was taken.
+    pub room_number: String,
+    /// The stay's primary guest.
+    pub guest: String,
+    pub status: LaundryOrderStatusNode,
+    pub note: Option<String>,
+    pub lines: Vec<LaundryOrderLineNode>,
+    /// The lines' unit prices times their quantities, net of tax.
+    pub total: i64,
+    /// The property's base currency.
+    pub currency: String,
+    pub created_at: OffsetDateTime,
+    pub status_at: OffsetDateTime,
+    pub delivered_at: Option<OffsetDateTime>,
+    /// Send as `If-Match: "<version>"` with a change of lines or status.
+    pub version: i32,
+}
+
+impl From<laundry::Order> for LaundryOrderNode {
+    fn from(order: laundry::Order) -> Self {
+        Self {
+            id: order.id,
+            reservation_room_id: order.reservation_room_id,
+            room_number: order.room_number,
+            guest: order.guest,
+            status: order.status.into(),
+            note: order.note,
+            lines: order
+                .lines
+                .into_iter()
+                .map(|line| LaundryOrderLineNode {
+                    position: line.position,
+                    price_id: line.price_id,
+                    item_code: line.item_code,
+                    service: line.service.into(),
+                    name: line.name,
+                    unit_price: line.unit_price,
+                    quantity: line.quantity,
+                })
+                .collect(),
+            total: order.total,
+            currency: order.currency,
+            created_at: order.created_at,
+            status_at: order.status_at,
+            delivered_at: order.delivered_at,
+            version: order.version,
+        }
+    }
+}
+
+/// A linen or laundry rule the query broke, as a GraphQL error; database errors stay hidden.
+fn laundry_error(err: laundry::LaundryError) -> async_graphql::Error {
+    match err {
+        laundry::LaundryError::Database(db_err) => internal(db_err),
+        laundry::LaundryError::Folio(folio_err) => folio_error(folio_err),
+        other => async_graphql::Error::new(other.to_string()),
+    }
 }
 
 /// A night-audit rule the query broke, as a GraphQL error; database errors stay hidden.
@@ -2749,6 +3059,117 @@ impl Query {
         Ok(housekeepers.into_iter().map(HousekeeperNode::from).collect())
     }
 
+    /// The property's linen items, by code.
+    async fn linen_items(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<LinenItemNode>> {
+        let mut tx = scoped(ctx, Permission::LinenView, property_id).await?;
+        let items = laundry::list_items(&mut tx, property_id).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(items.into_iter().map(LinenItemNode::from).collect())
+    }
+
+    /// The places the property keeps linen, by name.
+    async fn linen_locations(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+    ) -> async_graphql::Result<Vec<LinenLocationNode>> {
+        let mut tx = scoped(ctx, Permission::LinenView, property_id).await?;
+        let locations = laundry::list_locations(&mut tx, property_id).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(locations.into_iter().map(LinenLocationNode::from).collect())
+    }
+
+    /// Every par row of the property, by room type then item.
+    async fn linen_par(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<LinenParNode>> {
+        let mut tx = scoped(ctx, Permission::LinenView, property_id).await?;
+        let rows = laundry::list_par(&mut tx, property_id).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(rows.into_iter().map(LinenParNode::from).collect())
+    }
+
+    /// Every active location's stock of every active item, with its par and whether it is below, by location name
+    /// then item code.
+    async fn linen_stock(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<LinenStockNode>> {
+        let mut tx = scoped(ctx, Permission::LinenView, property_id).await?;
+        let cells = laundry::stock(&mut tx, property_id).await.map_err(laundry_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(cells.into_iter().map(LinenStockNode::from).collect())
+    }
+
+    /// The property's linen movements, newest first: `first` of them (1 to 100) older than the movement `after`, or
+    /// the newest when `after` is left out; only those from or to `locationId` when given.
+    async fn linen_movements(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        #[graphql(default = 50)] first: i32,
+        after: Option<Uuid>,
+        location_id: Option<Uuid>,
+    ) -> async_graphql::Result<Vec<LinenMovementNode>> {
+        let first = u32::try_from(first).map_err(|_| async_graphql::Error::new("first is 1 to 100"))?;
+        let mut tx = scoped(ctx, Permission::LinenView, property_id).await?;
+        let movements =
+            laundry::movements(&mut tx, property_id, first, after, location_id).await.map_err(laundry_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(movements.into_iter().map(LinenMovementNode::from).collect())
+    }
+
+    /// The property's laundry batches, newest first (at most 200); only those in `status` when given.
+    async fn laundry_batches(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        status: Option<LaundryBatchStatusNode>,
+    ) -> async_graphql::Result<Vec<LaundryBatchNode>> {
+        let mut tx = scoped(ctx, Permission::LinenView, property_id).await?;
+        let batches =
+            laundry::list_batches(&mut tx, property_id, status.map(Into::into)).await.map_err(laundry_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(batches.into_iter().map(LaundryBatchNode::from).collect())
+    }
+
+    /// The guest laundry price list by item code, then service; active prices only unless `includeInactive`.
+    async fn laundry_prices(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        #[graphql(default = false)] include_inactive: bool,
+    ) -> async_graphql::Result<Vec<LaundryPriceNode>> {
+        let mut tx =
+            scoped_any(ctx, &[Permission::LaundryOrders, Permission::LaundryPricesManage], property_id).await?;
+        let prices = laundry::list_prices(&mut tx, property_id, include_inactive).await.map_err(laundry_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(prices.into_iter().map(LaundryPriceNode::from).collect())
+    }
+
+    /// The property's guest laundry orders, open ones first, each group newest first (at most 500); only those in
+    /// `status` when given.
+    async fn laundry_orders(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        status: Option<LaundryOrderStatusNode>,
+    ) -> async_graphql::Result<Vec<LaundryOrderNode>> {
+        let mut tx = scoped(ctx, Permission::LaundryOrders, property_id).await?;
+        let orders = laundry::list_orders(&mut tx, property_id, status.map(Into::into)).await.map_err(laundry_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(orders.into_iter().map(LaundryOrderNode::from).collect())
+    }
+
+    /// One stay's guest laundry orders, newest first.
+    async fn laundry_orders_for_stay(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        reservation_room_id: Uuid,
+    ) -> async_graphql::Result<Vec<LaundryOrderNode>> {
+        let mut tx = scoped(ctx, Permission::LaundryOrders, property_id).await?;
+        let orders =
+            laundry::orders_for_stay(&mut tx, property_id, reservation_room_id).await.map_err(laundry_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(orders.into_iter().map(LaundryOrderNode::from).collect())
+    }
+
     /// The guest's ID documents uploaded at the property, newest first, at most 50. Needs `GuestDocumentsManage` at
     /// the property. Links to the files come only from the audited REST call.
     async fn guest_documents(
@@ -2920,13 +3341,21 @@ impl Query {
         Ok(days.into_iter().map(DailyStatsNode::from).collect())
     }
 
-    /// The property's raised ops alerts, by kind; empty when all is well.
+    /// The property's raised ops alerts that the caller may see, by kind; empty when all is well. The `AUDIT` and
+    /// `DRIFT` alerts need `PropertiesManage`, the `LINEN` alert `LinenManage`.
     async fn ops_alerts(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<OpsAlertNode>> {
-        let mut tx = scoped(ctx, Permission::PropertiesManage, property_id).await?;
+        let mut tx = scoped_any(ctx, &[Permission::PropertiesManage, Permission::LinenManage], property_id).await?;
+        let tenant = ctx.data::<TenantContext>()?;
+        let may = |permission| tenant.require(permission, Some(property_id)).is_ok();
+        let (properties, linen) = (may(Permission::PropertiesManage), may(Permission::LinenManage));
         let alerts = audit::alerts::list(&mut tx, property_id).await.map_err(internal)?;
         tx.commit().await.map_err(internal)?;
         Ok(alerts
             .into_iter()
+            .filter(|a| match a.kind {
+                audit::AlertKind::Audit | audit::AlertKind::Drift => properties,
+                audit::AlertKind::Linen => linen,
+            })
             .map(|a| OpsAlertNode { kind: a.kind.into(), message: a.message, raised_at: a.raised_at })
             .collect())
     }

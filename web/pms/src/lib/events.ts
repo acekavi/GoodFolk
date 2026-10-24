@@ -1,5 +1,7 @@
 import type { QueryClient } from '@tanstack/svelte-query';
-import { auditKeys, nightAuditKey } from './night-audit';
+import { laundryKey } from './laundry';
+import { linenKey } from './linen';
+import { auditKeys, nightAuditKey, opsAlertsKey } from './night-audit';
 import { rangeTouchesMonth, tapeEventTiles } from './tape';
 
 /**
@@ -17,6 +19,9 @@ export function applyEvent(client: QueryClient, type: string, data: string): voi
 			if (key.startsWith('tape:')) invalidateTape(client, key);
 			else if (key.startsWith('folio:')) invalidateFolio(client, key.slice('folio:'.length));
 			else if (key.startsWith('audit:')) invalidateAudit(client, key.slice('audit:'.length));
+			else if (key.startsWith('linen:')) invalidateLinen(client, key.slice('linen:'.length));
+			else if (key.startsWith('laundry:'))
+				void client.invalidateQueries({ queryKey: laundryKey(key.slice('laundry:'.length)) });
 			else {
 				void client.invalidateQueries({ queryKey: [key] });
 				// A reservation change can resolve, or add, an arrival or departure of the review.
@@ -69,6 +74,16 @@ function invalidateFolio(client: QueryClient, folioId: string): void {
 /** A property's night audit: its review, its runs, its statistics and its ops alerts. */
 function invalidateAudit(client: QueryClient, propertyId: string): void {
 	for (const queryKey of auditKeys(propertyId)) void client.invalidateQueries({ queryKey });
+}
+
+/**
+ * A property's linen: every Linen query, and the ops alerts, since a stock change raises or clears the linen alert
+ * in the same commit. Its `audit:<property>` event reaches only those who may see the night audit, which a
+ * housekeeping supervisor may not.
+ */
+function invalidateLinen(client: QueryClient, propertyId: string): void {
+	void client.invalidateQueries({ queryKey: linenKey(propertyId) });
+	void client.invalidateQueries({ queryKey: opsAlertsKey(propertyId) });
 }
 
 /** Keeps the cache fresh while the app is open. Returns a function that disconnects. */
