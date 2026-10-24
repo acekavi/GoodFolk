@@ -182,8 +182,8 @@ const OUT: readonly LocationKind[] = ['LAUNDRY', 'VENDOR'];
 
 /**
  * The active locations a movement of `kind` may take linen from and to, as the server allows: a receive comes in to
- * a store or pantry, a transfer moves between them, and a write-off loses linen from anywhere. An empty side has no
- * location.
+ * a store or pantry, a transfer moves between them, and a write-off loses linen from one of them (linen at a laundry
+ * or vendor is written off against its batch). An empty side has no location.
  */
 export function moveLocations(
 	kind: MoveKind,
@@ -197,7 +197,7 @@ export function moveLocations(
 		case 'transfer':
 			return { from: clean, to: clean };
 		case 'write_off':
-			return { from: active, to: [] };
+			return { from: clean, to: [] };
 	}
 }
 

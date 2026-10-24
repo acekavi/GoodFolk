@@ -190,12 +190,13 @@ async fn a_kind_must_suit_its_locations(_: PgPoolOptions, opts: PgConnectOptions
     tx.commit().await.unwrap();
     assert!(matches!(hotel.record(receive(sheet.id, 1, foreign)).await, Err(LaundryError::NotFound("location"))));
     assert!(matches!(hotel.record(receive(Uuid::now_v7(), 1, store)).await, Err(LaundryError::NotFound("item"))));
+    let towel = hotel.item("TOWEL").await;
     let mut tx = hotel.tx().await;
-    laundry::update_item(&mut tx, hotel.tenant, hotel.user, hotel.property, sheet.id, sheet.version, None, Some(false))
+    laundry::update_item(&mut tx, hotel.tenant, hotel.user, hotel.property, towel.id, towel.version, None, Some(false))
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    assert_eq!(invalid(hotel.record(receive(sheet.id, 1, store)).await), "SHEET_K is switched off");
+    assert_eq!(invalid(hotel.record(receive(towel.id, 1, store)).await), "TOWEL is switched off");
     assert_eq!(hotel.movement_count().await, 1);
 }
 
@@ -209,8 +210,16 @@ async fn a_write_off_needs_a_reason(_: PgPoolOptions, opts: PgConnectOptions) {
 
     assert_eq!(invalid(hotel.record(write_off(sheet, 1, store, None)).await), "a write-off needs a reason");
     assert_eq!(invalid(hotel.record(write_off(sheet, 1, store, Some("   "))).await), "a write-off needs a reason");
-    // A write-off may come from any kind of location.
-    assert!(matches!(hotel.record(write_off(sheet, 1, laundry, Some("Lost"))).await, Err(LaundryError::Conflict(_))));
+    // Linen at a laundry or vendor is written off against its batch, so every short batch stays settleable.
+    let vendor = hotel.location("Vendor", LocationKind::Vendor, None).await.id;
+    assert_eq!(
+        invalid(hotel.record(write_off(sheet, 1, laundry, Some("Lost"))).await),
+        "Write it off against its batch"
+    );
+    assert_eq!(
+        invalid(hotel.record(write_off(sheet, 1, vendor, Some("Lost"))).await),
+        "Write it off against its batch"
+    );
     hotel.record(write_off(sheet, 1, store, Some("Stained"))).await.unwrap();
     assert_eq!(hotel.held(store, sheet).await, 4);
 }
@@ -305,6 +314,7 @@ async fn par_totals_and_the_low_stock_alert(_: PgPoolOptions, opts: PgConnectOpt
     hotel.record(write_off(sheet, 4, store, Some("Torn"))).await.unwrap();
     hotel.record(write_off(sheet, 1, pantry, Some("Torn"))).await.unwrap();
     assert_eq!(hotel.alert().await.as_deref(), Some("Pantry East: SHEET_K 3 of 4; Store: SHEET_K 2 of 4"));
+
     hotel.record(receive(sheet, 2, store)).await.unwrap();
     hotel.record(receive(sheet, 1, pantry)).await.unwrap();
     assert!(hotel.alert().await.is_none());

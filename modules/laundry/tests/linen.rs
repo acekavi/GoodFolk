@@ -207,6 +207,35 @@ async fn a_location_holding_stock_stays_active(_: PgPoolOptions, opts: PgConnect
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_item_with_stock_stays_active(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let laundry = hotel.location("Laundry", LocationKind::Laundry, None).await.unwrap();
+    let item = hotel.item("SHEET_K").await.unwrap();
+    let mut tx = hotel.tx().await;
+    sqlx::query(
+        "insert into linen_stock (tenant_id, property_id, location_id, item_id, quantity) values ($1, $2, $3, $4, 2)",
+    )
+    .bind(hotel.tenant.0)
+    .bind(hotel.property)
+    .bind(laundry.id)
+    .bind(item.id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let refused = hotel.rename_item(item.id, 1, None, Some(false)).await;
+    assert!(matches!(&refused, Err(LaundryError::Conflict(_))), "{refused:?}");
+    assert_eq!(message(refused), "Move or write off its stock first");
+    // Renaming it is still fine.
+    let renamed = hotel.rename_item(item.id, 1, Some("King sheet"), None).await.unwrap();
+
+    let mut tx = hotel.tx().await;
+    sqlx::query("update linen_stock set quantity = 0").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(!hotel.rename_item(item.id, renamed.version, None, Some(false)).await.unwrap().active);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn par_is_replaced_whole(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;
     let (sheet, towel) = (hotel.item("SHEET_K").await.unwrap(), hotel.item("TOWEL_B").await.unwrap());

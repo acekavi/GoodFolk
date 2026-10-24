@@ -93,9 +93,9 @@ describe('moveLocations', () => {
 		expect(ids(to)).toEqual(['s', 'p']);
 	});
 
-	it('writes off from any active location, to nowhere', () => {
+	it('writes off by hand only from an active store or pantry, to nowhere', () => {
 		const { from, to } = moveLocations('write_off', locations);
-		expect(ids(from)).toEqual(['s', 'p', 'l', 'v']);
+		expect(ids(from)).toEqual(['s', 'p']);
 		expect(ids(to)).toEqual([]);
 	});
 

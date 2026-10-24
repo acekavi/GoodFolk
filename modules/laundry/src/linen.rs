@@ -95,7 +95,8 @@ pub async fn create_item(
     Ok(item)
 }
 
-/// Renames an item or switches it on or off; at least one change is needed (`Invalid`).
+/// Renames an item or switches it on or off; at least one change is needed (`Invalid`). An item with stock in any
+/// location cannot be switched off (`Conflict`).
 #[allow(clippy::too_many_arguments)]
 pub async fn update_item(
     tx: &mut Tx,
@@ -122,6 +123,16 @@ pub async fn update_item(
     let active = active.unwrap_or(current.active);
     if name == current.name && active == current.active {
         return Err(LaundryError::Invalid("Nothing to change".into()));
+    }
+    if current.active && !active {
+        let holds_stock: bool =
+            sqlx::query_scalar("select exists (select 1 from linen_stock where item_id = $1 and quantity > 0)")
+                .bind(id)
+                .fetch_one(&mut **tx)
+                .await?;
+        if holds_stock {
+            return Err(LaundryError::Conflict("Move or write off its stock first".into()));
+        }
     }
     let item: LinenItem = sqlx::query_as("update linen_item set name = $2, active = $3, version = version + 1 where id = $1 returning id, code, name, active, version")
     .bind(id)

@@ -141,7 +141,7 @@ pub(crate) async fn apply(
     }
 
     for movement in &movements {
-        check_locations(movement, |id| locations[&id].1)?;
+        check_locations(movement, batch, |id| locations[&id].1)?;
     }
 
     let mut stock = lock_stock(tx, tenant, property, &movements).await?;
@@ -264,8 +264,13 @@ fn clean(movement: &NewMovement, batch: Option<Uuid>) -> Result<NewMovement, Lau
     Ok(NewMovement { reason, ..movement.clone() })
 }
 
-/// Whether `movement`'s ends are the kinds of location its kind moves between (`Invalid` otherwise).
-fn check_locations(movement: &NewMovement, kind_of: impl Fn(Uuid) -> LocationKind) -> Result<(), LaundryError> {
+/// Whether `movement`'s ends are the kinds of location its kind moves between (`Invalid` otherwise). A write-off from a
+/// laundry or vendor goes against its batch, so every short batch stays settleable.
+fn check_locations(
+    movement: &NewMovement,
+    batch: Option<Uuid>,
+    kind_of: impl Fn(Uuid) -> LocationKind,
+) -> Result<(), LaundryError> {
     let clean = |id: Option<Uuid>| {
         id.map(&kind_of).is_none_or(|kind| matches!(kind, LocationKind::Store | LocationKind::Pantry))
     };
@@ -277,7 +282,7 @@ fn check_locations(movement: &NewMovement, kind_of: impl Fn(Uuid) -> LocationKin
         MovementKind::Receive | MovementKind::Transfer => clean(from) && clean(to),
         MovementKind::Send => clean(from) && out(to),
         MovementKind::Return => out(from) && clean(to),
-        MovementKind::WriteOff => true,
+        MovementKind::WriteOff => batch.is_some() || clean(from),
     };
     if fits {
         Ok(())
@@ -286,6 +291,7 @@ fn check_locations(movement: &NewMovement, kind_of: impl Fn(Uuid) -> LocationKin
             MovementKind::Receive => "a receive goes to a store or pantry",
             MovementKind::Transfer => "a transfer moves between stores and pantries",
             MovementKind::Send => "a send goes from a store or pantry to a laundry or vendor",
+            MovementKind::WriteOff => "Write it off against its batch",
             _ => "a return comes from a laundry or vendor to a store or pantry",
         };
         Err(LaundryError::Invalid(message.into()))

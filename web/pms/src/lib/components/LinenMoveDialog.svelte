@@ -1,6 +1,6 @@
 <!--
 	Records a linen movement by hand: a receive (bought in, to a store or pantry), a transfer between stores and
-	pantries, or, for `LinenManage`, a write-off from any location with its reason. The locations offered follow the
+	pantries, or, for `LinenManage`, a write-off from a store or pantry with its reason. The locations offered follow the
 	kind; more than a location holds is the server's 409, shown as it words it.
 -->
 <script lang="ts">
