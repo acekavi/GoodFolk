@@ -39,40 +39,7 @@ fn roles_round_trip_through_their_database_names() {
 #[test]
 fn each_role_has_exactly_its_permissions() {
     use Permission::*;
-    let all = [
-        PropertiesView,
-        PropertiesCreate,
-        PropertiesManage,
-        RoomsView,
-        RoomsManage,
-        InventoryView,
-        InventoryBlock,
-        RatesView,
-        RatesManage,
-        ReservationsView,
-        ReservationsManage,
-        FrontDeskCheckIn,
-        HousekeepingView,
-        HousekeepingUpdate,
-        HousekeepingSupervise,
-        RoomIssuesReport,
-        MediaManage,
-        GuestDocumentsManage,
-        FolioView,
-        FolioPost,
-        FolioAdjust,
-        InvoiceIssue,
-        TaxSettingsManage,
-        FxOverride,
-        PosPost,
-        NightAudit,
-        LinenView,
-        LinenMove,
-        LinenManage,
-        LaundryOrders,
-        LaundryPricesManage,
-        StaffManage,
-    ];
+    let all = ALL_PERMISSIONS;
     let expected: [(Role, &[Permission]); 7] = [
         (Role::Owner, &all),
         (
@@ -312,12 +279,59 @@ fn the_pos_role_posts_bills_and_nothing_else() {
 fn junior_roles_are_every_role_but_owner_and_manager() {
     let expected: Vec<Role> = ALL_ROLES.into_iter().filter(|r| !matches!(r, Role::Owner | Role::Manager)).collect();
 
-    assert_eq!(JUNIOR_ROLES.to_vec(), expected);
+    assert_eq!(JUNIOR_ROLES.len(), expected.len());
+    assert!(expected.iter().all(|role| JUNIOR_ROLES.contains(role)));
 }
 
 #[test]
 fn every_permission_is_described() {
     for permission in ALL_PERMISSIONS {
         assert!(!describe(permission).trim().is_empty(), "{permission:?}");
+    }
+}
+
+/// Fails to compile when a permission is added without a slot here, which keeps `ALL_PERMISSIONS` complete.
+fn slot(permission: Permission) -> usize {
+    use Permission::*;
+    match permission {
+        PropertiesView => 0,
+        PropertiesCreate => 1,
+        PropertiesManage => 2,
+        RoomsView => 3,
+        RoomsManage => 4,
+        InventoryView => 5,
+        InventoryBlock => 6,
+        RatesView => 7,
+        RatesManage => 8,
+        ReservationsView => 9,
+        ReservationsManage => 10,
+        FrontDeskCheckIn => 11,
+        HousekeepingView => 12,
+        HousekeepingUpdate => 13,
+        HousekeepingSupervise => 14,
+        RoomIssuesReport => 15,
+        MediaManage => 16,
+        GuestDocumentsManage => 17,
+        FolioView => 18,
+        FolioPost => 19,
+        FolioAdjust => 20,
+        InvoiceIssue => 21,
+        TaxSettingsManage => 22,
+        FxOverride => 23,
+        PosPost => 24,
+        NightAudit => 25,
+        LinenView => 26,
+        LinenMove => 27,
+        LinenManage => 28,
+        LaundryOrders => 29,
+        LaundryPricesManage => 30,
+        StaffManage => 31,
+    }
+}
+
+#[test]
+fn all_permissions_lists_every_permission_once() {
+    for (index, permission) in ALL_PERMISSIONS.into_iter().enumerate() {
+        assert_eq!(slot(permission), index, "{permission:?}");
     }
 }

@@ -138,67 +138,69 @@ impl Role {
 /// Permissions are added here as each phase introduces new actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Permission {
+    /// See [`describe`].
     PropertiesView,
+    /// See [`describe`].
     PropertiesCreate,
-    /// Change a property's settings (name, check-in and check-out times).
+    /// See [`describe`].
     PropertiesManage,
-    /// See room types, rooms, sections and block reasons.
+    /// See [`describe`].
     RoomsView,
-    /// Create, change, deactivate and reorder room types, rooms, sections and block reasons.
+    /// See [`describe`].
     RoomsManage,
-    /// See inventory counts and room blocks.
+    /// See [`describe`].
     InventoryView,
-    /// Block rooms and release or shorten blocks.
+    /// See [`describe`].
     InventoryBlock,
-    /// See rate plans, prices, restrictions, meal supplements and cancellation policies, and quote stays.
+    /// See [`describe`].
     RatesView,
-    /// Create and change rate plans, prices, restrictions, meal supplements and cancellation policies.
+    /// See [`describe`].
     RatesManage,
-    /// See reservations, what is free to sell, and guests.
+    /// See [`describe`].
     ReservationsView,
-    /// Create guests and reservations, change guests, cancel reservation rooms, and assign and unassign rooms.
+    /// See [`describe`].
     ReservationsManage,
-    /// Check a reservation room in, undo a same-day check-in, and check it out.
+    /// See [`describe`].
     FrontDeskCheckIn,
-    /// See room conditions, the housekeeping board, assignments and room issues.
+    /// See [`describe`].
     HousekeepingView,
-    /// Move a room through its cleaning steps and resolve room issues.
+    /// See [`describe`].
     HousekeepingUpdate,
-    /// Assign rooms, inspect, set any condition, and override a check-in on a room that is not ready.
+    /// See [`describe`].
     HousekeepingSupervise,
-    /// Report a problem with a room, without changing its condition.
+    /// See [`describe`].
     RoomIssuesReport,
-    /// Upload, reorder, caption and remove room type gallery photos.
+    /// See [`describe`].
     MediaManage,
-    /// Upload, view (through an audited signed link) and delete guests' ID documents.
+    /// See [`describe`].
     GuestDocumentsManage,
-    /// Folios, lines, payments, invoices.
+    /// See [`describe`].
     FolioView,
-    /// Charges, payments.
+    /// See [`describe`].
     FolioPost,
-    /// Reversals, transfers, refunds, routing, credit notes, posting tonight's charges.
+    /// See [`describe`].
     FolioAdjust,
-    /// Issue invoices, invoice links.
+    /// See [`describe`].
     InvoiceIssue,
-    /// Tax rules, outlets, property tax settings.
+    /// See [`describe`].
     TaxSettingsManage,
-    /// Manual exchange rates.
+    /// See [`describe`].
     FxOverride,
-    /// POS bills.
+    /// See [`describe`].
     PosPost,
-    /// The night audit; see [`describe`].
+    /// See [`describe`].
     NightAudit,
-    /// See linen. See [`describe`].
+    /// See [`describe`].
     LinenView,
-    /// Move linen. See [`describe`].
+    /// See [`describe`].
     LinenMove,
-    /// Manage linen. See [`describe`].
+    /// See [`describe`].
     LinenManage,
-    /// Guests' laundry orders. See [`describe`].
+    /// See [`describe`].
     LaundryOrders,
-    /// The guest laundry price list. See [`describe`].
+    /// See [`describe`].
     LaundryPricesManage,
-    /// Inviting staff, changing their roles and removing them; see [`describe`].
+    /// See [`describe`].
     StaffManage,
 }
 
@@ -246,13 +248,15 @@ pub const ALL_ROLES: [Role; 7] =
 pub const JUNIOR_ROLES: [Role; 5] =
     [Role::FrontDesk, Role::Housekeeping, Role::HkSupervisor, Role::Accountant, Role::Pos];
 
-/// What `permission` allows, in plain words, for the permission matrix.
+/// What `permission` allows, as a sentence for the permission matrix.
 pub fn describe(permission: Permission) -> &'static str {
     use Permission::*;
     match permission {
-        PropertiesView => "",
-        PropertiesCreate => "",
-        PropertiesManage => "Change a property's settings (name, check-in and check-out times).",
+        PropertiesView => "See properties and their settings.",
+        PropertiesCreate => "Create properties.",
+        PropertiesManage => {
+            "Change a property's settings, such as its name, check-in and check-out times and audit time."
+        }
         RoomsView => "See room types, rooms, sections and block reasons.",
         RoomsManage => "Create, change, deactivate and reorder room types, rooms, sections and block reasons.",
         InventoryView => "See inventory counts and room blocks.",
@@ -276,23 +280,25 @@ pub fn describe(permission: Permission) -> &'static str {
         RoomIssuesReport => "Report a problem with a room, without changing its condition.",
         MediaManage => "Upload, reorder, caption and remove room type gallery photos.",
         GuestDocumentsManage => "Upload, view (through an audited signed link) and delete guests' ID documents.",
-        FolioView => "Folios, lines, payments, invoices.",
-        FolioPost => "Charges, payments.",
-        FolioAdjust => "Reversals, transfers, refunds, routing, credit notes, posting tonight's charges.",
-        InvoiceIssue => "Issue invoices, invoice links.",
-        TaxSettingsManage => "Tax rules, outlets, property tax settings.",
-        FxOverride => "Manual exchange rates.",
-        PosPost => "POS bills.",
-        NightAudit => "the night-audit review, starting and retrying the close, and the audit history.",
-        LinenView => "seeing linen items, locations, par levels, stock, the movement ledger and laundry batches.",
-        LinenMove => "receiving, transferring, sending and returning linen (laundry batches out and back).",
-        LinenManage => "linen items, locations, par levels and write-offs.",
-        LaundryOrders => {
-            "seeing guests' laundry orders, collecting one from a stay, moving it along, delivering and cancelling it."
+        FolioView => "See folios, lines, payments and invoices.",
+        FolioPost => "Post charges and payments to folios.",
+        FolioAdjust => {
+            "Reverse, transfer, refund and route folio lines, issue credit notes, and post tonight's charges."
         }
-        LaundryPricesManage => "creating and changing the guest laundry price list.",
+        InvoiceIssue => "Issue invoices and open their links.",
+        TaxSettingsManage => "Change tax rules, outlets and a property's tax settings.",
+        FxOverride => "Set manual exchange rates.",
+        PosPost => "Post POS bills.",
+        NightAudit => "Review the night audit, start and retry the close, and see the audit history.",
+        LinenView => "See linen items, locations, par levels, stock, the movement ledger and laundry batches.",
+        LinenMove => "Receive, transfer, send and return linen (laundry batches out and back).",
+        LinenManage => "Change linen items, locations and par levels, and write linen off.",
+        LaundryOrders => {
+            "See guests' laundry orders, collect one from a stay, move it along, deliver it and cancel it."
+        }
+        LaundryPricesManage => "Create and change the guest laundry price list.",
         StaffManage => {
-            "Inviting staff, changing their roles and removing them; managers only for junior roles at their properties."
+            "Invite staff, change their roles and remove them; managers only for junior roles at their properties."
         }
     }
 }
