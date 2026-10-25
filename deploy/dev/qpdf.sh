@@ -1,11 +1,11 @@
 #!/bin/sh
-# Installs qpdf (Apache-2.0) for linearizing PDFs in the video crate.
+# Installs qpdf (Apache-2.0) for linearizing guest PDFs in the imaging crate.
 #
 #   deploy/dev/qpdf.sh install   download, verify, unpack, keep only bin/qpdf and the libraries it loads
 #   deploy/dev/qpdf.sh path      print the directory holding the binary
 #
 # The release binary finds its own libraries through RUNPATH $ORIGIN/../lib, so bin/ and lib/ stay side by side in
-# ~/.cache/goodfolk-qpdf, and the video crate looks in ~/.cache/goodfolk-qpdf/bin unless QPDF_BIN_DIR says otherwise.
+# ~/.cache/goodfolk-qpdf, and the imaging crate looks in ~/.cache/goodfolk-qpdf/bin unless QPDF_BIN_DIR says otherwise.
 # Beyond that it needs the system libstdc++, zlib and gmp. Needs curl, sha256sum and unzip.
 set -eu
 

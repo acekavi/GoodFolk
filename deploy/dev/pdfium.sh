@@ -1,10 +1,10 @@
 #!/bin/sh
-# Installs PDFium (BSD-3-Clause / Apache-2.0) as libpdfium.so for rendering PDF thumbnails in the video crate.
+# Installs PDFium (BSD-3-Clause / Apache-2.0) as libpdfium.so for rendering guest PDF thumbnails in the imaging crate.
 #
 #   deploy/dev/pdfium.sh install   download, verify, unpack, keep only lib/libpdfium.so
 #   deploy/dev/pdfium.sh path      print the directory holding the library
 #
-# The library lands in ~/.cache/goodfolk-pdfium/lib, which is where the video crate looks unless PDFIUM_LIB_DIR says
+# The library lands in ~/.cache/goodfolk-pdfium/lib, which is where the imaging crate looks unless PDFIUM_LIB_DIR says
 # otherwise. Prebuilt by bblanchon/pdfium-binaries. Needs curl, sha256sum and tar.
 set -eu
 
