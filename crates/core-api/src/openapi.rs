@@ -1,4 +1,8 @@
 use crate::routes::{
+    AcceptInvitationRequest, CreateInvitationRequest, InvitationPreview, InvitationTokenRequest, PreviewGrant,
+    SetGrantsRequest,
+};
+use crate::routes::{
     AddOccupantRequest, AssignRoomRequest, AssignmentRequest, BedRequest, BulkChangeRequest, BulkChangeResponse,
     CaptionRequest, CheckInRequest, CompleteUploadRequest, CopiedAssignments, CreateAccountRequest,
     CreateBlockReasonRequest, CreateBlockRequest, CreateCancellationPolicyRequest, CreateGuestRequest,
@@ -127,6 +131,13 @@ use utoipa::OpenApi;
         crate::routes::fx::set_rate,
         crate::routes::night_audit::close,
         crate::routes::night_audit::retry,
+        crate::routes::staff::invite,
+        crate::routes::staff::resend,
+        crate::routes::staff::revoke,
+        crate::routes::staff::set_grants,
+        crate::routes::staff::revoke_member,
+        crate::routes::staff::preview,
+        crate::routes::staff::accept,
     ),
     components(schemas(
         SignupRequest,
@@ -304,6 +315,16 @@ use utoipa::OpenApi;
         folio::PresetApplied,
         property::TaxSettings,
         StartedClose,
+        CreateInvitationRequest,
+        SetGrantsRequest,
+        InvitationTokenRequest,
+        AcceptInvitationRequest,
+        PreviewGrant,
+        InvitationPreview,
+        identity::GrantSpec,
+        identity::InvitationStatus,
+        identity::Invitation,
+        identity::Member,
     ))
 )]
 pub struct ApiDoc;

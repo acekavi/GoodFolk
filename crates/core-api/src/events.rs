@@ -1,4 +1,4 @@
-use crate::auth::TenantContext;
+use crate::auth::{TenantContext, holds_somewhere};
 use crate::extract::ApiQuery;
 use crate::state::AppState;
 use axum::extract::State;
@@ -124,6 +124,11 @@ fn is_laundry_key(key: &str) -> bool {
     key.starts_with("laundry:")
 }
 
+/// Whether `key` is a tenant's staff's (`staff:<tenant>`): its members and invitations.
+fn is_staff_key(key: &str) -> bool {
+    key.starts_with("staff:")
+}
+
 #[derive(Debug, Deserialize)]
 pub struct EventsQuery {
     pub property: Option<Uuid>,
@@ -139,6 +144,8 @@ pub async fn stream(
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let tenant = ctx.tenant;
     let grants = ctx.grants;
+    // Staff keys name who works where: only those who manage staff, at any property, hear of them.
+    let staff_manager = holds_somewhere(&grants, Permission::StaffManage);
     let ready = tokio_stream::once(Ok(SseEvent::default().event("ready").data("{}")));
     let updates = BroadcastStream::new(state.events.subscribe()).filter_map(move |item| match item {
         Ok(LiveEvent::Invalidate(event)) => {
@@ -159,6 +166,7 @@ pub async fn stream(
                         && (auditor || !is_audit_key(key))
                         && (linen_viewer || !is_linen_key(key))
                         && (laundry_taker || !is_laundry_key(key))
+                        && (staff_manager || !is_staff_key(key))
                 })
                 .collect();
             (relevant && !keys.is_empty())

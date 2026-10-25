@@ -1,6 +1,6 @@
 //! Read-only GraphQL API. All writes go through REST commands.
 
-use crate::auth::TenantContext;
+use crate::auth::{TenantContext, holds_somewhere};
 use crate::error::ApiError;
 use crate::persisted;
 use crate::state::AppState;
@@ -270,6 +270,7 @@ mirror_enum!(
 mirror_enum!(MealPlanNode as "MealPlan" from rates::MealPlan { Ro, Bb, Hb, Fb });
 mirror_enum!(PriceChangeModeNode as "PriceChangeMode" from rates::PriceChangeMode { Percent, Amount, Set });
 mirror_enum!(PenaltyKindNode as "PenaltyKind" from rates::PenaltyKind { Nights, Percent, Amount });
+mirror_enum!(DepositKindNode as "DepositKind" from rates::DepositKind { Percent, Nights, Amount });
 mirror_enum!(ViolationKindNode as "ViolationKind" from rates::ViolationKind {
     InvalidStay,
     Inactive,
@@ -407,6 +408,37 @@ fn media_error(err: media::MediaError) -> async_graphql::Error {
     }
 }
 
+/// When a deposit is due.
+#[derive(Enum, Clone, Copy, PartialEq, Eq)]
+#[graphql(name = "DepositDueType")]
+pub enum DepositDueTypeNode {
+    /// On the business date of the booking.
+    AtBooking,
+    /// `daysBeforeArrival` days before arrival.
+    DaysBeforeArrival,
+}
+
+/// What a plan asks for in advance. Advisory: shown and listed, never enforced.
+#[derive(SimpleObject)]
+pub struct DepositRuleNode {
+    pub kind: DepositKindNode,
+    /// Basis points of the stay's total (`PERCENT`), the first N nights (`NIGHTS`) or minor units (`AMOUNT`).
+    pub value: i64,
+    pub due: DepositDueTypeNode,
+    /// 0 to 365 when `due` is `DAYS_BEFORE_ARRIVAL`, otherwise `null`.
+    pub days_before_arrival: Option<i32>,
+}
+
+impl From<rates::DepositRule> for DepositRuleNode {
+    fn from(rule: rates::DepositRule) -> Self {
+        let (due, days_before_arrival) = match rule.due {
+            rates::DepositDue::AtBooking => (DepositDueTypeNode::AtBooking, None),
+            rates::DepositDue::DaysBeforeArrival { days } => (DepositDueTypeNode::DaysBeforeArrival, Some(days)),
+        };
+        Self { kind: rule.kind.into(), value: rule.value, due, days_before_arrival }
+    }
+}
+
 /// A rate plan. Amounts are minor units in its currency.
 #[derive(SimpleObject)]
 pub struct RatePlanNode {
@@ -428,6 +460,8 @@ pub struct RatePlanNode {
     pub inherit_restrictions: bool,
     pub allowed_meal_plans: Vec<MealPlanNode>,
     pub cancellation_policy_id: Option<Uuid>,
+    /// `null`: nothing is asked in advance.
+    pub deposit_rule: Option<DepositRuleNode>,
     pub room_type_ids: Vec<Uuid>,
     pub active: bool,
     pub version: i32,
@@ -452,6 +486,7 @@ impl From<rates::RatePlan> for RatePlanNode {
             inherit_restrictions: p.inherit_restrictions,
             allowed_meal_plans: p.allowed_meal_plans.into_iter().map(Into::into).collect(),
             cancellation_policy_id: p.cancellation_policy_id,
+            deposit_rule: p.deposit_rule.map(DepositRuleNode::from),
             room_type_ids: p.room_type_ids,
             active: p.active,
             version: p.version,
@@ -874,10 +909,35 @@ pub struct ReservationNode {
     pub rooms: Vec<ReservationRoomNode>,
     /// Newest first.
     pub history: Vec<HistoryEntryNode>,
+    /// What the rooms' deposit rules ask for, per currency, with what the deposit folio has received. Advisory.
+    pub deposit_due: Vec<DepositDueLineNode>,
+}
+
+/// A reservation's deposit in one currency. Amounts are minor units of `currency`.
+#[derive(SimpleObject)]
+pub struct DepositDueLineNode {
+    pub currency: String,
+    /// The rooms' deposits, each at most the room's total.
+    pub amount: i64,
+    /// The earliest of the rooms' due dates.
+    pub due_date: Date,
+    /// The deposit folio's payments, net of refunds.
+    pub paid: i64,
+    pub outstanding: i64,
+}
+
+impl From<reservations::DepositDueLine> for DepositDueLineNode {
+    fn from(d: reservations::DepositDueLine) -> Self {
+        Self { currency: d.currency, amount: d.amount, due_date: d.due_date, paid: d.paid, outstanding: d.outstanding }
+    }
 }
 
 impl ReservationNode {
-    fn new(r: reservations::ReservationDetail, history: Vec<reservations::HistoryEntry>) -> Self {
+    fn new(
+        r: reservations::ReservationDetail,
+        history: Vec<reservations::HistoryEntry>,
+        deposit_due: Vec<reservations::DepositDueLine>,
+    ) -> Self {
         Self {
             id: r.id,
             confirmation_no: r.confirmation_no,
@@ -936,6 +996,7 @@ impl ReservationNode {
                 .into_iter()
                 .map(|h| HistoryEntryNode { action: h.action, at: h.at, actor_name: h.actor_name, data: Json(h.data) })
                 .collect(),
+            deposit_due: deposit_due.into_iter().map(DepositDueLineNode::from).collect(),
         }
     }
 }
@@ -1845,6 +1906,38 @@ pub struct NightAuditNode {
     pub pos_bills: Vec<AuditOutletBillsNode>,
     pub booking_bills: BookingBillsNode,
     pub payments: Vec<PaymentGroupNode>,
+    /// Reservations past their deposit's due date with some still owed, by arrival. Advisory: not in `blocking`.
+    pub deposits_outstanding: Vec<AuditDepositNode>,
+}
+
+/// A reservation's deposit still owed in one currency. Amounts are minor units of `currency`.
+#[derive(SimpleObject)]
+pub struct AuditDepositNode {
+    pub reservation_id: Uuid,
+    pub confirmation: String,
+    /// The booker.
+    pub guest: String,
+    /// The earliest arrival of the rooms the deposit counts.
+    pub arrival: Date,
+    pub currency: String,
+    pub due: i64,
+    pub paid: i64,
+    pub due_date: Date,
+}
+
+impl From<audit::DepositRow> for AuditDepositNode {
+    fn from(d: audit::DepositRow) -> Self {
+        Self {
+            reservation_id: d.reservation_id,
+            confirmation: d.confirmation,
+            guest: d.guest,
+            arrival: d.arrival,
+            currency: d.currency,
+            due: d.due,
+            paid: d.paid,
+            due_date: d.due_date,
+        }
+    }
 }
 
 impl From<audit::NightAudit> for NightAuditNode {
@@ -1857,6 +1950,7 @@ impl From<audit::NightAudit> for NightAuditNode {
             pos_bills: n.pos_bills.into_iter().map(AuditOutletBillsNode::from).collect(),
             booking_bills: n.booking_bills.into(),
             payments: n.payments.into_iter().map(PaymentGroupNode::from).collect(),
+            deposits_outstanding: n.deposits_outstanding.into_iter().map(AuditDepositNode::from).collect(),
         }
     }
 }
@@ -2331,6 +2425,122 @@ impl From<laundry::Order> for LaundryOrderNode {
             version: order.version,
         }
     }
+}
+
+mirror_enum!(RoleNode as "Role" from identity::Role {
+    Owner,
+    Manager,
+    FrontDesk,
+    Housekeeping,
+    Accountant,
+    HkSupervisor,
+    Pos,
+});
+mirror_enum!(InvitationStatusNode as "InvitationStatus" from identity::InvitationStatus {
+    Pending,
+    Accepted,
+    Revoked,
+    Expired,
+});
+
+/// A role, tenant-wide or at one property.
+#[derive(SimpleObject)]
+pub struct GrantNode {
+    pub role: RoleNode,
+    /// `null`: every property.
+    pub property_id: Option<Uuid>,
+}
+
+impl From<identity::GrantSpec> for GrantNode {
+    fn from(g: identity::GrantSpec) -> Self {
+        Self { role: g.role.into(), property_id: g.property_id }
+    }
+}
+
+/// A member of the tenant.
+#[derive(SimpleObject)]
+pub struct MemberNode {
+    pub user_id: Uuid,
+    pub email: String,
+    pub display_name: String,
+    /// By role, then property.
+    pub grants: Vec<GrantNode>,
+    pub joined_at: OffsetDateTime,
+    /// Send as `If-Match: "<version>"` when changing the member's grants.
+    pub version: i32,
+}
+
+impl From<identity::Member> for MemberNode {
+    fn from(m: identity::Member) -> Self {
+        Self {
+            user_id: m.user_id,
+            email: m.email,
+            display_name: m.display_name,
+            grants: m.grants.into_iter().map(GrantNode::from).collect(),
+            joined_at: m.joined_at,
+            version: m.version,
+        }
+    }
+}
+
+/// An invitation to join the tenant. Its link is only ever in the email.
+#[derive(SimpleObject)]
+pub struct InvitationNode {
+    pub id: Uuid,
+    pub email: String,
+    pub display_name: String,
+    /// What accepting gives.
+    pub grants: Vec<GrantNode>,
+    /// A pending invitation past its expiry reads as `EXPIRED`.
+    pub status: InvitationStatusNode,
+    /// `null` once the inviter's account is deleted.
+    pub invited_by: Option<Uuid>,
+    pub created_at: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
+}
+
+impl From<identity::Invitation> for InvitationNode {
+    fn from(i: identity::Invitation) -> Self {
+        Self {
+            id: i.id,
+            email: i.email,
+            display_name: i.display_name,
+            grants: i.grants.into_iter().map(GrantNode::from).collect(),
+            status: i.status.into(),
+            invited_by: i.invited_by,
+            created_at: i.created_at,
+            expires_at: i.expires_at,
+        }
+    }
+}
+
+/// One permission: what it allows and the roles that hold it.
+#[derive(SimpleObject)]
+pub struct PermissionRowNode {
+    /// Such as `StaffManage`.
+    pub permission: String,
+    /// What it allows, in plain words.
+    pub allows: String,
+    pub roles: Vec<RoleNode>,
+}
+
+/// A staff rule the query broke, as a GraphQL error; database errors stay hidden.
+fn staff_error(err: identity::StaffError) -> async_graphql::Error {
+    match err {
+        identity::StaffError::Database(db_err) => internal(db_err),
+        other => async_graphql::Error::new(other.to_string()),
+    }
+}
+
+/// Checks that the caller manages staff (at any property; the manager rules apply to what they change) and opens a
+/// transaction in their tenant.
+async fn staff_scoped(ctx: &Context<'_>) -> async_graphql::Result<Tx> {
+    let pool = ctx.data::<PgPool>()?;
+    let tenant = ctx.data::<TenantContext>()?;
+    if !holds_somewhere(&tenant.grants, Permission::StaffManage) {
+        return Err(async_graphql::Error::new("you do not have permission to manage staff"));
+    }
+    db::begin(pool, Scope::tenant(tenant.tenant)).await.map_err(internal)
 }
 
 /// A linen or laundry rule the query broke, as a GraphQL error; database errors stay hidden.
@@ -2875,8 +3085,13 @@ impl Query {
         } else {
             Vec::new()
         };
+        let deposit_due = if selected(ctx, "depositDue")? {
+            reservations::deposit_due(&mut tx, id).await.map_err(reservations_error)?
+        } else {
+            Vec::new()
+        };
         tx.commit().await.map_err(internal)?;
-        Ok(ReservationNode::new(detail, history))
+        Ok(ReservationNode::new(detail, history, deposit_due))
     }
 
     /// Up to `first` (1 to 50) of the tenant's guests whose name is like `search`, typos included, or whose
@@ -3350,6 +3565,39 @@ impl Query {
         let stays = folio::in_house_guests(&mut tx, property_id).await.map_err(internal)?;
         tx.commit().await.map_err(internal)?;
         Ok(stays.into_iter().map(PosInHouseNode::from).collect())
+    }
+
+    /// The tenant's members, by name. Needs `StaffManage`.
+    async fn members(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<MemberNode>> {
+        let mut tx = staff_scoped(ctx).await?;
+        let members = identity::members(&mut tx).await.map_err(staff_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(members.into_iter().map(MemberNode::from).collect())
+    }
+
+    /// The tenant's invitations, newest first, of one status or all. Needs `StaffManage`.
+    async fn invitations(
+        &self,
+        ctx: &Context<'_>,
+        status: Option<InvitationStatusNode>,
+    ) -> async_graphql::Result<Vec<InvitationNode>> {
+        let mut tx = staff_scoped(ctx).await?;
+        let invitations = identity::list_invitations(&mut tx, status.map(Into::into)).await.map_err(staff_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(invitations.into_iter().map(InvitationNode::from).collect())
+    }
+
+    /// Every permission with the roles that hold it, generated from the role table. The same for every tenant, and
+    /// readable by every member.
+    async fn permission_matrix(&self) -> Vec<PermissionRowNode> {
+        identity::permission_matrix()
+            .into_iter()
+            .map(|row| PermissionRowNode {
+                permission: row.permission.to_owned(),
+                allows: row.allows.to_owned(),
+                roles: row.roles.into_iter().map(RoleNode::from).collect(),
+            })
+            .collect()
     }
 
     /// The statistics of the property's closed business dates from `from` to `to`, both included (at most 366 days),

@@ -175,7 +175,16 @@ async fn a_pos_user_posts_bills_and_reads_what_a_till_needs_and_nothing_else(_: 
         assert!(message.contains("permission"), "{group}: {read:?}");
     }
 
-    // Staff management: the role holds no permission but PosPost, so no staff route can admit it.
+    // Staff management: refused over REST and GraphQL.
+    let invite = json!({"email": "new@example.com", "display_name": "New", "grants": [{"role": "pos", "property_id": hotel.id}]});
+    let invited = post(&app, &pos, "/api/v1/invitations", invite).await;
+    assert_eq!(invited.status, StatusCode::FORBIDDEN, "{:?}", invited.body);
+    let removed = send(&app, Method::DELETE, &pos, &format!("/api/v1/members/{}", Uuid::now_v7()), None).await;
+    assert_eq!(removed.status, StatusCode::FORBIDDEN, "{:?}", removed.body);
+    let members = graphql(&app, &pos, "{ members { userId } }", json!({})).await;
+    assert!(members["errors"][0]["message"].as_str().unwrap_or_default().contains("permission"), "{members:?}");
+
+    // The role holds no permission but PosPost, so no staff route can admit it.
     let grants = [Grant { property_id: None, role: Role::Pos }];
     for permission in ALL_PERMISSIONS {
         assert_eq!(allows(&grants, permission, Some(hotel.id)), permission == Permission::PosPost, "{permission:?}");

@@ -456,3 +456,61 @@ async fn a_close_is_503_while_jobs_svc_is_down(_: PgPoolOptions, opts: PgConnect
     assert_eq!(refused.status, StatusCode::SERVICE_UNAVAILABLE, "{:?}", refused.body);
     assert_eq!(refused.body["detail"], "The jobs service is unavailable");
 }
+
+/// A deposit due at booking and unpaid: the reservation shows it due, and the review lists it without blocking.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_unpaid_deposit_is_due_on_the_reservation_and_listed_in_the_review(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "owner@example.com", "GAL", true).await;
+    let rule = json!({"kind": "amount", "value": 5_000, "due": {"type": "at_booking"}});
+    let plan = format!("{}/rate-plans/{}", hotel.path, hotel.bar);
+    let ruled = versioned(&app, Method::PATCH, &hotel.owner, &plan, 1, Some(json!({"deposit_rule": rule}))).await;
+    assert_eq!(ruled.status, StatusCode::OK, "{:?}", ruled.body);
+    let guest = json!({"first_name": "Ada", "last_name": "Silva", "residency": "non_resident"});
+    let guest = post(&app, &hotel.owner, &format!("{}/guests", hotel.path), guest).await.body;
+    let booking = json!({"booker_guest_id": guest["id"], "source": "front_desk",
+        "rooms": [{"room_type_id": hotel.deluxe, "rate_plan_id": hotel.bar, "meal_plan": "RO",
+                   "check_in": hotel.day(3), "check_out": hotel.day(5), "adults": 2}]});
+    let booked = post(&app, &hotel.owner, &format!("{}/reservations", hotel.path), booking).await;
+    assert_eq!(booked.status, StatusCode::CREATED, "{:?}", booked.body);
+    let reservation = booked.body["id"].clone();
+
+    let read = graphql(
+        &app,
+        &hotel.owner,
+        "query ($p: UUID!, $id: UUID!) {
+            reservation(propertyId: $p, id: $id) { depositDue { currency amount dueDate paid outstanding } }
+        }",
+        json!({"p": hotel.id, "id": reservation}),
+    )
+    .await;
+    let review = graphql(
+        &app,
+        &hotel.owner,
+        "query ($p: UUID!) {
+            nightAudit(propertyId: $p) {
+                blocking
+                depositsOutstanding { reservationId confirmation guest arrival currency due paid dueDate }
+            }
+        }",
+        json!({"p": hotel.id}),
+    )
+    .await;
+
+    assert!(read["errors"].is_null(), "{read:?}");
+    assert_eq!(
+        read["data"]["reservation"]["depositDue"],
+        json!([{"currency": "USD", "amount": 5_000, "dueDate": hotel.day(0), "paid": 0, "outstanding": 5_000}])
+    );
+    assert!(review["errors"].is_null(), "{review:?}");
+    let review = &review["data"]["nightAudit"];
+    assert_eq!(review["blocking"], 0, "an outstanding deposit never blocks the close");
+    assert_eq!(
+        review["depositsOutstanding"],
+        json!([{"reservationId": reservation, "confirmation": booked.body["confirmation_no"], "guest": "Ada Silva",
+                "arrival": hotel.day(3), "currency": "USD", "due": 5_000, "paid": 0, "dueDate": hotel.day(0)}])
+    );
+}

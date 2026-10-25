@@ -65,6 +65,11 @@ impl ApiError {
         Self::new(StatusCode::CONFLICT, "Conflict", Some(detail.into()))
     }
 
+    /// The resource existed but is no longer available, such as a used, expired or revoked invitation.
+    pub fn gone(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::GONE, "Gone", Some(detail.into()))
+    }
+
     pub fn precondition_failed(detail: impl Into<String>) -> Self {
         Self::new(StatusCode::PRECONDITION_FAILED, "Precondition failed", Some(detail.into()))
     }
@@ -140,6 +145,20 @@ pub(crate) fn laundry_error(err: laundry::LaundryError) -> ApiError {
         laundry::LaundryError::Invalid(message) => ApiError::unprocessable(message),
         laundry::LaundryError::Folio(folio_err) => crate::routes::folio::folio_error(folio_err),
         laundry::LaundryError::Database(db_err) => db_err.into(),
+    }
+}
+
+/// Maps the staff module's errors to problem details. An invitation that cannot be used is a 410 with only the fixed
+/// text, whatever the reason, so tokens cannot be probed.
+pub(crate) fn staff_error(err: identity::StaffError) -> ApiError {
+    match err {
+        identity::StaffError::NotFound(_) => ApiError::not_found(err.to_string()),
+        identity::StaffError::Gone => ApiError::gone(err.to_string()),
+        identity::StaffError::Forbidden(message) => ApiError::forbidden(message),
+        identity::StaffError::Conflict(message) => ApiError::conflict(message),
+        identity::StaffError::Invalid(message) => ApiError::unprocessable(message),
+        identity::StaffError::VersionMismatch => ApiError::precondition_failed(err.to_string()),
+        identity::StaffError::Database(db_err) => db_err.into(),
     }
 }
 

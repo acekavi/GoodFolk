@@ -16,6 +16,7 @@ pub(crate) mod rates;
 pub(crate) mod reservations;
 pub(crate) mod room_types;
 pub(crate) mod rooms;
+pub(crate) mod staff;
 pub(crate) mod taxes;
 
 use crate::error::ApiError;
@@ -71,6 +72,10 @@ pub use reservations::{
 };
 pub use room_types::{BedRequest, CreateRoomTypeRequest, UpdateRoomTypeRequest};
 pub use rooms::{CreateRoomRangeRequest, CreateRoomRequest, ReorderRequest, SectionRequest, UpdateRoomRequest};
+pub use staff::{
+    AcceptInvitationRequest, CreateInvitationRequest, InvitationPreview, InvitationTokenRequest, PreviewGrant,
+    SetGrantsRequest,
+};
 pub use taxes::{CreateTaxRuleRequest, UpdateTaxRuleRequest, UpdateTaxSettingsRequest};
 
 /// Longest a request may run before it is answered with 504.
@@ -119,6 +124,7 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/outlets"), post(pos::create_outlet))
         .route(&format!("{PROPERTY}/tax-rules"), post(taxes::create_rule))
         .route(&format!("{PROPERTY}/tax-rules/apply-preset"), post(taxes::apply_preset))
+        .route("/api/v1/invitations", post(staff::invite))
         .route_layer(from_fn_with_state(state.clone(), idempotency::idempotent));
 
     let requests = Router::new()
@@ -127,6 +133,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/me", get(auth::me))
         .route("/api/v1/session/tenant", put(auth::switch_tenant))
+        .route("/api/v1/invitations/preview", post(staff::preview))
+        .route("/api/v1/invitations/accept", post(staff::accept))
+        .route("/api/v1/invitations/{invitation}/resend", post(staff::resend))
+        .route("/api/v1/invitations/{invitation}/revoke", post(staff::revoke))
+        .route("/api/v1/members/{user}/grants", put(staff::set_grants))
+        .route("/api/v1/members/{user}", delete(staff::revoke_member))
         .route(PROPERTY, patch(properties::update))
         .route(&format!("{PROPERTY}/room-types/order"), put(room_types::reorder))
         .route(&format!("{PROPERTY}/room-types/{{room_type}}"), patch(room_types::update))

@@ -89,6 +89,26 @@ type AuditDepartureNode {
 	version: Int!
 }
 
+"""
+A reservation's deposit still owed in one currency. Amounts are minor units of `currency`.
+"""
+type AuditDepositNode {
+	reservationId: UUID!
+	confirmation: String!
+	"""
+	The booker.
+	"""
+	guest: String!
+	"""
+	The earliest arrival of the rooms the deposit counts.
+	"""
+	arrival: Date!
+	currency: String!
+	due: Int!
+	paid: Int!
+	dueDate: Date!
+}
+
 enum AuditMode {
 	MANUAL
 	AUTO
@@ -385,6 +405,62 @@ format, but it is always normalized to the UTC (Z) offset, e.g.
 """
 scalar DateTime
 
+"""
+A reservation's deposit in one currency. Amounts are minor units of `currency`.
+"""
+type DepositDueLineNode {
+	currency: String!
+	"""
+	The rooms' deposits, each at most the room's total.
+	"""
+	amount: Int!
+	"""
+	The earliest of the rooms' due dates.
+	"""
+	dueDate: Date!
+	"""
+	The deposit folio's payments, net of refunds.
+	"""
+	paid: Int!
+	outstanding: Int!
+}
+
+"""
+When a deposit is due.
+"""
+enum DepositDueType {
+	"""
+	On the business date of the booking.
+	"""
+	AT_BOOKING
+	"""
+	`daysBeforeArrival` days before arrival.
+	"""
+	DAYS_BEFORE_ARRIVAL
+}
+
+enum DepositKind {
+	PERCENT
+	NIGHTS
+	AMOUNT
+}
+
+"""
+What a plan asks for in advance. Advisory: shown and listed, never enforced.
+"""
+type DepositRuleNode {
+	kind: DepositKind!
+	"""
+	Basis points of the stay's total (`PERCENT`), the first N nights (`NIGHTS`) or minor units (`AMOUNT`).
+	"""
+	value: Int!
+	due: DepositDueType!
+	"""
+	0 to 365 when `due` is `DAYS_BEFORE_ARRIVAL`, otherwise `null`.
+	"""
+	daysBeforeArrival: Int
+}
+
 enum DocumentKind {
 	PASSPORT
 	NIC
@@ -549,6 +625,17 @@ type FxRateNode {
 }
 
 """
+A role, tenant-wide or at one property.
+"""
+type GrantNode {
+	role: Role!
+	"""
+	`null`: every property.
+	"""
+	propertyId: UUID
+}
+
+"""
 A guest's ID document. It carries no URL: each link comes from the audited REST call.
 """
 type GuestDocumentNode {
@@ -629,6 +716,36 @@ type InventoryDayNode {
 	outOfOrder: Int!
 	available: Int!
 	sellable: Int!
+}
+
+"""
+An invitation to join the tenant. Its link is only ever in the email.
+"""
+type InvitationNode {
+	id: UUID!
+	email: String!
+	displayName: String!
+	"""
+	What accepting gives.
+	"""
+	grants: [GrantNode!]!
+	"""
+	A pending invitation past its expiry reads as `EXPIRED`.
+	"""
+	status: InvitationStatus!
+	"""
+	`null` once the inviter's account is deleted.
+	"""
+	invitedBy: UUID
+	createdAt: DateTime!
+	expiresAt: DateTime!
+}
+
+enum InvitationStatus {
+	PENDING
+	ACCEPTED
+	REVOKED
+	EXPIRED
 }
 
 enum InvoiceKind {
@@ -1005,6 +1122,24 @@ enum MediaStatus {
 }
 
 """
+A member of the tenant.
+"""
+type MemberNode {
+	userId: UUID!
+	email: String!
+	displayName: String!
+	"""
+	By role, then property.
+	"""
+	grants: [GrantNode!]!
+	joinedAt: DateTime!
+	"""
+	Send as `If-Match: "<version>"` when changing the member's grants.
+	"""
+	version: Int!
+}
+
+"""
 Why a stay has no room.
 """
 enum NeedsRoomReason {
@@ -1026,6 +1161,10 @@ type NightAuditNode {
 	posBills: [AuditOutletBillsNode!]!
 	bookingBills: BookingBillsNode!
 	payments: [PaymentGroupNode!]!
+	"""
+	Reservations past their deposit's due date with some still owed, by arrival. Advisory: not in `blocking`.
+	"""
+	depositsOutstanding: [AuditDepositNode!]!
 }
 
 """
@@ -1182,6 +1321,21 @@ enum PenaltyKind {
 type PenaltyNode {
 	kind: PenaltyKind!
 	value: Int!
+}
+
+"""
+One permission: what it allows and the roles that hold it.
+"""
+type PermissionRowNode {
+	"""
+	Such as `StaffManage`.
+	"""
+	permission: String!
+	"""
+	What it allows, in plain words.
+	"""
+	allows: String!
+	roles: [Role!]!
 }
 
 enum PlanKind {
@@ -1473,6 +1627,19 @@ type Query {
 	"""
 	posInHouse(propertyId: UUID!): [PosInHouseNode!]!
 	"""
+	The tenant's members, by name. Needs `StaffManage`.
+	"""
+	members: [MemberNode!]!
+	"""
+	The tenant's invitations, newest first, of one status or all. Needs `StaffManage`.
+	"""
+	invitations(status: InvitationStatus): [InvitationNode!]!
+	"""
+	Every permission with the roles that hold it, generated from the role table. The same for every tenant, and
+	readable by every member.
+	"""
+	permissionMatrix: [PermissionRowNode!]!
+	"""
 	The statistics of the property's closed business dates from `from` to `to`, both included (at most 366 days),
 	by date, each with its breakdowns. A day not yet closed has none.
 	"""
@@ -1535,6 +1702,10 @@ type RatePlanNode {
 	inheritRestrictions: Boolean!
 	allowedMealPlans: [MealPlan!]!
 	cancellationPolicyId: UUID
+	"""
+	`null`: nothing is asked in advance.
+	"""
+	depositRule: DepositRuleNode
 	roomTypeIds: [UUID!]!
 	active: Boolean!
 	version: Int!
@@ -1626,6 +1797,10 @@ type ReservationNode {
 	Newest first.
 	"""
 	history: [HistoryEntryNode!]!
+	"""
+	What the rooms' deposit rules ask for, per currency, with what the deposit folio has received. Advisory.
+	"""
+	depositDue: [DepositDueLineNode!]!
 }
 
 type ReservationRoomConnection {
@@ -1756,6 +1931,16 @@ type RestrictionNode {
 	maxStay: Int
 	closedToArrival: Boolean!
 	closedToDeparture: Boolean!
+}
+
+enum Role {
+	OWNER
+	MANAGER
+	FRONT_DESK
+	HOUSEKEEPING
+	ACCOUNTANT
+	HK_SUPERVISOR
+	POS
 }
 
 """

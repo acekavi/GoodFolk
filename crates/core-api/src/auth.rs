@@ -63,6 +63,16 @@ impl TenantContext {
         }
     }
 
+    /// Like [`Self::require`], but a grant of `permission` at any one property is enough. For tenant-level actions
+    /// whose finer rules the module checks, such as the manager rules for staff.
+    pub fn require_somewhere(&self, permission: Permission) -> Result<(), ApiError> {
+        if holds_somewhere(&self.grants, permission) {
+            Ok(())
+        } else {
+            Err(ApiError::forbidden("you do not have permission for this action"))
+        }
+    }
+
     /// `None` if the user may see every property, otherwise the properties they hold a viewing grant for.
     pub fn visible_properties(&self) -> Option<Vec<Uuid>> {
         if allows(&self.grants, Permission::PropertiesView, None) {
@@ -77,6 +87,11 @@ impl TenantContext {
             )
         }
     }
+}
+
+/// Whether `grants` allow `permission` tenant-wide or at any one property.
+pub fn holds_somewhere(grants: &[Grant], permission: Permission) -> bool {
+    grants.iter().any(|grant| allows(&[*grant], permission, grant.property_id))
 }
 
 impl FromRequestParts<AppState> for TenantContext {
