@@ -292,7 +292,8 @@ mirror_enum!(
     MediaStatusNode as "MediaStatus" from media::AssetStatus { Uploading, Processing, Ready, Failed }
 );
 mirror_enum!(
-    /// A delivered image's size: `THUMB` is a 320 px square, the others are long edges of 640 to 2400 px.
+    /// A delivered file's size: `THUMB` is a 320 px square, `SM` to `XL` are image long edges of 640 to 2400 px,
+    /// `V1080` and `V720` are videos that fit 1920×1080 and 1280×720, and `ORIGINAL` is a guest PDF's linearized copy.
     RenditionSizeNode as "RenditionSize" from media_types::Size { Thumb, Sm, Md, Lg, Xl, V1080, V720, Original }
 );
 mirror_enum!(ImageFormatNode as "ImageFormat" from media_types::Format { Avif, Webp, #[graphql(name = "AV1")] Av1, H264, Pdf });

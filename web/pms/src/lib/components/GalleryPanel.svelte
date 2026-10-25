@@ -18,11 +18,12 @@
 	import { errorMessage } from '$lib/api/problem';
 	import { rest, unwrap } from '$lib/api/rest';
 	import {
+		countedVideos,
 		dropIndex,
 		formatDuration,
 		MAX_VIDEOS,
 		mediaKey,
-		renditionsOf,
+		posterOf,
 		TOO_MANY_VIDEOS,
 		videoSources,
 		type Box,
@@ -76,7 +77,7 @@
 		// A room type holds a few videos: those listed and those on their way count. The server decides.
 		let room =
 			MAX_VIDEOS -
-			media.filter((item) => item.kind === 'VIDEO').length -
+			countedVideos(media) -
 			uploads.items.filter((u) => u.target.purpose === 'gallery_video' && u.state !== 'failed')
 				.length;
 		uploads.add(
@@ -229,12 +230,12 @@
 	}
 </script>
 
-<section class="gallery" aria-label="Photos of {roomType.code}">
+<section class="gallery" aria-label="Photos and videos of {roomType.code}">
 	<h3>{roomType.code} · {roomType.name}</h3>
 	{#if error}<p class="error" role="alert">{error}</p>{/if}
 
 	{#if media.length === 0 && uploads.items.length === 0}
-		<p class="hint">No photos yet.</p>
+		<p class="hint">No photos or videos yet.</p>
 	{/if}
 
 	<ul class="tiles">
@@ -253,7 +254,7 @@
 								controls
 								playsinline
 								preload="none"
-								poster={renditionsOf(item.renditions, 'WEBP', ['MD'])[0]?.url}
+								poster={posterOf(item.renditions)}
 								aria-label={item.caption ?? `Video ${index + 1} of ${roomType.code}`}
 							>
 								{#each videoSources(item) as source (source.src)}

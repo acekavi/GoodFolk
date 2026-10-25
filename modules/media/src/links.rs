@@ -122,7 +122,7 @@ pub async fn unlink_gallery(
     .bind(property)
     .fetch_optional(&mut **tx)
     .await?;
-    let purpose = purpose.ok_or(MediaError::NotFound("photo"))?;
+    let purpose = purpose.ok_or(MediaError::NotFound("gallery item"))?;
     let kind = if purpose == Purpose::GalleryVideo.as_str() { "video" } else { "image" };
     let data = serde_json::json!({ "room_type_id": room_type, "kind": kind });
     audit(tx, tenant, Some(user), "media.removed", "media_asset", asset, data).await?;

@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, NETWORK_ERROR } from './api/problem';
 import {
+	HASH_CHUNK,
 	MissingEtag,
 	PartFailed,
 	UploadUnfinished,
 	UploadRefused,
 	fileType,
+	isVideoFile,
 	partRanges,
 	photoOrVideo,
 	putPart,
@@ -265,8 +267,15 @@ describe('putPart', () => {
 
 describe('sha256Hex', () => {
 	it('hashes to 64 hex digits', async () => {
-		expect(await sha256Hex(new TextEncoder().encode('abc').buffer as ArrayBuffer)).toBe(
+		expect(await sha256Hex(new Blob(['abc']))).toBe(
 			'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+		);
+	});
+
+	it('hashes a file of several chunks as one', async () => {
+		const bytes = Uint8Array.from({ length: 2 * HASH_CHUNK + 5 }, (_, i) => i % 251);
+		expect(await sha256Hex(new Blob([bytes]))).toBe(
+			'de44529cece48237d30967c74f61b9541b809af36ede33d34537e06b5bd946a5'
 		);
 	});
 });
@@ -323,7 +332,7 @@ describe('uploadFile', () => {
 			target_id: 'rt1',
 			filename: 'room.jpg',
 			bytes: 10,
-			sha256: await sha256Hex(new TextEncoder().encode('0123456789').buffer as ArrayBuffer)
+			sha256: await sha256Hex(new Blob(['0123456789']))
 		});
 		expect(put).toHaveBeenCalledTimes(3);
 		expect(api.complete).toHaveBeenCalledWith(
@@ -507,5 +516,23 @@ describe('uploadQueue', () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
 		expect(run).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('isVideoFile', () => {
+	const file = (name: string, type: string) => ({ name, type });
+
+	it('goes by the type the browser reports', () => {
+		expect(isVideoFile(file('tour.mp4', 'video/mp4'))).toBe(true);
+		expect(isVideoFile(file('photo.jpg', 'image/jpeg'))).toBe(false);
+	});
+
+	it('falls back to the extension when the type is empty', () => {
+		expect(isVideoFile(file('IMG_0001.MOV', ''))).toBe(true);
+		expect(isVideoFile(file('clip.webm', ''))).toBe(true);
+		expect(isVideoFile(file('clip.mkv', ''))).toBe(true);
+		expect(isVideoFile(file('clip.mp4', ''))).toBe(true);
+		expect(isVideoFile(file('doc.pdf', ''))).toBe(false);
+		expect(isVideoFile(file('noextension', ''))).toBe(false);
 	});
 });

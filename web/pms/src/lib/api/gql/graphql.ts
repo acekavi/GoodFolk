@@ -196,7 +196,10 @@ export type PriceChangeMode =
   | 'PERCENT'
   | 'SET';
 
-/** A delivered image's size: `THUMB` is a 320 px square, the others are long edges of 640 to 2400 px. */
+/**
+ * A delivered file's size: `THUMB` is a 320 px square, `SM` to `XL` are image long edges of 640 to 2400 px,
+ * `V1080` and `V720` are videos that fit 1920×1080 and 1280×720, and `ORIGINAL` is a guest PDF's linearized copy.
+ */
 export type RenditionSize =
   | 'LG'
   | 'MD'

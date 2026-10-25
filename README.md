@@ -327,7 +327,7 @@ This script reuses the hotel from [Trying housekeeping by hand](#trying-housekee
 
    `curl -s http://localhost:8090/healthz` answers `ok`.
 3. Sign in as `owner@example.com` on `http://localhost:5173`. On **Room types**, add a second type `STD` (2 adults); you will use it in step 8.
-4. Each room type card has a **Photos of DLX** panel: `No photos yet.` Click **Add photos** (or drop files on it) and choose three JPEGs. Each file gets a tile that reads `Processing…` and turns into the picture on its own, without a reload: the browser put the file straight into RustFS, media-svc made the renditions, and the `media:<property>` event refreshed the page. A 12 MP photo takes a few seconds.
+4. Each room type card has a **Photos and videos of DLX** panel: `No photos or videos yet.` Click **Add photos or videos** (or drop files on it) and choose three JPEGs. Each file gets a tile that reads `Processing…` and turns into the picture on its own, without a reload: the browser put the file straight into RustFS, media-svc made the renditions, and the `media:<property>` event refreshed the page. A 12 MP photo takes a few seconds.
 5. Arrange the gallery. Drag a tile by its `⠿` handle, or use **Move photo 1 later**; reload the page and the order stays. **Caption** opens a field (up to 200 characters), **Save** keeps it, and it becomes the image's alternative text. **Remove** asks `Remove this photo from the gallery?`; **Remove photo** unlinks it. (Its files stay in storage until the daily sweep, step 13.)
 6. The renditions are public and permanent. Right-click a photo, copy the image address (it looks like `http://localhost:9000/goodfolk-public/t/<tenant>/a/<asset>/md.avif`) and ask for its headers:
 

@@ -74,7 +74,7 @@ async fn captions_and_unlinking(_: PgPoolOptions, opts: PgConnectOptions) {
     unlink_gallery(&mut tx, hotel.tenant, hotel.user, hotel.property, hotel.room_type, photo).await.unwrap();
     let err =
         unlink_gallery(&mut tx, hotel.tenant, hotel.user, hotel.property, hotel.room_type, photo).await.unwrap_err();
-    assert!(matches!(err, MediaError::NotFound("photo")), "{err:?}");
+    assert!(matches!(err, MediaError::NotFound("gallery item")), "{err:?}");
     tx.commit().await.unwrap();
     assert!(hotel.order().await.is_empty());
     assert_eq!(hotel.assets().await, 1, "the asset stays until the sweep finds it unused");

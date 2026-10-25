@@ -1,3 +1,5 @@
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import type { components } from './api/openapi';
 import { ApiError, NETWORK_ERROR } from './api/problem';
 import { idempotencyKey, rest, unwrap } from './api/rest';
@@ -229,10 +231,19 @@ async function eachLimit<T>(items: readonly T[], limit: number, task: (item: T) 
 	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
-export async function sha256Hex(data: ArrayBuffer): Promise<string> {
-	// SubtleCrypto cannot hash incrementally; a whole file (at most 25 MiB) is fine.
-	const digest = await crypto.subtle.digest('SHA-256', data);
-	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+/** How much of a file is read into memory at a time while hashing it. */
+export const HASH_CHUNK = 8 * MIB;
+
+/**
+ * The SHA-256 of `blob` as 64 hex digits, read {@link HASH_CHUNK} at a time: SubtleCrypto cannot
+ * hash incrementally, and a video of up to 500 MB should not be held in memory whole.
+ */
+export async function sha256Hex(blob: Blob): Promise<string> {
+	const hash = sha256.create();
+	for (let start = 0; start < blob.size; start += HASH_CHUNK) {
+		hash.update(new Uint8Array(await blob.slice(start, start + HASH_CHUNK).arrayBuffer()));
+	}
+	return bytesToHex(hash.digest());
 }
 
 /** The server calls an upload makes; replaced in tests. */
@@ -316,7 +327,7 @@ export async function uploadFile(
 
 	const total = file.size;
 	onProgress?.({ phase: 'hashing', loaded: 0, total });
-	const sha256 = await sha256Hex(await file.arrayBuffer());
+	const sha256 = await sha256Hex(file);
 	signal?.throwIfAborted();
 
 	// Not aborted mid-request: a start the server answered is cancelled below rather than left behind.

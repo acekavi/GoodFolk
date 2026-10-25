@@ -7,7 +7,7 @@ import { bookableHotel, createProperty, runsQuery, signUp } from './helpers';
 const VIDEO = 'tests/e2e/fixtures/tour.mp4';
 /** Processing runs in media-svc's workers; a short clip takes a few seconds. */
 const READY = { timeout: 60_000 };
-const GALLERY = 'section[aria-label="Photos of DLX"]';
+const GALLERY = 'section[aria-label="Photos and videos of DLX"]';
 
 /** A signed-up owner's property with a DLX room type, and the page on its room types. */
 async function roomTypes(page: Page, code: string) {
@@ -16,7 +16,7 @@ async function roomTypes(page: Page, code: string) {
 	const propertyId = page.url().split('/p/')[1];
 	await bookableHotel(page, 2, 1);
 	await page.goto(`/p/${propertyId}/room-types`);
-	return page.getByRole('region', { name: 'Photos of DLX' });
+	return page.getByRole('region', { name: 'Photos and videos of DLX' });
 }
 
 test('a room tour video is uploaded, goes ready live, plays with sound and is removed', async ({
@@ -72,7 +72,7 @@ test('a room tour video is uploaded, goes ready live, plays with sound and is re
 	await gallery.getByRole('button', { name: 'Remove video', exact: true }).click();
 	await expect(gallery.locator('video')).toHaveCount(0);
 	await page.reload();
-	await expect(gallery).toContainText('No photos yet.');
+	await expect(gallery).toContainText('No photos or videos yet.');
 	await expect(gallery.getByRole('button', { name: /^Play video/ })).toHaveCount(0);
 });
 

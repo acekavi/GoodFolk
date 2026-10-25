@@ -2,8 +2,6 @@ import { graphql } from './api/gql';
 import type { RoomTypeGalleriesQuery } from './api/gql/graphql';
 import { query } from './api/graphql';
 
-export { isVideoFile } from './upload';
-
 export const RoomTypeGalleriesDocument = graphql(`
 	query RoomTypeGalleries($propertyId: UUID!) {
 		roomTypes(propertyId: $propertyId) {
@@ -123,6 +121,19 @@ export function dropIndex(boxes: readonly Box[], x: number, y: number): number {
 /** A room type holds at most this many videos. */
 export const MAX_VIDEOS = 3;
 export const TOO_MANY_VIDEOS = `A room type can have at most ${MAX_VIDEOS} videos`;
+
+/** The videos that count toward {@link MAX_VIDEOS}: every one but a failed one, as the server counts. */
+export function countedVideos(media: readonly Pick<MediaItem, 'kind' | 'status'>[]): number {
+	return media.filter((item) => item.kind === 'VIDEO' && item.status !== 'FAILED').length;
+}
+
+/** The sizes a video's poster picks from: `MD`, else the largest below it, since a small clip has no `MD`. */
+const POSTER_SIZES: readonly RenditionSize[] = ['THUMB', 'SM', 'MD'];
+
+/** The URL of a video's WebP poster frame, if it has one. */
+export function posterOf(renditions: readonly Rendition[]): string | undefined {
+	return largestOf(renditions, 'WEBP', POSTER_SIZES)[0]?.url;
+}
 
 /** A video's length as `m:ss`, to the nearest second. */
 export function formatDuration(ms: number): string {

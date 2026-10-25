@@ -2,16 +2,18 @@ import { QueryClient } from '@tanstack/svelte-query';
 import { describe, expect, it } from 'vitest';
 import { applyEvent } from './events';
 import {
+	countedVideos,
 	DISPLAY_SIZES,
 	dropIndex,
 	formatDuration,
-	isVideoFile,
 	LARGE_SIZES,
 	largestOf,
 	mediaKey,
+	posterOf,
 	renditionsOf,
 	srcset,
 	videoSources,
+	type MediaItem,
 	type Rendition,
 	type VideoSource
 } from './media';
@@ -170,20 +172,28 @@ describe('videoSources', () => {
 	});
 });
 
-describe('isVideoFile', () => {
-	const file = (name: string, type: string) => ({ name, type });
-
-	it('goes by the type the browser reports', () => {
-		expect(isVideoFile(file('tour.mp4', 'video/mp4'))).toBe(true);
-		expect(isVideoFile(file('photo.jpg', 'image/jpeg'))).toBe(false);
+describe('posterOf', () => {
+	it('shows the MD poster', () => {
+		expect(posterOf(renditions)).toBe('https://cdn/a/md.webp');
 	});
 
-	it('falls back to the extension when the type is empty', () => {
-		expect(isVideoFile(file('IMG_0001.MOV', ''))).toBe(true);
-		expect(isVideoFile(file('clip.webm', ''))).toBe(true);
-		expect(isVideoFile(file('clip.mkv', ''))).toBe(true);
-		expect(isVideoFile(file('clip.mp4', ''))).toBe(true);
-		expect(isVideoFile(file('doc.pdf', ''))).toBe(false);
-		expect(isVideoFile(file('noextension', ''))).toBe(false);
+	it('falls back to the largest poster a small clip has', () => {
+		const small = renditions.filter((r) => r.size === 'THUMB' || r.size === 'SM');
+		expect(posterOf(small)).toBe('https://cdn/a/sm.webp');
+		expect(posterOf([rendition('THUMB', 'WEBP', 320, 320)])).toBe('https://cdn/a/thumb.webp');
+		expect(posterOf([])).toBeUndefined();
+	});
+});
+
+describe('countedVideos', () => {
+	it('counts the videos the server counts, not photos or failed videos', () => {
+		const item = (kind: 'IMAGE' | 'VIDEO', status: MediaItem['status']) => ({ kind, status });
+		const media = [
+			item('VIDEO', 'READY'),
+			item('VIDEO', 'PROCESSING'),
+			item('VIDEO', 'FAILED'),
+			item('IMAGE', 'READY')
+		];
+		expect(countedVideos(media)).toBe(2);
 	});
 });

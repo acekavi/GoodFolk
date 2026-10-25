@@ -43,6 +43,7 @@
 		"vitest": "^4.1.8"
 	},
 	"dependencies": {
+		"@noble/hashes": "2.4.0",
 		"@tanstack/svelte-query": "6.2.4",
 		"openapi-fetch": "0.17.0"
 	}
