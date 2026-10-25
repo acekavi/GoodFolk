@@ -72,9 +72,7 @@ impl Config {
         };
         let storage = StorageConfig::from_vars(&var, production)?;
         let app_base_url = match var("APP_BASE_URL") {
-            Some(url) if url.starts_with("https://") || (!production && url.starts_with("http://")) => {
-                url.trim_end_matches('/').to_owned()
-            }
+            Some(url) if is_origin(&url, production) => url.trim_end_matches('/').to_owned(),
             Some(_) => bail!("APP_BASE_URL must be an https:// origin (or http:// outside production)"),
             None if production => {
                 bail!("APP_BASE_URL (the web app's origin, for email links) is required in production")
@@ -92,6 +90,17 @@ impl Config {
             app_base_url,
         })
     }
+}
+
+/// Whether `url` is an `https://` URL with a host (or `http://`, outside production).
+fn is_origin(url: &str, production: bool) -> bool {
+    let Ok(uri) = url.parse::<axum::http::Uri>() else { return false };
+    let scheme_ok = match uri.scheme_str() {
+        Some("https") => true,
+        Some("http") => !production,
+        _ => false,
+    };
+    scheme_ok && uri.host().is_some_and(|host| !host.is_empty())
 }
 
 #[cfg(test)]
@@ -160,5 +169,39 @@ mod tests {
         assert!(!Config::from_vars(with("FX_IMPORT", "off")).unwrap().fx_import);
         assert!(Config::from_vars(with("JOBS_TICK", "sometimes")).is_err());
         assert!(Config::from_vars(with("FX_IMPORT", "maybe")).is_err());
+    }
+
+    #[test]
+    fn app_base_url_is_an_origin_with_a_host_and_https_in_production() {
+        let with = |production: bool, url: &'static str| {
+            move |n: &str| match n {
+                "DATABASE_URL" => Some("postgres://local/db".to_owned()),
+                "DATABASE_DIRECT_URL" => Some("postgres://direct/db".to_owned()),
+                "APP_ENV" if production => Some("production".to_owned()),
+                "S3_ENDPOINT" => Some("https://account.r2.cloudflarestorage.com".to_owned()),
+                "S3_REGION" => Some("auto".to_owned()),
+                "S3_ACCESS_KEY" => Some("access".to_owned()),
+                "S3_SECRET_KEY" => Some("secret".to_owned()),
+                "S3_PUBLIC_BUCKET" => Some("goodfolk-public".to_owned()),
+                "S3_PRIVATE_BUCKET" => Some("goodfolk-private".to_owned()),
+                "MEDIA_PUBLIC_BASE_URL" => Some("https://media.example.com/".to_owned()),
+                "APP_BASE_URL" => Some(url.to_owned()),
+                _ => None,
+            }
+        };
+
+        let plain = Config::from_vars(with(true, "http://app.example.com")).unwrap_err();
+        assert!(plain.to_string().contains("APP_BASE_URL"), "{plain}");
+        for hostless in ["https://", "https:///invite", "https://:443"] {
+            for production in [true, false] {
+                let err = Config::from_vars(with(production, hostless)).unwrap_err();
+                assert!(err.to_string().contains("APP_BASE_URL"), "{hostless}: {err}");
+            }
+        }
+        assert_eq!(
+            Config::from_vars(with(false, "http://localhost:4173")).unwrap().app_base_url,
+            "http://localhost:4173"
+        );
+        assert!(Config::from_vars(with(true, "https://app.example.com")).is_ok());
     }
 }

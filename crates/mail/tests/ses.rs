@@ -104,13 +104,17 @@ async fn send_email_posts_simple_content_signed_for_ses() {
 }
 
 #[tokio::test]
-async fn throttles_and_server_errors_are_retried_and_other_refusals_are_not() {
+async fn throttles_pauses_forbidden_and_server_errors_are_retried_and_other_refusals_are_not() {
     let cases = [
         (StatusCode::TOO_MANY_REQUESTS, Some("TooManyRequestsException:http://internal.amazon.com/"), true),
         (StatusCode::BAD_REQUEST, Some("ThrottlingException"), true),
         (StatusCode::SERVICE_UNAVAILABLE, None, true),
+        (StatusCode::FORBIDDEN, None, true),
+        (StatusCode::FORBIDDEN, Some("AccessDeniedException:http://internal.amazon.com/"), true),
+        (StatusCode::BAD_REQUEST, Some("SendingPausedException:http://internal.amazon.com/"), true),
+        (StatusCode::BAD_REQUEST, Some("LimitExceededException:http://internal.amazon.com/"), true),
         (StatusCode::BAD_REQUEST, Some("MessageRejected:http://internal.amazon.com/"), false),
-        (StatusCode::FORBIDDEN, None, false),
+        (StatusCode::BAD_REQUEST, Some("BadRequestException:http://internal.amazon.com/"), false),
     ];
     for (status, kind, retryable) in cases {
         let (endpoint, _) = server(status, kind).await;

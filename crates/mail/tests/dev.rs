@@ -53,6 +53,23 @@ fn production_needs_ses_and_development_uses_the_outbox() {
 }
 
 #[test]
+fn each_missing_production_variable_is_named() {
+    const SES: [(&str, &str); 4] = [
+        ("MAIL_FROM", "GoodFolk <hello@example.com>"),
+        ("AWS_REGION", "ap-south-1"),
+        ("AWS_ACCESS_KEY_ID", "AKIDEXAMPLE"),
+        ("AWS_SECRET_ACCESS_KEY", "secret"),
+    ];
+    for (missing, _) in SES {
+        let var = |name: &str| {
+            SES.iter().find(|(key, _)| *key == name && *key != missing).map(|(_, value)| (*value).to_owned())
+        };
+        let err = mail::from_vars(var, true).err().expect("a production variable is missing");
+        assert_eq!(err.to_string(), format!("{missing} is required in production"));
+    }
+}
+
+#[test]
 fn a_mail_job_keeps_its_token_out_of_debug() {
     let job = MailJob::Invitation { invitation_id: Uuid::nil(), tenant_id: Uuid::nil(), token: "s3cr3t-token".into() };
 

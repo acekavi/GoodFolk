@@ -93,7 +93,7 @@ impl Mailer for SesMailer {
             tracing::info!(to = %message.to, subject = %message.subject, "mail sent through SES");
             return Ok(());
         }
-        // `x-amzn-ErrorType` is `<Name>:<namespace>`; the name is enough to tell a throttle.
+        // `x-amzn-ErrorType` is `<Name>:<namespace>`; the name is enough to tell a throttle or a pause.
         let kind = response
             .headers()
             .get("x-amzn-errortype")
@@ -102,8 +102,14 @@ impl Mailer for SesMailer {
             .unwrap_or("")
             .to_owned();
         let detail = format!("SES answered {status} {kind}");
-        let throttled = status.as_u16() == 429 || kind.contains("Throttl") || kind.contains("TooManyRequests");
-        if throttled || status.is_server_error() {
+        // A throttle, a daily sending limit reached or the account's sending paused all clear in time; a 403 is
+        // usually credentials or permissions being fixed. Dropping an invitation for any of them would lose it.
+        let throttled = status.as_u16() == 429
+            || kind.contains("Throttl")
+            || kind.contains("TooManyRequests")
+            || kind.contains("LimitExceeded")
+            || kind.contains("SendingPaused");
+        if throttled || status == reqwest::StatusCode::FORBIDDEN || status.is_server_error() {
             Err(MailError::Retryable(detail))
         } else {
             Err(MailError::Permanent(detail))
