@@ -7,7 +7,8 @@
 //! A video job is the one line `{"job":<ProcessJob>,"input":"<path>","out_dir":"<path>"}` and nothing after it: the
 //! upload is already in the file at `input`, and the worker writes what it makes into the directory `out_dir`. A
 //! probe is the one line `{"probe":"<path>"}`: Finalize's look at a video upload, run here so that `ffprobe` meets
-//! the untrusted file with neither the service's secrets nor an uncapped address space.
+//! the untrusted file with neither the service's secrets nor an uncapped address space. A video worker lowers its own
+//! CPU priority (nice 10) at startup, so image jobs stay quick while a clip encodes.
 //!
 //! **Output** (stdout): a big-endian `u32` length, a JSON [`Header`] of that length, then, for an image, the archive's
 //! bytes and each rendition's bytes, back to back, at the lengths the header gives. A video's header names its files
@@ -49,6 +50,8 @@ pub const VIDEO_TIMEOUT: Duration = Duration::from_secs(600);
 /// [`VIDEO_WORKER_ADDRESS_SPACE`] (8.5 GB for one 1080p encode on 16 CPUs), and a refused reservation hangs SVT-AV1
 /// rather than failing it. With 4 arenas the encode peaks near 4.4 GB, at the same speed.
 const VIDEO_ENV: [(&str, &str); 1] = [("MALLOC_ARENA_MAX", "4")];
+/// The nice value a video worker, and every ffmpeg it runs, takes on.
+const VIDEO_NICE: i32 = 10;
 /// How long one `ffprobe` of a video may take, inside the worker.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a probe-only worker may run: its `ffprobe`, plus starting up.
@@ -500,6 +503,11 @@ pub fn main() -> ExitCode {
     if let Err(error) = limit_memory(cap) {
         tracing::error!(%error, "could not cap the worker's memory");
         return ExitCode::FAILURE;
+    }
+    if matches!(job, JobLine::Video(_))
+        && let Err(error) = rustix::process::setpriority_process(None, VIDEO_NICE)
+    {
+        tracing::warn!(%error, "could not lower the video worker's priority");
     }
     #[cfg(debug_assertions)]
     if let Some(exit) = test_hooks::on_start() {

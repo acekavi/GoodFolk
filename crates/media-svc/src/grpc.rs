@@ -247,7 +247,6 @@ impl MediaSvc {
             bytes: digests.len,
             width: probe.width,
             height: probe.height,
-            duration_ms: probe.duration_ms,
         }))
     }
 }
@@ -292,14 +291,7 @@ fn verify(
             _ => UNREADABLE,
         })?,
     };
-    Ok(Verified {
-        blake3: blake3.as_bytes().to_vec(),
-        mime: ty.mime().to_owned(),
-        bytes: len,
-        width,
-        height,
-        duration_ms: 0,
-    })
+    Ok(Verified { blake3: blake3.as_bytes().to_vec(), mime: ty.mime().to_owned(), bytes: len, width, height })
 }
 
 /// What one read of a file gives: its length, its first [`SNIFF_BYTES`] and both hashes.

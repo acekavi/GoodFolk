@@ -23,6 +23,6 @@ message FinalizeRequest {
   string tenant_id = 1; string asset_id = 2; Purpose purpose = 3; string s3_upload_id = 4;
   repeated CompletedPart parts = 5; uint64 declared_bytes = 6; bytes sha256 = 7;
 }
-message Verified { bytes blake3 = 1; string mime = 2; uint64 bytes = 3; uint32 width = 4; uint32 height = 5; uint32 duration_ms = 6; }
+message Verified { bytes blake3 = 1; string mime = 2; uint64 bytes = 3; uint32 width = 4; uint32 height = 5; }
 message Refused { string reason = 1; }
 message FinalizeResponse { oneof result { Verified verified = 1; Refused refused = 2; } }

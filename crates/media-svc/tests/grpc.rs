@@ -251,7 +251,6 @@ async fn video_finalize_verifies_a_phone_clip() {
     assert_eq!(verified.mime, "video/mp4");
     assert_eq!(verified.bytes, body.len() as u64);
     assert_eq!((verified.width, verified.height), (1920, 1080));
-    assert!(verified.duration_ms.abs_diff(10_000) < 100, "{} ms", verified.duration_ms);
     let key = upload_key(tenant, asset);
     assert_eq!(server.storage.head(Bucket::Private, &key).await.unwrap(), Some(body.len() as u64));
     assert!(server.tmp.entries_for(asset).is_empty(), "the temporary copy is gone");
