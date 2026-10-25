@@ -7,6 +7,7 @@ import {
 	UploadRefused,
 	fileType,
 	partRanges,
+	photoOrVideo,
 	putPart,
 	refusal,
 	retryableComplete,
@@ -84,6 +85,38 @@ describe('refusal', () => {
 
 	it('refuses an empty file', () => {
 		expect(refusal(file('a.jpg', 'image/jpeg', 0), 'gallery')).toBe('The file is empty');
+	});
+});
+
+describe('refusal of a gallery video', () => {
+	it('accepts the four containers, by type or extension, up to 500 MB', () => {
+		expect(refusal(file('a.mp4', 'video/mp4', 500 * MIB), 'gallery_video')).toBeNull();
+		expect(refusal(file('a.mov', 'video/quicktime', 1), 'gallery_video')).toBeNull();
+		expect(refusal(file('a.webm', 'video/webm', 1), 'gallery_video')).toBeNull();
+		expect(refusal(file('a.mkv', 'video/x-matroska', 1), 'gallery_video')).toBeNull();
+		expect(refusal(file('IMG_1.MOV', '', 1), 'gallery_video')).toBeNull();
+	});
+
+	it('refuses a larger video with the server’s words', () => {
+		expect(refusal(file('a.mp4', 'video/mp4', 500 * MIB + 1), 'gallery_video')).toBe(
+			'Videos can be at most 500 MB'
+		);
+	});
+
+	it('refuses other types and empty files', () => {
+		expect(refusal(file('a.gif', 'image/gif', 10), 'gallery_video')).toBe(
+			'This file type is not accepted here'
+		);
+		expect(refusal(file('a.mp4', 'video/mp4', 0), 'gallery_video')).toBe('The file is empty');
+	});
+});
+
+describe('photoOrVideo', () => {
+	it('picks the video purpose for a video and the photo purpose otherwise', () => {
+		expect(photoOrVideo(file('a.mp4', 'video/mp4', 1))).toBe('gallery_video');
+		expect(photoOrVideo(file('a.mov', '', 1))).toBe('gallery_video');
+		expect(photoOrVideo(file('a.jpg', 'image/jpeg', 1))).toBe('gallery');
+		expect(photoOrVideo(file('a.pdf', 'application/pdf', 1))).toBe('gallery');
 	});
 });
 

@@ -293,7 +293,7 @@
 		</form>
 	{/if}
 
-	<h2>Photos</h2>
+	<h2>Photos and videos</h2>
 	{#if galleries.error}
 		<p class="error" role="alert">{errorMessage(galleries.error)}</p>
 	{:else if galleries.data}

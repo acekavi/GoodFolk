@@ -3,7 +3,7 @@ import type { HousekeepingBoardQuery, MyRoomsQuery, RoomIssuesQuery } from './ap
 import { query } from './api/graphql';
 import { ApiError, errorMessage } from './api/problem';
 import { idempotencyKey, ifMatch, rest, unwrap } from './api/rest';
-import { mediaKey, type MediaItem } from './media';
+import { mediaKey, type Photo } from './media';
 
 export const HousekeepingBoardDocument = graphql(`
 	query HousekeepingBoard($propertyId: UUID!) {
@@ -390,7 +390,7 @@ export function issuePhotosKey(propertyId: string) {
 export async function fetchIssuePhotos(
 	propertyId: string,
 	signal?: AbortSignal
-): Promise<Record<string, MediaItem[]>> {
+): Promise<Record<string, Photo[]>> {
 	const { roomIssues } = await query(IssuePhotosDocument, { propertyId }, signal);
 	return Object.fromEntries(roomIssues.map((issue) => [issue.id, issue.photos]));
 }

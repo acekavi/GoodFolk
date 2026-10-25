@@ -11,12 +11,14 @@ type UploadedPart = components['schemas']['UploadedPart'];
 
 const MIB = 1024 * 1024;
 const IMAGES = ['image/jpeg', 'image/png', 'image/webp'];
+export const VIDEOS = ['video/mp4', 'video/quicktime', 'video/webm', 'video/x-matroska'];
 
 /** What each purpose accepts, mirroring the server's table. The server decides from the bytes. */
 export const LIMITS: Record<Purpose, { types: readonly string[]; maxBytes: number }> = {
 	gallery: { types: IMAGES, maxBytes: 25 * MIB },
 	issue_photo: { types: IMAGES, maxBytes: 25 * MIB },
-	guest_document: { types: [...IMAGES, 'application/pdf'], maxBytes: 15 * MIB }
+	guest_document: { types: [...IMAGES, 'application/pdf'], maxBytes: 15 * MIB },
+	gallery_video: { types: VIDEOS, maxBytes: 500 * MIB }
 };
 
 const BY_EXTENSION: Record<string, string> = {
@@ -25,6 +27,10 @@ const BY_EXTENSION: Record<string, string> = {
 	png: 'image/png',
 	webp: 'image/webp',
 	pdf: 'application/pdf',
+	mp4: 'video/mp4',
+	mov: 'video/quicktime',
+	webm: 'video/webm',
+	mkv: 'video/x-matroska',
 	heic: 'image/heic',
 	heif: 'image/heif'
 };
@@ -33,6 +39,7 @@ const HEIC = new Set(['image/heic', 'image/heif', 'image/heic-sequence', 'image/
 /** Refusal messages: the server's words, plus the spec's 'Not a supported image' for photos. */
 export const NOT_ACCEPTED = 'This file type is not accepted here';
 export const NOT_AN_IMAGE = 'Not a supported image';
+export const VIDEO_TOO_LARGE = 'Videos can be at most 500 MB';
 export const EMPTY = 'The file is empty';
 
 /** The file's type as the browser reports it, or from its extension when the browser does not know. */
@@ -40,6 +47,16 @@ export function fileType(file: { name: string; type: string }): string {
 	if (file.type) return file.type.toLowerCase();
 	const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
 	return BY_EXTENSION[extension] ?? '';
+}
+
+/** Whether the file is a video, by its type or, when the browser reports none, its extension. */
+export function isVideoFile(file: { name: string; type: string }): boolean {
+	return fileType(file).startsWith('video/');
+}
+
+/** The gallery purpose a file is uploaded under: a video's own, else a photo's. */
+export function photoOrVideo(file: { name: string; type: string }): 'gallery' | 'gallery_video' {
+	return isVideoFile(file) ? 'gallery_video' : 'gallery';
 }
 
 /**
@@ -53,8 +70,13 @@ export function refusal(
 	const { types, maxBytes } = LIMITS[purpose];
 	const type = fileType(file);
 	if (HEIC.has(type)) return NOT_ACCEPTED;
-	if (!types.includes(type)) return purpose === 'guest_document' ? NOT_ACCEPTED : NOT_AN_IMAGE;
+	if (!types.includes(type)) {
+		return purpose === 'guest_document' || purpose === 'gallery_video'
+			? NOT_ACCEPTED
+			: NOT_AN_IMAGE;
+	}
 	if (file.size === 0) return EMPTY;
+	if (purpose === 'gallery_video' && file.size > maxBytes) return VIDEO_TOO_LARGE;
 	if (file.size > maxBytes) return `Too large: the limit is ${maxBytes / MIB} MB`;
 	return null;
 }
