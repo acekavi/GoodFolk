@@ -115,6 +115,11 @@
 			{/each}
 		</nav>
 		<span class="spacer"></span>
+		<a
+			href={resolve('/(app)/settings')}
+			aria-current={page.url.pathname.startsWith(resolve('/(app)/settings')) ? 'page' : undefined}
+			>Staff and settings</a
+		>
 		<span>{me.data.display_name}</span>
 		<button disabled={busy} onclick={logout}>Sign out</button>
 	</header>
@@ -142,7 +147,7 @@
 		display: flex;
 		gap: 0.5rem;
 	}
-	nav a[aria-current='page'] {
+	header a[aria-current='page'] {
 		font-weight: 600;
 	}
 	.spacer {

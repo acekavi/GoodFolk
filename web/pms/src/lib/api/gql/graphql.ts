@@ -35,6 +35,18 @@ export type ChangeMode =
   | 'AMOUNT'
   | 'PERCENT';
 
+/** When a deposit is due. */
+export type DepositDueType =
+  /** On the business date of the booking. */
+  | 'AT_BOOKING'
+  /** `daysBeforeArrival` days before arrival. */
+  | 'DAYS_BEFORE_ARRIVAL';
+
+export type DepositKind =
+  | 'AMOUNT'
+  | 'NIGHTS'
+  | 'PERCENT';
+
 export type DocumentKind =
   | 'DRIVING_LICENCE'
   | 'NIC'
@@ -61,6 +73,12 @@ export type IdDocType =
 export type ImageFormat =
   | 'AVIF'
   | 'WEBP';
+
+export type InvitationStatus =
+  | 'ACCEPTED'
+  | 'EXPIRED'
+  | 'PENDING'
+  | 'REVOKED';
 
 export type InvoiceKind =
   | 'CREDIT_NOTE'
@@ -207,6 +225,15 @@ export type ReservationSortField =
 export type Residency =
   | 'NON_RESIDENT'
   | 'RESIDENT';
+
+export type Role =
+  | 'ACCOUNTANT'
+  | 'FRONT_DESK'
+  | 'HK_SUPERVISOR'
+  | 'HOUSEKEEPING'
+  | 'MANAGER'
+  | 'OWNER'
+  | 'POS';
 
 /** How ready a room is for a guest. */
 export type RoomCondition =
@@ -410,7 +437,7 @@ export type NightAuditQueryVariables = Exact<{
 }>;
 
 
-export type NightAuditQuery = { nightAudit: { businessDate: string, blocking: number, arrivals: Array<{ reservationRoomId: string, reservationId: string, confirmation: string, guest: string, roomNumber: string | null, arrival: string, departure: string, status: RoomStatus, total: number, currency: string, noShowPenalty: number, version: number }>, departures: Array<{ reservationRoomId: string, reservationId: string, confirmation: string, guest: string, roomNumber: string | null, departure: string, version: number, balances: Array<{ currency: string, amount: number }> }>, posBills: Array<{ outlet: string, totalBase: number, bills: Array<{ id: string, billNo: string, billDate: string, currency: string, total: number, totalBase: number, roomNumber: string | null, settled: boolean, highlight: boolean }> }>, bookingBills: { nights: Array<{ reservationRoomId: string, roomNumber: string | null, date: string, roomAmount: number, mealAmount: number, currency: string, problem: string | null, alreadyPosted: number }>, posted: Array<{ category: string, lines: number, totalBase: number }> }, payments: Array<{ method: string, currency: string, count: number, amount: number, baseAmount: number, refunds: number, flagged: Array<string> }> } };
+export type NightAuditQuery = { nightAudit: { businessDate: string, blocking: number, arrivals: Array<{ reservationRoomId: string, reservationId: string, confirmation: string, guest: string, roomNumber: string | null, arrival: string, departure: string, status: RoomStatus, total: number, currency: string, noShowPenalty: number, version: number }>, departures: Array<{ reservationRoomId: string, reservationId: string, confirmation: string, guest: string, roomNumber: string | null, departure: string, version: number, balances: Array<{ currency: string, amount: number }> }>, posBills: Array<{ outlet: string, totalBase: number, bills: Array<{ id: string, billNo: string, billDate: string, currency: string, total: number, totalBase: number, roomNumber: string | null, settled: boolean, highlight: boolean }> }>, bookingBills: { nights: Array<{ reservationRoomId: string, roomNumber: string | null, date: string, roomAmount: number, mealAmount: number, currency: string, problem: string | null, alreadyPosted: number }>, posted: Array<{ category: string, lines: number, totalBase: number }> }, payments: Array<{ method: string, currency: string, count: number, amount: number, baseAmount: number, refunds: number, flagged: Array<string> }>, depositsOutstanding: Array<{ reservationId: string, confirmation: string, guest: string, arrival: string, currency: string, due: number, paid: number, dueDate: string }> } };
 
 export type AuditRunsQueryVariables = Exact<{
   propertyId: string;
@@ -446,7 +473,7 @@ export type RatePlansQueryVariables = Exact<{
 }>;
 
 
-export type RatePlansQuery = { ratePlans: Array<{ id: string, code: string, name: string, kind: PlanKind, segment: Segment, residency: Residency | null, currency: string, parentId: string | null, depth: number, deriveMode: ChangeMode | null, deriveValue: number | null, roundingStep: number, extraAdultAmount: number, inheritRestrictions: boolean, allowedMealPlans: Array<MealPlan>, cancellationPolicyId: string | null, roomTypeIds: Array<string>, active: boolean, version: number }>, mealSupplements: Array<{ id: string, mealPlan: MealPlan, currency: string, adultAmount: number, childAmount: number, from: string, to: string | null, version: number }>, cancellationPolicies: Array<{ id: string, name: string, version: number }> };
+export type RatePlansQuery = { ratePlans: Array<{ id: string, code: string, name: string, kind: PlanKind, segment: Segment, residency: Residency | null, currency: string, parentId: string | null, depth: number, deriveMode: ChangeMode | null, deriveValue: number | null, roundingStep: number, extraAdultAmount: number, inheritRestrictions: boolean, allowedMealPlans: Array<MealPlan>, cancellationPolicyId: string | null, roomTypeIds: Array<string>, active: boolean, version: number, depositRule: { kind: DepositKind, value: number, due: DepositDueType, daysBeforeArrival: number | null } | null }>, mealSupplements: Array<{ id: string, mealPlan: MealPlan, currency: string, adultAmount: number, childAmount: number, from: string, to: string | null, version: number }>, cancellationPolicies: Array<{ id: string, name: string, version: number }> };
 
 export type RateGridQueryVariables = Exact<{
   propertyId: string;
@@ -519,6 +546,14 @@ export type ReservationQueryVariables = Exact<{
 
 export type ReservationQuery = { reservation: { id: string, confirmationNo: string, status: RoomStatus, source: Source, notes: string, createdAt: string, version: number, booker: { id: string, firstName: string, lastName: string, email: string | null, phone: string | null, country: string | null, residency: Residency, idDocType: IdDocType | null, idDocMasked: string | null, notes: string, version: number }, account: { id: string, name: string, kind: AccountKind } | null, totals: Array<{ currency: string, amount: number }>, rooms: Array<{ id: string, version: number, status: RoomStatus, checkIn: string, checkOut: string, adults: number, children: number, mealPlan: MealPlan, total: number, currency: string, cancellationPenalty: number | null, cancelledAt: string | null, recordedPenalty: number | null, checkedInAt: string | null, checkedInBusinessDate: string | null, checkedOutAt: string | null, canCheckIn: boolean, canUndoCheckIn: boolean, canCheckOut: boolean, roomType: { id: string, code: string, name: string }, room: { id: string, number: string } | null, ratePlan: { id: string, code: string }, primaryGuest: { id: string, firstName: string, lastName: string, residency: Residency, idDocType: IdDocType | null, idDocMasked: string | null }, occupants: Array<{ id: string, firstName: string, lastName: string, residency: Residency, idDocType: IdDocType | null, idDocMasked: string | null }>, nights: Array<{ date: string, room: number, meal: number }>, cancellationTerms: { rules: Array<{ daysBeforeArrival: number, penalty: { kind: PenaltyKind, value: number } }>, noShow: { kind: PenaltyKind, value: number } } | null }>, history: Array<{ action: string, at: string, actorName: string | null, data: unknown }> } };
 
+export type ReservationDepositQueryVariables = Exact<{
+  p: string;
+  id: string;
+}>;
+
+
+export type ReservationDepositQuery = { reservation: { id: string, depositDue: Array<{ currency: string, amount: number, dueDate: string, paid: number, outstanding: number }> } };
+
 export type GuestsQueryVariables = Exact<{
   propertyId: string;
   search?: string | null | undefined;
@@ -557,7 +592,7 @@ export type TaxSettingsQueryVariables = Exact<{
 }>;
 
 
-export type TaxSettingsQuery = { propertyTaxSettings: { vatRegistered: boolean, tin: string | null, tdlSmallTurnover: boolean, legalName: string | null, address: string | null, baseCurrency: string, acceptedCurrencies: Array<string>, version: number }, taxRules: Array<{ id: string, code: string, name: string, kind: TaxKind, rateBp: number, appliesTo: Array<string>, base: Array<string>, sequence: number, presentation: TaxPresentation, condition: unknown, effectiveFrom: string, effectiveTo: string | null, version: number }>, outlets: Array<{ code: string, name: string, active: boolean }> };
+export type TaxSettingsQuery = { propertyTaxSettings: { vatRegistered: boolean, tin: string | null, sltdaLicence: string | null, tdlSmallTurnover: boolean, legalName: string | null, address: string | null, baseCurrency: string, acceptedCurrencies: Array<string>, version: number }, taxRules: Array<{ id: string, code: string, name: string, kind: TaxKind, rateBp: number, appliesTo: Array<string>, base: Array<string>, sequence: number, presentation: TaxPresentation, condition: unknown, effectiveFrom: string, effectiveTo: string | null, version: number }>, outlets: Array<{ code: string, name: string, active: boolean }> };
 
 export type OutletsQueryVariables = Exact<{
   propertyId: string;
@@ -575,12 +610,34 @@ export type ExchangeRatesQueryVariables = Exact<{
 
 export type ExchangeRatesQuery = { fxRates: Array<{ date: string, currency: string, rate: string, source: string, sourceDate: string }>, fxAlert: { message: string, raisedAt: string } | null, propertyTaxSettings: { baseCurrency: string, acceptedCurrencies: Array<string> } };
 
+export type BlockReasonsQueryVariables = Exact<{
+  propertyId: string;
+}>;
+
+
+export type BlockReasonsQuery = { blockReasons: Array<{ id: string, code: string, label: string, defaultKind: BlockKind, active: boolean, version: number }> };
+
 export type FxAlertQueryVariables = Exact<{
   propertyId: string;
 }>;
 
 
 export type FxAlertQuery = { fxAlert: { message: string, raisedAt: string } | null };
+
+export type MembersQueryVariables = Exact<{ [key: string]: never; }>;
+
+
+export type MembersQuery = { members: Array<{ userId: string, email: string, displayName: string, joinedAt: string, version: number, grants: Array<{ role: Role, propertyId: string | null }> }> };
+
+export type InvitationsQueryVariables = Exact<{ [key: string]: never; }>;
+
+
+export type InvitationsQuery = { invitations: Array<{ id: string, email: string, displayName: string, status: InvitationStatus, createdAt: string, expiresAt: string, grants: Array<{ role: Role, propertyId: string | null }> }> };
+
+export type PermissionMatrixQueryVariables = Exact<{ [key: string]: never; }>;
+
+
+export type PermissionMatrixQuery = { permissionMatrix: Array<{ permission: string, allows: string, roles: Array<Role> }> };
 
 export type TapeWindowQueryVariables = Exact<{
   property: string;
@@ -1076,9 +1133,19 @@ export const NightAuditDocument = new TypedDocumentString(`
       refunds
       flagged
     }
+    depositsOutstanding {
+      reservationId
+      confirmation
+      guest
+      arrival
+      currency
+      due
+      paid
+      dueDate
+    }
   }
 }
-    `, {"hash":"sha256:3b28da9286aa04a2a4e656a69abe59027a3f9d27da56ac7ee4e839c0dafb28d8"}) as unknown as TypedDocumentString<NightAuditQuery, NightAuditQueryVariables>;
+    `, {"hash":"sha256:da8ebd655bcd34845dd88699ec06635ab2324853b407bc4f305ceb081d54876e"}) as unknown as TypedDocumentString<NightAuditQuery, NightAuditQueryVariables>;
 export const AuditRunsDocument = new TypedDocumentString(`
     query AuditRuns($propertyId: UUID!, $first: Int!) {
   auditRuns(propertyId: $propertyId, first: $first) {
@@ -1163,6 +1230,12 @@ export const RatePlansDocument = new TypedDocumentString(`
     inheritRestrictions
     allowedMealPlans
     cancellationPolicyId
+    depositRule {
+      kind
+      value
+      due
+      daysBeforeArrival
+    }
     roomTypeIds
     active
     version
@@ -1183,7 +1256,7 @@ export const RatePlansDocument = new TypedDocumentString(`
     version
   }
 }
-    `, {"hash":"sha256:1a16d95a5cd35bfc8bce15bd9d7c39071bfb080de1f7d8fbe2d90e3e52f532f0"}) as unknown as TypedDocumentString<RatePlansQuery, RatePlansQueryVariables>;
+    `, {"hash":"sha256:384805e99cf00394c1c2ec7d6d676fbd565421bef143f0f59595c42f811795d5"}) as unknown as TypedDocumentString<RatePlansQuery, RatePlansQueryVariables>;
 export const RateGridDocument = new TypedDocumentString(`
     query RateGrid($propertyId: UUID!, $ratePlanId: UUID!, $from: Date!, $to: Date!) {
   rateGrid(propertyId: $propertyId, ratePlanId: $ratePlanId, from: $from, to: $to) {
@@ -1434,6 +1507,20 @@ export const ReservationDocument = new TypedDocumentString(`
   }
 }
     `, {"hash":"sha256:2a513b095e6041e8d166928f61842645c9133d3257011e38613d61a37d4617d7"}) as unknown as TypedDocumentString<ReservationQuery, ReservationQueryVariables>;
+export const ReservationDepositDocument = new TypedDocumentString(`
+    query ReservationDeposit($p: UUID!, $id: UUID!) {
+  reservation(propertyId: $p, id: $id) {
+    id
+    depositDue {
+      currency
+      amount
+      dueDate
+      paid
+      outstanding
+    }
+  }
+}
+    `, {"hash":"sha256:282ad1b08489beef32927664d18d2b382516f70328a7ca5c5473d6a4838a6b22"}) as unknown as TypedDocumentString<ReservationDepositQuery, ReservationDepositQueryVariables>;
 export const GuestsDocument = new TypedDocumentString(`
     query Guests($propertyId: UUID!, $search: String, $first: Int) {
   guests(propertyId: $propertyId, search: $search, first: $first) {
@@ -1514,6 +1601,7 @@ export const TaxSettingsDocument = new TypedDocumentString(`
   propertyTaxSettings(propertyId: $propertyId) {
     vatRegistered
     tin
+    sltdaLicence
     tdlSmallTurnover
     legalName
     address
@@ -1542,7 +1630,7 @@ export const TaxSettingsDocument = new TypedDocumentString(`
     active
   }
 }
-    `, {"hash":"sha256:44d85f5c6c2b63a1f43b46030699c0d233c251fd28ef2506ac81411d0178d1ef"}) as unknown as TypedDocumentString<TaxSettingsQuery, TaxSettingsQueryVariables>;
+    `, {"hash":"sha256:2ad597ef9813904dca734131ed7c9921157fd2acb7b4554db1e2fadceef5b093"}) as unknown as TypedDocumentString<TaxSettingsQuery, TaxSettingsQueryVariables>;
 export const OutletsDocument = new TypedDocumentString(`
     query Outlets($propertyId: UUID!) {
   outlets(propertyId: $propertyId) {
@@ -1574,6 +1662,18 @@ export const ExchangeRatesDocument = new TypedDocumentString(`
   }
 }
     `, {"hash":"sha256:1b704639f40a4b7613bc546b9fd557d9faffad6239639225955663dfcbc60789"}) as unknown as TypedDocumentString<ExchangeRatesQuery, ExchangeRatesQueryVariables>;
+export const BlockReasonsDocument = new TypedDocumentString(`
+    query BlockReasons($propertyId: UUID!) {
+  blockReasons(propertyId: $propertyId) {
+    id
+    code
+    label
+    defaultKind
+    active
+    version
+  }
+}
+    `, {"hash":"sha256:d10b100d07d3ac18aa224a7e43c99221aacd212829bb1ba40ea8d25f4ffc8dda"}) as unknown as TypedDocumentString<BlockReasonsQuery, BlockReasonsQueryVariables>;
 export const FxAlertDocument = new TypedDocumentString(`
     query FxAlert($propertyId: UUID!) {
   fxAlert(propertyId: $propertyId) {
@@ -1582,6 +1682,46 @@ export const FxAlertDocument = new TypedDocumentString(`
   }
 }
     `, {"hash":"sha256:fb04468ca356a863385a69bf76a4bc4d950f5effbe3b207fbd28086e145ef9b9"}) as unknown as TypedDocumentString<FxAlertQuery, FxAlertQueryVariables>;
+export const MembersDocument = new TypedDocumentString(`
+    query Members {
+  members {
+    userId
+    email
+    displayName
+    grants {
+      role
+      propertyId
+    }
+    joinedAt
+    version
+  }
+}
+    `, {"hash":"sha256:528ad4f892adffbd9f76ae119144bf5d3d34744df04c0c0eb928a7f4b8271841"}) as unknown as TypedDocumentString<MembersQuery, MembersQueryVariables>;
+export const InvitationsDocument = new TypedDocumentString(`
+    query Invitations {
+  invitations {
+    id
+    email
+    displayName
+    grants {
+      role
+      propertyId
+    }
+    status
+    createdAt
+    expiresAt
+  }
+}
+    `, {"hash":"sha256:e4449a6a61e0e069797db7184776cae9ba8160a68c56e593ef566ddefe820d19"}) as unknown as TypedDocumentString<InvitationsQuery, InvitationsQueryVariables>;
+export const PermissionMatrixDocument = new TypedDocumentString(`
+    query PermissionMatrix {
+  permissionMatrix {
+    permission
+    allows
+    roles
+  }
+}
+    `, {"hash":"sha256:79f3c8e977f09ca4a397a5e14c0757a52eb9003899b45f4182615071ccd8c7aa"}) as unknown as TypedDocumentString<PermissionMatrixQuery, PermissionMatrixQueryVariables>;
 export const TapeWindowDocument = new TypedDocumentString(`
     query TapeWindow($property: UUID!, $rooms: [UUID!]!, $from: Date!, $to: Date!) {
   tapeWindow(propertyId: $property, roomIds: $rooms, from: $from, to: $to) {

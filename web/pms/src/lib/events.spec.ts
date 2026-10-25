@@ -6,6 +6,7 @@ import { addDays } from './inventory';
 import { laundryKey } from './laundry';
 import { linenKey } from './linen';
 import { auditRunsKey, dailyStatsKey, nightAuditKey, opsAlertsKey } from './night-audit';
+import { reservationDepositKey } from './reservations';
 import { tapeKey, tileStartFor, unassignedKey } from './tape';
 
 describe('applyEvent', () => {
@@ -122,6 +123,28 @@ describe('applyEvent', () => {
 
 		expect(client.getQueryState(holding)?.isInvalidated).toBe(true);
 		expect(client.getQueryState(other)?.isInvalidated).toBe(false);
+	});
+
+	it('refetches the deposit and the night audit of a reservation whose folio changed', () => {
+		const client = new QueryClient();
+		client.setQueryData(foliosKey('p1', 'r1', null), [{ id: 'f1' }]);
+		client.setQueryData(foliosKey('p1', 'r2', null), [{ id: 'f2' }]);
+		const keys = [
+			reservationDepositKey('r1'),
+			nightAuditKey('p1'),
+			reservationDepositKey('r2'),
+			nightAuditKey('p2')
+		];
+		for (const key of keys) client.setQueryData(key, []);
+
+		applyEvent(client, 'invalidate', '["folio:f1"]');
+
+		expect(keys.map((key) => client.getQueryState(key)?.isInvalidated)).toEqual([
+			true,
+			true,
+			false,
+			false
+		]);
 	});
 
 	it("refetches the property's review, runs, statistics and alerts on an audit event", () => {

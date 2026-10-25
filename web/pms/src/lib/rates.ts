@@ -1,8 +1,10 @@
 import { graphql } from './api/gql';
 import type { RateGridQuery, RatePlansQuery } from './api/gql/graphql';
 import { query } from './api/graphql';
+import type { components } from './api/openapi';
 import { addDays, monthDays } from './inventory';
 import { exponent } from './money';
+import { bpToPercent, percentToBp } from './settings';
 
 export const RatePlansDocument = graphql(`
 	query RatePlans($propertyId: UUID!) {
@@ -23,6 +25,12 @@ export const RatePlansDocument = graphql(`
 			inheritRestrictions
 			allowedMealPlans
 			cancellationPolicyId
+			depositRule {
+				kind
+				value
+				due
+				daysBeforeArrival
+			}
 			roomTypeIds
 			active
 			version
@@ -144,6 +152,7 @@ export type RatePlan = RatePlansQuery['ratePlans'][number];
 export type MealSupplement = RatePlansQuery['mealSupplements'][number];
 export type RateGrid = RateGridQuery['rateGrid'];
 export type Restriction = RateGrid['restrictions'][number];
+export type DepositRule = NonNullable<RatePlan['depositRule']>;
 
 /** Plans, meal supplements and cancellation policies change together under `rate-plans:<property>`. */
 export function ratePlansKey(propertyId: string) {
@@ -351,4 +360,108 @@ export function batcher<T>(
 		},
 		flush
 	};
+}
+
+/**
+ * What a deposit rule asks of one room for a stay of `nights` (in date order), mirroring the server's
+ * `room_deposit`: basis points of the stay's total rounded half up (`PERCENT`), the first N nights' room amounts
+ * without meals (`NIGHTS`), or a fixed amount (`AMOUNT`); never more than the stay's total.
+ */
+export function depositAmount(
+	rule: Pick<DepositRule, 'kind' | 'value'>,
+	nights: readonly { room: number; meal: number }[]
+): number {
+	const total = nights.reduce((sum, night) => sum + night.room + night.meal, 0);
+	let amount: number;
+	switch (rule.kind) {
+		case 'NIGHTS':
+			amount = nights.slice(0, rule.value).reduce((sum, night) => sum + night.room, 0);
+			break;
+		case 'PERCENT':
+			amount = Math.floor((total * rule.value + 5_000) / 10_000);
+			break;
+		case 'AMOUNT':
+			amount = rule.value;
+			break;
+	}
+	return Math.min(amount, total);
+}
+
+/** When the deposit is due: the business date of the booking, or `daysBeforeArrival` days before arrival. */
+export function depositDueDate(
+	rule: Pick<DepositRule, 'due' | 'daysBeforeArrival'>,
+	booked: string,
+	arrival: string
+): string {
+	return rule.due === 'AT_BOOKING' ? booked : addDays(arrival, -(rule.daysBeforeArrival ?? 0));
+}
+
+/** The review step's line: `Deposit due USD 50.00 by 2026-10-25`. */
+export function depositText(amount: number, currency: string, dueDate: string): string {
+	return `Deposit due ${currency} ${formatMoney(amount, currency)} by ${dueDate}`;
+}
+
+/** A rule in words, for the plans table: `50% of the stay, at booking`, `2 nights, 7 days before arrival`. */
+export function describeDepositRule(rule: DepositRule, currency: string): string {
+	const what =
+		rule.kind === 'PERCENT'
+			? `${bpToPercent(rule.value)}% of the stay`
+			: rule.kind === 'NIGHTS'
+				? `${rule.value} night${rule.value === 1 ? '' : 's'}`
+				: `${currency} ${formatMoney(rule.value, currency)}`;
+	const days = rule.daysBeforeArrival ?? 0;
+	const when =
+		rule.due === 'AT_BOOKING' ? 'at booking' : `${days} day${days === 1 ? '' : 's'} before arrival`;
+	return `${what}, ${when}`;
+}
+
+/** The deposit rule as the plan form edits it; `kind` `''` is no rule. */
+export interface DepositDraft {
+	kind: '' | 'percent' | 'nights' | 'amount';
+	/** A percentage (`50`), a number of nights (`2`) or an amount (`100.00`). */
+	value: string;
+	due: 'at_booking' | 'days_before_arrival';
+	days: string;
+}
+
+export function depositDraft(rule: DepositRule | null | undefined, currency: string): DepositDraft {
+	if (!rule) return { kind: '', value: '', due: 'at_booking', days: '' };
+	const kind = rule.kind.toLowerCase() as DepositDraft['kind'];
+	return {
+		kind,
+		value:
+			rule.kind === 'PERCENT'
+				? bpToPercent(rule.value)
+				: rule.kind === 'NIGHTS'
+					? String(rule.value)
+					: formatMoney(rule.value, currency).replaceAll(',', ''),
+		due: rule.due === 'AT_BOOKING' ? 'at_booking' : 'days_before_arrival',
+		days: rule.due === 'AT_BOOKING' ? '' : String(rule.daysBeforeArrival ?? 0)
+	};
+}
+
+/**
+ * The draft as the API's `deposit_rule`, or `null` for no rule; throws with what to fix when a value is out of the
+ * server's range (a percentage above 0 up to 100 with 2 decimals, 1 to 30 nights, an amount above 0, 0 to 365 days).
+ */
+export function depositRuleBody(
+	draft: DepositDraft,
+	currency: string
+): components['schemas']['DepositRule'] | null {
+	if (!draft.kind) return null;
+	let value: number | null;
+	if (draft.kind === 'percent') {
+		value = percentToBp(draft.value);
+		if (!value) throw new Error('Enter the deposit as a percentage above 0, up to 100.');
+	} else if (draft.kind === 'nights') {
+		value = /^\d{1,2}$/.test(draft.value.trim()) ? Number(draft.value.trim()) : null;
+		if (!value || value > 30) throw new Error('Enter the deposit as 1 to 30 nights.');
+	} else {
+		value = parseMoney(draft.value, currency);
+		if (!value) throw new Error('Enter the deposit as an amount above 0, e.g. 100.00.');
+	}
+	if (draft.due === 'at_booking') return { kind: draft.kind, value, due: { type: 'at_booking' } };
+	const days = /^\d{1,3}$/.test(draft.days.trim()) ? Number(draft.days.trim()) : null;
+	if (days === null || days > 365) throw new Error('Enter the days before arrival as 0 to 365.');
+	return { kind: draft.kind, value, due: { type: 'days_before_arrival', days } };
 }

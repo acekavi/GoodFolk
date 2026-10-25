@@ -8,7 +8,7 @@ import {
 	percentToBp,
 	rulePeriods,
 	seesFxBanner,
-	settingsAccess,
+	settingsIndex,
 	type TaxRule
 } from './settings';
 
@@ -86,40 +86,45 @@ describe('isValidRate', () => {
 	});
 });
 
-describe('settingsAccess', () => {
-	const pages = (grants: Profile['grants']) =>
-		settingsAccess(profile(grants), 'p1').map(
-			({ page, edit }) => `${page}:${edit ? 'edit' : 'view'}`
+describe('settingsIndex', () => {
+	const index = (grants: Profile['grants']) =>
+		settingsIndex(profile(grants), 'p1').map(
+			({ group, links }) => `${group}: ${links.map((entry) => entry.label).join(', ')}`
 		);
 
-	it('lets the owner change taxes, outlets, exchange rates and laundry prices', () => {
-		expect(pages([{ role: 'owner' }])).toEqual([
-			'taxes:edit',
-			'outlets:edit',
-			'exchange-rates:edit',
-			'laundry-prices:edit'
+	it('shows the owner every group and page, in the order the spec lists them', () => {
+		expect(index([{ role: 'owner' }])).toEqual([
+			'Property: General, Taxes and invoices, Currencies and exchange rates',
+			'Operations: Sections, Block reasons, Outlets, Laundry prices',
+			'Rates: Cancellation policies',
+			'Staff: Staff, Permissions'
 		]);
+		expect(settingsIndex(profile([{ role: 'owner' }]), 'p1')[2].links[0].link).toBe(
+			'cancellation-policies'
+		);
 	});
 
-	it('lets a manager set exchange rates and laundry prices and only read taxes and outlets', () => {
-		expect(pages([{ role: 'manager', property_id: 'p1' }])).toEqual([
-			'taxes:view',
-			'outlets:view',
-			'exchange-rates:edit',
-			'laundry-prices:edit'
-		]);
+	it('shows a manager the same pages at their property', () => {
+		expect(index([{ role: 'manager', property_id: 'p1' }])).toEqual(index([{ role: 'owner' }]));
 	});
 
-	it('shows front desk and accountants every page read-only', () => {
+	it('shows a manager elsewhere only Staff and Permissions here', () => {
+		expect(index([{ role: 'manager', property_id: 'p2' }])).toEqual(['Staff: Staff, Permissions']);
+	});
+
+	it('shows front desk and accountants the pages they read, without Staff', () => {
 		for (const role of ['front_desk', 'accountant'] as const) {
-			expect(pages([{ role }])).toEqual(['taxes:view', 'outlets:view', 'exchange-rates:view']);
+			expect(index([{ role }])).toEqual([
+				'Property: Taxes and invoices, Currencies and exchange rates',
+				'Operations: Outlets',
+				'Staff: Permissions'
+			]);
 		}
 	});
 
-	it('shows nothing without FolioView, or at another property', () => {
-		expect(pages([{ role: 'housekeeping' }])).toEqual([]);
-		expect(pages([{ role: 'hk_supervisor' }])).toEqual([]);
-		expect(pages([{ role: 'owner', property_id: 'p2' }])).toEqual([]);
+	it('shows housekeeping only the permissions', () => {
+		expect(index([{ role: 'housekeeping' }])).toEqual(['Staff: Permissions']);
+		expect(index([{ role: 'hk_supervisor', property_id: 'p1' }])).toEqual(['Staff: Permissions']);
 	});
 });
 

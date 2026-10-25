@@ -1,5 +1,5 @@
 <!--
-	The night audit of the property's business date: the five review lists, the row actions that resolve each
+	The night audit of the property's business date: the five review lists and the advisory Deposits outstanding, the row actions that resolve each
 	arrival and departure (confirmed in `AuditActionDialog`; Cancel opens the reservation and its own cancel), and
 	Close the day once nothing is left to resolve. The close runs in the background: the step tracker follows the
 	run, which the server's `audit:<property>` events refetch, and the review reloads for the new date when it
@@ -402,6 +402,33 @@
 				</table>
 			</div>
 		{/each}
+	</section>
+
+	<section aria-labelledby="deposits">
+		<h2 id="deposits">Deposits outstanding ({data.depositsOutstanding.length})</h2>
+		<p class="hint">Advisory: these never block the close.</p>
+		{#if data.depositsOutstanding.length === 0}
+			<p class="hint">No deposit past its due date is still owed.</p>
+		{:else}
+			<div class="scroll">
+				<table>
+					<thead>
+						<tr><th>Guest</th><th>Booking</th><th>Arrival</th><th>Due</th><th>Paid</th></tr>
+					</thead>
+					<tbody>
+						{#each data.depositsOutstanding as row (`${row.reservationId}/${row.currency}`)}
+							<tr>
+								<td>{row.guest}</td>
+								<td>{row.confirmation}</td>
+								<td>{row.arrival}</td>
+								<td>{money(row.due, row.currency)} by {row.dueDate}</td>
+								<td>{money(row.paid, row.currency)}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		{/if}
 	</section>
 
 	<AuditActionDialog {propertyId} businessDate={data.businessDate} bind:action ondone={done} />

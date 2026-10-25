@@ -4,7 +4,7 @@
 	import { createQuery } from '@tanstack/svelte-query';
 	import { can, fetchMe } from '$lib/session';
 	import { fetchOpsAlerts, opsAlertLabel, opsAlertsKey, seesOpsAlerts } from '$lib/night-audit';
-	import { fetchFxAlert, fxAlertKey, seesFxBanner, settingsAccess } from '$lib/settings';
+	import { fetchFxAlert, fxAlertKey, seesFxBanner, settingsIndex } from '$lib/settings';
 
 	let { children } = $props();
 
@@ -42,14 +42,9 @@
 		{ href: resolve('/(app)/p/[property]/rates', { property }), label: 'Rates' },
 		{ href: resolve('/(app)/p/[property]/meal-plans', { property }), label: 'Meal plans' }
 	]);
-	const settingsLinks = $derived(
-		me.data
-			? settingsAccess(me.data, property).map((entry) => ({
-					href: resolve(`/(app)/p/[property]/settings/${entry.page}`, { property }),
-					label: entry.label
-				}))
-			: []
-	);
+	// The Settings index lists each settings page the user may open; the link shows when there is one.
+	const seesSettings = $derived(!!me.data && settingsIndex(me.data, property).length > 0);
+	const settings = $derived(resolve('/(app)/p/[property]/settings', { property }));
 
 	// Owners and managers, who can set a rate by hand, see why the last import left rates missing or stale.
 	const fxBanner = $derived(!!me.data && seesFxBanner(me.data, property));
@@ -79,13 +74,12 @@
 			>{link.label}</a
 		>
 	{/each}
-	{#if settingsLinks.length > 0}
-		<span class="group" aria-hidden="true">Settings:</span>
-		{#each settingsLinks as link (link.href)}
-			<a href={link.href} aria-current={page.url.pathname === link.href ? 'page' : undefined}
-				>{link.label}</a
-			>
-		{/each}
+	{#if seesSettings}
+		<a
+			class="group"
+			href={settings}
+			aria-current={page.url.pathname.startsWith(settings) ? 'page' : undefined}>Settings</a
+		>
 	{/if}
 </nav>
 <!-- The Exchange rates page shows the alert itself. -->
@@ -120,7 +114,6 @@
 		font-weight: 600;
 	}
 	.group {
-		color: var(--muted);
 		padding-left: var(--space);
 		border-left: 1px solid var(--border);
 	}

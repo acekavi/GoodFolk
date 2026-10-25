@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	batcher,
+	depositAmount,
+	depositDraft,
+	depositDueDate,
+	depositRuleBody,
+	depositText,
+	describeDepositRule,
 	descendants,
 	formatMoney,
 	formula,
@@ -30,6 +36,7 @@ const plan = (overrides: Partial<RatePlan> = {}): RatePlan => ({
 	inheritRestrictions: false,
 	allowedMealPlans: ['RO'],
 	cancellationPolicyId: null,
+	depositRule: null,
 	roomTypeIds: ['dlx'],
 	active: true,
 	version: 1,
@@ -278,5 +285,105 @@ describe('batcher', () => {
 		await batch.flush();
 
 		expect(calls).toEqual([['a=1'], ['b=2']]);
+	});
+});
+
+describe('deposits', () => {
+	// Three nights: rooms 10000, 12000 and 14000, meals 1000 each (39000 in all), as the server's tests.
+	const nights = [0, 1, 2].map((n) => ({ room: 10_000 + 2_000 * n, meal: 1_000 }));
+
+	it('prices a percent deposit as basis points of the total, rounded half up, capped', () => {
+		expect(depositAmount({ kind: 'PERCENT', value: 3_000 }, nights)).toBe(11_700);
+		expect(depositAmount({ kind: 'PERCENT', value: 3 }, nights)).toBe(12);
+		expect(depositAmount({ kind: 'PERCENT', value: 10_000 }, nights)).toBe(39_000);
+	});
+
+	it("prices a nights deposit as the first nights' room amounts, without meals, capped", () => {
+		expect(depositAmount({ kind: 'NIGHTS', value: 1 }, nights)).toBe(10_000);
+		expect(depositAmount({ kind: 'NIGHTS', value: 2 }, nights)).toBe(22_000);
+		expect(depositAmount({ kind: 'NIGHTS', value: 30 }, nights)).toBe(36_000);
+	});
+
+	it("caps an amount deposit at the stay's total", () => {
+		expect(depositAmount({ kind: 'AMOUNT', value: 25_000 }, nights)).toBe(25_000);
+		expect(depositAmount({ kind: 'AMOUNT', value: 100_000 }, nights)).toBe(39_000);
+	});
+
+	it('is due at booking or N days before arrival', () => {
+		expect(
+			depositDueDate({ due: 'AT_BOOKING', daysBeforeArrival: null }, '2026-10-01', '2026-10-10')
+		).toBe('2026-10-01');
+		expect(
+			depositDueDate(
+				{ due: 'DAYS_BEFORE_ARRIVAL', daysBeforeArrival: 14 },
+				'2026-10-01',
+				'2026-10-10'
+			)
+		).toBe('2026-09-26');
+	});
+
+	it('reads as the review step shows it', () => {
+		expect(depositText(5_000, 'USD', '2026-10-25')).toBe('Deposit due USD 50.00 by 2026-10-25');
+		expect(depositText(1_500_000, 'LKR', '2026-10-25')).toBe(
+			'Deposit due LKR 15,000.00 by 2026-10-25'
+		);
+	});
+
+	it('describes a rule in words', () => {
+		expect(
+			describeDepositRule(
+				{ kind: 'PERCENT', value: 5_000, due: 'AT_BOOKING', daysBeforeArrival: null },
+				'USD'
+			)
+		).toBe('50% of the stay, at booking');
+		expect(
+			describeDepositRule(
+				{ kind: 'NIGHTS', value: 1, due: 'DAYS_BEFORE_ARRIVAL', daysBeforeArrival: 7 },
+				'USD'
+			)
+		).toBe('1 night, 7 days before arrival');
+		expect(
+			describeDepositRule(
+				{ kind: 'AMOUNT', value: 10_000, due: 'DAYS_BEFORE_ARRIVAL', daysBeforeArrival: 1 },
+				'USD'
+			)
+		).toBe('USD 100.00, 1 day before arrival');
+	});
+
+	it('turns the form into the API rule, and back', () => {
+		const draft = { kind: 'percent', value: '50', due: 'at_booking', days: '' } as const;
+		expect(depositRuleBody(draft, 'USD')).toEqual({
+			kind: 'percent',
+			value: 5_000,
+			due: { type: 'at_booking' }
+		});
+		expect(
+			depositRuleBody(
+				{ kind: 'amount', value: '100.50', due: 'days_before_arrival', days: '0' },
+				'USD'
+			)
+		).toEqual({ kind: 'amount', value: 10_050, due: { type: 'days_before_arrival', days: 0 } });
+		expect(depositRuleBody({ ...draft, kind: '' }, 'USD')).toBeNull();
+		expect(
+			depositDraft(
+				{ kind: 'AMOUNT', value: 10_050, due: 'DAYS_BEFORE_ARRIVAL', daysBeforeArrival: 3 },
+				'USD'
+			)
+		).toEqual({ kind: 'amount', value: '100.50', due: 'days_before_arrival', days: '3' });
+		expect(depositDraft(null, 'USD').kind).toBe('');
+	});
+
+	it('refuses values out of the range the server takes', () => {
+		const at = (kind: 'percent' | 'nights' | 'amount', value: string) => () =>
+			depositRuleBody({ kind, value, due: 'at_booking', days: '' }, 'USD');
+		for (const value of ['0', '100.01', 'half']) expect(at('percent', value)).toThrow();
+		for (const value of ['0', '31', '1.5']) expect(at('nights', value)).toThrow();
+		for (const value of ['0', '-1', 'ten']) expect(at('amount', value)).toThrow();
+		expect(() =>
+			depositRuleBody(
+				{ kind: 'nights', value: '1', due: 'days_before_arrival', days: '366' },
+				'USD'
+			)
+		).toThrow();
 	});
 });

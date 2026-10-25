@@ -216,6 +216,25 @@ export const ReservationDocument = graphql(`
 	}
 `);
 
+/**
+ * The reservation modal's deposit: what the rooms' booked deposit rules ask for, per currency, and what the deposit
+ * folio has received. Its own query, so the validated `ReservationDocument` stays as it is.
+ */
+export const ReservationDepositDocument = graphql(`
+	query ReservationDeposit($p: UUID!, $id: UUID!) {
+		reservation(propertyId: $p, id: $id) {
+			id
+			depositDue {
+				currency
+				amount
+				dueDate
+				paid
+				outstanding
+			}
+		}
+	}
+`);
+
 /** Guest search for the new-reservation screen and the assign picker's "book for a new guest" step. */
 export const GuestsDocument = graphql(`
 	query Guests($propertyId: UUID!, $search: String, $first: Int) {
@@ -317,6 +336,11 @@ export function reservationKey(id: string) {
 	return [`reservation:${id}`] as const;
 }
 
+/** Under `reservation:<id>`; `events.ts` also refetches it when one of the reservation's folios changes. */
+export function reservationDepositKey(id: string) {
+	return [...reservationKey(id), 'deposit'] as const;
+}
+
 /**
  * Query key for the assign picker's free rooms of one type for one stay. Not named by any server event;
  * `freeRoomsKey(propertyId)` alone is the prefix of every such key, for invalidating them all after a room
@@ -393,6 +417,15 @@ export async function fetchReservations(
 /** One reservation with its rooms and history. */
 export async function fetchReservation(propertyId: string, id: string, signal?: AbortSignal) {
 	return (await query(ReservationDocument, { p: propertyId, id }, signal)).reservation;
+}
+
+export async function fetchReservationDeposit(
+	propertyId: string,
+	id: string,
+	signal?: AbortSignal
+) {
+	return (await query(ReservationDepositDocument, { p: propertyId, id }, signal)).reservation
+		.depositDue;
 }
 
 /** Guests whose name is like `search`, typos included, or whose email/phone matches it exactly. */

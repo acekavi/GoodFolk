@@ -81,3 +81,9 @@ export function can(profile: Profile, action: keyof typeof ACTIONS, propertyId: 
 			roles.includes(grant.role) && (grant.property_id == null || grant.property_id === propertyId)
 	);
 }
+
+/** UI hint only; the API enforces permissions. Whether some grant, at any property or tenant-wide, allows `action`. */
+export function canAnywhere(profile: Profile, action: keyof typeof ACTIONS): boolean {
+	const roles: Role[] = ACTIONS[action];
+	return profile.grants.some((grant) => roles.includes(grant.role));
+}
