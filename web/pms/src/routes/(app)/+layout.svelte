@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { goto } from '$app/navigation';
+	import { onDestroy } from 'svelte';
 	import { page } from '$app/state';
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { rest } from '$lib/api/rest';
 	import { ApiError, errorMessage, toApiError } from '$lib/api/problem';
+	import { onUnauthorized } from '$lib/api/unauthorized';
 	import { connectEvents } from '$lib/events';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
 	import { wipeDevice } from '$lib/hk-sync.svelte';
@@ -20,15 +22,27 @@
 		enabled: !!me.data?.current_tenant
 	}));
 
-	$effect(() => {
-		if (me.error instanceof ApiError && me.error.status === 401) void goto(resolve('/login'));
-	});
+	let signingOut = false;
+	/** Ends the tab's session as signing out does: clears the caches, wipes the device and goes to sign-in. */
+	async function signOutTab() {
+		if (signingOut) return;
+		signingOut = true;
+		// Read the owner first: clearing the cache empties `me`, and the wipe needs to know whose data to remove.
+		const owner = me.data ? ownerOf(me.data) : null;
+		client.clear();
+		if (owner) await wipeDevice(owner);
+		await goto(resolve('/login'));
+	}
+
+	// A 401 from any API call means the session has ended (the member was removed, or it expired).
+	onDestroy(onUnauthorized(() => void signOutTab()));
 
 	// Connected while signed in. A boolean, so refetching the profile (every event resync does) doesn't
-	// reconnect: a reconnect resyncs, which would refetch the profile again, in a loop.
+	// reconnect: a reconnect resyncs, which would refetch the profile again, in a loop. A stream the browser gave up
+	// on may mean the session ended while the tab was idle, so the profile is checked: a 401 signs the tab out.
 	const signedIn = $derived(!!me.data);
 	$effect(() => {
-		if (signedIn) return connectEvents(client);
+		if (signedIn) return connectEvents(client, undefined, () => void me.refetch());
 	});
 
 	let actionError = $state('');
@@ -74,11 +88,7 @@
 				actionError = toApiError(problem, response.status).message;
 				return;
 			}
-			// Read the owner first: clearing the cache empties `me`, and the wipe needs to know whose data to remove.
-			const owner = me.data ? ownerOf(me.data) : null;
-			client.clear();
-			if (owner) await wipeDevice(owner);
-			await goto(resolve('/login'));
+			await signOutTab();
 		} catch (err) {
 			actionError = errorMessage(err);
 		} finally {

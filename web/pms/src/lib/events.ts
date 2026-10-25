@@ -98,8 +98,15 @@ function invalidateLinen(client: QueryClient, propertyId: string): void {
 	void client.invalidateQueries({ queryKey: opsAlertsKey(propertyId) });
 }
 
-/** Keeps the cache fresh while the app is open. Returns a function that disconnects. */
-export function connectEvents(client: QueryClient, propertyId?: string): () => void {
+/**
+ * Keeps the cache fresh while the app is open. Returns a function that disconnects. `onClosed` runs when the
+ * browser gives up on the stream, which it does when a reconnect is refused (a `401` once the session has ended).
+ */
+export function connectEvents(
+	client: QueryClient,
+	propertyId?: string,
+	onClosed?: () => void
+): () => void {
 	const url = propertyId
 		? `/api/v1/events?property=${encodeURIComponent(propertyId)}`
 		: '/api/v1/events';
@@ -111,5 +118,8 @@ export function connectEvents(client: QueryClient, propertyId?: string): () => v
 	}
 	// EventSource reconnects by itself; anything missed while disconnected is refetched on reconnect.
 	source.addEventListener('open', () => applyEvent(client, 'resync', '{}'));
+	source.addEventListener('error', () => {
+		if (source.readyState === EventSource.CLOSED) onClosed?.();
+	});
 	return () => source.close();
 }

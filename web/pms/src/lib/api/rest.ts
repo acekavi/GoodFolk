@@ -1,11 +1,17 @@
 import createClient from 'openapi-fetch';
 import type { paths } from './openapi';
 import { ApiError, toApiError } from './problem';
+import { reportStatus } from './unauthorized';
 
 /** REST client for commands. Same origin, so the session cookie is sent automatically. */
 export const rest = createClient<paths>({
 	baseUrl: '',
 	headers: { 'x-goodfolk-csrf': '1' }
+});
+rest.use({
+	onResponse({ response }) {
+		reportStatus(response.status);
+	}
 });
 
 /** A fresh key per user action; reuse it only when retrying that same action. */

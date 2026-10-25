@@ -1,11 +1,11 @@
-use crate::auth::{TenantContext, holds_somewhere};
+use crate::auth::{Authenticated, TenantContext, holds_somewhere};
 use crate::extract::ApiQuery;
 use crate::state::AppState;
 use axum::extract::State;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
-use db::Event;
+use db::{Event, TenantId};
 use futures::Stream;
-use identity::{Permission, allows};
+use identity::{Grant, Permission, TenantAccess, allows, resolve_tenant_access};
 use serde::Deserialize;
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
@@ -134,46 +134,106 @@ pub struct EventsQuery {
     pub property: Option<Uuid>,
 }
 
+/// One open stream: whose it is and what they may hear.
+struct Watch {
+    pool: PgPool,
+    /// The stream's session, looked up again when the tenant's staff change.
+    token: String,
+    tenant: TenantId,
+    grants: Vec<Grant>,
+    property: Option<Uuid>,
+    staff_key: String,
+}
+
+impl Watch {
+    /// Reloads the session's access after a staff change. False when the session no longer reaches this tenant as a
+    /// member (removed, signed out, switched to another tenant) or cannot be checked, and the stream should end.
+    async fn refresh(&mut self) -> bool {
+        match resolve_tenant_access(&self.pool, &self.token).await {
+            Ok(TenantAccess::Member { tenant, grants, .. }) if tenant == self.tenant => {
+                self.grants = grants;
+                true
+            }
+            Ok(_) => false,
+            Err(err) => {
+                tracing::warn!(error = %err, "could not recheck a stream's session after a staff change; ending it");
+                false
+            }
+        }
+    }
+
+    /// The `invalidate` event for `event`'s keys this stream may hear, if any.
+    fn invalidation(&self, event: &Event) -> Option<SseEvent> {
+        let grants = &self.grants;
+        let relevant = event.tenant_id == self.tenant
+            && (event.property_id.is_none() || self.property.is_none() || event.property_id == self.property);
+        // Folio and exchange-rate keys name money: only those who may view the property's folios hear of them.
+        // The night audit's keys go to those who run it and to those who may view the folios it closes.
+        let folio_viewer = allows(grants, Permission::FolioView, event.property_id);
+        let auditor = folio_viewer || allows(grants, Permission::NightAudit, event.property_id);
+        // Linen keys go to those who may view the linen, and guest laundry keys to those who take the orders.
+        let linen_viewer = allows(grants, Permission::LinenView, event.property_id);
+        let laundry_taker = allows(grants, Permission::LaundryOrders, event.property_id);
+        // Staff keys name who works where: only those who manage staff, at any property, hear of them.
+        let staff_manager = holds_somewhere(grants, Permission::StaffManage);
+        let keys: Vec<&String> = event
+            .keys
+            .iter()
+            .filter(|key| {
+                (folio_viewer || !is_money_key(key))
+                    && (auditor || !is_audit_key(key))
+                    && (linen_viewer || !is_linen_key(key))
+                    && (laundry_taker || !is_laundry_key(key))
+                    && (staff_manager || !is_staff_key(key))
+            })
+            .collect();
+        (relevant && !keys.is_empty())
+            .then(|| SseEvent::default().event("invalidate").json_data(&keys).expect("keys serialize"))
+    }
+}
+
 /// `ready` is sent immediately so proxies that hold headers until the first bytes forward the stream.
 /// `invalidate` events carry the cache keys that changed. `resync` means events were missed and
 /// the client should refetch everything on screen.
+///
+/// A change to the tenant's staff (`staff:<tenant>`) rechecks the stream's session first: a member who was removed
+/// (or whose session ended) has the stream ended, so the client's reconnect gets the `401`, and one whose grants
+/// changed hears the following keys under the new grants. The recheck runs in the stream, not in the listener, so
+/// one slow lookup never holds up another stream.
 pub async fn stream(
     State(state): State<AppState>,
     ctx: TenantContext,
+    auth: Authenticated,
     ApiQuery(query): ApiQuery<EventsQuery>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    let tenant = ctx.tenant;
-    let grants = ctx.grants;
-    // Staff keys name who works where: only those who manage staff, at any property, hear of them.
-    let staff_manager = holds_somewhere(&grants, Permission::StaffManage);
+    let watch = Watch {
+        pool: state.pool.clone(),
+        token: auth.token,
+        tenant: ctx.tenant,
+        grants: ctx.grants,
+        property: query.property,
+        staff_key: identity::staff_key(ctx.tenant),
+    };
     let ready = tokio_stream::once(Ok(SseEvent::default().event("ready").data("{}")));
-    let updates = BroadcastStream::new(state.events.subscribe()).filter_map(move |item| match item {
-        Ok(LiveEvent::Invalidate(event)) => {
-            let relevant = event.tenant_id == tenant
-                && (event.property_id.is_none() || query.property.is_none() || event.property_id == query.property);
-            // Folio and exchange-rate keys name money: only those who may view the property's folios hear of them.
-            // The night audit's keys go to those who run it and to those who may view the folios it closes.
-            let folio_viewer = allows(&grants, Permission::FolioView, event.property_id);
-            let auditor = folio_viewer || allows(&grants, Permission::NightAudit, event.property_id);
-            // Linen keys go to those who may view the linen, and guest laundry keys to those who take the orders.
-            let linen_viewer = allows(&grants, Permission::LinenView, event.property_id);
-            let laundry_taker = allows(&grants, Permission::LaundryOrders, event.property_id);
-            let keys: Vec<&String> = event
-                .keys
-                .iter()
-                .filter(|key| {
-                    (folio_viewer || !is_money_key(key))
-                        && (auditor || !is_audit_key(key))
-                        && (linen_viewer || !is_linen_key(key))
-                        && (laundry_taker || !is_laundry_key(key))
-                        && (staff_manager || !is_staff_key(key))
-                })
-                .collect();
-            (relevant && !keys.is_empty())
-                .then(|| Ok(SseEvent::default().event("invalidate").json_data(&keys).expect("keys serialize")))
-        }
-        Ok(LiveEvent::Resync) | Err(BroadcastStreamRecvError::Lagged(_)) => {
-            Some(Ok(SseEvent::default().event("resync").data("{}")))
+    let events = BroadcastStream::new(state.events.subscribe());
+    let updates = futures::stream::unfold((events, watch), |(mut events, mut watch)| async move {
+        loop {
+            match events.next().await? {
+                Ok(LiveEvent::Invalidate(event)) => {
+                    if event.tenant_id == watch.tenant
+                        && event.keys.contains(&watch.staff_key)
+                        && !watch.refresh().await
+                    {
+                        return None;
+                    }
+                    if let Some(invalidate) = watch.invalidation(&event) {
+                        return Some((Ok(invalidate), (events, watch)));
+                    }
+                }
+                Ok(LiveEvent::Resync) | Err(BroadcastStreamRecvError::Lagged(_)) => {
+                    return Some((Ok(SseEvent::default().event("resync").data("{}")), (events, watch)));
+                }
+            }
         }
     });
     Sse::new(ready.chain(updates)).keep_alive(KeepAlive::default())

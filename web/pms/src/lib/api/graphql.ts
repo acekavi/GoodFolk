@@ -1,5 +1,6 @@
 import type { TypedDocumentString } from './gql/graphql';
 import { ApiError, toApiError } from './problem';
+import { reportStatus } from './unauthorized';
 
 interface GraphQLResult<T> {
 	data?: T;
@@ -25,6 +26,7 @@ export async function query<TResult, TVariables>(
 		}),
 		signal
 	});
+	reportStatus(response.status);
 	// A proxy in front of the API (502, 504) answers with an HTML page, not JSON.
 	if (!response.headers.get('content-type')?.includes('json')) {
 		throw toApiError(undefined, response.status);

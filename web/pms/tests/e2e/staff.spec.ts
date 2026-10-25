@@ -43,7 +43,6 @@ test('an owner invites a front-desk clerk, who accepts from the emailed link; re
 	await expect(nav.getByRole('link', { name: 'Night audit' })).toBeVisible();
 	await clerkPage.goto('/settings/staff');
 	await expect(clerkPage.getByText('Only owners and managers manage staff.')).toBeVisible();
-	await clerkPage.goBack();
 
 	// The link is single use.
 	const again = await context.newPage();
@@ -54,12 +53,11 @@ test('an owner invites a front-desk clerk, who accepts from the emailed link; re
 	await expect(page.getByRole('table', { name: 'Members' })).toContainText(clerk);
 	await expect(invitations).toBeHidden();
 
-	// Removing the clerk ends their sessions: the open page's next request is a 401. The page keeps its cached
-	// profile for 30 seconds, so the request is the reload's session check, which sends it to the sign-in page.
+	// Removing the clerk ends their sessions. The idle page signs itself out: the server ends its event stream, the
+	// browser's reconnect is refused with a 401, and the page's profile check then sends it to the sign-in page.
 	page.once('dialog', (dialog) => dialog.accept());
 	await page.getByRole('button', { name: 'Remove Kasun Fernando' }).click();
 	await expect(page.getByRole('status')).toContainText('Kasun Fernando has been removed.');
-	await clerkPage.reload();
 	await expect(clerkPage).toHaveURL(/\/login/);
 	await context.close();
 });
