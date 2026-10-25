@@ -118,7 +118,7 @@ async fn sweep_deletes_expired_documents_and_orphans(_: PgPoolOptions, opts: PgC
     assert_eq!(hotel.documents_of(guest).await, 0);
     let prefix = |asset: Uuid| format!("t/{}/a/{asset}", hotel.tenant.0);
     let keys = |asset: Uuid| {
-        ["upload", "archive.jxl", "thumb.avif", "thumb.webp", "md.avif", "md.webp", "ready"]
+        ["upload", "archive.jxl", "thumb.avif", "thumb.webp", "md.avif", "md.webp"]
             .map(|name| format!("{}/{name}", prefix(asset)))
             .to_vec()
     };

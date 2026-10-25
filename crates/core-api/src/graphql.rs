@@ -354,7 +354,11 @@ pub struct MediaNode {
 fn video_mime(format: media_types::Format) -> &'static str {
     match format {
         media_types::Format::Av1 => r#"video/mp4; codecs="av01.0.08M.10, opus""#,
-        _ => r#"video/mp4; codecs="avc1.640028, mp4a.40.2""#,
+        media_types::Format::H264 => r#"video/mp4; codecs="avc1.640028, mp4a.40.2""#,
+        // `media_parts` passes only video formats.
+        media_types::Format::Avif | media_types::Format::Webp | media_types::Format::Pdf => {
+            unreachable!("not a video format")
+        }
     }
 }
 

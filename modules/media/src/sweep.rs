@@ -223,14 +223,14 @@ async fn delete_orphan(
     .fetch_optional(&mut **tx)
     .await?;
     Ok(deleted.map(|row| {
-        // A video's archive is its upload, listed once; any asset may have the marker, which media-svc keeps in the
+        // A video's archive is its upload, listed once; only a video has the `ready` marker media-svc keeps in the
         // private bucket.
         let upload = storage::upload_key(tenant.0, asset);
         let archive = row.archive_key.filter(|key| *key != upload);
         let keys = std::iter::once(upload)
             .chain(archive)
             .chain(row.renditions.into_iter().map(|r| r.key))
-            .chain([storage::ready_marker_key(tenant.0, asset)])
+            .chain((row.purpose == Purpose::GalleryVideo).then(|| storage::ready_marker_key(tenant.0, asset)))
             .collect();
         (row.purpose, keys)
     }))

@@ -33,7 +33,10 @@ async fn graphql(app: &TestApp, cookie: &str, query: &str, variables: Value) -> 
 
 const GALLERY: &str = "query ($p: UUID!) {
     roomTypes(propertyId: $p) {
-        id media { assetId status error caption width height renditions { size format width height url } }
+        id media {
+            assetId status error caption width height kind durationMs sources { url }
+            renditions { size format width height url }
+        }
     }
 }";
 const GALLERY_VIDEOS: &str = "query ($p: UUID!) {
@@ -560,6 +563,10 @@ async fn gallery_order_caption_and_removal(_: PgPoolOptions, opts: PgConnectOpti
     let gallery = body["data"]["roomTypes"][0]["media"].as_array().unwrap().clone();
     assert_eq!(gallery.iter().map(|m| m["assetId"].clone()).collect::<Vec<_>>(), [json!(photos[1]), json!(photos[0])]);
     assert_eq!((gallery[0]["caption"].clone(), gallery[1]["caption"].clone()), (Value::Null, json!("Sea view")));
+    assert_eq!(
+        (gallery[0]["kind"].clone(), gallery[0]["durationMs"].clone(), gallery[0]["sources"].clone()),
+        (json!("IMAGE"), Value::Null, json!([]))
+    );
     let url = gallery[0]["renditions"][0]["url"].as_str().unwrap();
     assert_eq!(url, storage.public_url(&storage::rendition_key(hotel.tenant, photos[1], "thumb", "webp")).as_str());
 
