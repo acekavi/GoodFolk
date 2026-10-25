@@ -17,6 +17,12 @@ const AUDIO_BITRATE: &str = "128k";
 const MAX_FPS: f64 = 30.0;
 /// The shortest long edge that gets a 1080p rendition.
 const V1080_FROM: u32 = 1600;
+/// Where every encode and the poster run stop reading the source: the 60 s limit plus a second. The limit is checked
+/// against the length the container declares, which a file can understate; this bounds the work whatever it says.
+const READ_LIMIT: &str = "61";
+/// The longest a rendition may run. An honest clip's streams end within a few frames of its declared length, while
+/// one that ran on is cut at [`READ_LIMIT`], so the line sits halfway between the two.
+const MAX_OUTPUT_MS: u32 = probe::MAX_DURATION_MS + 500;
 /// A PNG of a 3840x2160 RGB frame is about 25 MB at worst.
 const MAX_POSTER: u64 = 64 * 1024 * 1024;
 
@@ -116,6 +122,11 @@ pub(crate) fn failed(ran: &run::Ran) -> VideoError {
     VideoError::Tool(format!("ffmpeg exited with {}: {}", ran.status, ran.stderr()))
 }
 
+/// The source as an input that is read for at most [`READ_LIMIT`] seconds.
+fn source(command: &mut Command, input: &Path) {
+    command.args(["-t", READ_LIMIT]).args(run::input(input));
+}
+
 fn strings<const N: usize>(args: [&str; N]) -> impl Iterator<Item = OsString> {
     args.into_iter().map(OsString::from)
 }
@@ -168,7 +179,9 @@ fn encode_size(
     let path = |format: Format| out_dir.join(format!("{}.{}", size.as_str(), format.as_str()));
     let graph = format!("[0:{}]{},split=2[av1][h264]", probe.video_stream, filter_chain(probe, width, height));
     let mut command = ffmpeg();
-    command.arg("-y").arg("-i").arg(run::file_input(input)).args(["-filter_complex", &graph]);
+    command.arg("-y");
+    source(&mut command, input);
+    command.args(["-filter_complex", &graph]);
     command.args(output(probe, opts, size, Format::Av1, "[av1]", &path(Format::Av1)));
     command.args(output(probe, opts, size, Format::H264, "[h264]", &path(Format::H264)));
     let ran = run::run(&mut command, deadline, 0)?;
@@ -182,6 +195,9 @@ fn encode_size(
             let path = path(format);
             let left = deadline.saturating_duration_since(Instant::now());
             let duration_ms = probe::probe(&path, left)?.duration_ms;
+            if duration_ms > MAX_OUTPUT_MS {
+                return Err(VideoError::Unreadable("longer than its declared duration".into()));
+            }
             Ok(Encoded { size, format, width, height, path, duration_ms })
         })
         .collect()
@@ -216,7 +232,8 @@ pub fn poster_png(input: &Path, probe: &Probe, timeout: Duration) -> Result<Vec<
     if probe.duration_ms >= 1000 {
         command.args(["-ss", "1"]);
     }
-    command.arg("-i").arg(run::file_input(input)).arg("-map").arg(format!("0:{}", probe.video_stream));
+    source(&mut command, input);
+    command.arg("-map").arg(format!("0:{}", probe.video_stream));
     command.args(["-frames:v", "1", "-vf"]);
     command.arg(format!("{},format=rgb24", bt709(probe)));
     command.args(["-c:v", "png", "-f", "image2pipe", "-"]);

@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -74,4 +75,13 @@ fn not_a_video_is_unreadable() {
 fn a_probe_past_the_timeout_is_killed() {
     let err = probe(&fixture("phone-1080p-h264.mp4"), Duration::ZERO).unwrap_err();
     assert!(matches!(err, VideoError::TimedOut), "{err:?}");
+}
+
+#[test]
+fn a_playlist_cannot_reach_past_the_file() {
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("probe-playlist.m3u8");
+    fs::write(&path, "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nhttp://127.0.0.1:9/a.ts\n#EXT-X-ENDLIST\n")
+        .unwrap();
+    let err = probe(&path, TIMEOUT).unwrap_err();
+    assert!(matches!(&err, VideoError::Unreadable(m) if m.contains("not on whitelist 'file'")), "{err:?}");
 }

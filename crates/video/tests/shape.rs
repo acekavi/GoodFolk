@@ -181,6 +181,42 @@ fn a_transcode_past_its_timeout_is_killed() {
     assert!(matches!(err, VideoError::TimedOut), "{err:?}");
 }
 
+/// A 70 s Matroska clip whose header says 10 s: encoded at test time, then its segment `Duration` (EBML ID 0x4489, an
+/// 8-byte float in milliseconds) overwritten.
+fn clip_longer_than_it_declares() -> PathBuf {
+    let dir = out_dir("lying-source");
+    let long = dir.join("long.mkv");
+    let status = Command::new(video::tools::ffmpeg())
+        .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=70"])
+        .args(["-c:v", "libopenh264", "-b:v", "300k"])
+        .arg(&long)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let mut bytes = fs::read(&long).unwrap();
+    let at = bytes.windows(3).position(|w| w == [0x44, 0x89, 0x88]).expect("a segment duration");
+    bytes[at + 3..at + 11].copy_from_slice(&10_000f64.to_be_bytes());
+    let lying = dir.join("lying.mkv");
+    fs::write(&lying, bytes).unwrap();
+    lying
+}
+
+#[test]
+fn a_clip_longer_than_it_declares_is_cut_and_refused() {
+    let input = clip_longer_than_it_declares();
+    let p = probe(&input, TIMEOUT).unwrap();
+    assert_eq!(p.duration_ms, 10_000);
+    let dir = out_dir("lying");
+    let err = transcode(&input, &p, &dir, &Options::default()).unwrap_err();
+    assert!(matches!(&err, VideoError::Unreadable(m) if m == "longer than its declared duration"), "{err:?}");
+    // Each encode stopped one second past the limit rather than running to the end of the frames.
+    for entry in fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let seconds: f64 = ffprobe(&path)["format"]["duration"].as_str().unwrap().parse().unwrap();
+        assert!(seconds <= 61.1, "{}: {seconds} s", path.display());
+    }
+}
+
 fn poster_ladder(name: &str) -> (Vec<u8>, Vec<imaging::Rendition>) {
     let input = fixture(name);
     let p = probe(&input, TIMEOUT).unwrap();

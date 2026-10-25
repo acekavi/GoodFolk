@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{run, tools};
 
-const MAX_DURATION_MS: u32 = 60_000;
+pub(crate) const MAX_DURATION_MS: u32 = 60_000;
 const MAX_LONG_SIDE: u32 = 3840;
 const MAX_SHORT_SIDE: u32 = 2160;
 const VIDEO_CODECS: [&str; 4] = ["h264", "hevc", "vp9", "av1"];
@@ -131,7 +131,7 @@ fn run_ffprobe(path: &Path, timeout: Duration) -> Result<Vec<u8>, VideoError> {
     let ran = run::run(
         Command::new(tools::ffprobe())
             .args(["-v", "error", "-print_format", "json", "-show_streams", "-show_format"])
-            .arg(run::file_input(path)),
+            .args(run::input(path)),
         Instant::now() + timeout,
         MAX_STDOUT,
     )?;

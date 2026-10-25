@@ -50,7 +50,7 @@ pub fn vmaf(reference: &Path, distorted: &Path, probe: &Probe, size_of: (u32, u3
         filter_chain(probe, width, height)
     );
     let mut command = ffmpeg();
-    command.arg("-i").arg(run::file_input(distorted)).arg("-i").arg(run::file_input(reference));
+    command.args(run::input(distorted)).args(run::input(reference));
     command.args(["-lavfi", &graph, "-f", "null", "-"]);
     let ran = run::run(&mut command, Instant::now() + TIMEOUT, MAX_LOG)?;
     if !ran.status.success() {

@@ -14,11 +14,12 @@ use crate::VideoError;
 const MAX_STDERR: u64 = 64 * 1024;
 const POLL: Duration = Duration::from_millis(10);
 
-/// `path` as an ffmpeg or ffprobe input that is always read as a file, never as a protocol (`http:`, `concat:`, ...).
-pub(crate) fn file_input(path: &Path) -> OsString {
-    let mut input = OsString::from("file:");
-    input.push(path);
-    input
+/// The arguments that open `path` as an ffmpeg or ffprobe input: always read as a file, never as a protocol (`http:`,
+/// `concat:`, ...), and nothing the file refers to (a playlist's segments, say) opened through any protocol but `file`.
+pub(crate) fn input(path: &Path) -> [OsString; 4] {
+    let mut file = OsString::from("file:");
+    file.push(path);
+    ["-protocol_whitelist".into(), "file".into(), "-i".into(), file]
 }
 
 /// What a finished child left behind.
@@ -87,4 +88,15 @@ fn drain(pipe: Option<impl Read + Send + 'static>, cap: u64) -> thread::JoinHand
         }
         (buf, over)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_input_is_a_file_that_opens_only_files() {
+        let args = input(Path::new("/tmp/clip.mp4"));
+        assert_eq!(args, ["-protocol_whitelist", "file", "-i", "file:/tmp/clip.mp4"].map(OsString::from));
+    }
 }
