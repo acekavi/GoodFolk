@@ -67,8 +67,9 @@ impl Drop for TempInput {
 }
 
 /// The linearized copy of `bytes`, or `None` when qpdf could not make one: it refused the file (exit 2), ran out of
-/// time or was killed. Exit 3 means warnings only, and the output is good. A missing qpdf is an error, as it is a
-/// broken install that would fail every upload.
+/// time or was killed. Exit 3 means warnings only, and the output is good. Output that is not a PDF counts as a
+/// failure. A qpdf that is missing or will not start is an error, as it is a broken install that would fail every
+/// upload.
 pub(crate) fn linearize(bytes: &[u8]) -> Result<Option<Vec<u8>>, ImagingError> {
     let qpdf = dir(QPDF_DIR_VAR, ".cache/goodfolk-qpdf/bin")?.join("qpdf");
     let input = TempInput::create(bytes).map_err(|e| ImagingError::Encode(format!("qpdf input file: {e}")))?;
@@ -88,7 +89,7 @@ pub(crate) fn linearize(bytes: &[u8]) -> Result<Option<Vec<u8>>, ImagingError> {
                 qpdf.display()
             )));
         }
-        Err(_) => return Ok(None),
+        Err(e) => return Err(ImagingError::Encode(format!("qpdf could not start: {e}"))),
     };
     let mut stdout = child.stdout.take().expect("stdout was piped");
     let reader = std::thread::spawn(move || {
@@ -110,7 +111,7 @@ pub(crate) fn linearize(bytes: &[u8]) -> Result<Option<Vec<u8>>, ImagingError> {
     };
     let out = reader.join().ok().and_then(Result::ok);
     Ok(match (status.and_then(|s| s.code()), out) {
-        (Some(0 | 3), Some(out)) if !out.is_empty() => Some(out),
+        (Some(0 | 3), Some(out)) if out.starts_with(b"%PDF-") => Some(out),
         _ => None,
     })
 }

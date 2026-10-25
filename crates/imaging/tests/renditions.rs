@@ -181,6 +181,8 @@ fn encrypted_pdf_is_kept_without_thumbnail() {
     let done = process(&pdf, SourceType::Pdf, Profile::GuestDocument).unwrap();
     assert_eq!(done.archive, pdf);
     assert!(images_of(&done).is_empty());
+    // qpdf cannot open it without the password ("invalid password", exit 2), so there is no linearized copy either.
+    assert!(done.renditions.is_empty());
 }
 
 #[test]

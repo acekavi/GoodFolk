@@ -2,12 +2,14 @@
 # Regenerates the derived test fixtures. Run from anywhere: sh crates/imaging/tests/fixtures/make.sh
 #
 # Needs: cargo (the generator is crates/imaging/examples/make_fixtures.rs), qpdf (for long.pdf and
-# encrypted.pdf; deploy/dev/qpdf.sh) and, only when the two downloaded sources are missing, curl and sha256sum. Nothing else; no ImageMagick, exiftool or
-# PIL. The sources are committed, so a normal checkout never downloads anything.
+# encrypted.pdf; deploy/dev/qpdf.sh) and, only when the two downloaded sources are missing, curl and
+# sha256sum. Nothing else; no ImageMagick, exiftool or PIL. The sources are committed, so a
+# normal checkout never downloads anything.
 #
 # Downloaded (CC0, see SOURCES.md): photo-12mp.jpg, photo.heic.
 # Derived: small.jpg, rotated.jpg, gps.jpg, p3.jpg, onesided.jpg, truncated.jpg, alpha.png, photo.webp,
-#          bomb.png, doc.pdf, fake.jpg, elf.png, cmyk.jpg, long.pdf, encrypted.pdf (the last two with qpdf).
+#          bomb.png, doc.pdf, fake.jpg, elf.png, cmyk.jpg, long.pdf, encrypted.pdf (the last two with
+#          qpdf).
 # elf.png is 4 KiB of fixed ELF-header-like bytes plus deterministic filler.
 # No progressive JPEG fixture: the marker walker is pinned in src/decode.rs by a hand-built stream
 # (SOF2 plus several scans), since no local tool is guaranteed to write one.

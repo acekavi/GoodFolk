@@ -353,8 +353,8 @@ async fn supervise(
 }
 
 /// The variables a worker inherits: where the JPEG XL tools, ffmpeg, qpdf and PDFium are (`JXL_BIN_DIR`,
-/// `FFMPEG_BIN_DIR`, `QPDF_BIN_DIR` and `PDFIUM_LIB_DIR`, else under `HOME`), `PATH` and `RUST_LOG`, plus the test hooks' `MEDIA_TEST_WORKER_*` in debug builds.
-/// `RAYON_NUM_THREADS` is set per worker.
+/// `FFMPEG_BIN_DIR`, `QPDF_BIN_DIR` and `PDFIUM_LIB_DIR`, else under `HOME`), `PATH` and `RUST_LOG`,
+/// plus the test hooks' `MEDIA_TEST_WORKER_*` in debug builds. `RAYON_NUM_THREADS` is set per worker.
 fn forwarded_env() -> impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)> {
     std::env::vars_os().filter(|(name, _)| {
         let Some(name) = name.to_str() else { return false };
