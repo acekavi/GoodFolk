@@ -8,9 +8,10 @@
 //! one API call this crate needs does not justify either.
 //!
 //! **The token in the outbox.** An invitation's link must carry its token, and the token is stored only as a hash, so
-//! [`MailJob::Invitation`] carries the token itself through the outbox to the sender. The outbox row is the one place
-//! it is kept, and the outbox purge deletes delivered rows. Nothing here logs a job or a message body: a send logs the
-//! recipient and the subject only, and [`MailJob`]'s `Debug` hides the token.
+//! [`MailJob::Invitation`] carries the token itself through the outbox to the sender. The undelivered outbox row is
+//! the one place it is kept: the relay drops it from the row once the row is delivered or refused (migration 0038).
+//! Nothing here logs a job or a message body: a send logs the recipient and the subject only, and [`MailJob`]'s
+//! `Debug` hides the token.
 
 mod dev;
 mod ses;

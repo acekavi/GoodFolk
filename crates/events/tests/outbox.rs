@@ -251,6 +251,39 @@ async fn a_refused_message_is_finished_with_its_error_kept(_: PgPoolOptions, opt
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_mail_sends_token_is_dropped_once_sent_or_refused(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = app_pool(opts.clone(), 4).await;
+    let owner = PgPool::connect_with(opts).await.unwrap();
+    let job = |token: &str| json!({"Invitation": {"invitation_id": "i1", "tenant_id": "t1", "token": token}});
+    let sent = enqueue_payload(&app, "mail-send", &job("sent-token")).await;
+    let mut refused_job = job("refused-token");
+    refused_job["refuse"] = json!(true);
+    let refused = enqueue_payload(&app, "mail-send", &refused_job).await;
+    // Another topic keeps its payload whole, even one shaped like a mail job.
+    let other = enqueue_payload(&app, "media-process", &job("other-token")).await;
+
+    let bus = Arc::new(MemoryBus::default());
+    let shutdown = CancellationToken::new();
+    let relay = tokio::spawn(run_relay(app, bus.clone(), Arc::default(), shutdown.clone()));
+    wait_for("the rows to be finished", async || count_sent(&owner).await == 3).await;
+    shutdown.cancel();
+    relay.await.unwrap();
+
+    let payload = async |id: Uuid| -> serde_json::Value {
+        sqlx::query_scalar("select payload from outbox where id = $1").bind(id).fetch_one(&owner).await.unwrap()
+    };
+    let scrubbed = json!({"Invitation": {"invitation_id": "i1", "tenant_id": "t1"}});
+    assert_eq!(payload(sent).await, scrubbed);
+    let mut refused_scrubbed = scrubbed.clone();
+    refused_scrubbed["refuse"] = json!(true);
+    assert_eq!(payload(refused).await, refused_scrubbed);
+    assert_eq!(payload(other).await, job("other-token"));
+    // The receiver was sent the token.
+    let delivered = bus.sent.lock().unwrap().iter().find(|m| m.id == sent).unwrap().payload.clone();
+    assert_eq!(delivered, job("sent-token"));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn two_relays_never_send_a_row_twice(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = app_pool(opts.clone(), 8).await;
     let owner = PgPool::connect_with(opts).await.unwrap();
