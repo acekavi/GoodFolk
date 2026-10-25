@@ -29,9 +29,12 @@ use uuid::Uuid;
 
 /// How long media-svc may take to start an upload.
 const CREATE_UPLOAD_DEADLINE: Duration = Duration::from_secs(2);
-/// How long media-svc may take to verify a completed upload (up to 25 MiB read and hashed), well inside the request
-/// timeout so the caller hears 502 rather than 504.
+/// How long media-svc may take to verify a completed photo or guest document (up to 25 MiB read and hashed), well
+/// inside the request timeout so the caller hears 502 rather than 504.
 const FINALIZE_DEADLINE: Duration = Duration::from_secs(10);
+/// How long media-svc may take to verify a completed video: up to 500 MB read, hashed and probed (the probe alone may
+/// take 15 s), well inside the complete-upload route's own request timeout.
+const VIDEO_FINALIZE_DEADLINE: Duration = Duration::from_secs(120);
 /// How long a guest document link works.
 const GUEST_DOCUMENT_LINK_TTL: Duration = Duration::from_secs(5 * 60);
 /// The most parts one upload can have.
@@ -55,6 +58,14 @@ fn upload_permission(purpose: Purpose) -> Permission {
         Purpose::Gallery | Purpose::GalleryVideo => Permission::MediaManage,
         Purpose::IssuePhoto => Permission::RoomIssuesReport,
         Purpose::GuestDocument => Permission::GuestDocumentsManage,
+    }
+}
+
+/// How long media-svc may take to verify a completed upload of `purpose`.
+fn finalize_deadline(purpose: Purpose) -> Duration {
+    match purpose {
+        Purpose::GalleryVideo => VIDEO_FINALIZE_DEADLINE,
+        Purpose::Gallery | Purpose::IssuePhoto | Purpose::GuestDocument => FINALIZE_DEADLINE,
     }
 }
 
@@ -344,9 +355,9 @@ pub async fn complete_upload(
         sha256: pending.sha256.to_vec(),
     };
     let mut client = state.media.clone();
+    let deadline = finalize_deadline(pending.purpose);
     let finalized =
-        call_media_svc(&state, request, FINALIZE_DEADLINE, |request| async move { client.finalize(request).await })
-            .await;
+        call_media_svc(&state, request, deadline, |request| async move { client.finalize(request).await }).await;
     let verified = match finalized.map(|reply| reply.result) {
         Ok(Some(Outcome::Verified(verified))) => verified,
         Ok(Some(Outcome::Refused(refused))) => {
@@ -559,7 +570,18 @@ pub async fn delete_guest_document(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_sha256;
+    use super::*;
+    use crate::routes::{COMPLETE_UPLOAD_TIMEOUT, REQUEST_TIMEOUT};
+
+    #[test]
+    fn a_video_finalize_gets_the_long_deadline_inside_its_request_timeout() {
+        assert_eq!(finalize_deadline(Purpose::GalleryVideo), VIDEO_FINALIZE_DEADLINE);
+        for purpose in [Purpose::Gallery, Purpose::IssuePhoto, Purpose::GuestDocument] {
+            assert_eq!(finalize_deadline(purpose), FINALIZE_DEADLINE, "{purpose:?}");
+        }
+        assert!(FINALIZE_DEADLINE < REQUEST_TIMEOUT);
+        assert!(VIDEO_FINALIZE_DEADLINE < COMPLETE_UPLOAD_TIMEOUT);
+    }
 
     #[test]
     fn a_sha256_is_exactly_64_hexadecimal_digits() {
