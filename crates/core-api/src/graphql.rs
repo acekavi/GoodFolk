@@ -233,12 +233,12 @@ pub struct InventoryDayNode {
 
 /// A GraphQL enum mirroring one of a module's enums, with conversions both ways.
 macro_rules! mirror_enum {
-    ($(#[$meta:meta])* $node:ident as $name:literal from $source:path { $($variant:ident),+ $(,)? }) => {
+    ($(#[$meta:meta])* $node:ident as $name:literal from $source:path { $($(#[$vmeta:meta])* $variant:ident),+ $(,)? }) => {
         $(#[$meta])*
         #[derive(Enum, Clone, Copy, PartialEq, Eq)]
         #[graphql(name = $name)]
         pub enum $node {
-            $($variant),+
+            $($(#[$vmeta])* $variant),+
         }
 
         impl From<$source> for $node {
@@ -295,7 +295,7 @@ mirror_enum!(
     /// A delivered image's size: `THUMB` is a 320 px square, the others are long edges of 640 to 2400 px.
     RenditionSizeNode as "RenditionSize" from media_types::Size { Thumb, Sm, Md, Lg, Xl, V1080, V720, Original }
 );
-mirror_enum!(ImageFormatNode as "ImageFormat" from media_types::Format { Avif, Webp, Av1, H264, Pdf });
+mirror_enum!(ImageFormatNode as "ImageFormat" from media_types::Format { Avif, Webp, #[graphql(name = "AV1")] Av1, H264, Pdf });
 mirror_enum!(DocumentKindNode as "DocumentKind" from media::DocumentKind { Passport, Nic, DrivingLicence, Other });
 
 /// One delivered image of a photo.

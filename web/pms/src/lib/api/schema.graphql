@@ -702,7 +702,7 @@ enum IdDocType {
 enum ImageFormat {
 	AVIF
 	WEBP
-	AV_1
+	AV1
 	H264
 	PDF
 }

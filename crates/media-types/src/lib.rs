@@ -350,6 +350,11 @@ mod tests {
         assert_eq!(Format::H264.as_str(), "h264.mp4");
         assert_eq!(Format::Pdf.as_str(), "pdf");
         assert_eq!(Profile::GalleryVideo.sizes(), [Size::V1080, Size::V720]);
+        // Stored renditions carry these names, so they never change.
+        let names = serde_json::to_value([Size::V1080, Size::V720, Size::Original]).unwrap();
+        assert_eq!(names, serde_json::json!(["v1080", "v720", "original"]));
+        let names = serde_json::to_value([Format::Av1, Format::H264, Format::Pdf]).unwrap();
+        assert_eq!(names, serde_json::json!(["av1", "h264", "pdf"]));
     }
 
     fn credit_note() -> InvoiceData {
