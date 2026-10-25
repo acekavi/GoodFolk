@@ -7,8 +7,9 @@
 # Route: a pinned prebuilt, not a source build. BtbN/FFmpeg-Builds' "lgpl" variant is configured without --enable-gpl
 # and --enable-nonfree (it is LGPLv3, --enable-version3) and already carries every library the video pipeline needs:
 # libsvtav1, libopenh264, libopus, libdav1d, libvmaf and libzimg. The licence test in crates/video/tests/licence.rs
-# re-checks that from `ffmpeg -buildconf`, so a repinned build that loses one fails loudly. The monthly autobuild tag
-# is pinned (BtbN keeps the first build of each month), so the URL and checksum do not rot like the rolling "latest".
+# re-checks that from `ffmpeg -buildconf`, so a repinned build that loses one fails loudly. A month's last autobuild is
+# pinned: BtbN keeps the last build of each month for two years (daily builds only 14 days), so this pin must be moved
+# to a newer monthly build before 2028-09, or the download stops working.
 #
 # The binaries land in ~/.cache/goodfolk-ffmpeg/bin, which is where the video crate looks unless FFMPEG_BIN_DIR says
 # otherwise. They link only glibc dynamically. Needs curl, sha256sum, tar and xz.

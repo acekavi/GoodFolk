@@ -18,7 +18,7 @@ root="${HOME}/.cache/goodfolk-qpdf"
 bin="$root/bin"
 
 install() {
-    if [ -x "$bin/qpdf" ]; then
+    if [ -x "$bin/qpdf" ] && [ -d "$root/lib" ]; then
         echo "qpdf $VERSION already installed in $bin"
         return
     fi
