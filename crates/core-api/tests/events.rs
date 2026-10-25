@@ -241,3 +241,85 @@ async fn a_delayed_reconnect_resyncs_again_once_events_flow(_: PgPoolOptions, op
     let received = tokio::time::timeout(Duration::from_secs(5), events.recv()).await.unwrap().unwrap();
     assert_eq!(received, LiveEvent::Invalidate(event));
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn staff_keys_reach_only_those_who_manage_staff(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    let desk = app.staff(&superuser, &owner, "desk@example.com", "front_desk").await;
+    let manager = app.staff(&superuser, &owner, "manager@example.com", "manager").await;
+    let tenant = common::uuid(&app.send(Method::GET, "/api/v1/me", Some(&owner), None).await.body["current_tenant"]);
+    let mut owners_stream = open_stream(&app, &owner).await;
+    let mut managers_stream = open_stream(&app, &manager).await;
+    let mut desks_stream = open_stream(&app, &desk).await;
+
+    let staff = identity::staff_key(TenantId(tenant));
+    let event =
+        Event { tenant_id: TenantId(tenant), property_id: None, keys: vec![staff.clone(), "properties".into()] };
+    app.state.events.send(LiveEvent::Invalidate(event)).unwrap();
+
+    let both = format!("event: invalidate\ndata: [\"{staff}\",\"properties\"]\n\n");
+    for stream in [&mut owners_stream, &mut managers_stream] {
+        let frame = tokio::time::timeout(Duration::from_secs(1), stream.frame()).await.unwrap().unwrap().unwrap();
+        assert_eq!(frame.into_data().unwrap(), both);
+    }
+    let desks = tokio::time::timeout(Duration::from_secs(1), desks_stream.frame()).await.unwrap().unwrap().unwrap();
+    assert_eq!(desks.into_data().unwrap(), "event: invalidate\ndata: [\"properties\"]\n\n");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn removing_a_member_ends_their_open_stream(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    spawn_listener(PgPool::connect_with(opts.clone()).await.unwrap(), app.state.events.clone(), Default::default())
+        .await
+        .unwrap();
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    let desk = app.staff(&superuser, &owner, "desk@example.com", "front_desk").await;
+    let user = common::uuid(&app.send(Method::GET, "/api/v1/me", Some(&desk), None).await.body["user_id"]);
+    let mut desks_stream = open_stream(&app, &desk).await;
+    let mut owners_stream = open_stream(&app, &owner).await;
+
+    let removed = app
+        .send_with(Method::DELETE, &format!("/api/v1/members/{user}"), Some(&owner), None, &[("x-goodfolk-csrf", "1")])
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
+
+    let ended = tokio::time::timeout(Duration::from_secs(5), desks_stream.frame()).await.unwrap();
+    assert!(ended.is_none(), "the removed member's stream is still open: {ended:?}");
+    let owners = tokio::time::timeout(Duration::from_secs(5), owners_stream.frame()).await.unwrap().unwrap().unwrap();
+    assert!(String::from_utf8_lossy(&owners.into_data().unwrap()).contains("staff:"));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_open_stream_follows_its_members_new_grants(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    let member = app.staff(&superuser, &owner, "kamala@example.com", "housekeeping").await;
+    let user = common::uuid(&app.send(Method::GET, "/api/v1/me", Some(&member), None).await.body["user_id"]);
+    let tenant =
+        TenantId(common::uuid(&app.send(Method::GET, "/api/v1/me", Some(&owner), None).await.body["current_tenant"]));
+    let mut stream = open_stream(&app, &member).await;
+    let staff = identity::staff_key(tenant);
+    let keys = vec![staff.clone(), "folio:f1".to_owned(), "properties".to_owned()];
+
+    for (role, heard) in [
+        ("manager", format!("[\"{staff}\",\"folio:f1\",\"properties\"]")),
+        ("housekeeping", "[\"properties\"]".to_owned()),
+    ] {
+        sqlx::query("update role_grant set role = $1 where user_id = $2 and tenant_id = $3")
+            .bind(role)
+            .bind(user)
+            .bind(tenant.0)
+            .execute(&superuser)
+            .await
+            .unwrap();
+        let event = Event { tenant_id: tenant, property_id: None, keys: keys.clone() };
+        app.state.events.send(LiveEvent::Invalidate(event)).unwrap();
+
+        let frame = tokio::time::timeout(Duration::from_secs(5), stream.frame()).await.unwrap().unwrap().unwrap();
+        assert_eq!(frame.into_data().unwrap(), format!("event: invalidate\ndata: {heard}\n\n"), "as {role}");
+    }
+}

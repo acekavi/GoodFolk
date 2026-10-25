@@ -84,6 +84,16 @@ export const NightAuditDocument = graphql(`
 				refunds
 				flagged
 			}
+			depositsOutstanding {
+				reservationId
+				confirmation
+				guest
+				arrival
+				currency
+				due
+				paid
+				dueDate
+			}
 		}
 	}
 `);

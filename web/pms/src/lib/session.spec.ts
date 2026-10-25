@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { can, isTenantOwner, type Profile } from './session';
+import { can, canAnywhere, isTenantOwner, posOnly, type Profile } from './session';
 
 function profile(grants: Profile['grants']): Profile {
 	return { user_id: 'u', email: 'a@b.lk', display_name: 'A', tenants: [], grants };
@@ -156,5 +156,26 @@ describe('can', () => {
 		expect(can(profile([{ role: 'front_desk', property_id: 'p2' }]), 'folioView', 'p1')).toBe(
 			false
 		);
+	});
+});
+
+describe('canAnywhere', () => {
+	it('counts a grant at any property', () => {
+		expect(canAnywhere(profile([{ role: 'manager', property_id: 'p2' }]), 'staffManage')).toBe(
+			true
+		);
+		expect(canAnywhere(profile([{ role: 'owner' }]), 'staffManage')).toBe(true);
+		expect(canAnywhere(profile([{ role: 'front_desk' }]), 'staffManage')).toBe(false);
+	});
+});
+
+describe('posOnly', () => {
+	it('is true only when every grant is pos', () => {
+		expect(posOnly(profile([{ role: 'pos', property_id: 'p1' }, { role: 'pos' }]))).toBe(true);
+		expect(posOnly(profile([{ role: 'pos' }, { role: 'front_desk', property_id: 'p1' }]))).toBe(
+			false
+		);
+		expect(posOnly(profile([{ role: 'owner' }]))).toBe(false);
+		expect(posOnly(profile([]))).toBe(false);
 	});
 });

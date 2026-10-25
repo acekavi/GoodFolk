@@ -21,8 +21,8 @@ Related: [ARCHITECTURE.md](../ARCHITECTURE.md) (why), [api-conventions.md](api-c
 |---|---|---|
 | `tenant` | `id`, `name` | Read policy also exposes tenants the current user belongs to (via `membership`) |
 | `app_user` | `id`, `email citext unique`, `password_hash`, `display_name` | Global identity; no RLS. Bind emails as `$1::citext` |
-| `membership` | `(tenant_id, user_id)` | Users see their own memberships in any tenant; only the current tenant can write |
-| `role_grant` | `id`, `tenant_id`, `user_id`, `property_id null`, `role` | `null` property = tenant-wide. Roles: `owner`, `manager`, `front_desk`, `housekeeping`, `accountant` |
+| `membership` | `(tenant_id, user_id)`, `version integer not null default 1` | Users see their own memberships in any tenant; only the current tenant can write. `version` (8a, `0035`) is bumped by every change to a member's grants, and `PUT /members/{user}/grants` is `If-Match` on it |
+| `role_grant` | `id`, `tenant_id`, `user_id`, `property_id null`, `role` | `null` property = tenant-wide. Roles: `owner`, `manager`, `front_desk`, `housekeeping`, `hk_supervisor`, `accountant`, `pos` (the check constraint is replaced in `0035`) |
 | `session` | `id`, `token_hash bytea unique`, `user_id`, `active_tenant_id`, `expires_at` | SHA-256 of the cookie token; no RLS (looked up before a tenant is known) |
 | `property` | `id`, `tenant_id`, `code` (unique per tenant), `name`, `timezone`, `base_currency`, `version` | Later phases add settings columns (below) |
 | `audit_log` | `id`, `tenant_id`, `actor_user_id`, `action`, `entity`, `entity_id`, `data jsonb`, `at` | Append-only (no update/delete grant) |
@@ -162,11 +162,36 @@ jobs-svc reads across tenants through definer functions only (`app.jobs_properti
 | `card_token` | `id`, `tenant_id`, `guest_id`, `provider`, `token_ref`, `card_brand`, `last4`, `expiry` | Gateway tokens only; never card numbers (7c) |
 | `merchant_account` | `id`, `tenant_id`, `property_id`, `provider`, `gateway_host`, `merchant_id`, `secret_name` (Secret Manager), `currencies char(3)[]`, `active` | Per-property credentials (7c) |
 
-## Phase 8: Settings and channels
+## Phase 8a: Staff, invitations and settings (implemented)
+
+Migrations `0035_staff_settings.sql`, `0036_owner_tenant_read_name.sql` and `0037_open_rooms.sql`.
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `invitation` | `id`, `tenant_id`, `email citext`, `grants jsonb`, `token_hash`, `expires_at`, `accepted_at null`, `invited_by` | Staff onboarding |
+| `invitation` | `id`, `tenant_id`, `email citext`, `display_name` (1–200), `grants jsonb` (an array of 1–50 `{role, property_id \| null}`), `token_hash bytea unique`, `status` (`pending` \| `accepted` \| `revoked` \| `expired`), `invited_by null`, `created_at`, `expires_at`, `accepted_at null`, `accepted_user_id null` | Tenant-owned, forced row-level security, in the isolation suite. `invitation_one_pending_idx` is unique on `(tenant_id, email)` where `status = 'pending'`. `accepted_at` is set exactly when `status = 'accepted'`. The token itself is never stored: `token_hash` is the SHA-256 of 32 random bytes. The application role has `select`, `insert` and `update` and no `delete`: an invitation is revoked, accepted or expired, never removed. An expired invitation is marked lazily |
+
+Changes to existing tables:
+
+- `membership` gains `version integer not null default 1` (above).
+- `role_grant.role` admits `pos`.
+- `property` gains `sltda_licence text null` (1–50 characters), printed on invoices under the TIN.
+- `rate_plan` gains `deposit_rule jsonb null` (an object `{kind: percent \| nights \| amount, value, due}`, where `value` is basis points, a night count of 1–30, or minor units, and `due` is `at_booking` or `days_before_arrival` with 0–365 days). Advisory only.
+- `reservation_room` gains `deposit_terms jsonb null`, the rule copied at booking (as the cancellation terms are), so a rule edit changes no existing booking. `reservation_room_open_idx` (`0037`) is a partial index on `(property_id, reservation_id)` for tentative and confirmed rooms, which the night audit's **Deposits outstanding** list starts from.
+
+Definer functions (each pins `search_path = pg_catalog, public, pg_temp`, revokes `public`, and is granted to the application role only), since a token is looked up before any tenant is known:
+
+- `app.invitation_by_token(hash bytea)`: the invitation behind a token hash, with the tenant's and inviter's names, for preview and accept.
+- `app.invitation_by_id(id uuid)`: the same by id, for jobs-svc's `/mail`, which holds the invitation id and not the token.
+- `app.accept_invitation_row(id uuid, user_id uuid)`: marks a pending, unexpired invitation accepted.
+
+They rely on owner-only policies (`invitation_owner_read`, `invitation_owner_accept`, and `owner_tenant_read` on `tenant`, renamed in `0036`) because forced row-level security applies to the table owner and, on Cloud SQL, the owner is not a superuser. `goodfolk_app` is never a member of the owner, so the API gains nothing from them; check them on the real database at the first deployment, as for jobs-svc's.
+
+Membership revocation deletes the `membership` row, its `role_grant` rows (cascade) and the user's `session` rows whose `active_tenant_id` is the tenant. It is audited as `membership.revoked`.
+
+## Phase 8b: Channels (planned)
+
+| Table | Key columns | Notes |
+|---|---|---|
 | `channel_connection` | `id`, `tenant_id`, `property_id`, `provider` (`channex`), `external_property_id`, `status`, `secret_name` | |
 | `channel_room_map` | `(connection_id, room_type_id)`, `tenant_id`, `external_room_id` | |
 | `channel_rate_map` | `(connection_id, rate_plan_id)`, `tenant_id`, `external_rate_id`, `currency` | Currency must equal the plan's |

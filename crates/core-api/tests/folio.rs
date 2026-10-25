@@ -534,6 +534,27 @@ async fn tax_rules_are_checked_as_a_set_and_the_preset_applies(_: PgPoolOptions,
     assert_eq!(settings.status, StatusCode::UNPROCESSABLE_ENTITY, "the base currency stays accepted");
 }
 
+/// The SLTDA licence is 1 to 50 characters with no whitespace around them; `null` clears it.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_sltda_licence_is_validated_and_round_trips(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "owner@example.com", "GAL").await;
+    let path = format!("{}/tax-settings", hotel.path);
+    let too_long = "A".repeat(51);
+    for refused in ["", " SLTDA/1", "SLTDA/1 ", "SLTDA/1\n", too_long.as_str()] {
+        let body = Some(json!({ "sltda_licence": refused }));
+        let response = versioned(&app, Method::PATCH, &hotel.owner, &path, 1, body).await;
+        assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY, "{refused:?}: {:?}", response.body);
+    }
+    let body = Some(json!({ "sltda_licence": "SLTDA/GAL/0042" }));
+    let set = versioned(&app, Method::PATCH, &hotel.owner, &path, 1, body).await;
+    assert_eq!(set.status, StatusCode::OK, "{:?}", set.body);
+    assert_eq!(set.body["sltda_licence"], "SLTDA/GAL/0042");
+    let cleared = versioned(&app, Method::PATCH, &hotel.owner, &path, 2, Some(json!({ "sltda_licence": null }))).await;
+    assert_eq!(cleared.status, StatusCode::OK, "{:?}", cleared.body);
+    assert_eq!(cleared.body["sltda_licence"], Value::Null);
+}
+
 /// `folios` of a reservation reads its deposit, stay and account folios with each one's own lines and payments; a
 /// charge sends `folio:<id>` to the property's live streams.
 #[sqlx::test(migrator = "db::MIGRATOR")]

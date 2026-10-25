@@ -494,6 +494,7 @@ enum Seed {
     Folio,
     NightAudit,
     Laundry,
+    Staff,
 }
 
 impl Seed {
@@ -507,6 +508,7 @@ impl Seed {
             Seed::Folio => seed_folio(pool, tenant).await,
             Seed::NightAudit => seed_night_audit(pool, tenant).await,
             Seed::Laundry => seed_laundry(pool, tenant).await,
+            Seed::Staff => seed_staff(pool, tenant).await,
         }
     }
 }
@@ -1381,6 +1383,34 @@ async fn laundry_order_lines_are_isolated_by_tenant(_: PgPoolOptions, opts: PgCo
         "insert into laundry_order_line (tenant_id, property_id, order_id, position, price_id, item_code, service, name, unit_price, quantity)
          select $1, property_id, order_id, 2, price_id, item_code, service, name, unit_price, quantity from laundry_order_line",
         Seed::Laundry,
+    )
+    .await;
+}
+
+async fn seed_staff(pool: &PgPool, tenant: TenantId) {
+    let mut tx = begin(pool, Scope::tenant(tenant)).await.unwrap();
+    sqlx::query(
+        "insert into invitation (id, tenant_id, email, display_name, grants, token_hash, status, expires_at)
+         values ($2, $1, 'new@example.com', 'New', '[{\"role\": \"front_desk\"}]', $3, 'pending', now() + interval '7 days')",
+    )
+    .bind(tenant.0)
+    .bind(Uuid::now_v7())
+    .bind(Uuid::now_v7().as_bytes().to_vec())
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn invitations_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "invitation",
+        "insert into invitation (id, tenant_id, email, display_name, grants, token_hash, status, expires_at)
+         select gen_random_uuid(), $1, 'other@example.com', 'Other', grants, sha256(gen_random_uuid()::text::bytea), 'pending', expires_at
+         from invitation",
+        Seed::Staff,
     )
     .await;
 }

@@ -6,12 +6,16 @@
 	import type { components } from '$lib/api/openapi';
 	import { Pending } from '$lib/pending.svelte';
 	import {
+		depositDraft,
+		depositRuleBody,
+		describeDepositRule,
 		descendants,
 		fetchRatePlans,
 		formatMoney,
 		formula,
 		parseMoney,
 		ratePlansKey,
+		type DepositDraft,
 		type RatePlan
 	} from '$lib/rates';
 	import { fetchRoomTypes, roomTypesKey } from '$lib/rooms';
@@ -64,6 +68,8 @@
 		mealPlans: MealPlan[];
 		roomTypeIds: string[];
 		policyId: string;
+		/** The advisory deposit rule, edited beside the cancellation policy. */
+		deposit: DepositDraft;
 		active: boolean;
 	}
 
@@ -97,6 +103,7 @@
 			mealPlans: ['RO'],
 			roomTypeIds: (roomTypes.data ?? []).filter((t) => t.active).map((t) => t.id),
 			policyId: '',
+			deposit: depositDraft(null, ''),
 			active: true
 		};
 	}
@@ -125,6 +132,7 @@
 			mealPlans: [...plan.allowedMealPlans],
 			roomTypeIds: [...plan.roomTypeIds],
 			policyId: plan.cancellationPolicyId ?? '',
+			deposit: depositDraft(plan.depositRule, plan.currency),
 			active: plan.active
 		};
 	}
@@ -167,6 +175,7 @@
 				room_type_ids: d.roomTypeIds,
 				...(d.kind === 'derived' ? derivation(d) : {})
 			};
+			const deposit = depositRuleBody(d.deposit, currency.toUpperCase());
 			await pending.run('plan', async () => {
 				if (d.id) {
 					unwrap(
@@ -176,6 +185,7 @@
 								...common,
 								residency: d.residency || null,
 								cancellation_policy_id: d.policyId || null,
+								deposit_rule: deposit,
 								active: d.active
 							}
 						})
@@ -187,7 +197,8 @@
 						kind: d.kind,
 						currency: currency.toUpperCase(),
 						residency: d.residency || undefined,
-						cancellation_policy_id: d.policyId || undefined
+						cancellation_policy_id: d.policyId || undefined,
+						deposit_rule: deposit ?? undefined
 					};
 					unwrap(
 						await rest.POST('/api/v1/properties/{property}/rate-plans', {
@@ -244,6 +255,7 @@
 				<th>Name</th>
 				<th>Sold to</th>
 				<th>Pricing</th>
+				<th>Deposit</th>
 				<th>Status</th>
 				{#if manage}<th><span class="visually-hidden">Actions</span></th>{/if}
 			</tr>
@@ -267,6 +279,8 @@
 							{plan.kind === 'CUSTOM' ? 'Custom, priced by hand' : 'Priced by hand'}
 						{/if}
 					</td>
+					<td>{plan.depositRule ? describeDepositRule(plan.depositRule, plan.currency) : 'None'}</td
+					>
 					<td>{plan.active ? 'Active' : 'Inactive'}</td>
 					{#if manage}
 						<td>
@@ -282,7 +296,7 @@
 					{/if}
 				</tr>
 			{:else}
-				<tr><td colspan={manage ? 6 : 5}>No rate plans yet.</td></tr>
+				<tr><td colspan={manage ? 7 : 6}>No rate plans yet.</td></tr>
 			{/each}
 		</tbody>
 	</table>
@@ -420,6 +434,44 @@
 					{/each}
 				</select>
 			</label>
+			<fieldset>
+				<legend>Deposit (advisory: shown and listed, never enforced)</legend>
+				<label>
+					Asks for
+					<select bind:value={draft.deposit.kind}>
+						<option value="">No deposit</option>
+						<option value="percent">A percentage of the stay</option>
+						<option value="nights">The first nights</option>
+						<option value="amount">A fixed amount</option>
+					</select>
+				</label>
+				{#if draft.deposit.kind}
+					<label>
+						{draft.deposit.kind === 'percent'
+							? 'Percentage (%)'
+							: draft.deposit.kind === 'nights'
+								? 'Nights'
+								: `Amount (${currency})`}
+						<input required inputmode="decimal" bind:value={draft.deposit.value} />
+					</label>
+					<label>
+						Due
+						<select bind:value={draft.deposit.due}>
+							<option value="at_booking">At booking</option>
+							<option value="days_before_arrival">Days before arrival</option>
+						</select>
+					</label>
+					{#if draft.deposit.due === 'days_before_arrival'}
+						<label>
+							Days before arrival
+							<input required inputmode="numeric" bind:value={draft.deposit.days} />
+						</label>
+					{/if}
+					<p class="hint">
+						Bookings keep the rule they were made under; a change applies to new ones.
+					</p>
+				{/if}
+			</fieldset>
 			{#if draft.id}
 				<label class="check"><input type="checkbox" bind:checked={draft.active} /> Active</label>
 			{/if}

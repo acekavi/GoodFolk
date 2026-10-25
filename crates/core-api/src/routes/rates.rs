@@ -11,9 +11,10 @@ use db::Scope;
 use garde::Validate;
 use identity::Permission;
 use rates::{
-    BulkChange, CancellationPolicy, CancellationPolicyChanges, CancellationRule, ChangeMode, MAX_AMOUNT, MealPlan,
-    MealSupplement, MealSupplementChanges, NewCancellationPolicy, NewMealSupplement, NewRatePlan, Penalty, PlanKind,
-    Price, PriceChange, PriceChangeMode, RatePlan, RatePlanChanges, RatesError, Residency, RestrictionChange, Segment,
+    BulkChange, CancellationPolicy, CancellationPolicyChanges, CancellationRule, ChangeMode, DepositRule, MAX_AMOUNT,
+    MealPlan, MealSupplement, MealSupplementChanges, NewCancellationPolicy, NewMealSupplement, NewRatePlan, Penalty,
+    PlanKind, Price, PriceChange, PriceChangeMode, RatePlan, RatePlanChanges, RatesError, Residency, RestrictionChange,
+    Segment,
 };
 use serde::{Deserialize, Serialize};
 use time::{Date, Weekday};
@@ -83,12 +84,16 @@ pub struct CreateRatePlanRequest {
     pub allowed_meal_plans: Vec<MealPlan>,
     #[garde(skip)]
     pub cancellation_policy_id: Option<Uuid>,
+    /// What the plan asks for in advance, advisory only; left out for none. A derived plan has its own.
+    #[garde(skip)]
+    pub deposit_rule: Option<DepositRule>,
     /// A derived plan sells a subset of its parent's room types.
     #[garde(length(min = 1, max = 200))]
     pub room_type_ids: Vec<Uuid>,
 }
 
-/// Fields left out stay as they are; `residency` and `cancellation_policy_id` sent as `null` are cleared.
+/// Fields left out stay as they are; `residency`, `cancellation_policy_id` and `deposit_rule` sent as `null` are
+/// cleared.
 /// The code, kind and currency never change.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct UpdateRatePlanRequest {
@@ -119,6 +124,11 @@ pub struct UpdateRatePlanRequest {
     #[schema(value_type = Option<Uuid>, nullable)]
     #[garde(skip)]
     pub cancellation_policy_id: Option<Option<Uuid>>,
+    /// Changing it leaves existing bookings alone: each room keeps the rule it was booked under.
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<DepositRule>, nullable)]
+    #[garde(skip)]
+    pub deposit_rule: Option<Option<DepositRule>>,
     #[garde(inner(length(min = 1, max = 200)))]
     pub room_type_ids: Option<Vec<Uuid>>,
     /// `false` stops selling the plan; its prices stay.
@@ -139,6 +149,7 @@ impl Changes for UpdateRatePlanRequest {
             && self.inherit_restrictions.is_none()
             && self.allowed_meal_plans.is_none()
             && self.cancellation_policy_id.is_none()
+            && self.deposit_rule.is_none()
             && self.room_type_ids.is_none()
             && self.active.is_none()
     }
@@ -334,6 +345,7 @@ pub async fn create_plan(
         inherit_restrictions: body.inherit_restrictions,
         allowed_meal_plans: body.allowed_meal_plans,
         cancellation_policy_id: body.cancellation_policy_id,
+        deposit_rule: body.deposit_rule,
         room_type_ids: body.room_type_ids,
     };
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
@@ -367,6 +379,7 @@ pub async fn update_plan(
         inherit_restrictions: body.inherit_restrictions,
         allowed_meal_plans: body.allowed_meal_plans,
         cancellation_policy_id: body.cancellation_policy_id,
+        deposit_rule: body.deposit_rule,
         room_type_ids: body.room_type_ids,
         active: body.active,
     };

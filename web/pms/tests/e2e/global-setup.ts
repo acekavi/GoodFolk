@@ -1,4 +1,5 @@
 import { createHash, createHmac } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
 
 const RUSTFS = 'http://localhost:9000';
 const BUCKETS = ['goodfolk-public', 'goodfolk-private'];
@@ -49,6 +50,8 @@ async function headBucket(bucket: string): Promise<number> {
 // The media tests upload to RustFS, which Playwright cannot start. Playwright runs this once its web servers
 // are up (neither needs RustFS to start) and before any test: without RustFS on :9000 and both buckets, stop here.
 export default async function globalSetup() {
+	// The mail outbox the invitation emails land in (see playwright.config.ts).
+	mkdirSync(process.env.MAIL_OUTBOX_DIR!, { recursive: true });
 	let statuses: number[];
 	try {
 		statuses = await Promise.all(BUCKETS.map(headBucket));

@@ -1,10 +1,12 @@
-//! The five review lists of a business date, and the count of what blocks its close.
+//! The six review lists of a business date, and the count of what blocks its close.
 
 use crate::AuditError;
 use db::Tx;
 use domain::RoomStatus;
-use reservations::CancellationTerms;
+use rates::DepositRule;
+use reservations::{CancellationTerms, DepositRoom};
 use sqlx::types::Json;
+use std::sync::LazyLock;
 use time::Date;
 use uuid::Uuid;
 
@@ -19,6 +21,24 @@ pub struct NightAudit {
     pub pos_bills: Vec<OutletBills>,
     pub booking_bills: BookingBills,
     pub payments: Vec<PaymentGroup>,
+    /// Advisory: never part of `blocking`.
+    pub deposits_outstanding: Vec<DepositRow>,
+}
+
+/// A reservation's deposit in one currency, due by the business date and not fully paid, while it still has a room
+/// tentative or confirmed ([`reservations::deposit_lines`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepositRow {
+    pub reservation_id: Uuid,
+    pub confirmation: String,
+    /// The booker.
+    pub guest: String,
+    /// The earliest arrival of its rooms counted towards the deposit.
+    pub arrival: Date,
+    pub currency: String,
+    pub due: i64,
+    pub paid: i64,
+    pub due_date: Date,
 }
 
 /// A stay due by the business date and still tentative or confirmed.
@@ -180,6 +200,7 @@ pub async fn night_audit(tx: &mut Tx, property: Uuid) -> Result<NightAudit, Audi
     let nights = folio::preview_business_date_charges(tx, property, date).await?;
     let posted = posted_lines(tx, property, date).await?;
     let payments = payments(tx, property, date).await?;
+    let deposits_outstanding = deposits_outstanding(tx, property, date).await?;
     Ok(NightAudit {
         business_date: date,
         blocking: u32::try_from(arrivals.len() + departures.len()).unwrap_or(u32::MAX),
@@ -188,6 +209,7 @@ pub async fn night_audit(tx: &mut Tx, property: Uuid) -> Result<NightAudit, Audi
         pos_bills,
         booking_bills: BookingBills { nights, posted },
         payments,
+        deposits_outstanding,
     })
 }
 
@@ -445,6 +467,99 @@ async fn payments(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<Payment
         }
     }
     Ok(groups)
+}
+
+#[derive(sqlx::FromRow)]
+struct DepositStay {
+    reservation_id: Uuid,
+    confirmation_no: String,
+    first_name: String,
+    last_name: String,
+    booked_business_date: Date,
+    currency: String,
+    arrival: Date,
+    deposit_terms: Json<DepositRule>,
+    dates: Vec<Date>,
+    rooms: Vec<i64>,
+    meals: Vec<i64>,
+    /// The deposit folio's net payments in the room's currency, without transfers.
+    paid: i64,
+}
+
+/// The deposits list's rooms: those of the property's (`$1`) reservations with a room still tentative or confirmed
+/// that count towards the deposit ([`reservations::COUNTED_ROOM_SQL`]), with their nights and what their reservation
+/// has paid in their currency ([`reservations::DEPOSIT_PAID_SQL`]), grouped by reservation. Public so a test can
+/// `EXPLAIN` it: it starts from the open rooms through `reservation_room_open_idx`, not from every booking ever made.
+pub static DEPOSITS_SQL: LazyLock<String> = LazyLock::new(|| {
+    let (counted, nights, paid) =
+        (reservations::COUNTED_ROOM_SQL, reservations::STAY_NIGHTS_SQL, reservations::DEPOSIT_PAID_SQL);
+    format!(
+        "select r.id as reservation_id, r.confirmation_no, g.first_name, g.last_name, r.booked_business_date,
+                rr.currency::text as currency, rr.arrival, rr.deposit_terms,
+                coalesce(n.dates, '{{}}') as dates, coalesce(n.rooms, '{{}}') as rooms,
+                coalesce(n.meals, '{{}}') as meals, coalesce(paid.amount, 0)::bigint as paid
+         from (select distinct o.reservation_id from reservation_room o
+               where o.property_id = $1 and o.status in ('tentative', 'confirmed')) open
+         join reservation r on r.id = open.reservation_id
+         join guest g on g.id = r.booker_guest_id
+         join reservation_room rr on rr.reservation_id = r.id and {counted}
+         left join lateral ({nights}) n on true
+         left join lateral (select d.amount from ({paid}) d where d.currency = rr.currency::text) paid on true
+         order by r.id, rr.arrival, rr.id"
+    )
+});
+
+/// The deposits outstanding on D, by arrival then confirmation and currency: each reservation of [`DEPOSITS_SQL`]
+/// priced by [`reservations::deposit_lines`], kept when due by D with something still owed.
+async fn deposits_outstanding(tx: &mut Tx, property: Uuid, date: Date) -> Result<Vec<DepositRow>, AuditError> {
+    let rows: Vec<DepositStay> =
+        sqlx::query_as(sqlx::AssertSqlSafe(DEPOSITS_SQL.as_str())).bind(property).fetch_all(&mut **tx).await?;
+    let mut list: Vec<DepositRow> = Vec::new();
+    let mut rows = rows.into_iter().peekable();
+    while let Some(first) = rows.next() {
+        let mut stays = vec![first];
+        while let Some(next) = rows.next_if(|row| row.reservation_id == stays[0].reservation_id) {
+            stays.push(next);
+        }
+        let mut paid: Vec<(String, i64)> = Vec::new();
+        let mut rooms: Vec<DepositRoom> = Vec::new();
+        for stay in &stays {
+            if !paid.iter().any(|(currency, _)| *currency == stay.currency) {
+                paid.push((stay.currency.clone(), stay.paid));
+            }
+            rooms.push(DepositRoom {
+                currency: stay.currency.clone(),
+                arrival: stay.arrival,
+                rule: stay.deposit_terms.0.clone(),
+                nights: stay
+                    .dates
+                    .iter()
+                    .zip(&stay.rooms)
+                    .zip(&stay.meals)
+                    .map(|((&d, &room), &meal)| (d, room, meal))
+                    .collect(),
+            });
+        }
+        let reservation = &stays[0];
+        let arrival = stays.iter().map(|stay| stay.arrival).min().expect("at least one room");
+        let guest = guest_name(reservation.first_name.clone(), reservation.last_name.clone());
+        for line in reservations::deposit_lines(reservation.booked_business_date, &rooms, &paid) {
+            if line.due_date <= date && line.outstanding > 0 {
+                list.push(DepositRow {
+                    reservation_id: reservation.reservation_id,
+                    confirmation: reservation.confirmation_no.clone(),
+                    guest: guest.clone(),
+                    arrival,
+                    currency: line.currency,
+                    due: line.amount,
+                    paid: line.paid,
+                    due_date: line.due_date,
+                });
+            }
+        }
+    }
+    list.sort_by(|a, b| (a.arrival, &a.confirmation, &a.currency).cmp(&(b.arrival, &b.confirmation, &b.currency)));
+    Ok(list)
 }
 
 /// "First Last", or the last name alone when there is no first name.

@@ -2,9 +2,10 @@ use crate::prices::{Reprice, derive_prices, tree_keys};
 use crate::restrictions::{derive_restrictions, inheriting_levels};
 use crate::{RatesError, audit, business_date, lock_rates, notify, rate_plans_key, rates_keys, violates};
 use db::{TenantId, Tx, UserId};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::postgres::PgRow;
+use sqlx::types::Json;
 use time::Duration;
 use uuid::Uuid;
 
@@ -38,6 +39,52 @@ db::text_enum!(
     MealPlan { Ro = "RO", Bb = "BB", Hb = "HB", Fb = "FB" }
 );
 
+/// How a deposit is priced: `percent` = basis points of the stay's total, `nights` = the first N nights' room
+/// amounts, `amount` = minor units in the plan's currency.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DepositKind {
+    Percent,
+    Nights,
+    Amount,
+}
+
+/// When a deposit is due: on the business date of the booking, or `days` (0 to 365) before arrival.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DepositDue {
+    AtBooking,
+    DaysBeforeArrival { days: i32 },
+}
+
+/// What a plan asks for in advance. Advisory: it is shown and listed, never enforced. Copied onto each room at
+/// booking (`reservation_room.deposit_terms`), so a later change leaves existing bookings alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct DepositRule {
+    pub kind: DepositKind,
+    /// 1 to 10000 basis points (`percent`), 1 to 30 nights (`nights`) or 1 to 100000000000 minor units (`amount`).
+    pub value: i64,
+    pub due: DepositDue,
+}
+
+/// `rule`'s value and due days stay in range.
+fn check_deposit_rule(rule: &DepositRule) -> Result<(), RatesError> {
+    let (range, message) = match rule.kind {
+        DepositKind::Percent => (1..=10_000, "a percent deposit is 1 to 10000 basis points"),
+        DepositKind::Nights => (1..=30, "a nights deposit is 1 to 30 nights"),
+        DepositKind::Amount => (1..=crate::MAX_AMOUNT, "an amount deposit is 1 to 100000000000 minor units"),
+    };
+    if !range.contains(&rule.value) {
+        return Err(RatesError::Invalid(message.into()));
+    }
+    match rule.due {
+        DepositDue::DaysBeforeArrival { days } if !(0..=365).contains(&days) => {
+            Err(RatesError::Invalid("a deposit is due 0 to 365 days before arrival".into()))
+        }
+        _ => Ok(()),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct RatePlan {
     pub id: Uuid,
@@ -63,6 +110,8 @@ pub struct RatePlan {
     pub inherit_restrictions: bool,
     pub allowed_meal_plans: Vec<MealPlan>,
     pub cancellation_policy_id: Option<Uuid>,
+    /// The plan's own deposit rule; a derived plan never takes its parent's.
+    pub deposit_rule: Option<DepositRule>,
     /// The room types it sells, in their display order.
     pub room_type_ids: Vec<Uuid>,
     pub active: bool,
@@ -86,6 +135,7 @@ pub struct NewRatePlan {
     pub inherit_restrictions: bool,
     pub allowed_meal_plans: Vec<MealPlan>,
     pub cancellation_policy_id: Option<Uuid>,
+    pub deposit_rule: Option<DepositRule>,
     pub room_type_ids: Vec<Uuid>,
 }
 
@@ -105,6 +155,7 @@ pub struct RatePlanChanges {
     pub inherit_restrictions: Option<bool>,
     pub allowed_meal_plans: Option<Vec<MealPlan>>,
     pub cancellation_policy_id: Option<Option<Uuid>>,
+    pub deposit_rule: Option<Option<DepositRule>>,
     pub room_type_ids: Option<Vec<Uuid>>,
     pub active: Option<bool>,
 }
@@ -124,6 +175,7 @@ impl sqlx::FromRow<'_, PgRow> for RatePlan {
         let residency: Option<String> = row.try_get("residency")?;
         let derive_mode: Option<String> = row.try_get("derive_mode")?;
         let meal_plans: Vec<String> = row.try_get("allowed_meal_plans")?;
+        let deposit_rule: Option<Json<DepositRule>> = row.try_get("deposit_rule")?;
         Ok(RatePlan {
             id: row.try_get("id")?,
             property_id: row.try_get("property_id")?,
@@ -149,6 +201,7 @@ impl sqlx::FromRow<'_, PgRow> for RatePlan {
                 .map(|value| MealPlan::parse(value).ok_or_else(|| decode_error("allowed_meal_plans", value)))
                 .collect::<Result<_, _>>()?,
             cancellation_policy_id: row.try_get("cancellation_policy_id")?,
+            deposit_rule: deposit_rule.map(|rule| rule.0),
             room_type_ids: row.try_get("room_type_ids")?,
             active: row.try_get("active")?,
             version: row.try_get("version")?,
@@ -169,7 +222,7 @@ pub async fn list_rate_plans(tx: &mut Tx, property: Uuid) -> Result<Vec<RatePlan
          )
          select p.id, p.property_id, p.code, p.name, p.kind, p.segment, p.residency, p.currency::text as currency,
                 p.parent_id, t.depth, p.derive_mode, p.derive_value, p.rounding_step, p.extra_adult_amount,
-                p.inherit_restrictions, p.allowed_meal_plans, p.cancellation_policy_id, p.active, p.version,
+                p.inherit_restrictions, p.allowed_meal_plans, p.cancellation_policy_id, p.deposit_rule, p.active, p.version,
                 array(select s.room_type_id from rate_plan_room_type s join room_type rt on rt.id = s.room_type_id
                       where s.rate_plan_id = p.id order by rt.sort_order, rt.code) as room_type_ids
          from tree t join rate_plan p on p.id = t.id
@@ -416,12 +469,15 @@ pub async fn create_rate_plan(
         check_subset(&room_types, &input.code, &types, &parent.room_type_ids)?;
     }
     check_policy(tx, property, input.cancellation_policy_id).await?;
+    if let Some(rule) = &input.deposit_rule {
+        check_deposit_rule(rule)?;
+    }
     let id = Uuid::now_v7();
     let inserted = sqlx::query(
         "insert into rate_plan (id, tenant_id, property_id, code, name, kind, segment, residency, currency, parent_id,
                                 derive_mode, derive_value, rounding_step, extra_adult_amount, inherit_restrictions,
-                                allowed_meal_plans, cancellation_policy_id)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+                                allowed_meal_plans, cancellation_policy_id, deposit_rule)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)",
     )
     .bind(id)
     .bind(tenant.0)
@@ -440,6 +496,7 @@ pub async fn create_rate_plan(
     .bind(input.inherit_restrictions)
     .bind(meal_plan_texts(&input.allowed_meal_plans))
     .bind(input.cancellation_policy_id)
+    .bind(input.deposit_rule.as_ref().map(Json))
     .execute(&mut **tx)
     .await;
     match inserted {
@@ -541,6 +598,9 @@ pub async fn update_rate_plan(
     if let Some(policy) = changes.cancellation_policy_id {
         check_policy(tx, property, policy).await?;
     }
+    if let Some(Some(rule)) = &changes.deposit_rule {
+        check_deposit_rule(rule)?;
+    }
     sqlx::query(
         "update rate_plan set name = coalesce($3, name), segment = $4, residency = $5,
                 parent_id = coalesce($6, parent_id), derive_mode = coalesce($7, derive_mode),
@@ -549,7 +609,8 @@ pub async fn update_rate_plan(
                 inherit_restrictions = coalesce($11, inherit_restrictions),
                 allowed_meal_plans = coalesce($12, allowed_meal_plans),
                 cancellation_policy_id = case when $13 then $14 else cancellation_policy_id end,
-                active = coalesce($15, active), version = version + 1
+                active = coalesce($15, active),
+                deposit_rule = case when $16 then $17 else deposit_rule end, version = version + 1
          where id = $1 and version = $2",
     )
     .bind(id)
@@ -567,6 +628,8 @@ pub async fn update_rate_plan(
     .bind(changes.cancellation_policy_id.is_some())
     .bind(changes.cancellation_policy_id.flatten())
     .bind(changes.active)
+    .bind(changes.deposit_rule.is_some())
+    .bind(changes.deposit_rule.as_ref().and_then(|rule| rule.as_ref().map(Json)))
     .execute(&mut **tx)
     .await?;
     set_room_types(tx, tenant, property, id, &types).await?;

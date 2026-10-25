@@ -240,7 +240,7 @@ async fn a_vat_registered_property_issues_a_tax_invoice(_: PgPoolOptions, opts: 
     let refused = hotel.issue(stay.guests[0]).await;
     assert_eq!(conflict(refused), "Set the property's TIN before issuing a tax invoice");
     let mut tx = hotel.tx().await;
-    sqlx::query("update property set tin = '134567890-7000' where id = $1")
+    sqlx::query("update property set tin = '134567890-7000', sltda_licence = 'SLTDA/GAL/0042' where id = $1")
         .bind(hotel.property)
         .execute(&mut *tx)
         .await
@@ -252,6 +252,7 @@ async fn a_vat_registered_property_issues_a_tax_invoice(_: PgPoolOptions, opts: 
     let issued = data(&invoice);
 
     assert_eq!(issued.supplier.tin.as_deref(), Some("134567890-7000"));
+    assert_eq!(issued.supplier.sltda_licence.as_deref(), Some("SLTDA/GAL/0042"));
     assert_eq!((issued.title.as_str(), issued.vat_registered), ("TAX INVOICE", true));
     // 1,035,250 + VAT 186,345 = 1,221,595 cents. Taxes print in their calculation order.
     let taxes: Vec<(i32, i64)> = issued.taxes.iter().map(|t| (t.rate_bp, t.amount_lkr)).collect();

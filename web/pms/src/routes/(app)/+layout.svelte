@@ -1,14 +1,16 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { goto } from '$app/navigation';
+	import { onDestroy } from 'svelte';
 	import { page } from '$app/state';
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { rest } from '$lib/api/rest';
 	import { ApiError, errorMessage, toApiError } from '$lib/api/problem';
+	import { onUnauthorized } from '$lib/api/unauthorized';
 	import { connectEvents } from '$lib/events';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
 	import { wipeDevice } from '$lib/hk-sync.svelte';
-	import { fetchMe, ownerOf } from '$lib/session';
+	import { fetchMe, ownerOf, posOnly } from '$lib/session';
 
 	let { children } = $props();
 
@@ -17,18 +19,30 @@
 	const properties = createQuery(() => ({
 		queryKey: propertiesKey,
 		queryFn: ({ signal }) => fetchProperties(signal),
-		enabled: !!me.data?.current_tenant
+		enabled: !!me.data?.current_tenant && !posOnly(me.data)
 	}));
 
-	$effect(() => {
-		if (me.error instanceof ApiError && me.error.status === 401) void goto(resolve('/login'));
-	});
+	let signingOut = false;
+	/** Ends the tab's session as signing out does: clears the caches, wipes the device and goes to sign-in. */
+	async function signOutTab() {
+		if (signingOut) return;
+		signingOut = true;
+		// Read the owner first: clearing the cache empties `me`, and the wipe needs to know whose data to remove.
+		const owner = me.data ? ownerOf(me.data) : null;
+		client.clear();
+		if (owner) await wipeDevice(owner);
+		await goto(resolve('/login'));
+	}
+
+	// A 401 from any API call means the session has ended (the member was removed, or it expired).
+	onDestroy(onUnauthorized(() => void signOutTab()));
 
 	// Connected while signed in. A boolean, so refetching the profile (every event resync does) doesn't
-	// reconnect: a reconnect resyncs, which would refetch the profile again, in a loop.
+	// reconnect: a reconnect resyncs, which would refetch the profile again, in a loop. A stream the browser gave up
+	// on may mean the session ended while the tab was idle, so the profile is checked: a 401 signs the tab out.
 	const signedIn = $derived(!!me.data);
 	$effect(() => {
-		if (signedIn) return connectEvents(client);
+		if (signedIn) return connectEvents(client, undefined, () => void me.refetch());
 	});
 
 	let actionError = $state('');
@@ -74,11 +88,7 @@
 				actionError = toApiError(problem, response.status).message;
 				return;
 			}
-			// Read the owner first: clearing the cache empties `me`, and the wipe needs to know whose data to remove.
-			const owner = me.data ? ownerOf(me.data) : null;
-			client.clear();
-			if (owner) await wipeDevice(owner);
-			await goto(resolve('/login'));
+			await signOutTab();
 		} catch (err) {
 			actionError = errorMessage(err);
 		} finally {
@@ -87,7 +97,14 @@
 	}
 </script>
 
-{#if me.data}
+{#if me.data && posOnly(me.data)}
+	<!-- A till is an API client: it is shown no navigation and no pages. -->
+	<main>
+		<p>This account is for a point-of-sale till and has no pages</p>
+		{#if actionError}<p class="error" role="alert">{actionError}</p>{/if}
+		<button disabled={busy} onclick={logout}>Sign out</button>
+	</main>
+{:else if me.data}
 	<header>
 		{#if me.data.tenants.length > 1}
 			<select
@@ -115,6 +132,11 @@
 			{/each}
 		</nav>
 		<span class="spacer"></span>
+		<a
+			href={resolve('/(app)/settings')}
+			aria-current={page.url.pathname.startsWith(resolve('/(app)/settings')) ? 'page' : undefined}
+			>Staff and settings</a
+		>
 		<span>{me.data.display_name}</span>
 		<button disabled={busy} onclick={logout}>Sign out</button>
 	</header>
@@ -142,7 +164,7 @@
 		display: flex;
 		gap: 0.5rem;
 	}
-	nav a[aria-current='page'] {
+	header a[aria-current='page'] {
 		font-weight: 600;
 	}
 	.spacer {

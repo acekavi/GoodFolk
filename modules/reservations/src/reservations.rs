@@ -103,6 +103,8 @@ pub struct CreatedReservation {
 /// picked and inserted one room at a time, in input order); a room no free room fits is created unassigned
 /// rather than refused, and the response and audit name the room chosen, or none. The reservation gets its deposit
 /// folio and each stay its guest folio; a reservation billed to an account routes [`folio::DEFAULT_ROUTING`] there.
+/// Each room keeps its plan's cancellation policy and deposit rule as its booked terms; a deposit rule is advisory
+/// ([`crate::deposit_due`]) and never refuses a booking.
 pub async fn create_reservation(
     tx: &mut Tx,
     tenant: TenantId,
@@ -167,6 +169,7 @@ pub async fn create_reservation(
         return Err(invalid(reasons.join("; ")));
     }
     let terms = cancellation_terms(tx, property, &input.rooms).await?;
+    let deposits = deposit_terms(tx, property, &input.rooms).await?;
 
     let number: i64 = sqlx::query_scalar(
         "insert into property_counter (tenant_id, property_id, name, value) values ($1, $2, 'confirmation', 1)
@@ -212,8 +215,8 @@ pub async fn create_reservation(
         let room_version: i32 = sqlx::query_scalar(
             "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, room_id, stay,
                                            adults, children, rate_plan_id, meal_plan, status, primary_guest_id,
-                                           currency, cancellation_terms)
-             values ($1, $2, $3, $4, $5, $6, daterange($7, $8), $9, $10, $11, $12, 'confirmed', $13, $14, $15)
+                                           currency, cancellation_terms, deposit_terms)
+             values ($1, $2, $3, $4, $5, $6, daterange($7, $8), $9, $10, $11, $12, 'confirmed', $13, $14, $15, $16)
              returning version",
         )
         .bind(room_id)
@@ -231,6 +234,7 @@ pub async fn create_reservation(
         .bind(room.primary_guest_id.unwrap_or(input.booker_guest_id))
         .bind(&quote.currency)
         .bind(terms.get(&room.rate_plan_id))
+        .bind(deposits.get(&room.rate_plan_id))
         .fetch_one(&mut **tx)
         .await?;
         folio::ensure_guest_folio(tx, tenant, property, room_id).await?;
@@ -498,6 +502,23 @@ async fn cancellation_terms(
         "select rp.id, jsonb_build_object('rules', cp.rules, 'no_show', cp.no_show)
          from rate_plan rp join cancellation_policy cp on cp.id = rp.cancellation_policy_id
          where rp.property_id = $1 and rp.id = any($2)",
+    )
+    .bind(property)
+    .bind(&plans)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// Each requested plan's deposit rule as the terms a booking keeps, by plan id. Plans without a rule are left out.
+async fn deposit_terms(
+    tx: &mut Tx,
+    property: Uuid,
+    rooms: &[NewReservationRoom],
+) -> Result<HashMap<Uuid, serde_json::Value>, sqlx::Error> {
+    let plans: Vec<Uuid> = rooms.iter().map(|room| room.rate_plan_id).collect();
+    let rows: Vec<(Uuid, serde_json::Value)> = sqlx::query_as(
+        "select id, deposit_rule from rate_plan where property_id = $1 and id = any($2) and deposit_rule is not null",
     )
     .bind(property)
     .bind(&plans)

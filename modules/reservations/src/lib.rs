@@ -9,6 +9,7 @@ mod assignment;
 mod autoassign;
 mod availability;
 mod cancellation;
+mod deposit;
 mod detail;
 mod guests;
 mod list;
@@ -27,6 +28,10 @@ pub use assignment::{AssignedRoom, FreeRoom, assign_room, free_rooms, unassign_r
 pub use autoassign::FIT_HORIZON_DAYS;
 pub use availability::{AvailabilityRequest, MAX_AVAILABILITY_NIGHTS, RoomTypeAvailability, availability};
 pub use cancellation::{CancellationTerms, CancelledRoom, cancel_room, cancellation_penalty, no_show_penalty};
+pub use deposit::{
+    COUNTED_ROOM_SQL, DEPOSIT_PAID_SQL, DepositDueLine, DepositRoom, STAY_NIGHTS_SQL, deposit_due, deposit_lines,
+    room_deposit,
+};
 pub use detail::{
     AccountRef, HistoryEntry, Night, RatePlanRef, ReservationDetail, RoomDetail, RoomRef, RoomTypeRef, get_reservation,
     reservation_history,

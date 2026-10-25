@@ -19,7 +19,14 @@
 	import { addDays } from '$lib/inventory';
 	import { Pending } from '$lib/pending.svelte';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
-	import { formatMoney } from '$lib/rates';
+	import {
+		depositAmount,
+		depositDueDate,
+		depositText,
+		fetchRatePlans,
+		formatMoney,
+		ratePlansKey
+	} from '$lib/rates';
 	import {
 		availabilityKey,
 		bookingStep,
@@ -81,6 +88,12 @@
 		queryKey: accountsKey(propertyId),
 		queryFn: ({ signal }) => fetchAccounts(propertyId, undefined, false, signal),
 		enabled: manage
+	}));
+
+	// The plans' deposit rules, for the review's "Deposit due" line. Advisory: without them the line is left out.
+	const ratePlans = createQuery(() => ({
+		queryKey: ratePlansKey(propertyId),
+		queryFn: ({ signal }) => fetchRatePlans(propertyId, signal)
 	}));
 
 	let booking = $state.raw<Booking>(NEW_BOOKING);
@@ -344,6 +357,21 @@
 	function money(amount: number, currency: string): string {
 		return `${currency} ${formatMoney(amount, currency)}`;
 	}
+
+	/** What the offer's plan asks in advance for the rooms booked, as the server will work it out; `null` with no rule. */
+	const deposit = $derived.by(() => {
+		const offer = booking.offer;
+		const stay = booking.stay;
+		const rule = ratePlans.data?.ratePlans.find(
+			(plan) => plan.id === offer?.ratePlanId
+		)?.depositRule;
+		if (!offer || !stay || !rule || !businessDate) return null;
+		return depositText(
+			depositAmount(rule, offer.nights) * rooms,
+			offer.currency,
+			depositDueDate(rule, businessDate, stay.checkIn)
+		);
+	});
 
 	function occupancy(adults: number, children: number): string {
 		const text = `${adults} adult${adults === 1 ? '' : 's'}`;
@@ -713,6 +741,7 @@
 						{#if rooms > 1}({rooms} rooms × {money(offer.total, offer.currency)}){/if}
 					</dd>
 				</dl>
+				{#if deposit}<p>{deposit}</p>{/if}
 				<label>
 					Rooms
 					<input type="number" required min="1" max={roomsAllowed(offer)} bind:value={rooms} />

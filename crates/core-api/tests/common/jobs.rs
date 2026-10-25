@@ -15,10 +15,18 @@ use tokio_util::task::TaskTracker;
 pub const SECRET: &str = "core-api-jobs-test-secret-0123456789abcdef";
 
 /// jobs-svc served on a random port, acting as the app role and taking its locks on connections to `opts`, with no
-/// storage and no exchange-rate source; returns its address.
+/// storage, no exchange-rate source and a dev mailer under the system's temporary directory; returns its address.
 pub async fn serve(opts: PgConnectOptions) -> SocketAddr {
     let pool = db::testing::app_pool(opts.clone(), 5).await;
-    let svc = JobsSvc { pool, lock: opts, storage: None, fx_source: None, tracker: TaskTracker::new() };
+    let svc = JobsSvc {
+        pool,
+        lock: opts,
+        storage: None,
+        fx_source: None,
+        tracker: TaskTracker::new(),
+        mailer: Arc::new(mail::DevMailer { dir: std::env::temp_dir().join("goodfolk-core-api-jobs-outbox") }),
+        app_base_url: "http://app.test".to_owned(),
+    };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let router = jobs_svc::router(svc, Arc::new(Verifier::SharedSecret(SECRET.to_owned())));

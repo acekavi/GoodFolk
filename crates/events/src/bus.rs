@@ -244,6 +244,11 @@ fn bus_from_vars(
             if var("APP_ENV").is_some_and(|env| env == "production") {
                 bail!("EVENT_BUS=push is not allowed when APP_ENV=production");
             }
+            // Every push carries one header, for one audience; Google ID tokens are checked against it, so a push
+            // bus would be refused by every receiver but one. Pub/Sub sets each subscription's own.
+            if var("SVC_AUTH").is_some_and(|auth| auth == "google") {
+                bail!("EVENT_BUS=push cannot be used with SVC_AUTH=google; use EVENT_BUS=pubsub or SVC_AUTH=secret");
+            }
             let Some(auth) = auth else { bail!("EVENT_BUS=push needs service auth") };
             Ok(Arc::new(PushBus::from_vars(&var, topics, Some(auth))?))
         }
@@ -289,6 +294,22 @@ mod tests {
         let shown = format!("{err:#}");
 
         assert!(shown.contains("PUSH_ENDPOINT_MEDIA_PROCESS") && !shown.contains("not a url"), "{shown}");
+    }
+
+    #[test]
+    fn a_push_bus_is_refused_with_google_service_auth() {
+        let vars = [
+            ("EVENT_BUS", "push"),
+            ("SVC_AUTH", "google"),
+            ("PUSH_ENDPOINT_MEDIA_PROCESS", "http://localhost:8090/work"),
+        ];
+
+        let err = bus_from_vars(lookup(&vars), &["media-process"], Some(auth())).err().unwrap();
+        let shown = format!("{err:#}");
+
+        assert!(shown.contains("EVENT_BUS=push") && shown.contains("SVC_AUTH=google"), "{shown}");
+        let secret = [("EVENT_BUS", "push"), ("SVC_AUTH", "secret"), vars[2]];
+        assert!(bus_from_vars(lookup(&secret), &["media-process"], Some(auth())).is_ok());
     }
 
     #[test]

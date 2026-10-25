@@ -1,7 +1,13 @@
 import { graphql } from './api/gql';
-import type { ExchangeRatesQuery, OutletsQuery, TaxSettingsQuery } from './api/gql/graphql';
+import type {
+	BlockReasonsQuery,
+	ExchangeRatesQuery,
+	OutletsQuery,
+	TaxSettingsQuery
+} from './api/gql/graphql';
 import { query } from './api/graphql';
-import { can, type Profile } from './session';
+import { roomsKey } from './rooms';
+import { can, canAnywhere, posOnly, type Profile } from './session';
 
 /** The Taxes page: the property's tax settings, every rule (ended or not), and the outlets a rule can name. */
 export const TaxSettingsDocument = graphql(`
@@ -9,6 +15,7 @@ export const TaxSettingsDocument = graphql(`
 		propertyTaxSettings(propertyId: $propertyId) {
 			vatRegistered
 			tin
+			sltdaLicence
 			tdlSmallTurnover
 			legalName
 			address
@@ -74,6 +81,20 @@ export const ExchangeRatesDocument = graphql(`
 	}
 `);
 
+/** The Block reasons page: every reason, retired or not, with the version a change sends. */
+export const BlockReasonsDocument = graphql(`
+	query BlockReasons($propertyId: UUID!) {
+		blockReasons(propertyId: $propertyId) {
+			id
+			code
+			label
+			defaultKind
+			active
+			version
+		}
+	}
+`);
+
 /** The banner's alert alone. */
 export const FxAlertDocument = graphql(`
 	query FxAlert($propertyId: UUID!) {
@@ -88,6 +109,7 @@ export type TaxSettings = TaxSettingsQuery['propertyTaxSettings'];
 export type TaxRule = TaxSettingsQuery['taxRules'][number];
 export type OutletRow = OutletsQuery['outlets'][number];
 export type FxRate = ExchangeRatesQuery['fxRates'][number];
+export type BlockReasonRow = BlockReasonsQuery['blockReasons'][number];
 
 /** Not named by any server event: the settings commands invalidate it themselves. */
 export function taxSettingsKey(propertyId: string) {
@@ -110,6 +132,15 @@ export function exchangeRatesKey(propertyId: string, from: string, to: string) {
 
 export function fxAlertKey(propertyId: string) {
 	return [...fxKey(propertyId), 'alert'] as const;
+}
+
+/** Under the server's `rooms:<property>` event, which a block reason change queues. */
+export function blockReasonsKey(propertyId: string) {
+	return [...roomsKey(propertyId), 'block-reasons'] as const;
+}
+
+export async function fetchBlockReasons(propertyId: string, signal?: AbortSignal) {
+	return (await query(BlockReasonsDocument, { propertyId }, signal)).blockReasons;
 }
 
 export async function fetchTaxSettings(propertyId: string, signal?: AbortSignal) {
@@ -162,33 +193,86 @@ export function isValidRate(text: string): boolean {
 	return !!match && /[1-9]/.test(match[1] + (match[2] ?? ''));
 }
 
-export type SettingsPage = 'taxes' | 'outlets' | 'exchange-rates' | 'laundry-prices';
+/** A settings page the index links to; Sections and Cancellation policies live on Rooms and Rate plans. */
+export type SettingsLink =
+	| 'general'
+	| 'taxes'
+	| 'exchange-rates'
+	| 'sections'
+	| 'block-reasons'
+	| 'outlets'
+	| 'laundry-prices'
+	| 'cancellation-policies'
+	| 'staff'
+	| 'permissions';
+
+export interface SettingsGroup {
+	group: string;
+	links: { link: SettingsLink; label: string }[];
+}
 
 /**
- * The settings pages a user sees at the property, and whether each can be changed there. Taxes, outlets and
- * exchange rates are read with `FolioView`; taxes and outlets are changed with `TaxSettingsManage`, exchange rates
- * with `FxOverride`. Laundry prices are seen and changed with `LaundryPricesManage`.
+ * The Settings index at the property: its groups, each with the pages the user may open, and no group left empty.
+ * Each page keeps its own permission: General `PropertiesManage`; Taxes and invoices, Currencies and exchange rates
+ * and Outlets `FolioView`; Sections and Block reasons `RoomsManage`; Laundry prices `LaundryPricesManage`;
+ * Cancellation policies (on Rate plans) `RatesManage`; Staff `StaffManage` at any property; Permissions every member
+ * but a till (`posOnly`).
  */
-export function settingsAccess(
-	profile: Profile,
-	propertyId: string
-): { page: SettingsPage; label: string; edit: boolean }[] {
-	const pages: { page: SettingsPage; label: string; edit: boolean }[] = [];
-	if (can(profile, 'folioView', propertyId)) {
-		const taxes = can(profile, 'taxSettingsManage', propertyId);
-		pages.push(
-			{ page: 'taxes', label: 'Taxes', edit: taxes },
-			{ page: 'outlets', label: 'Outlets', edit: taxes },
-			{
-				page: 'exchange-rates',
-				label: 'Exchange rates',
-				edit: can(profile, 'fxOverride', propertyId)
-			}
-		);
-	}
-	if (can(profile, 'laundryPricesManage', propertyId))
-		pages.push({ page: 'laundry-prices', label: 'Laundry prices', edit: true });
-	return pages;
+export function settingsIndex(profile: Profile, propertyId: string): SettingsGroup[] {
+	const at = (action: Parameters<typeof can>[1]) => can(profile, action, propertyId);
+	const groups: {
+		group: string;
+		links: { link: SettingsLink; label: string; shown: boolean }[];
+	}[] = [
+		{
+			group: 'Property',
+			links: [
+				{ link: 'general', label: 'General', shown: at('propertiesManage') },
+				{ link: 'taxes', label: 'Taxes and invoices', shown: at('folioView') },
+				{
+					link: 'exchange-rates',
+					label: 'Currencies and exchange rates',
+					shown: at('folioView')
+				}
+			]
+		},
+		{
+			group: 'Operations',
+			links: [
+				{ link: 'sections', label: 'Sections', shown: at('manageRooms') },
+				{ link: 'block-reasons', label: 'Block reasons', shown: at('manageRooms') },
+				{ link: 'outlets', label: 'Outlets', shown: at('folioView') },
+				{ link: 'laundry-prices', label: 'Laundry prices', shown: at('laundryPricesManage') }
+			]
+		},
+		{
+			group: 'Rates',
+			links: [
+				{
+					link: 'cancellation-policies',
+					label: 'Cancellation policies',
+					shown: at('manageRates')
+				}
+			]
+		},
+		{
+			group: 'Staff',
+			links: [
+				{ link: 'staff', label: 'Staff', shown: canAnywhere(profile, 'staffManage') },
+				{
+					link: 'permissions',
+					label: 'Permissions',
+					shown: profile.grants.length > 0 && !posOnly(profile)
+				}
+			]
+		}
+	];
+	return groups
+		.map(({ group, links }) => ({
+			group,
+			links: links.filter((entry) => entry.shown).map(({ link, label }) => ({ link, label }))
+		}))
+		.filter((group) => group.links.length > 0);
 }
 
 /** Whether the exchange-rate alert banner is shown: to those who can set a rate by hand. */

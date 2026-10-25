@@ -352,3 +352,45 @@ async fn a_price_change_tells_screens_to_refetch_each_plans_months(_: PgPoolOpti
         ]
     );
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_plans_deposit_rule_is_set_changed_cleared_and_read(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts).await;
+    let plans = format!("{}/rate-plans", hotel.path);
+    let mut bar = hotel.bar();
+    bar["deposit_rule"] = json!({"kind": "percent", "value": 3000, "due": {"type": "at_booking"}});
+
+    let created = post(&app, &hotel.owner, &plans, bar).await;
+    let plan = format!("{plans}/{}", created.body["id"].as_str().unwrap());
+    let nights = json!({"kind": "nights", "value": 1, "due": {"type": "days_before_arrival", "days": 14}});
+    let changed = patch(&app, &hotel.owner, &plan, 1, json!({"deposit_rule": nights})).await;
+    let read = app
+        .send(
+            Method::POST,
+            "/graphql",
+            Some(&hotel.owner),
+            Some(json!({"query": "query ($p: UUID!) { ratePlans(propertyId: $p) { depositRule { kind value due daysBeforeArrival } } }",
+                        "variables": {"p": hotel.id}})),
+        )
+        .await;
+    let renamed = patch(&app, &hotel.owner, &plan, 2, json!({"name": "Rack"})).await;
+    let too_many = json!({"kind": "nights", "value": 31, "due": {"type": "at_booking"}});
+    let refused = patch(&app, &hotel.owner, &plan, 3, json!({"deposit_rule": too_many})).await;
+    let cleared = patch(&app, &hotel.owner, &plan, 3, json!({"deposit_rule": null})).await;
+
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    assert_eq!(created.body["deposit_rule"], json!({"kind": "percent", "value": 3000, "due": {"type": "at_booking"}}));
+    assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.body);
+    assert_eq!(changed.body["deposit_rule"], nights);
+    assert_eq!(
+        read.body["data"]["ratePlans"][0]["depositRule"],
+        json!({"kind": "NIGHTS", "value": 1, "due": "DAYS_BEFORE_ARRIVAL", "daysBeforeArrival": 14}),
+        "{:?}",
+        read.body
+    );
+    assert_eq!(renamed.body["deposit_rule"], nights, "a change that does not name the rule leaves it");
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", refused.body);
+    assert_eq!(cleared.status, StatusCode::OK, "{:?}", cleared.body);
+    assert_eq!(cleared.body["deposit_rule"], Value::Null);
+}

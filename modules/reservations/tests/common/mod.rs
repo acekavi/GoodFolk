@@ -229,6 +229,7 @@ impl Hotel {
             inherit_restrictions: false,
             allowed_meal_plans: vec![rates::MealPlan::Ro, rates::MealPlan::Bb],
             cancellation_policy_id: None,
+            deposit_rule: None,
             room_type_ids: room_types.to_vec(),
         }
     }

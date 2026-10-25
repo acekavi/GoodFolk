@@ -1,6 +1,14 @@
+//! Staff: the interim `add-staff` command, and invitations, members and revocation over HTTP.
+
+mod common;
+
+use axum::http::{Method, StatusCode, header};
+use common::{TestApp, TestResponse, session_cookie};
 use core_api::staff::{AddStaff, AddStaffError, Outcome, add_staff, parse_args};
 use db::testing::app_pool;
 use identity::{Role, SignupInput, authenticate, signup};
+use mail::MailJob;
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::sync::OnceLock;
@@ -353,4 +361,332 @@ async fn a_short_password_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
     let refused = add_staff(&pool, AddStaff { password: "short".into(), ..staff(Role::Manager) }).await;
 
     assert!(matches!(refused, Err(AddStaffError::Invalid(_))));
+}
+
+/// A tenant with one property (Galle) and its owner, over HTTP.
+struct Tenant {
+    app: TestApp,
+    superuser: PgPool,
+    owner: String,
+    tenant: Uuid,
+    property: Uuid,
+}
+
+impl Tenant {
+    async fn new(opts: PgConnectOptions) -> Self {
+        let app = TestApp::new(opts.clone()).await;
+        let superuser = PgPool::connect_with(opts).await.unwrap();
+        let owner = app.signup_owner("owner@example.com", "Lagoon").await;
+        let property = json!({"code": "GAL", "name": "Galle", "timezone": "Asia/Colombo", "base_currency": "LKR"});
+        let created = app
+            .send_with(
+                Method::POST,
+                "/api/v1/properties",
+                Some(&owner),
+                Some(property),
+                &[("x-goodfolk-csrf", "1"), ("idempotency-key", "property-0001")],
+            )
+            .await;
+        assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+        let me = app.send(Method::GET, "/api/v1/me", Some(&owner), None).await;
+        let tenant = common::uuid(&me.body["current_tenant"]);
+        Self { app, superuser, owner, tenant, property: common::uuid(&created.body["id"]) }
+    }
+
+    async fn invite_as(&self, cookie: &str, email: &str, grants: Value) -> TestResponse {
+        let body = json!({"email": email, "display_name": "Kamala", "grants": grants});
+        let key = Uuid::now_v7().to_string();
+        self.app
+            .send_with(
+                Method::POST,
+                "/api/v1/invitations",
+                Some(cookie),
+                Some(body),
+                &[("x-goodfolk-csrf", "1"), ("idempotency-key", &key)],
+            )
+            .await
+    }
+
+    /// Invites `email` as the owner, as a front-desk clerk at Galle, and returns the invitation's id.
+    async fn invite(&self, email: &str) -> Uuid {
+        let invited =
+            self.invite_as(&self.owner, email, json!([{"role": "front_desk", "property_id": self.property}])).await;
+        assert_eq!(invited.status, StatusCode::CREATED, "{:?}", invited.body);
+        common::uuid(&invited.body["id"])
+    }
+
+    /// The newest token mailed for `invitation`, as the email's link carries it: only the outbox has it.
+    async fn token(&self, invitation: Uuid) -> String {
+        let payloads: Vec<Value> =
+            sqlx::query_scalar("select payload from outbox where topic = $1 order by created_at desc, id desc")
+                .bind(mail::SEND_TOPIC)
+                .fetch_all(&self.superuser)
+                .await
+                .unwrap();
+        payloads
+            .into_iter()
+            .map(|payload| serde_json::from_value::<MailJob>(payload).unwrap())
+            .find_map(|MailJob::Invitation { invitation_id, token, .. }| (invitation_id == invitation).then_some(token))
+            .expect("the invitation was mailed")
+    }
+
+    async fn preview(&self, token: &str) -> TestResponse {
+        self.app.send(Method::POST, "/api/v1/invitations/preview", None, Some(json!({"token": token}))).await
+    }
+
+    async fn accept(&self, cookie: Option<&str>, token: &str, password: Option<&str>) -> TestResponse {
+        let body = json!({"token": token, "password": password});
+        self.app.send(Method::POST, "/api/v1/invitations/accept", cookie, Some(body)).await
+    }
+
+    /// Invites `email` and accepts as a new user; returns their session cookie and user id.
+    async fn member(&self, email: &str) -> (String, Uuid) {
+        let token = self.token(self.invite(email).await).await;
+        let accepted = self.accept(None, &token, Some(PASSWORD)).await;
+        assert_eq!(accepted.status, StatusCode::OK, "{:?}", accepted.body);
+        (session_cookie(&accepted.headers), common::uuid(&accepted.body["user_id"]))
+    }
+
+    async fn graphql(&self, cookie: &str, query: &str) -> Value {
+        let response = self.app.send(Method::POST, "/graphql", Some(cookie), Some(json!({"query": query}))).await;
+        assert_eq!(response.status, StatusCode::OK, "{:?}", response.body);
+        response.body
+    }
+
+    async fn set_grants(&self, cookie: &str, user: Uuid, version: Option<&str>, grants: Value) -> TestResponse {
+        let mut headers = vec![("x-goodfolk-csrf", "1")];
+        if let Some(version) = version {
+            headers.push(("if-match", version));
+        }
+        let path = format!("/api/v1/members/{user}/grants");
+        self.app.send_with(Method::PUT, &path, Some(cookie), Some(json!({"grants": grants})), &headers).await
+    }
+}
+
+const GONE: &str = "This invitation is no longer valid";
+
+fn is_gone(response: &TestResponse) -> bool {
+    response.status == StatusCode::GONE
+        && response.body == json!({"type": "about:blank", "title": "Gone", "status": 410, "detail": GONE})
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_invited_clerk_sets_a_password_and_is_signed_in_with_the_grants(_: PgPoolOptions, opts: PgConnectOptions) {
+    let logs = captured_logs();
+    let t = Tenant::new(opts).await;
+    let grants = json!([{"role": "front_desk", "property_id": t.property}]);
+    let body = json!({"email": "Kamala@Example.com", "display_name": "Kamala", "grants": grants});
+    let headers = [("x-goodfolk-csrf", "1"), ("idempotency-key", "invite-0001")];
+    let path = "/api/v1/invitations";
+
+    let invited = t.app.send_with(Method::POST, path, Some(&t.owner), Some(body.clone()), &headers).await;
+    let replayed = t.app.send_with(Method::POST, path, Some(&t.owner), Some(body), &headers).await;
+    let token = t.token(common::uuid(&invited.body["id"])).await;
+    let preview = t.preview(&token).await;
+    let accepted = t.accept(None, &token, Some(PASSWORD)).await;
+    let cookie = session_cookie(&accepted.headers);
+    let me = t.app.send(Method::GET, "/api/v1/me", Some(&cookie), None).await;
+    let again = t.accept(None, &token, Some(PASSWORD)).await;
+    let previewed_again = t.preview(&token).await;
+    let unknown = t.accept(None, "not-a-token", Some(PASSWORD)).await;
+    let listed = t.graphql(&t.owner, "{ invitations { email status grants { role propertyId } } }").await;
+
+    assert_eq!(invited.status, StatusCode::CREATED, "{:?}", invited.body);
+    assert_eq!(
+        (invited.body["email"].as_str(), invited.body["status"].as_str()),
+        (Some("kamala@example.com"), Some("pending"))
+    );
+    assert_eq!(replayed.body, invited.body, "a retry replays the invitation and sends nothing more");
+    let mailed: i64 = sqlx::query_scalar("select count(*) from outbox where topic = $1")
+        .bind(mail::SEND_TOPIC)
+        .fetch_one(&t.superuser)
+        .await
+        .unwrap();
+    assert_eq!(mailed, 1);
+    assert_eq!(preview.status, StatusCode::OK, "{:?}", preview.body);
+    assert_eq!(
+        preview.body,
+        json!({"tenant_name": "Lagoon", "inviter": "Owner", "email": "kamala@example.com",
+               "grants": [{"role": "front_desk", "property_name": "Galle"}], "existing_account": false})
+    );
+    assert_eq!(accepted.status, StatusCode::OK, "{:?}", accepted.body);
+    assert_eq!(me.status, StatusCode::OK, "{:?}", me.body);
+    assert_eq!(me.body["email"], "kamala@example.com");
+    assert_eq!(me.body["current_tenant"], json!(t.tenant));
+    assert_eq!(me.body["grants"], json!([{"property_id": t.property, "role": "front_desk"}]));
+    assert!(is_gone(&again), "a token works once: {} {:?}", again.status, again.body);
+    assert!(is_gone(&previewed_again), "{} {:?}", previewed_again.status, previewed_again.body);
+    assert!(is_gone(&unknown), "an unknown token gets the same answer: {} {:?}", unknown.status, unknown.body);
+    assert_eq!(listed["data"]["invitations"][0]["status"], "ACCEPTED", "{listed:?}");
+
+    // The token is never in a response, and never in the logs.
+    for response in [&invited, &replayed, &preview, &accepted, &me, &again] {
+        assert!(!response.body.to_string().contains(&token), "{:?}", response.body);
+        assert!(!format!("{:?}", response.headers).contains(&token));
+    }
+    assert!(!listed.to_string().contains(&token));
+    assert!(!logs.text().contains(&token), "the token was logged");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_existing_user_accepts_while_signed_in_and_their_session_switches(_: PgPoolOptions, opts: PgConnectOptions) {
+    let t = Tenant::new(opts).await;
+    let kamala = t.app.signup_owner("kamala@example.com", "Kamala's own").await;
+    let token = t.token(t.invite("kamala@example.com").await).await;
+
+    let preview = t.preview(&token).await;
+    let signed_out = t.accept(None, &token, Some(PASSWORD)).await;
+    let someone_else = t.app.signup_owner("other@example.com", "Other").await;
+    let wrong_user = t.accept(Some(&someone_else), &token, None).await;
+    let accepted = t.accept(Some(&kamala), &token, None).await;
+    let me = t.app.send(Method::GET, "/api/v1/me", Some(&kamala), None).await;
+
+    assert_eq!(preview.body["existing_account"], true, "{:?}", preview.body);
+    assert_eq!(signed_out.status, StatusCode::CONFLICT, "{:?}", signed_out.body);
+    assert_eq!(signed_out.body["detail"], "Sign in as kamala@example.com to accept");
+    assert_eq!(wrong_user.status, StatusCode::FORBIDDEN, "{:?}", wrong_user.body);
+    assert_eq!(accepted.status, StatusCode::OK, "{:?}", accepted.body);
+    assert!(accepted.headers.get(header::SET_COOKIE).is_none(), "the session is kept, not replaced");
+    assert_eq!(me.body["current_tenant"], json!(t.tenant), "{:?}", me.body);
+    assert_eq!(me.body["tenants"].as_array().unwrap().len(), 2);
+    // The password was not changed.
+    let pool = &t.app.pool;
+    assert!(authenticate(pool, "kamala@example.com", "a long enough password").await.unwrap().is_some());
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn resent_and_revoked_invitations_refuse_their_old_links(_: PgPoolOptions, opts: PgConnectOptions) {
+    let t = Tenant::new(opts).await;
+    let invitation = t.invite("kamala@example.com").await;
+    let first = t.token(invitation).await;
+
+    let resent =
+        t.app.send(Method::POST, &format!("/api/v1/invitations/{invitation}/resend"), Some(&t.owner), None).await;
+    let second = t.token(invitation).await;
+    let old_link = t.preview(&first).await;
+    let new_link = t.preview(&second).await;
+    let revoked =
+        t.app.send(Method::POST, &format!("/api/v1/invitations/{invitation}/revoke"), Some(&t.owner), None).await;
+    let after_revoke = t.accept(None, &second, Some(PASSWORD)).await;
+    let unknown =
+        t.app.send(Method::POST, &format!("/api/v1/invitations/{}/revoke", Uuid::now_v7()), Some(&t.owner), None).await;
+
+    assert_eq!(resent.status, StatusCode::OK, "{:?}", resent.body);
+    assert_ne!(first, second);
+    assert!(is_gone(&old_link), "{} {:?}", old_link.status, old_link.body);
+    assert_eq!(new_link.status, StatusCode::OK, "{:?}", new_link.body);
+    assert_eq!((revoked.status, revoked.body["status"].as_str()), (StatusCode::OK, Some("revoked")));
+    assert!(is_gone(&after_revoke), "{} {:?}", after_revoke.status, after_revoke.body);
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{:?}", unknown.body);
+    for response in [&resent, &revoked] {
+        assert!(!response.body.to_string().contains(&first) && !response.body.to_string().contains(&second));
+    }
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn grants_change_with_if_match_and_a_revoked_member_is_signed_out(_: PgPoolOptions, opts: PgConnectOptions) {
+    let t = Tenant::new(opts).await;
+    let (cookie, user) = t.member("kamala@example.com").await;
+    let members = t.graphql(&t.owner, "{ members { userId email version grants { role propertyId } } }").await;
+    let version =
+        members["data"]["members"].as_array().unwrap().iter().find(|m| m["userId"] == json!(user)).unwrap()["version"]
+            .as_i64()
+            .unwrap();
+    let both = json!([{"role": "front_desk", "property_id": t.property}, {"role": "accountant", "property_id": null}]);
+
+    let missing = t.set_grants(&t.owner, user, None, both.clone()).await;
+    let changed = t.set_grants(&t.owner, user, Some(&format!("\"{version}\"")), both.clone()).await;
+    let stale = t.set_grants(&t.owner, user, Some(&format!("\"{version}\"")), both).await;
+    let me = t.app.send(Method::GET, "/api/v1/me", Some(&cookie), None).await;
+    let owner_id = t.app.send(Method::GET, "/api/v1/me", Some(&t.owner), None).await.body["user_id"].clone();
+    let themself = t
+        .app
+        .send(Method::DELETE, &format!("/api/v1/members/{}", owner_id.as_str().unwrap()), Some(&t.owner), None)
+        .await;
+    let removed = t.app.send(Method::DELETE, &format!("/api/v1/members/{user}"), Some(&t.owner), None).await;
+    let after = t.app.send(Method::GET, "/api/v1/me", Some(&cookie), None).await;
+
+    assert_eq!(missing.status, StatusCode::PRECONDITION_REQUIRED, "{:?}", missing.body);
+    assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.body);
+    assert_eq!(changed.headers[header::ETAG], format!("\"{}\"", version + 1));
+    assert_eq!(changed.body["grants"].as_array().unwrap().len(), 2);
+    assert_eq!(stale.status, StatusCode::PRECONDITION_FAILED, "{:?}", stale.body);
+    assert_eq!(me.body["grants"].as_array().unwrap().len(), 2, "grants are re-read on the next request");
+    assert_eq!(themself.status, StatusCode::FORBIDDEN, "an owner cannot remove themself: {:?}", themself.body);
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
+    assert_eq!(after.status, StatusCode::UNAUTHORIZED, "the revoked member's old cookie: {:?}", after.body);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn managers_act_only_on_junior_staff_and_front_desk_on_nobody(_: PgPoolOptions, opts: PgConnectOptions) {
+    let t = Tenant::new(opts).await;
+    let manager = t.app.staff(&t.superuser, &t.owner, "manager@example.com", "manager").await;
+    let desk = t.app.staff(&t.superuser, &t.owner, "desk@example.com", "front_desk").await;
+    let (_, clerk) = t.member("kamala@example.com").await;
+    let owner_invitation =
+        t.invite_as(&t.owner, "boss@example.com", json!([{"role": "manager", "property_id": null}])).await;
+    let owner_invitation = common::uuid(&owner_invitation.body["id"]);
+
+    let as_manager =
+        t.invite_as(&manager, "deputy@example.com", json!([{"role": "manager", "property_id": null}])).await;
+    let junior =
+        t.invite_as(&manager, "porter@example.com", json!([{"role": "housekeeping", "property_id": t.property}])).await;
+    let resend =
+        t.app.send(Method::POST, &format!("/api/v1/invitations/{owner_invitation}/resend"), Some(&manager), None).await;
+    let owner_id = common::uuid(&t.app.send(Method::GET, "/api/v1/me", Some(&t.owner), None).await.body["user_id"]);
+    let remove_owner = t.app.send(Method::DELETE, &format!("/api/v1/members/{owner_id}"), Some(&manager), None).await;
+    let as_owner = t.invite_as(&t.owner, "deputy@example.com", json!([{"role": "owner", "property_id": null}])).await;
+    let existing = t.invite_as(&t.owner, "desk@example.com", json!([{"role": "pos", "property_id": null}])).await;
+
+    assert_eq!(as_manager.status, StatusCode::FORBIDDEN, "{:?}", as_manager.body);
+    assert!(as_manager.body["detail"].as_str().unwrap().contains("manager"), "the refusal names the role");
+    assert_eq!(junior.status, StatusCode::CREATED, "{:?}", junior.body);
+    assert_eq!(resend.status, StatusCode::FORBIDDEN, "{:?}", resend.body);
+    assert_eq!(remove_owner.status, StatusCode::FORBIDDEN, "{:?}", remove_owner.body);
+    assert_eq!(as_owner.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", as_owner.body);
+    assert_eq!(existing.status, StatusCode::CONFLICT, "{:?}", existing.body);
+
+    // Front desk: every staff route and read is refused; the permissions matrix is open to every member.
+    let grants = json!([{"role": "pos", "property_id": t.property}]);
+    let refused = [
+        t.invite_as(&desk, "x@example.com", grants.clone()).await,
+        t.app.send(Method::POST, &format!("/api/v1/invitations/{owner_invitation}/resend"), Some(&desk), None).await,
+        t.app.send(Method::POST, &format!("/api/v1/invitations/{owner_invitation}/revoke"), Some(&desk), None).await,
+        t.set_grants(&desk, clerk, Some("\"1\""), grants).await,
+        t.app.send(Method::DELETE, &format!("/api/v1/members/{clerk}"), Some(&desk), None).await,
+    ];
+    for response in refused {
+        assert_eq!(response.status, StatusCode::FORBIDDEN, "{:?}", response.body);
+    }
+    for query in ["{ members { userId } }", "{ invitations(status: PENDING) { id } }"] {
+        let read = t.graphql(&desk, query).await;
+        assert!(read["errors"][0]["message"].as_str().unwrap().contains("permission"), "{read:?}");
+    }
+    let matrix = t.graphql(&desk, "{ permissionMatrix { permission allows roles } }").await;
+    let rows = matrix["data"]["permissionMatrix"].as_array().unwrap();
+    let staff = rows.iter().find(|row| row["permission"] == "StaffManage").unwrap();
+    assert_eq!(staff["roles"], json!(["OWNER", "MANAGER"]));
+    let pending = t.graphql(&manager, "{ invitations(status: PENDING) { email } }").await;
+    let emails: Vec<&str> =
+        pending["data"]["invitations"].as_array().unwrap().iter().map(|i| i["email"].as_str().unwrap()).collect();
+    assert_eq!(emails, ["porter@example.com", "boss@example.com"]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_token_is_throttled_like_a_sign_in(_: PgPoolOptions, opts: PgConnectOptions) {
+    let t = Tenant::new(opts).await;
+
+    let mut answers = Vec::new();
+    for _ in 0..identity::MAX_LOGIN_FAILURES {
+        answers.push(t.accept(None, "guessed-token", Some(PASSWORD)).await.status);
+    }
+    let throttled = t.preview("guessed-token").await;
+    let other = t.preview("another-guess").await;
+
+    assert!(answers.iter().all(|status| *status == StatusCode::GONE), "{answers:?}");
+    assert_eq!(throttled.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", throttled.body);
+    assert_eq!(other.status, StatusCode::GONE, "each token has its own count");
+    let keys: Vec<String> =
+        sqlx::query_scalar("select distinct email::text from login_failure").fetch_all(&t.superuser).await.unwrap();
+    assert!(keys.iter().all(|key| key.starts_with("invitation:") && !key.contains("guess")), "{keys:?}");
 }

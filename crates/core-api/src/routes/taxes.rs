@@ -225,7 +225,7 @@ pub async fn apply_preset(
     Ok(Json(applied))
 }
 
-/// Fields left out keep their value; `null` clears `tin`, `legal_name` or `address`.
+/// Fields left out keep their value; `null` clears `tin`, `sltda_licence`, `legal_name` or `address`.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct UpdateTaxSettingsRequest {
     #[garde(skip)]
@@ -235,6 +235,11 @@ pub struct UpdateTaxSettingsRequest {
     #[schema(value_type = Option<String>, nullable)]
     #[garde(inner(inner(pattern(r"^[0-9A-Z-]{5,20}$"))))]
     pub tin: Option<Option<String>>,
+    /// 1 to 50 characters, with no whitespace around them.
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<String>, nullable)]
+    #[garde(inner(inner(length(chars, min = 1, max = 50), pattern(r"^\S(.*\S)?$"))))]
+    pub sltda_licence: Option<Option<String>>,
     /// The tourism development levy's small-turnover band; takes effect on the rules when the preset is applied.
     #[garde(skip)]
     pub tdl_small_turnover: Option<bool>,
@@ -255,6 +260,7 @@ impl Changes for UpdateTaxSettingsRequest {
     fn is_empty(&self) -> bool {
         self.vat_registered.is_none()
             && self.tin.is_none()
+            && self.sltda_licence.is_none()
             && self.tdl_small_turnover.is_none()
             && self.legal_name.is_none()
             && self.address.is_none()
@@ -281,6 +287,7 @@ pub async fn update_settings(
     let changes = TaxSettingsChanges {
         vat_registered: body.vat_registered,
         tin: body.tin,
+        sltda_licence: body.sltda_licence,
         tdl_small_turnover: body.tdl_small_turnover,
         legal_name: body.legal_name,
         address: body.address,

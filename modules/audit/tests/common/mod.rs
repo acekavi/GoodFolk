@@ -35,6 +35,10 @@ pub struct Stay<'a> {
     pub meal_amount: i64,
     /// The booked cancellation terms.
     pub terms: Option<serde_json::Value>,
+    /// The booked deposit terms.
+    pub deposit_terms: Option<serde_json::Value>,
+    /// Another room of this booking, instead of a reservation of its own.
+    pub of: Option<&'a Booked>,
     pub first_name: &'a str,
     pub last_name: &'a str,
     /// The primary guest's residency.
@@ -65,6 +69,8 @@ impl<'a> Stay<'a> {
             room_amount: 10_000,
             meal_amount: 0,
             terms: None,
+            deposit_terms: None,
+            of: None,
             first_name: "Ada",
             last_name: "Silva",
             residency: "resident",
@@ -180,7 +186,9 @@ impl Hotel {
             }
             None => None,
         };
-        let (guest, plan, reservation, id) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let plans: i64 = sqlx::query_scalar("select count(*) + 1 from rate_plan").fetch_one(&mut *tx).await.unwrap();
+        let (guest, plan, id) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let reservation = stay.of.map_or_else(Uuid::now_v7, |booked| booked.reservation);
         sqlx::query("insert into guest (id, tenant_id, first_name, last_name, residency) values ($1, $2, $3, $4, $5)")
             .bind(guest)
             .bind(self.tenant.0)
@@ -203,39 +211,41 @@ impl Hotel {
         .bind(plan)
         .bind(self.tenant.0)
         .bind(stay.property)
-        .bind(n.to_string())
+        .bind(plans.to_string())
         .bind(stay.segment)
         .bind(residency)
         .bind(stay.currency)
         .execute(&mut *tx)
         .await
         .unwrap();
-        let confirmation = format!("GAL-{n:06}");
-        sqlx::query(
-            "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id,
+        let confirmation = stay.of.map_or_else(|| format!("GAL-{n:06}"), |booked| booked.confirmation.clone());
+        if stay.of.is_none() {
+            sqlx::query(
+                "insert into reservation (id, tenant_id, property_id, confirmation_no, source, booker_guest_id,
                                       booked_business_date)
              values ($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(reservation)
-        .bind(self.tenant.0)
-        .bind(stay.property)
-        .bind(&confirmation)
-        .bind(stay.source)
-        .bind(guest)
-        .bind(self.day(stay.booked))
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+            )
+            .bind(reservation)
+            .bind(self.tenant.0)
+            .bind(stay.property)
+            .bind(&confirmation)
+            .bind(stay.source)
+            .bind(guest)
+            .bind(self.day(stay.booked))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
         let (arrival, departure) = (self.day(stay.from), self.day(stay.to));
         let checked_in = matches!(stay.status, "checked_in" | "checked_out");
         sqlx::query(
             "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, room_id, stay,
                                            adults, children, rate_plan_id, meal_plan, status, primary_guest_id,
                                            currency, cancellation_terms, checked_in_at, checked_in_business_date,
-                                           checked_out_at)
+                                           checked_out_at, deposit_terms)
              values ($1, $2, $3, $4, $5, $6, daterange($7, $8), $16, $17, $9, $10, $11, $12, $13, $14,
                      case when $15 then now() end, case when $15 then $7::date end,
-                     case when $11 = 'checked_out' then now() end)",
+                     case when $11 = 'checked_out' then now() end, $18)",
         )
         .bind(id)
         .bind(self.tenant.0)
@@ -254,6 +264,7 @@ impl Hotel {
         .bind(checked_in)
         .bind(stay.adults)
         .bind(stay.children)
+        .bind(stay.deposit_terms)
         .execute(&mut *tx)
         .await
         .unwrap();

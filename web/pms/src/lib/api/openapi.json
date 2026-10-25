@@ -84,6 +84,183 @@
         }
       }
     },
+    "/api/v1/invitations": {
+      "post": {
+        "tags": [
+          "crate::routes::staff"
+        ],
+        "operationId": "create_invitation",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateInvitationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Invitation"
+                }
+              }
+            }
+          },
+          "403": {},
+          "409": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/invitations/accept": {
+      "post": {
+        "tags": [
+          "crate::routes::staff"
+        ],
+        "summary": "Public. With a session, accepts as its user (whose email must be the invitation's) and switches the session to the\ntenant. Without one, creates the account with `password` (409 \"Sign in as <email> to accept\" if the email already\nhas one) and signs it in. Answers 410 and 429 as preview does.",
+        "operationId": "accept_invitation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptInvitationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            }
+          },
+          "403": {},
+          "409": {},
+          "410": {},
+          "422": {},
+          "429": {}
+        }
+      }
+    },
+    "/api/v1/invitations/preview": {
+      "post": {
+        "tags": [
+          "crate::routes::staff"
+        ],
+        "summary": "Public. An unknown, used, expired or revoked token is 410 \"This invitation is no longer valid\". After 5 failed\nattempts with one token within 15 minutes, further ones are 429 until the window passes.",
+        "operationId": "preview_invitation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationPreview"
+                }
+              }
+            }
+          },
+          "410": {},
+          "429": {}
+        }
+      }
+    },
+    "/api/v1/invitations/{invitation}/resend": {
+      "post": {
+        "tags": [
+          "crate::routes::staff"
+        ],
+        "summary": "Sends a pending or expired invitation again with a new link, valid for 7 days from now. The old link stops working.",
+        "operationId": "resend_invitation",
+        "parameters": [
+          {
+            "name": "invitation",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Invitation"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {}
+        }
+      }
+    },
+    "/api/v1/invitations/{invitation}/revoke": {
+      "post": {
+        "tags": [
+          "crate::routes::staff"
+        ],
+        "summary": "Revokes a pending invitation: its link answers 410.",
+        "operationId": "revoke_invitation",
+        "parameters": [
+          {
+            "name": "invitation",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Invitation"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {}
+        }
+      }
+    },
     "/api/v1/me": {
       "get": {
         "tags": [
@@ -101,6 +278,96 @@
             }
           },
           "401": {}
+        }
+      }
+    },
+    "/api/v1/members/{user}": {
+      "delete": {
+        "tags": [
+          "crate::routes::staff"
+        ],
+        "summary": "Removes a member from the tenant and ends their sessions in it: their next request is 401.",
+        "operationId": "revoke_member",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {},
+          "404": {},
+          "409": {}
+        }
+      }
+    },
+    "/api/v1/members/{user}/grants": {
+      "put": {
+        "tags": [
+          "crate::routes::staff"
+        ],
+        "summary": "Replaces a member's grants. They take effect on the member's next request.",
+        "operationId": "set_member_grants",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "the member's version, e.g. \"3\"",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetGrantsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"1\"; send it back as If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Member"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "409": {},
+          "412": {},
+          "422": {},
+          "428": {}
         }
       }
     },
@@ -5628,6 +5895,24 @@
   },
   "components": {
     "schemas": {
+      "AcceptInvitationRequest": {
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Needed when no account has the invitation's email (12 to 128 characters, as at sign-up), and ignored when the\nrequest comes with a session."
+          },
+          "token": {
+            "type": "string"
+          }
+        }
+      },
       "Account": {
         "type": "object",
         "description": "A company or travel agent a reservation can be billed to.",
@@ -6550,6 +6835,30 @@
           }
         }
       },
+      "CreateInvitationRequest": {
+        "type": "object",
+        "required": [
+          "email",
+          "display_name",
+          "grants"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "description": "1 to 200 characters: the new account's name."
+          },
+          "email": {
+            "type": "string"
+          },
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GrantSpec"
+            },
+            "description": "1 to 50 grants; `owner` is never given by invitation."
+          }
+        }
+      },
       "CreateLaundryOrderRequest": {
         "type": "object",
         "required": [
@@ -6769,6 +7078,17 @@
           "currency": {
             "type": "string",
             "description": "ISO 4217. A derived plan uses its parent's."
+          },
+          "deposit_rule": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DepositRule",
+                "description": "What the plan asks for in advance, advisory only; left out for none. A derived plan has its own."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "derive_mode": {
             "oneOf": [
@@ -7185,6 +7505,75 @@
           }
         }
       },
+      "DepositDue": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "at_booking"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "days",
+              "type"
+            ],
+            "properties": {
+              "days": {
+                "type": "integer",
+                "format": "int32"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "days_before_arrival"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "When a deposit is due: on the business date of the booking, or `days` (0 to 365) before arrival."
+      },
+      "DepositKind": {
+        "type": "string",
+        "description": "How a deposit is priced: `percent` = basis points of the stay's total, `nights` = the first N nights' room\namounts, `amount` = minor units in the plan's currency.",
+        "enum": [
+          "percent",
+          "nights",
+          "amount"
+        ]
+      },
+      "DepositRule": {
+        "type": "object",
+        "description": "What a plan asks for in advance. Advisory: it is shown and listed, never enforced. Copied onto each room at\nbooking (`reservation_room.deposit_terms`), so a later change leaves existing bookings alone.",
+        "required": [
+          "kind",
+          "value",
+          "due"
+        ],
+        "properties": {
+          "due": {
+            "$ref": "#/components/schemas/DepositDue"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/DepositKind"
+          },
+          "value": {
+            "type": "integer",
+            "format": "int64",
+            "description": "1 to 10000 basis points (`percent`), 1 to 30 nights (`nights`) or 1 to 100000000000 minor units (`amount`)."
+          }
+        }
+      },
       "DocumentKind": {
         "type": "string",
         "description": "The kind of ID document a guest document is.",
@@ -7198,6 +7587,25 @@
       "Grant": {
         "type": "object",
         "description": "A role held tenant-wide (`property_id: None`) or for one property.",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "property_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          }
+        }
+      },
+      "GrantSpec": {
+        "type": "object",
+        "description": "A grant to give: a role, tenant-wide (`property_id: None`) or for one property.",
         "required": [
           "role"
         ],
@@ -7311,6 +7719,110 @@
           "driving_licence",
           "other"
         ]
+      },
+      "Invitation": {
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "display_name",
+          "grants",
+          "status",
+          "created_at",
+          "expires_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GrantSpec"
+            }
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "invited_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/InvitationStatus"
+          }
+        }
+      },
+      "InvitationPreview": {
+        "type": "object",
+        "description": "What the invitation page shows before accepting.",
+        "required": [
+          "tenant_name",
+          "email",
+          "grants",
+          "existing_account"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "existing_account": {
+            "type": "boolean",
+            "description": "An account has the email: the page asks the person to sign in as it, not for a password."
+          },
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PreviewGrant"
+            }
+          },
+          "inviter": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` once the inviter's account is deleted."
+          },
+          "tenant_name": {
+            "type": "string"
+          }
+        }
+      },
+      "InvitationStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "accepted",
+          "revoked",
+          "expired"
+        ]
+      },
+      "InvitationTokenRequest": {
+        "type": "object",
+        "description": "The token from an invitation's link.",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        }
       },
       "InvoiceSummary": {
         "type": "object",
@@ -7803,6 +8315,44 @@
               "null"
             ],
             "format": "int32"
+          }
+        }
+      },
+      "Member": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "email",
+          "display_name",
+          "grants",
+          "joined_at",
+          "version"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GrantSpec"
+            }
+          },
+          "joined_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "For `If-Match` on [`set_grants`]; bumps on every membership change."
           }
         }
       },
@@ -8764,6 +9314,25 @@
           }
         }
       },
+      "PreviewGrant": {
+        "type": "object",
+        "description": "One role an invitation gives.",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "property_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` for all properties."
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          }
+        }
+      },
       "Price": {
         "type": "object",
         "description": "A price, net of tax, in minor units of the property's base currency.",
@@ -9004,6 +9573,17 @@
           },
           "currency": {
             "type": "string"
+          },
+          "deposit_rule": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DepositRule",
+                "description": "The plan's own deposit rule; a derived plan never takes its parent's."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "depth": {
             "type": "integer",
@@ -9409,7 +9989,8 @@
           "front_desk",
           "housekeeping",
           "accountant",
-          "hk_supervisor"
+          "hk_supervisor",
+          "pos"
         ]
       },
       "Room": {
@@ -9757,6 +10338,21 @@
               "format": "uuid"
             },
             "description": "1 to 500 rooms of the property."
+          }
+        }
+      },
+      "SetGrantsRequest": {
+        "type": "object",
+        "required": [
+          "grants"
+        ],
+        "properties": {
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GrantSpec"
+            },
+            "description": "Replaces every grant the member holds: 1 to 50 of them."
           }
         }
       },
@@ -10309,6 +10905,13 @@
             "type": "string",
             "format": "uuid"
           },
+          "sltda_licence": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The SLTDA licence number printed under the TIN on invoices."
+          },
           "tdl_small_turnover": {
             "type": "boolean",
             "description": "The tourism development levy's small-turnover band (0.5% instead of 1%), used when the preset is applied."
@@ -10803,7 +11406,7 @@
       },
       "UpdateRatePlanRequest": {
         "type": "object",
-        "description": "Fields left out stay as they are; `residency` and `cancellation_policy_id` sent as `null` are cleared.\nThe code, kind and currency never change.",
+        "description": "Fields left out stay as they are; `residency`, `cancellation_policy_id` and `deposit_rule` sent as `null` are\ncleared.\nThe code, kind and currency never change.",
         "properties": {
           "active": {
             "type": [
@@ -10827,6 +11430,17 @@
               "null"
             ],
             "format": "uuid"
+          },
+          "deposit_rule": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DepositRule",
+                "description": "Changing it leaves existing bookings alone: each room keeps the rule it was booked under."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "derive_mode": {
             "oneOf": [
@@ -11124,7 +11738,7 @@
       },
       "UpdateTaxSettingsRequest": {
         "type": "object",
-        "description": "Fields left out keep their value; `null` clears `tin`, `legal_name` or `address`.",
+        "description": "Fields left out keep their value; `null` clears `tin`, `sltda_licence`, `legal_name` or `address`.",
         "properties": {
           "accepted_currencies": {
             "type": [
@@ -11147,6 +11761,13 @@
               "string",
               "null"
             ]
+          },
+          "sltda_licence": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "1 to 50 characters, with no whitespace around them."
           },
           "tdl_small_turnover": {
             "type": [

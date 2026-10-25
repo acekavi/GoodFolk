@@ -56,6 +56,97 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_invitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invitations/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Public. With a session, accepts as its user (whose email must be the invitation's) and switches the session to the
+         *     tenant. Without one, creates the account with `password` (409 "Sign in as <email> to accept" if the email already
+         *     has one) and signs it in. Answers 410 and 429 as preview does.
+         */
+        post: operations["accept_invitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invitations/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Public. An unknown, used, expired or revoked token is 410 "This invitation is no longer valid". After 5 failed
+         *     attempts with one token within 15 minutes, further ones are 429 until the window passes.
+         */
+        post: operations["preview_invitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invitations/{invitation}/resend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sends a pending or expired invitation again with a new link, valid for 7 days from now. The old link stops working. */
+        post: operations["resend_invitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invitations/{invitation}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revokes a pending invitation: its link answers 410. */
+        post: operations["revoke_invitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me": {
         parameters: {
             query?: never;
@@ -65,6 +156,40 @@ export interface paths {
         };
         get: operations["me"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/members/{user}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Removes a member from the tenant and ends their sessions in it: their next request is 401. */
+        delete: operations["revoke_member"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/members/{user}/grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Replaces a member's grants. They take effect on the member's next request. */
+        put: operations["set_member_grants"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1761,6 +1886,14 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AcceptInvitationRequest: {
+            /**
+             * @description Needed when no account has the invitation's email (12 to 128 characters, as at sign-up), and ignored when the
+             *     request comes with a session.
+             */
+            password?: string | null;
+            token: string;
+        };
         /** @description A company or travel agent a reservation can be billed to. */
         Account: {
             active: boolean;
@@ -2106,6 +2239,13 @@ export interface components {
             /** @description Prices the guest's stays: some plans sell only to residents or only to non-residents. */
             residency: components["schemas"]["Residency"];
         };
+        CreateInvitationRequest: {
+            /** @description 1 to 200 characters: the new account's name. */
+            display_name: string;
+            email: string;
+            /** @description 1 to 50 grants; `owner` is never given by invitation. */
+            grants: components["schemas"]["GrantSpec"][];
+        };
         CreateLaundryOrderRequest: {
             /** @description 1 to 50 lines; a price may repeat. */
             lines: components["schemas"]["LaundryOrderLineRequest"][];
@@ -2201,6 +2341,7 @@ export interface components {
             code: string;
             /** @description ISO 4217. A derived plan uses its parent's. */
             currency: string;
+            deposit_rule?: components["schemas"]["DepositRule"] | null;
             derive_mode?: components["schemas"]["ChangeMode"] | null;
             /**
              * Format: int64
@@ -2379,6 +2520,35 @@ export interface components {
              */
             version: number;
         };
+        /** @description When a deposit is due: on the business date of the booking, or `days` (0 to 365) before arrival. */
+        DepositDue: {
+            /** @enum {string} */
+            type: "at_booking";
+        } | {
+            /** Format: int32 */
+            days: number;
+            /** @enum {string} */
+            type: "days_before_arrival";
+        };
+        /**
+         * @description How a deposit is priced: `percent` = basis points of the stay's total, `nights` = the first N nights' room
+         *     amounts, `amount` = minor units in the plan's currency.
+         * @enum {string}
+         */
+        DepositKind: "percent" | "nights" | "amount";
+        /**
+         * @description What a plan asks for in advance. Advisory: it is shown and listed, never enforced. Copied onto each room at
+         *     booking (`reservation_room.deposit_terms`), so a later change leaves existing bookings alone.
+         */
+        DepositRule: {
+            due: components["schemas"]["DepositDue"];
+            kind: components["schemas"]["DepositKind"];
+            /**
+             * Format: int64
+             * @description 1 to 10000 basis points (`percent`), 1 to 30 nights (`nights`) or 1 to 100000000000 minor units (`amount`).
+             */
+            value: number;
+        };
         /**
          * @description The kind of ID document a guest document is.
          * @enum {string}
@@ -2386,6 +2556,12 @@ export interface components {
         DocumentKind: "passport" | "nic" | "driving_licence" | "other";
         /** @description A role held tenant-wide (`property_id: None`) or for one property. */
         Grant: {
+            /** Format: uuid */
+            property_id?: string | null;
+            role: components["schemas"]["Role"];
+        };
+        /** @description A grant to give: a role, tenant-wide (`property_id: None`) or for one property. */
+        GrantSpec: {
             /** Format: uuid */
             property_id?: string | null;
             role: components["schemas"]["Role"];
@@ -2423,6 +2599,36 @@ export interface components {
          * @enum {string}
          */
         IdDocType: "passport" | "nic" | "driving_licence" | "other";
+        Invitation: {
+            /** Format: date-time */
+            created_at: string;
+            display_name: string;
+            email: string;
+            /** Format: date-time */
+            expires_at: string;
+            grants: components["schemas"]["GrantSpec"][];
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            invited_by?: string | null;
+            status: components["schemas"]["InvitationStatus"];
+        };
+        /** @description What the invitation page shows before accepting. */
+        InvitationPreview: {
+            email: string;
+            /** @description An account has the email: the page asks the person to sign in as it, not for a password. */
+            existing_account: boolean;
+            grants: components["schemas"]["PreviewGrant"][];
+            /** @description `null` once the inviter's account is deleted. */
+            inviter?: string | null;
+            tenant_name: string;
+        };
+        /** @enum {string} */
+        InvitationStatus: "pending" | "accepted" | "revoked" | "expired";
+        /** @description The token from an invitation's link. */
+        InvitationTokenRequest: {
+            token: string;
+        };
         /**
          * @description What staff see of an invoice or credit note: never its data snapshot or its PDF's object key, which only the
          *     audited link reaches.
@@ -2625,6 +2831,20 @@ export interface components {
             status: components["schemas"]["AssetStatus"];
             /** Format: int32 */
             width?: number | null;
+        };
+        Member: {
+            display_name: string;
+            email: string;
+            grants: components["schemas"]["GrantSpec"][];
+            /** Format: date-time */
+            joined_at: string;
+            /** Format: uuid */
+            user_id: string;
+            /**
+             * Format: int32
+             * @description For `If-Match` on [`set_grants`]; bumps on every membership change.
+             */
+            version: number;
         };
         /** @description A room after [`modify_room`]. */
         ModifiedRoom: {
@@ -3014,6 +3234,12 @@ export interface components {
             /** @description The property's rules now, as [`list_tax_rules`] returns them. */
             rules: components["schemas"]["TaxRuleRow"][];
         };
+        /** @description One role an invitation gives. */
+        PreviewGrant: {
+            /** @description `null` for all properties. */
+            property_name?: string | null;
+            role: components["schemas"]["Role"];
+        };
         /** @description A price, net of tax, in minor units of the property's base currency. */
         Price: {
             active: boolean;
@@ -3106,6 +3332,7 @@ export interface components {
             cancellation_policy_id?: string | null;
             code: string;
             currency: string;
+            deposit_rule?: components["schemas"]["DepositRule"] | null;
             /**
              * Format: int32
              * @description Levels of plans above this one: 0 for standard and custom plans.
@@ -3270,7 +3497,7 @@ export interface components {
             weekdays?: number[];
         };
         /** @enum {string} */
-        Role: "owner" | "manager" | "front_desk" | "housekeeping" | "accountant" | "hk_supervisor";
+        Role: "owner" | "manager" | "front_desk" | "housekeeping" | "accountant" | "hk_supervisor" | "pos";
         Room: {
             active: boolean;
             floor?: string | null;
@@ -3407,6 +3634,10 @@ export interface components {
             condition: components["schemas"]["Condition"];
             /** @description 1 to 500 rooms of the property. */
             room_ids: string[];
+        };
+        SetGrantsRequest: {
+            /** @description Replaces every grant the member holds: 1 to 50 of them. */
+            grants: components["schemas"]["GrantSpec"][];
         };
         SetLaundryOrderStatusRequest: {
             /** @description The next step (`processing`, `ready`, then `delivered`), or `cancelled` from any step before `delivered`. */
@@ -3606,6 +3837,8 @@ export interface components {
             legal_name?: string | null;
             /** Format: uuid */
             property_id: string;
+            /** @description The SLTDA licence number printed under the TIN on invoices. */
+            sltda_licence?: string | null;
             /** @description The tourism development levy's small-turnover band (0.5% instead of 1%), used when the preset is applied. */
             tdl_small_turnover: boolean;
             /** @description The taxpayer identification number printed on invoices. */
@@ -3755,7 +3988,8 @@ export interface components {
             name?: string | null;
         };
         /**
-         * @description Fields left out stay as they are; `residency` and `cancellation_policy_id` sent as `null` are cleared.
+         * @description Fields left out stay as they are; `residency`, `cancellation_policy_id` and `deposit_rule` sent as `null` are
+         *     cleared.
          *     The code, kind and currency never change.
          */
         UpdateRatePlanRequest: {
@@ -3764,6 +3998,7 @@ export interface components {
             allowed_meal_plans?: components["schemas"]["MealPlan"][] | null;
             /** Format: uuid */
             cancellation_policy_id?: string | null;
+            deposit_rule?: components["schemas"]["DepositRule"] | null;
             derive_mode?: components["schemas"]["ChangeMode"] | null;
             /** Format: int64 */
             derive_value?: number | null;
@@ -3836,12 +4071,14 @@ export interface components {
             /** Format: int32 */
             sequence?: number | null;
         };
-        /** @description Fields left out keep their value; `null` clears `tin`, `legal_name` or `address`. */
+        /** @description Fields left out keep their value; `null` clears `tin`, `sltda_licence`, `legal_name` or `address`. */
         UpdateTaxSettingsRequest: {
             /** @description ISO 4217 codes, 1 to 20, including the base currency. */
             accepted_currencies?: string[] | null;
             address?: string | null;
             legal_name?: string | null;
+            /** @description 1 to 50 characters, with no whitespace around them. */
+            sltda_licence?: string | null;
             /** @description The tourism development levy's small-turnover band; takes effect on the rules when the preset is applied. */
             tdl_small_turnover?: boolean | null;
             /** @description 5 to 20 digits, capital letters or `-`. */
@@ -3972,6 +4209,215 @@ export interface operations {
             };
         };
     };
+    create_invitation: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateInvitationRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Invitation"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    accept_invitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcceptInvitationRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Profile"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_invitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvitationTokenRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationPreview"];
+                };
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resend_invitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitation: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Invitation"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revoke_invitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitation: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Invitation"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     me: {
         parameters: {
             query?: never;
@@ -3990,6 +4436,109 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revoke_member: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_member_grants: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description the member's version, e.g. "3" */
+                "If-Match": string;
+            };
+            path: {
+                user: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetGrantsRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "1"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Member"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };

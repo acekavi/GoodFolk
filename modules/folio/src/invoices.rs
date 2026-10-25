@@ -123,6 +123,7 @@ struct Issuer {
     legal_name: String,
     address: Option<String>,
     tin: Option<String>,
+    sltda_licence: Option<String>,
     vat_registered: bool,
     base_currency: String,
     business_date: Date,
@@ -130,7 +131,7 @@ struct Issuer {
 
 async fn issuer(tx: &mut Tx, property: Uuid) -> Result<Issuer, FolioError> {
     sqlx::query_as(
-        "select code, coalesce(legal_name, name) as legal_name, address, tin, vat_registered,
+        "select code, coalesce(legal_name, name) as legal_name, address, tin, sltda_licence, vat_registered,
                 base_currency::text as base_currency, business_date
          from property where id = $1 for share",
     )
@@ -193,7 +194,12 @@ pub async fn issue_invoice(
     let serial = format!("{}-{:04}-{number:06}", issuer.code, issuer.business_date.year());
     let data = InvoiceData {
         kind: InvoiceKind::Invoice,
-        supplier: Supplier { legal_name: issuer.legal_name, address: issuer.address, tin: issuer.tin },
+        supplier: Supplier {
+            legal_name: issuer.legal_name,
+            address: issuer.address,
+            tin: issuer.tin,
+            sltda_licence: issuer.sltda_licence,
+        },
         purchaser,
         serial,
         title: if issuer.vat_registered { "TAX INVOICE" } else { "INVOICE" }.into(),

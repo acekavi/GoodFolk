@@ -1,7 +1,9 @@
 mod common;
 
 use common::Hotel;
-use rates::{ChangeMode, PlanKind, RatePlanChanges, RatesError, Residency, Segment};
+use rates::{
+    ChangeMode, DepositDue, DepositKind, DepositRule, PlanKind, RatePlanChanges, RatesError, Residency, Segment,
+};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use uuid::Uuid;
 
@@ -190,4 +192,101 @@ async fn codes_are_unique_and_updates_need_the_current_version(_: PgPoolOptions,
     assert!(matches!(stale, Err(RatesError::VersionMismatch("rate plan"))), "{stale:?}");
     assert!(matches!(unknown, Err(RatesError::NotFound("rate plan"))), "{unknown:?}");
     assert!(matches!(elsewhere, Err(RatesError::NotFound("property"))), "{elsewhere:?}");
+}
+
+fn deposit(kind: DepositKind, value: i64, due: DepositDue) -> DepositRule {
+    DepositRule { kind, value, due }
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_deposit_rule_is_set_changed_and_cleared_with_the_plan(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let rule = deposit(DepositKind::Percent, 3_000, DepositDue::DaysBeforeArrival { days: 14 });
+    let bar =
+        hotel.plan(rates::NewRatePlan { deposit_rule: Some(rule.clone()), ..hotel.standard_plan("BAR", "USD") }).await;
+    assert_eq!(bar.deposit_rule, Some(rule.clone()));
+    assert_eq!(hotel.plans().await[0].deposit_rule, Some(rule.clone()));
+    let stored: serde_json::Value = sqlx::query_scalar("select deposit_rule from rate_plan where id = $1")
+        .bind(bar.id)
+        .fetch_one(&mut *hotel.tx().await)
+        .await
+        .unwrap();
+    assert_eq!(
+        stored,
+        serde_json::json!({ "kind": "percent", "value": 3000, "due": { "type": "days_before_arrival", "days": 14 } })
+    );
+
+    let renamed =
+        hotel.try_update(&bar, RatePlanChanges { name: Some("Best".into()), ..Default::default() }).await.unwrap();
+    assert_eq!(renamed.deposit_rule, Some(rule), "left alone when not named");
+
+    let nights = deposit(DepositKind::Nights, 1, DepositDue::AtBooking);
+    let changes = RatePlanChanges { deposit_rule: Some(Some(nights.clone())), ..Default::default() };
+    let changed = hotel.try_update(&renamed, changes).await.unwrap();
+    assert_eq!(changed.deposit_rule, Some(nights));
+
+    let cleared =
+        hotel.try_update(&changed, RatePlanChanges { deposit_rule: Some(None), ..Default::default() }).await.unwrap();
+    assert_eq!(cleared.deposit_rule, None);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_deposit_rule_stays_in_range(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let at_booking = DepositDue::AtBooking;
+    let cases = [
+        (deposit(DepositKind::Percent, 0, at_booking.clone()), "a percent deposit is 1 to 10000 basis points"),
+        (deposit(DepositKind::Percent, 10_001, at_booking.clone()), "a percent deposit is 1 to 10000 basis points"),
+        (deposit(DepositKind::Nights, 0, at_booking.clone()), "a nights deposit is 1 to 30 nights"),
+        (deposit(DepositKind::Nights, 31, at_booking.clone()), "a nights deposit is 1 to 30 nights"),
+        (deposit(DepositKind::Amount, 0, at_booking.clone()), "an amount deposit is 1 to 100000000000 minor units"),
+        (
+            deposit(DepositKind::Amount, 1, DepositDue::DaysBeforeArrival { days: -1 }),
+            "a deposit is due 0 to 365 days before arrival",
+        ),
+        (
+            deposit(DepositKind::Amount, 1, DepositDue::DaysBeforeArrival { days: 366 }),
+            "a deposit is due 0 to 365 days before arrival",
+        ),
+    ];
+    for (rule, message) in cases {
+        let input = rates::NewRatePlan { deposit_rule: Some(rule.clone()), ..hotel.standard_plan("BAD", "USD") };
+        assert_eq!(invalid(hotel.try_plan(input).await), message, "{rule:?} on create");
+    }
+
+    let edges = [
+        deposit(DepositKind::Percent, 10_000, DepositDue::DaysBeforeArrival { days: 0 }),
+        deposit(DepositKind::Nights, 30, DepositDue::DaysBeforeArrival { days: 365 }),
+        deposit(DepositKind::Amount, 1, at_booking.clone()),
+    ];
+    for (n, rule) in edges.into_iter().enumerate() {
+        let input = rates::NewRatePlan { deposit_rule: Some(rule), ..hotel.standard_plan(&format!("OK{n}"), "USD") };
+        hotel.plan(input).await;
+    }
+
+    let bar = hotel.plan(hotel.standard_plan("BAR", "USD")).await;
+    let changes = RatePlanChanges {
+        deposit_rule: Some(Some(deposit(DepositKind::Nights, 31, at_booking))),
+        ..Default::default()
+    };
+    assert_eq!(invalid(hotel.try_update(&bar, changes).await), "a nights deposit is 1 to 30 nights");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_derived_plan_has_its_own_deposit_rule(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let rule = deposit(DepositKind::Amount, 5_000, DepositDue::AtBooking);
+    let bar =
+        hotel.plan(rates::NewRatePlan { deposit_rule: Some(rule.clone()), ..hotel.standard_plan("BAR", "USD") }).await;
+    let ota = hotel.plan(hotel.derived_plan("OTA", &bar, ChangeMode::Percent, 1_000)).await;
+    assert_eq!(ota.deposit_rule, None, "not inherited");
+
+    let own = deposit(DepositKind::Nights, 2, DepositDue::DaysBeforeArrival { days: 3 });
+    let ota = hotel
+        .try_update(&ota, RatePlanChanges { deposit_rule: Some(Some(own.clone())), ..Default::default() })
+        .await
+        .unwrap();
+    let listed = hotel.plans().await;
+    assert_eq!(listed[0].deposit_rule, Some(rule));
+    assert_eq!((listed[1].id, listed[1].deposit_rule.clone()), (ota.id, Some(own)));
 }

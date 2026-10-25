@@ -11,6 +11,7 @@ domain.workspace = true
 folio.workspace = true
 fx.workspace = true
 property.workspace = true
+rates.workspace = true
 reservations.workspace = true
 rooms.workspace = true
 rust_decimal.workspace = true

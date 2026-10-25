@@ -22,9 +22,11 @@
 	import { formatMoney } from '$lib/rates';
 	import {
 		fetchReservation,
+		fetchReservationDeposit,
 		formatStay,
 		historyLabel,
 		idDocText,
+		reservationDepositKey,
 		reservationKey,
 		reservationListsKey,
 		sourceLabel,
@@ -63,6 +65,12 @@
 		queryFn: ({ signal }) => fetchReservation(propertyId, id, signal)
 	}));
 	const data = $derived(reservation.data);
+	// What the rooms' deposit rules ask for, and what the deposit folio has taken: advisory, so a failure only
+	// leaves it out.
+	const deposit = createQuery(() => ({
+		queryKey: reservationDepositKey(id),
+		queryFn: ({ signal }) => fetchReservationDeposit(propertyId, id, signal)
+	}));
 	const stay = $derived.by(() => {
 		const rooms = data?.rooms ?? [];
 		if (rooms.length === 0) return '';
@@ -192,6 +200,15 @@
 					<dd>
 						{data.totals.map((total) => money(total.amount, total.currency)).join(' + ') || '–'}
 					</dd>
+					{#each deposit.data ?? [] as line (line.currency)}
+						<dt>Deposit</dt>
+						<dd>
+							Due {money(line.amount, line.currency)} by {line.dueDate} · paid {money(
+								line.paid,
+								line.currency
+							)} · outstanding {money(line.outstanding, line.currency)}
+						</dd>
+					{/each}
 					<dt>Account</dt>
 					<dd>
 						{#if manage}

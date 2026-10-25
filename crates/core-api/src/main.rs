@@ -36,12 +36,16 @@ async fn serve() -> anyhow::Result<()> {
     let media = MediaServices::new(storage, &config.media_svc_url, media_auth.clone(), Arc::new(config.internal_auth))?;
     let jobs = JobsServices::new(&config.jobs_svc_url, Arc::new(config.jobs_svc_auth))?;
     let state = AppState::with_media(pool.clone(), config.production, config.guest_id_keys, media).with_jobs(jobs);
-    // Pushes to media-svc carry the same credentials as its gRPC calls.
+    // Pushes carry the same credentials as media-svc's gRPC calls. The push bus is for local runs only, where every
+    // service takes the one shared secret, so jobs-svc's `mail-send` pushes pass too.
     let push_auth: ::events::HeaderProvider = Arc::new(move || {
         let media_auth = media_auth.clone();
         Box::pin(async move { media_auth.header().await.map_err(|e| ::events::BusError::Retryable(e.to_string())) })
     });
-    let bus = ::events::bus_from_env(&[::media::PROCESS_TOPIC, ::folio::INVOICE_RENDER_TOPIC], Some(push_auth))?;
+    let bus = ::events::bus_from_env(
+        &[::media::PROCESS_TOPIC, ::folio::INVOICE_RENDER_TOPIC, ::mail::SEND_TOPIC],
+        Some(push_auth),
+    )?;
     // One direct connection, kept open, used only for LISTEN (and to reconnect it).
     let listen_pool = PgPoolOptions::new()
         .max_connections(1)

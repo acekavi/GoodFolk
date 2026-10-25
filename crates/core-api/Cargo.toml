@@ -24,6 +24,7 @@ garde.workspace = true
 housekeeping.workspace = true
 identity.workspace = true
 laundry.workspace = true
+mail.workspace = true
 media.workspace = true
 media-types.workspace = true
 mimalloc.workspace = true

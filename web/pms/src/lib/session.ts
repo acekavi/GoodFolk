@@ -56,7 +56,7 @@ const ACTIONS = {
 	/** Manual exchange rates; mirrors `FxOverride`. */
 	fxOverride: ['owner', 'manager'],
 	/** POS bills; mirrors `PosPost`. */
-	posPost: ['owner', 'manager'],
+	posPost: ['owner', 'manager', 'pos'],
 	/** The night-audit review, starting and retrying the close, and the audit history; mirrors `NightAudit`. */
 	nightAudit: ['owner', 'manager', 'front_desk'],
 	/** Linen items, locations, par, stock, the movement ledger and laundry batches; mirrors `LinenView`. */
@@ -68,7 +68,9 @@ const ACTIONS = {
 	/** Guests' laundry orders; mirrors `LaundryOrders`. */
 	laundryOrders: ['owner', 'manager', 'front_desk', 'hk_supervisor', 'housekeeping'],
 	/** The guest laundry price list; mirrors `LaundryPricesManage`. */
-	laundryPricesManage: ['owner', 'manager']
+	laundryPricesManage: ['owner', 'manager'],
+	/** Invite staff, change their roles and remove them; mirrors `StaffManage`. */
+	staffManage: ['owner', 'manager']
 } satisfies Record<string, Role[]>;
 
 /** UI hint only; the API enforces permissions. A grant counts tenant-wide or for `propertyId`. */
@@ -78,4 +80,15 @@ export function can(profile: Profile, action: keyof typeof ACTIONS, propertyId: 
 		(grant) =>
 			roles.includes(grant.role) && (grant.property_id == null || grant.property_id === propertyId)
 	);
+}
+
+/** UI hint only; the API enforces permissions. Whether some grant, at any property or tenant-wide, allows `action`. */
+export function canAnywhere(profile: Profile, action: keyof typeof ACTIONS): boolean {
+	const roles: Role[] = ACTIONS[action];
+	return profile.grants.some((grant) => roles.includes(grant.role));
+}
+
+/** Whether every grant is `pos`: a till, an API client that is shown no pages. UI hint only. */
+export function posOnly(profile: Pick<Profile, 'grants'>): boolean {
+	return profile.grants.length > 0 && profile.grants.every((grant) => grant.role === 'pos');
 }

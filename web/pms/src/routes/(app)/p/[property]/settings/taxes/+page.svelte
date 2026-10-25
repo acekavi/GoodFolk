@@ -48,6 +48,7 @@
 		return {
 			vatRegistered: settings.vatRegistered,
 			tin: settings.tin ?? '',
+			sltdaLicence: settings.sltdaLicence ?? '',
 			tdlSmallTurnover: settings.tdlSmallTurnover,
 			legalName: settings.legalName ?? '',
 			address: settings.address ?? '',
@@ -100,6 +101,7 @@
 		const body = {
 			vat_registered: draft.vatRegistered,
 			tin: draft.tin.trim() || null,
+			sltda_licence: draft.sltdaLicence.trim() || null,
 			tdl_small_turnover: draft.tdlSmallTurnover,
 			legal_name: draft.legalName.trim() || null,
 			address: draft.address.trim() || null,
@@ -217,7 +219,7 @@
 	}
 </script>
 
-<h1>Taxes</h1>
+<h1>Taxes and invoices</h1>
 {#if !manage}
 	<p class="hint">Only the owner can change the property's taxes.</p>
 {/if}
@@ -237,6 +239,13 @@
 					TIN
 					<input maxlength="20" pattern={'[0-9A-Z-]{5,20}'} bind:value={draft.tin} />
 					<span class="hint">Printed on invoices; a tax invoice needs it.</span>
+				</label>
+				<label>
+					SLTDA licence
+					<input maxlength="50" bind:value={draft.sltdaLicence} />
+					<span class="hint"
+						>The tourism authority's licence number, printed on invoices under the TIN.</span
+					>
 				</label>
 				<label class="check">
 					<input type="checkbox" bind:checked={draft.tdlSmallTurnover} /> Small-turnover TDL band (0.5%)

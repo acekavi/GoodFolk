@@ -1,8 +1,8 @@
 use db::{Tx, UserId};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Owner,
@@ -11,6 +11,7 @@ pub enum Role {
     Housekeeping,
     Accountant,
     HkSupervisor,
+    Pos,
 }
 
 impl Role {
@@ -22,17 +23,16 @@ impl Role {
             Role::Housekeeping => "housekeeping",
             Role::Accountant => "accountant",
             Role::HkSupervisor => "hk_supervisor",
+            Role::Pos => "pos",
         }
     }
 
     pub fn parse(value: &str) -> Option<Role> {
-        [Role::Owner, Role::Manager, Role::FrontDesk, Role::Housekeeping, Role::Accountant, Role::HkSupervisor]
-            .into_iter()
-            .find(|role| role.as_str() == value)
+        ALL_ROLES.into_iter().find(|role| role.as_str() == value)
     }
 
     /// Anything not listed is denied, so a new permission is granted only where it is added.
-    fn permits(self, permission: Permission) -> bool {
+    pub(crate) fn permits(self, permission: Permission) -> bool {
         use Permission::*;
         match self {
             Role::Owner => true,
@@ -67,6 +67,7 @@ impl Role {
                     | LinenManage
                     | LaundryOrders
                     | LaundryPricesManage
+                    | StaffManage
             ),
             Role::FrontDesk => matches!(
                 permission,
@@ -117,6 +118,7 @@ impl Role {
                     | LinenManage
                     | LaundryOrders
             ),
+            Role::Pos => matches!(permission, PosPost),
             Role::Accountant => {
                 matches!(
                     permission,
@@ -136,66 +138,211 @@ impl Role {
 /// Permissions are added here as each phase introduces new actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Permission {
+    /// See [`describe`].
     PropertiesView,
+    /// See [`describe`].
     PropertiesCreate,
-    /// Change a property's settings (name, check-in and check-out times).
+    /// See [`describe`].
     PropertiesManage,
-    /// See room types, rooms, sections and block reasons.
+    /// See [`describe`].
     RoomsView,
-    /// Create, change, deactivate and reorder room types, rooms, sections and block reasons.
+    /// See [`describe`].
     RoomsManage,
-    /// See inventory counts and room blocks.
+    /// See [`describe`].
     InventoryView,
-    /// Block rooms and release or shorten blocks.
+    /// See [`describe`].
     InventoryBlock,
-    /// See rate plans, prices, restrictions, meal supplements and cancellation policies, and quote stays.
+    /// See [`describe`].
     RatesView,
-    /// Create and change rate plans, prices, restrictions, meal supplements and cancellation policies.
+    /// See [`describe`].
     RatesManage,
-    /// See reservations, what is free to sell, and guests.
+    /// See [`describe`].
     ReservationsView,
-    /// Create guests and reservations, change guests, cancel reservation rooms, and assign and unassign rooms.
+    /// See [`describe`].
     ReservationsManage,
-    /// Check a reservation room in, undo a same-day check-in, and check it out.
+    /// See [`describe`].
     FrontDeskCheckIn,
-    /// See room conditions, the housekeeping board, assignments and room issues.
+    /// See [`describe`].
     HousekeepingView,
-    /// Move a room through its cleaning steps and resolve room issues.
+    /// See [`describe`].
     HousekeepingUpdate,
-    /// Assign rooms, inspect, set any condition, and override a check-in on a room that is not ready.
+    /// See [`describe`].
     HousekeepingSupervise,
-    /// Report a problem with a room, without changing its condition.
+    /// See [`describe`].
     RoomIssuesReport,
-    /// Upload, reorder, caption and remove room type gallery photos.
+    /// See [`describe`].
     MediaManage,
-    /// Upload, view (through an audited signed link) and delete guests' ID documents.
+    /// See [`describe`].
     GuestDocumentsManage,
-    /// Folios, lines, payments, invoices.
+    /// See [`describe`].
     FolioView,
-    /// Charges, payments.
+    /// See [`describe`].
     FolioPost,
-    /// Reversals, transfers, refunds, routing, credit notes, posting tonight's charges.
+    /// See [`describe`].
     FolioAdjust,
-    /// Issue invoices, invoice links.
+    /// See [`describe`].
     InvoiceIssue,
-    /// Tax rules, outlets, property tax settings.
+    /// See [`describe`].
     TaxSettingsManage,
-    /// Manual exchange rates.
+    /// See [`describe`].
     FxOverride,
-    /// POS bills.
+    /// See [`describe`].
     PosPost,
-    /// Allows: the night-audit review, starting and retrying the close, and the audit history.
+    /// See [`describe`].
     NightAudit,
-    /// Allows: seeing linen items, locations, par levels, stock, the movement ledger and laundry batches.
+    /// See [`describe`].
     LinenView,
-    /// Allows: receiving, transferring, sending and returning linen (laundry batches out and back).
+    /// See [`describe`].
     LinenMove,
-    /// Allows: linen items, locations, par levels and write-offs.
+    /// See [`describe`].
     LinenManage,
-    /// Allows: seeing guests' laundry orders, collecting one from a stay, moving it along, delivering and cancelling it.
+    /// See [`describe`].
     LaundryOrders,
-    /// Allows: creating and changing the guest laundry price list.
+    /// See [`describe`].
     LaundryPricesManage,
+    /// See [`describe`].
+    StaffManage,
+}
+
+impl Permission {
+    /// The permission's name as the permission matrix shows it, such as `StaffManage`.
+    pub fn name(self) -> &'static str {
+        use Permission::*;
+        match self {
+            PropertiesView => "PropertiesView",
+            PropertiesCreate => "PropertiesCreate",
+            PropertiesManage => "PropertiesManage",
+            RoomsView => "RoomsView",
+            RoomsManage => "RoomsManage",
+            InventoryView => "InventoryView",
+            InventoryBlock => "InventoryBlock",
+            RatesView => "RatesView",
+            RatesManage => "RatesManage",
+            ReservationsView => "ReservationsView",
+            ReservationsManage => "ReservationsManage",
+            FrontDeskCheckIn => "FrontDeskCheckIn",
+            HousekeepingView => "HousekeepingView",
+            HousekeepingUpdate => "HousekeepingUpdate",
+            HousekeepingSupervise => "HousekeepingSupervise",
+            RoomIssuesReport => "RoomIssuesReport",
+            MediaManage => "MediaManage",
+            GuestDocumentsManage => "GuestDocumentsManage",
+            FolioView => "FolioView",
+            FolioPost => "FolioPost",
+            FolioAdjust => "FolioAdjust",
+            InvoiceIssue => "InvoiceIssue",
+            TaxSettingsManage => "TaxSettingsManage",
+            FxOverride => "FxOverride",
+            PosPost => "PosPost",
+            NightAudit => "NightAudit",
+            LinenView => "LinenView",
+            LinenMove => "LinenMove",
+            LinenManage => "LinenManage",
+            LaundryOrders => "LaundryOrders",
+            LaundryPricesManage => "LaundryPricesManage",
+            StaffManage => "StaffManage",
+        }
+    }
+}
+
+/// Every permission, in declaration order.
+pub const ALL_PERMISSIONS: [Permission; 32] = [
+    Permission::PropertiesView,
+    Permission::PropertiesCreate,
+    Permission::PropertiesManage,
+    Permission::RoomsView,
+    Permission::RoomsManage,
+    Permission::InventoryView,
+    Permission::InventoryBlock,
+    Permission::RatesView,
+    Permission::RatesManage,
+    Permission::ReservationsView,
+    Permission::ReservationsManage,
+    Permission::FrontDeskCheckIn,
+    Permission::HousekeepingView,
+    Permission::HousekeepingUpdate,
+    Permission::HousekeepingSupervise,
+    Permission::RoomIssuesReport,
+    Permission::MediaManage,
+    Permission::GuestDocumentsManage,
+    Permission::FolioView,
+    Permission::FolioPost,
+    Permission::FolioAdjust,
+    Permission::InvoiceIssue,
+    Permission::TaxSettingsManage,
+    Permission::FxOverride,
+    Permission::PosPost,
+    Permission::NightAudit,
+    Permission::LinenView,
+    Permission::LinenMove,
+    Permission::LinenManage,
+    Permission::LaundryOrders,
+    Permission::LaundryPricesManage,
+    Permission::StaffManage,
+];
+
+/// Every role.
+pub const ALL_ROLES: [Role; 7] =
+    [Role::Owner, Role::Manager, Role::FrontDesk, Role::Housekeeping, Role::Accountant, Role::HkSupervisor, Role::Pos];
+
+/// The roles a manager may grant and act on; owners and managers are not junior.
+pub const JUNIOR_ROLES: [Role; 5] =
+    [Role::FrontDesk, Role::Housekeeping, Role::HkSupervisor, Role::Accountant, Role::Pos];
+
+/// What `permission` allows, as a sentence for the permission matrix.
+pub fn describe(permission: Permission) -> &'static str {
+    use Permission::*;
+    match permission {
+        PropertiesView => "See properties and their settings.",
+        PropertiesCreate => "Create properties.",
+        PropertiesManage => {
+            "Change a property's settings, such as its name, check-in and check-out times and audit time, and see its \
+             audit and drift ops alerts."
+        }
+        RoomsView => "See room types, rooms, sections and block reasons.",
+        RoomsManage => "Create, change, deactivate and reorder room types, rooms, sections and block reasons.",
+        InventoryView => "See inventory counts and room blocks.",
+        InventoryBlock => "Block rooms and release or shorten blocks.",
+        RatesView => {
+            "See rate plans, prices, restrictions, meal supplements and cancellation policies, and quote stays."
+        }
+        RatesManage => {
+            "Create and change rate plans, prices, restrictions, meal supplements and cancellation policies."
+        }
+        ReservationsView => "See reservations, what is free to sell, and guests.",
+        ReservationsManage => {
+            "Create guests and reservations, change guests, cancel reservation rooms, and assign and unassign rooms."
+        }
+        FrontDeskCheckIn => "Check a reservation room in, undo a same-day check-in, and check it out.",
+        HousekeepingView => "See room conditions, the housekeeping board, assignments and room issues.",
+        HousekeepingUpdate => "Move a room through its cleaning steps and resolve room issues.",
+        HousekeepingSupervise => {
+            "Assign rooms, inspect, set any condition, and override a check-in on a room that is not ready."
+        }
+        RoomIssuesReport => "Report a problem with a room, without changing its condition.",
+        MediaManage => "Upload, reorder, caption and remove room type gallery photos.",
+        GuestDocumentsManage => "Upload, view (through an audited signed link) and delete guests' ID documents.",
+        FolioView => "See folios, lines, payments and invoices.",
+        FolioPost => "Post charges and payments to folios.",
+        FolioAdjust => {
+            "Reverse, transfer, refund and route folio lines, issue credit notes, and post tonight's charges."
+        }
+        InvoiceIssue => "Issue invoices and open their links.",
+        TaxSettingsManage => "Change tax rules, outlets and a property's tax settings.",
+        FxOverride => "Set manual exchange rates.",
+        PosPost => "Post POS bills.",
+        NightAudit => "Review the night audit, start and retry the close, and see the audit history.",
+        LinenView => "See linen items, locations, par levels, stock, the movement ledger and laundry batches.",
+        LinenMove => "Receive, transfer, send and return linen (laundry batches out and back).",
+        LinenManage => "Change linen items, locations and par levels, and write linen off.",
+        LaundryOrders => {
+            "See guests' laundry orders, collect one from a stay, move it along, deliver it and cancel it."
+        }
+        LaundryPricesManage => "Create and change the guest laundry price list.",
+        StaffManage => {
+            "Invite staff, change their roles and remove them; managers only for junior roles at their properties."
+        }
+    }
 }
 
 /// A role held tenant-wide (`property_id: None`) or for one property.
@@ -211,6 +358,77 @@ pub fn allows(grants: &[Grant], permission: Permission, property: Option<Uuid>) 
         let in_scope = grant.property_id.is_none() || grant.property_id == property;
         in_scope && grant.role.permits(permission)
     })
+}
+
+/// The manager rules for giving `given`: nobody grants `owner`; owners give any other role; a manager gives only
+/// junior roles, at properties where they hold `manager`, or anywhere (and tenant-wide) with a tenant-wide `manager`
+/// grant. A refusal names the role or property.
+pub fn check_may_give(actor: &[Grant], given: &[Grant]) -> Result<(), String> {
+    let tenant_wide_manager = actor.iter().any(|g| g.role == Role::Manager && g.property_id.is_none());
+    for grant in given {
+        let role = grant.role.as_str();
+        if grant.role == Role::Owner {
+            return Err("nobody can grant the owner role".into());
+        }
+        if is_owner(actor) {
+            continue;
+        }
+        if !JUNIOR_ROLES.contains(&grant.role) {
+            return Err(format!("only owners can grant the {role} role"));
+        }
+        match grant.property_id {
+            None if !tenant_wide_manager => {
+                return Err(format!("a tenant-wide {role} grant needs a tenant-wide manager"));
+            }
+            Some(property)
+                if !tenant_wide_manager
+                    && !actor.iter().any(|g| g.role == Role::Manager && g.property_id == Some(property)) =>
+            {
+                return Err(format!("you do not manage property {property}"));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The manager rules for acting on a member holding `member`: owners act on anyone; a manager only on members whose
+/// every grant is a junior role at a property they manage (any property, with a tenant-wide `manager` grant). A
+/// member's tenant-wide grant needs a tenant-wide manager. A refusal names the role or property.
+pub fn check_may_act_on(actor: &[Grant], member: &[Grant]) -> Result<(), String> {
+    if is_owner(actor) {
+        return Ok(());
+    }
+    if !actor.iter().any(|g| g.role == Role::Manager) {
+        return Err("only owners and managers manage staff".into());
+    }
+    if let Some(grant) = member.iter().find(|g| !JUNIOR_ROLES.contains(&g.role)) {
+        return Err(format!("only owners can manage a member with the {} role", grant.role.as_str()));
+    }
+    let tenant_wide_manager = actor.iter().any(|g| g.role == Role::Manager && g.property_id.is_none());
+    if tenant_wide_manager {
+        return Ok(());
+    }
+    for grant in member {
+        match grant.property_id {
+            None => {
+                return Err(format!(
+                    "a member with a tenant-wide {} grant needs a tenant-wide manager",
+                    grant.role.as_str()
+                ));
+            }
+            Some(property) if !actor.iter().any(|g| g.role == Role::Manager && g.property_id == Some(property)) => {
+                return Err(format!("you do not manage property {property}"));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// Owners are always tenant-wide.
+fn is_owner(grants: &[Grant]) -> bool {
+    grants.iter().any(|g| g.role == Role::Owner && g.property_id.is_none())
 }
 
 /// Loads `user`'s grants in the tenant that `tx` is scoped to.

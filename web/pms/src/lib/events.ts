@@ -2,6 +2,7 @@ import type { QueryClient } from '@tanstack/svelte-query';
 import { laundryKey } from './laundry';
 import { linenKey } from './linen';
 import { auditKeys, nightAuditKey, opsAlertsKey } from './night-audit';
+import { reservationDepositKey } from './reservations';
 import { rangeTouchesMonth, tapeEventTiles } from './tape';
 
 /**
@@ -60,15 +61,26 @@ function invalidateTape(client: QueryClient, eventKey: string): void {
 
 /**
  * A reservation's folios are cached together under `['folios', property, reservation, account]`; those holding
- * the folio refetch.
+ * the folio refetch. A payment on a reservation's deposit folio changes what it still owes, so its deposit and the
+ * property's night-audit review refetch too.
  */
 function invalidateFolio(client: QueryClient, folioId: string): void {
+	const holds = (data: unknown) =>
+		(data as { id: string }[] | undefined)?.some((folio) => folio.id === folioId) ?? false;
+	const holding = client
+		.getQueryCache()
+		.findAll({ queryKey: ['folios'] })
+		.filter((query) => holds(query.state.data));
 	void client.invalidateQueries({
 		queryKey: ['folios'],
-		predicate: (query) =>
-			(query.state.data as { id: string }[] | undefined)?.some((folio) => folio.id === folioId) ??
-			false
+		predicate: (query) => holds(query.state.data)
 	});
+	for (const { queryKey } of holding) {
+		const [, propertyId, reservationId] = queryKey as [string, string, string];
+		if (reservationId === 'account') continue;
+		void client.invalidateQueries({ queryKey: reservationDepositKey(reservationId) });
+		void client.invalidateQueries({ queryKey: nightAuditKey(propertyId) });
+	}
 }
 
 /** A property's night audit: its review, its runs, its statistics and its ops alerts. */
@@ -86,8 +98,15 @@ function invalidateLinen(client: QueryClient, propertyId: string): void {
 	void client.invalidateQueries({ queryKey: opsAlertsKey(propertyId) });
 }
 
-/** Keeps the cache fresh while the app is open. Returns a function that disconnects. */
-export function connectEvents(client: QueryClient, propertyId?: string): () => void {
+/**
+ * Keeps the cache fresh while the app is open. Returns a function that disconnects. `onClosed` runs when the
+ * browser gives up on the stream, which it does when a reconnect is refused (a `401` once the session has ended).
+ */
+export function connectEvents(
+	client: QueryClient,
+	propertyId?: string,
+	onClosed?: () => void
+): () => void {
 	const url = propertyId
 		? `/api/v1/events?property=${encodeURIComponent(propertyId)}`
 		: '/api/v1/events';
@@ -99,5 +118,8 @@ export function connectEvents(client: QueryClient, propertyId?: string): () => v
 	}
 	// EventSource reconnects by itself; anything missed while disconnected is refetched on reconnect.
 	source.addEventListener('open', () => applyEvent(client, 'resync', '{}'));
+	source.addEventListener('error', () => {
+		if (source.readyState === EventSource.CLOSED) onClosed?.();
+	});
 	return () => source.close();
 }
