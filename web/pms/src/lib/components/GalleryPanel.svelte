@@ -7,6 +7,11 @@
 	video is open at a time. Self-contained: it runs its
 	own commands and refetches the galleries after each.
 -->
+<script module lang="ts">
+	/** The video playing anywhere on the page: starting another pauses it. */
+	let current: HTMLVideoElement | undefined;
+</script>
+
 <script lang="ts">
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { onDestroy, tick } from 'svelte';
@@ -57,6 +62,8 @@
 	let removing = $state<string | null>(null);
 	/** The video whose player is open, if any. */
 	let playing = $state<string | null>(null);
+	/** The video that failed to play, if any. */
+	let unplayable = $state<string | null>(null);
 	const players: Record<string, HTMLVideoElement | undefined> = $state({});
 	const ACCEPT = [...LIMITS.gallery.types, ...VIDEOS].join(',');
 
@@ -84,8 +91,20 @@
 	/** Swaps a video's poster for its player and plays it, with sound; any other player closes. */
 	async function play(assetId: string) {
 		playing = assetId;
+		unplayable = null;
 		await tick();
-		void players[assetId]?.play().catch(() => {});
+		const video = players[assetId];
+		if (!video) return;
+		// The poster button is gone, so keyboard focus moves to the player.
+		video.focus();
+		if (current && current !== video) current.pause();
+		current = video;
+		try {
+			await video.play();
+		} catch (err) {
+			// A blocked autoplay leaves the controls to start it; anything else cannot play here.
+			if (!(err instanceof DOMException && err.name === 'NotAllowedError')) unplayable = assetId;
+		}
 	}
 
 	/** Runs a command, shows its problem if it fails, and refetches the galleries either way. */
@@ -241,11 +260,16 @@
 									<source src={source.src} type={source.type} />
 								{/each}
 							</video>
+							{#if unplayable === item.assetId}
+								<p class="state error" role="alert">This video can't play in this browser</p>
+							{/if}
 						{:else}
 							<button
 								type="button"
 								class="play"
-								aria-label="Play video, {formatDuration(item.durationMs ?? 0)}"
+								aria-label="Play video{item.caption ? `: ${item.caption}` : ''}, {formatDuration(
+									item.durationMs ?? 0
+								)}"
 								onclick={() => play(item.assetId)}
 							>
 								<Picture

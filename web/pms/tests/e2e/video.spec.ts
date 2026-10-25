@@ -52,6 +52,7 @@ test('a room tour video is uploaded, goes ready live, plays with sound and is re
 	// A tap opens the player in place and plays it with sound.
 	await play.click();
 	await expect(gallery.locator('video')).toHaveCount(1);
+	await expect(gallery.locator('video')).toBeFocused();
 	await page.waitForFunction(() => {
 		const v = document.querySelector('video');
 		return !!v && !v.paused && v.currentTime > 0.5;
