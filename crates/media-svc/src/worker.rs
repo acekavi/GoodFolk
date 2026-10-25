@@ -5,11 +5,13 @@
 //!
 //! **Input** (stdin), an image job: the [`ProcessJob`] as one line of JSON, then the upload's bytes until end of file.
 //! A video job is the one line `{"job":<ProcessJob>,"input":"<path>","out_dir":"<path>"}` and nothing after it: the
-//! upload is already in the file at `input`, and the worker writes what it makes into the directory `out_dir`.
+//! upload is already in the file at `input`, and the worker writes what it makes into the directory `out_dir`. A
+//! probe is the one line `{"probe":"<path>"}`: Finalize's look at a video upload, run here so that `ffprobe` meets
+//! the untrusted file with neither the service's secrets nor an uncapped address space.
 //!
 //! **Output** (stdout): a big-endian `u32` length, a JSON [`Header`] of that length, then, for an image, the archive's
 //! bytes and each rendition's bytes, back to back, at the lengths the header gives. A video's header names its files
-//! in `out_dir` instead, and nothing follows it. Nothing else is written to stdout; the worker logs to stderr.
+//! in `out_dir` instead, and a probe's header holds the probe; nothing follows either. Nothing else is written to stdout; the worker logs to stderr.
 //!
 //! **Exit status:** 0 when a header was written (a finished job, or a file that cannot be read).
 //! [`EXIT_OUT_OF_ADDRESS_SPACE`] when the worker found an allocation refused by its cap; a retry would meet the same
@@ -47,8 +49,12 @@ pub const VIDEO_TIMEOUT: Duration = Duration::from_secs(600);
 /// [`VIDEO_WORKER_ADDRESS_SPACE`] (8.5 GB for one 1080p encode on 16 CPUs), and a refused reservation hangs SVT-AV1
 /// rather than failing it. With 4 arenas the encode peaks near 4.4 GB, at the same speed.
 const VIDEO_ENV: [(&str, &str); 1] = [("MALLOC_ARENA_MAX", "4")];
-/// How long the worker's own `ffprobe` of a video may take; Finalize already probed it within the same time.
+/// How long one `ffprobe` of a video may take, inside the worker.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a probe-only worker may run: its `ffprobe`, plus starting up.
+pub const PROBE_WORKER_TIMEOUT: Duration = Duration::from_secs(15);
+/// The sizes a video rendition comes in.
+const VIDEO_SIZES: [Size; 2] = [Size::V1080, Size::V720];
 /// How long extracting the poster frame may take.
 const POSTER_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_JOB_LINE: usize = 4096;
@@ -57,12 +63,13 @@ const MAX_HEADER: u32 = 1 << 20;
 const MAX_OUTPUT: u64 = 256 << 20;
 
 /// `Video` is a finished video: the displayed size and length of the source, and every file made, video renditions
-/// first.
+/// first. `Probed` is a probe's result.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 enum Header {
     Done { width: u32, height: u32, archive_ext: String, archive_len: u64, renditions: Vec<PieceHeader> },
     Video { width: u32, height: u32, duration_ms: u32, files: Vec<VideoFile> },
+    Probed { probe: video::Probe },
     Unreadable { detail: String },
 }
 
@@ -74,12 +81,38 @@ struct VideoJob {
     out_dir: PathBuf,
 }
 
-/// The job line, told apart by its shape.
+/// A probe's line.
+#[derive(Debug, Serialize, Deserialize)]
+struct ProbeJob {
+    probe: PathBuf,
+}
+
+/// The lines that name a file rather than carry the upload, told apart by their shape.
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum JobLine {
+enum FileLine {
     Video(VideoJob),
+    Probe(ProbeJob),
+}
+
+enum JobLine {
     Image(ProcessJob),
+    Video(VideoJob),
+    Probe(ProbeJob),
+}
+
+impl JobLine {
+    /// The image shape first, so a malformed image job is logged with its own error.
+    fn parse(line: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(line).map(Self::Image).or_else(|error| {
+            serde_json::from_slice(line)
+                .map(|file| match file {
+                    FileLine::Video(job) => Self::Video(job),
+                    FileLine::Probe(job) => Self::Probe(job),
+                })
+                .map_err(|_| error)
+        })
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -126,8 +159,20 @@ pub struct VideoFile {
     pub format: Format,
     pub width: u32,
     pub height: u32,
-    /// A plain name inside the job's `out_dir`; [`run_video`] refuses anything that could point elsewhere.
+    /// `<size>.<format>` inside the job's `out_dir`; [`run_video`] refuses any other name.
     pub name: String,
+}
+
+impl VideoFile {
+    /// A video rendition (AV1 or H.264 at 1080p or 720p) or a poster image (AVIF or WebP at a Gallery size).
+    fn is_expected(&self) -> bool {
+        let sizes: &[Size] = match self.format {
+            Format::Av1 | Format::H264 => &VIDEO_SIZES,
+            Format::Avif | Format::Webp => media_types::Profile::Gallery.sizes(),
+            Format::Pdf => &[],
+        };
+        sizes.contains(&self.size) && self.name == format!("{}.{}", self.size.as_str(), self.format.as_str())
+    }
 }
 
 #[derive(Debug)]
@@ -224,6 +269,16 @@ pub async fn run_video(
     let line = serde_json::to_vec(&line).map_err(|e| WorkerError::Io(io::Error::other(e)))?;
     match supervise(exe, line, &[], &VIDEO_ENV, rayon_threads, timeout).await? {
         Exit::Output(out) => parse_video(&out),
+        Exit::OutOfAddressSpace => Ok(Outcome::OutOfAddressSpace),
+    }
+}
+
+/// Probes the video file at `path` in `<exe> worker`, supervised as [`run`] is, within [`PROBE_WORKER_TIMEOUT`].
+pub async fn probe(exe: &Path, path: &Path) -> Result<Outcome<video::Probe>, WorkerError> {
+    let line =
+        serde_json::to_vec(&ProbeJob { probe: path.to_owned() }).map_err(|e| WorkerError::Io(io::Error::other(e)))?;
+    match supervise(exe, line, &[], &VIDEO_ENV, 1, PROBE_WORKER_TIMEOUT).await? {
+        Exit::Output(out) => parse_probe(&out),
         Exit::OutOfAddressSpace => Ok(Outcome::OutOfAddressSpace),
     }
 }
@@ -336,7 +391,9 @@ fn parse(out: &[u8]) -> Result<Outcome, WorkerError> {
     };
     let outcome = match header {
         Header::Unreadable { detail } => Outcome::Unreadable(detail),
-        Header::Video { .. } => return Err(WorkerError::Malformed("a video result for an image job")),
+        Header::Video { .. } | Header::Probed { .. } => {
+            return Err(WorkerError::Malformed("a video result for an image job"));
+        }
         Header::Done { archive_ext, .. } if !matches!(archive_ext.as_str(), "jxl" | "jpg" | "pdf") => {
             return Err(WorkerError::Malformed("unknown archive type"));
         }
@@ -364,15 +421,31 @@ fn parse_video(out: &[u8]) -> Result<Outcome<VideoOutput>, WorkerError> {
     }
     match header {
         Header::Unreadable { detail } => Ok(Outcome::Unreadable(detail)),
-        Header::Done { .. } => Err(WorkerError::Malformed("an image result for a video job")),
+        Header::Done { .. } | Header::Probed { .. } => Err(WorkerError::Malformed("another result for a video job")),
+        Header::Video { files, .. } if !files.iter().all(VideoFile::is_expected) => {
+            Err(WorkerError::Malformed("a file that is no rendition or poster"))
+        }
+        // Each expected file at most once, so there are never more than the 14 a 4K video makes.
         Header::Video { files, .. }
-            if files.iter().any(|f| f.name.is_empty() || f.name.contains('/') || f.name.starts_with('.')) =>
+            if files.iter().enumerate().any(|(i, f)| files[..i].iter().any(|g| g.name == f.name)) =>
         {
-            Err(WorkerError::Malformed("a file name outside the output directory"))
+            Err(WorkerError::Malformed("a file named twice"))
         }
         Header::Video { width, height, duration_ms, files } => {
             Ok(Outcome::Done(VideoOutput { width, height, duration_ms, files }))
         }
+    }
+}
+
+fn parse_probe(out: &[u8]) -> Result<Outcome<video::Probe>, WorkerError> {
+    let (header, body) = header(out)?;
+    if !body.is_empty() {
+        return Err(WorkerError::Malformed("trailing bytes"));
+    }
+    match header {
+        Header::Unreadable { detail } => Ok(Outcome::Unreadable(detail)),
+        Header::Probed { probe } => Ok(Outcome::Done(probe)),
+        Header::Done { .. } | Header::Video { .. } => Err(WorkerError::Malformed("another result for a probe")),
     }
 }
 
@@ -401,7 +474,7 @@ pub fn main() -> ExitCode {
         tracing::error!("the job line is missing or too long");
         return ExitCode::FAILURE;
     }
-    let job: JobLine = match serde_json::from_slice(&line) {
+    let job = match JobLine::parse(&line) {
         Ok(job) => job,
         Err(error) => {
             tracing::error!(%error, "the job is not valid JSON");
@@ -409,7 +482,7 @@ pub fn main() -> ExitCode {
         }
     };
     let cap = match job {
-        JobLine::Video(_) => VIDEO_WORKER_ADDRESS_SPACE,
+        JobLine::Video(_) | JobLine::Probe(_) => VIDEO_WORKER_ADDRESS_SPACE,
         JobLine::Image(_) => WORKER_ADDRESS_SPACE,
     };
     if let Err(error) = limit_memory(cap) {
@@ -428,12 +501,29 @@ pub fn main() -> ExitCode {
     }
     match job {
         JobLine::Image(job) => image(&job, &bytes),
-        JobLine::Video(_) if !bytes.is_empty() => {
-            tracing::error!("bytes follow a video job's line");
+        JobLine::Video(_) | JobLine::Probe(_) if !bytes.is_empty() => {
+            tracing::error!("bytes follow a line that names a file");
             ExitCode::FAILURE
         }
         JobLine::Video(job) => video(&job),
+        JobLine::Probe(job) => probe_only(&job),
     }
+}
+
+/// Finalize's probe: a file ffprobe cannot read, or cannot read in time, is unreadable.
+fn probe_only(job: &ProbeJob) -> ExitCode {
+    let written = match video::probe(&job.probe, PROBE_TIMEOUT) {
+        Ok(probe) => write(&Header::Probed { probe }, std::iter::empty()),
+        Err(error @ (VideoError::Unreadable(_) | VideoError::TimedOut)) => {
+            tracing::info!(%error, "the video cannot be read");
+            write(&Header::Unreadable { detail: error.to_string() }, std::iter::empty())
+        }
+        Err(error @ VideoError::Tool(_)) => {
+            tracing::error!(%error, "probing failed");
+            return ExitCode::FAILURE;
+        }
+    };
+    finish(written)
 }
 
 fn image(job: &ProcessJob, bytes: &[u8]) -> ExitCode {
@@ -755,9 +845,74 @@ mod tests {
 
     #[test]
     fn a_video_file_outside_the_output_directory_is_malformed() {
-        for name in ["../upload", "/etc/passwd", "a/b.mp4", ".hidden", ""] {
+        for name in ["../upload", "/etc/passwd", "a/b.mp4", ".hidden", "", "720p.av1.mp4"] {
             assert!(matches!(parse_video(&frame(&video(name), b"")), Err(WorkerError::Malformed(_))), "{name:?}");
         }
+    }
+
+    fn files(files: Vec<(Size, Format)>) -> Header {
+        Header::Video {
+            width: 1920,
+            height: 1080,
+            duration_ms: 10_000,
+            files: files
+                .into_iter()
+                .map(|(size, format)| VideoFile {
+                    size,
+                    format,
+                    width: 10,
+                    height: 10,
+                    name: format!("{}.{}", size.as_str(), format.as_str()),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn only_renditions_and_posters_each_once_are_accepted() {
+        let every = files(vec![
+            (Size::V1080, Format::Av1),
+            (Size::V1080, Format::H264),
+            (Size::V720, Format::Av1),
+            (Size::V720, Format::H264),
+            (Size::Thumb, Format::Avif),
+            (Size::Xl, Format::Webp),
+        ]);
+        assert!(matches!(parse_video(&frame(&every, b"")), Ok(Outcome::Done(_))));
+        for wrong in [
+            vec![(Size::Md, Format::Pdf)],
+            vec![(Size::Original, Format::Pdf)],
+            vec![(Size::Md, Format::Av1)],
+            vec![(Size::V720, Format::Webp)],
+            vec![(Size::V720, Format::Av1), (Size::V720, Format::Av1)],
+        ] {
+            assert!(
+                matches!(parse_video(&frame(&files(wrong.clone()), b"")), Err(WorkerError::Malformed(_))),
+                "{wrong:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_probe_comes_back_whole() {
+        let probe = video::Probe {
+            duration_ms: 10_000,
+            width: 1080,
+            height: 1920,
+            rotation: 90,
+            hdr: false,
+            fps: 29.97,
+            video_codec: "h264".into(),
+            video_stream: 0,
+            audio_codec: None,
+            audio_stream: None,
+        };
+        let Outcome::Done(back) = parse_probe(&frame(&Header::Probed { probe: probe.clone() }, b"")).unwrap() else {
+            panic!("not done")
+        };
+        assert_eq!(back, probe);
+        assert!(matches!(parse_probe(&frame(&done(3, 2), b"abcde")), Err(WorkerError::Malformed(_))));
+        assert!(matches!(parse(&frame(&Header::Probed { probe }, b"")), Err(WorkerError::Malformed(_))));
     }
 
     #[test]
@@ -776,11 +931,17 @@ mod tests {
             mime: "video/mp4".into(),
         };
         let image = serde_json::to_vec(&job).unwrap();
-        assert!(matches!(serde_json::from_slice(&image).unwrap(), JobLine::Image(_)));
+        assert!(matches!(JobLine::parse(&image).unwrap(), JobLine::Image(_)));
         let line = VideoJob { job, input: "/tmp/a/source".into(), out_dir: "/tmp/a/out".into() };
         let line = serde_json::to_vec(&line).unwrap();
-        assert!(
-            matches!(serde_json::from_slice(&line).unwrap(), JobLine::Video(v) if v.out_dir == Path::new("/tmp/a/out"))
-        );
+        assert!(matches!(JobLine::parse(&line).unwrap(), JobLine::Video(v) if v.out_dir == Path::new("/tmp/a/out")));
+        let probe = serde_json::to_vec(&ProbeJob { probe: "/tmp/a/source".into() }).unwrap();
+        assert!(matches!(JobLine::parse(&probe).unwrap(), JobLine::Probe(p) if p.probe == Path::new("/tmp/a/source")));
+    }
+
+    #[test]
+    fn a_malformed_image_job_keeps_its_own_error() {
+        let error = JobLine::parse(br#"{"tenant_id":"not-a-uuid"}"#).err().expect("refused");
+        assert!(error.to_string().contains("UUID") || error.to_string().contains("uuid"), "{error}");
     }
 }

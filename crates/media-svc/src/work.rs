@@ -96,18 +96,26 @@ async fn handle(state: &WorkState, job: &ProcessJob) -> anyhow::Result<()> {
 /// repeat delivery that the work is done; the marker written once `Ready` is out does.
 async fn handle_video(state: &WorkState, job: &ProcessJob) -> anyhow::Result<()> {
     let svc = &state.svc;
-    let upload = upload_key(job.tenant_id, job.asset_id);
     if SourceType::from_mime(&job.mime).is_none_or(|ty| !ty.is_video()) {
         return publish(svc, failed(job, UNREADABLE)).await;
     }
-    let permit = svc.video_workers.clone().acquire_owned().await?;
-    // Checked once the permit is held, so a repeat delivery that queued behind the first finds its marker.
+    // Held until the marker is written, so a repeat delivery queued behind this one finds it and does nothing.
+    let _permit = svc.video_workers.clone().acquire_owned().await?;
     let marker = ready_marker(job.tenant_id, job.asset_id);
     if svc.storage.head(Bucket::Private, &marker).await?.is_some() {
         tracing::info!(asset = %job.asset_id, "the video's result was already published");
         return Ok(());
     }
     let dir = ScratchDir::new(&svc.tmp_dir, job.asset_id).await?;
+    let result = video_job(state, job, &dir, &marker).await;
+    dir.remove().await;
+    result
+}
+
+/// Copies the upload into `dir`, makes the renditions there, stores and publishes them and writes the `marker`.
+async fn video_job(state: &WorkState, job: &ProcessJob, dir: &ScratchDir, marker: &str) -> anyhow::Result<()> {
+    let svc = &state.svc;
+    let upload = upload_key(job.tenant_id, job.asset_id);
     let input = dir.path().join("source");
     match svc.storage.get_to_file(Bucket::Private, &upload, &input, limits(Profile::GalleryVideo).max_bytes).await {
         Ok(_) => {}
@@ -121,11 +129,14 @@ async fn handle_video(state: &WorkState, job: &ProcessJob) -> anyhow::Result<()>
     }
     let out_dir = dir.path().join("out");
     tokio::fs::create_dir(&out_dir).await?;
-    let (exe, input, out) = (&svc.worker_exe, &input, &out_dir);
+    let (exe, input_path, out) = (&svc.worker_exe, &input, &out_dir);
     let processed =
-        attempts(job, move || worker::run_video(exe, job, input, out, state.rayon_threads, worker::VIDEO_TIMEOUT))
+        attempts(job, move || worker::run_video(exe, job, input_path, out, state.rayon_threads, worker::VIDEO_TIMEOUT))
             .await;
-    drop(permit);
+    // Up to 500 MB that nothing reads any more; only the renditions are stored.
+    if let Err(error) = tokio::fs::remove_file(&input).await {
+        tracing::warn!(asset = %job.asset_id, %error, "removing the upload's copy failed");
+    }
 
     let result = match processed {
         Attempts::Done(output) => store_video(svc, job, &out_dir, output).await?,
@@ -134,7 +145,7 @@ async fn handle_video(state: &WorkState, job: &ProcessJob) -> anyhow::Result<()>
     };
     let ready = matches!(result, MediaResult::Ready { .. });
     publish(svc, result).await?;
-    if ready && let Err(error) = svc.storage.put(Bucket::Private, &marker, Vec::new(), "text/plain", None).await {
+    if ready && let Err(error) = svc.storage.put(Bucket::Private, marker, Vec::new(), "text/plain", None).await {
         tracing::warn!(asset = %job.asset_id, %error, "marking the video done failed; a repeat delivery redoes it");
     }
     Ok(())
@@ -245,7 +256,7 @@ async fn store_video(
     let (tenant, asset) = (job.tenant_id, job.asset_id);
     let mut renditions = Vec::with_capacity(output.files.len());
     for file in output.files {
-        let bytes = tokio::fs::read(out_dir.join(&file.name)).await?;
+        let bytes = read_output(out_dir, &file.name).await?;
         let len = bytes.len() as u64;
         let key = rendition_key(tenant, asset, file.size.as_str(), file.format.as_str());
         svc.storage.put(Bucket::Public, &key, bytes, file.format.content_type(), Some(IMMUTABLE)).await?;
@@ -269,6 +280,14 @@ async fn store_video(
     })
 }
 
+/// The file `name` in a video job's `out_dir`, read only when it is a regular file: a link could point anywhere.
+async fn read_output(out_dir: &Path, name: &str) -> anyhow::Result<Vec<u8>> {
+    let path = out_dir.join(name);
+    let kind = tokio::fs::symlink_metadata(&path).await?.file_type();
+    anyhow::ensure!(kind.is_file(), "{name} in a video job's output is not a regular file");
+    Ok(tokio::fs::read(&path).await?)
+}
+
 fn failed(job: &ProcessJob, reason: &str) -> MediaResult {
     MediaResult::Failed { tenant_id: job.tenant_id, asset_id: job.asset_id, reason: reason.to_owned() }
 }
@@ -278,4 +297,23 @@ pub(crate) async fn publish(svc: &MediaSvc, result: MediaResult) -> anyhow::Resu
         Message { id: Uuid::now_v7(), topic: RESULTS_TOPIC.to_owned(), payload: serde_json::to_value(&result)? };
     svc.bus.publish(&message).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn only_regular_output_files_are_read() {
+        let dir = std::env::temp_dir().join(format!("media-svc-output-{}", Uuid::now_v7()));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("720p.av1.mp4"), b"video").unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", dir.join("720p.h264.mp4")).unwrap();
+        std::fs::create_dir(dir.join("thumb.avif")).unwrap();
+
+        assert_eq!(read_output(&dir, "720p.av1.mp4").await.unwrap(), b"video");
+        assert!(read_output(&dir, "720p.h264.mp4").await.is_err(), "a link is refused");
+        assert!(read_output(&dir, "thumb.avif").await.is_err(), "a directory is refused");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

@@ -15,17 +15,15 @@ use sha2::{Digest, Sha256};
 use storage::{Bucket, PART_SIZE, StorageError, upload_key};
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
-use video::VideoError;
 
 use crate::limits::limits;
+use crate::worker::{self, Outcome as Probed, WorkerError};
 use crate::{MediaSvc, ScratchDir};
 
 /// How long part URLs stay valid.
 const PART_URL_TTL: Duration = Duration::from_secs(3600);
 /// How much of the file the type is sniffed from.
 const SNIFF_BYTES: usize = 4096;
-/// How long `ffprobe` may take over a video upload.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How much of a video's copy is read at a time while hashing it.
 const HASH_CHUNK: usize = 1 << 20;
 
@@ -183,17 +181,30 @@ impl MediaSvc {
     }
 
     /// As [`Self::read_and_verify`] for a video, which may be up to 500 MB: the object is streamed into a temporary
-    /// file instead of memory, then checked and probed there. The file is removed whatever the outcome.
+    /// file instead of memory, then checked there and probed in a worker. The file is removed whatever the outcome.
     async fn read_and_verify_video(
         &self,
         key: &str,
         request: &FinalizeRequest,
         asset: Uuid,
     ) -> Result<Result<Verified, &'static str>, Status> {
+        let _permit =
+            self.video_finalizes.clone().acquire_owned().await.map_err(|_| Status::internal("verification failed"))?;
         let dir = ScratchDir::new(&self.tmp_dir, asset).await.map_err(|error| {
             tracing::error!(%error, "creating a temporary directory failed");
             Status::internal("verification failed")
         })?;
+        let verdict = self.verify_video_copy(&dir, key, request).await;
+        dir.remove().await;
+        verdict
+    }
+
+    async fn verify_video_copy(
+        &self,
+        dir: &ScratchDir,
+        key: &str,
+        request: &FinalizeRequest,
+    ) -> Result<Result<Verified, &'static str>, Status> {
         let source = dir.path().join("source");
         let max_bytes = limits(Profile::GalleryVideo).max_bytes;
         match self.storage.get_to_file(Bucket::Private, key, &source, max_bytes).await {
@@ -202,16 +213,42 @@ impl MediaSvc {
             Err(StorageError::TooLarge { .. }) => return Ok(Err(TOO_LARGE)),
             Err(error) => return Err(storage_status(error)),
         }
-        let declared_sha256 = request.sha256.clone();
-        let declared_bytes = request.declared_bytes;
-        tokio::task::spawn_blocking(move || {
-            let verdict = verify_video(&source, declared_bytes, &declared_sha256);
-            // Removing up to 500 MB stays off the async workers too.
-            drop(dir);
-            verdict
-        })
-        .await
-        .map_err(|_| Status::internal("verification failed"))?
+        let (path, declared_bytes, declared_sha256) = (source.clone(), request.declared_bytes, request.sha256.clone());
+        let checked = tokio::task::spawn_blocking(move || check_video_copy(&path, declared_bytes, &declared_sha256))
+            .await
+            .map_err(|_| Status::internal("verification failed"))??;
+        let (digests, ty) = match checked {
+            Ok(checked) => checked,
+            Err(reason) => return Ok(Err(reason)),
+        };
+        // ffprobe meets the untrusted file in a worker: no secrets, a capped address space, a time limit.
+        let probe = match worker::probe(&self.worker_exe, &source).await {
+            Ok(Probed::Done(probe)) => probe,
+            // A file ffprobe cannot read, or cannot read in time or space, would not transcode either.
+            Ok(Probed::Unreadable(detail)) => {
+                tracing::info!(detail, "a video upload cannot be read");
+                return Ok(Err(UNREADABLE));
+            }
+            Ok(Probed::OutOfAddressSpace) | Err(WorkerError::TimedOut) => {
+                tracing::warn!("probing a video upload ran out of time or address space");
+                return Ok(Err(UNREADABLE));
+            }
+            Err(error) => {
+                tracing::error!(%error, "probing a video upload failed");
+                return Err(Status::internal("verification failed"));
+            }
+        };
+        if let Err(refusal) = video::accept(&probe) {
+            return Ok(Err(refusal.message()));
+        }
+        Ok(Ok(Verified {
+            blake3: digests.blake3.as_bytes().to_vec(),
+            mime: ty.mime().to_owned(),
+            bytes: digests.len,
+            width: probe.width,
+            height: probe.height,
+            duration_ms: probe.duration_ms,
+        }))
     }
 }
 
@@ -295,13 +332,12 @@ fn digest_file(path: &Path) -> io::Result<Digests> {
     Ok(Digests { len, head, sha256: sha256.finalize().to_vec(), blake3: blake3.finalize() })
 }
 
-/// Checks a video upload copied to `path` as [`verify`] checks an image (size, checksum, sniffed type), then probes it
-/// and applies the video rules. Never decodes a frame.
-fn verify_video(
+/// Checks a video upload copied to `path` as [`verify`] checks an image: its size, its checksum and its sniffed type.
+fn check_video_copy(
     path: &Path,
     declared_bytes: u64,
     declared_sha256: &[u8],
-) -> Result<Result<Verified, &'static str>, Status> {
+) -> Result<Result<(Digests, SourceType), &'static str>, Status> {
     let limits = limits(Profile::GalleryVideo);
     let digests = digest_file(path).map_err(|error| {
         tracing::error!(%error, "reading a video upload's copy failed");
@@ -313,32 +349,10 @@ fn verify_video(
     if digests.sha256 != declared_sha256 {
         return Ok(Err(CHECKSUM));
     }
-    let Some(ty) = imaging::sniff(&digests.head).filter(|ty| limits.types.contains(ty)) else {
-        return Ok(Err(WRONG_TYPE));
-    };
-    let probe = match video::probe(path, PROBE_TIMEOUT) {
-        Ok(probe) => probe,
-        // A file ffprobe cannot read, or cannot read in time, would not transcode either.
-        Err(error @ (VideoError::Unreadable(_) | VideoError::TimedOut)) => {
-            tracing::info!(%error, "a video upload cannot be read");
-            return Ok(Err(UNREADABLE));
-        }
-        Err(error @ VideoError::Tool(_)) => {
-            tracing::error!(%error, "probing a video upload failed");
-            return Err(Status::internal("verification failed"));
-        }
-    };
-    if let Err(refusal) = video::accept(&probe) {
-        return Ok(Err(refusal.message()));
-    }
-    Ok(Ok(Verified {
-        blake3: digests.blake3.as_bytes().to_vec(),
-        mime: ty.mime().to_owned(),
-        bytes: digests.len,
-        width: probe.width,
-        height: probe.height,
-        duration_ms: probe.duration_ms,
-    }))
+    Ok(match imaging::sniff(&digests.head).filter(|ty| limits.types.contains(ty)) {
+        Some(ty) => Ok((digests, ty)),
+        None => Err(WRONG_TYPE),
+    })
 }
 
 #[cfg(test)]

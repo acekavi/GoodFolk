@@ -41,9 +41,12 @@ async fn serve() -> anyhow::Result<()> {
         bus: events::bus_from_env(&[media_svc::RESULTS_TOPIC], Some(auth))?,
         workers: Arc::new(Semaphore::new(config.workers)),
         video_workers: Arc::new(Semaphore::new(VIDEO_WORKERS)),
+        video_finalizes: Arc::new(Semaphore::new(config.video_finalizes)),
         worker_exe: std::env::current_exe().context("locating the media-svc binary")?,
         tmp_dir: config.tmp_dir.clone(),
     };
+
+    media_svc::clear_tmp_dir(&config.tmp_dir);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     let tcp = tokio::net::TcpListener::bind(addr).await?;

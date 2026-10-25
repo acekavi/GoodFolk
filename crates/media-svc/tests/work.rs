@@ -324,6 +324,21 @@ mod hooked {
     }
 
     #[tokio::test]
+    async fn concurrent_deliveries_of_a_video_transcode_once() {
+        let test = "hooked::concurrent_deliveries_of_a_video_transcode_once";
+        let Some(dir) = hooked(test, &[]) else { return };
+        let server = start().await;
+        let job = uploaded(&server, Profile::GalleryVideo, video_fixture("tiny-e2e.mp4"), "video/mp4").await;
+        let auth = format!("Bearer {SECRET}");
+        let (first, second) =
+            tokio::join!(post_work(&server, &job, Some(&auth)), post_work(&server, &job, Some(&auth)));
+        assert_eq!((first.as_u16(), second.as_u16()), (200, 200));
+        assert_eq!(server.bus.sent.lock().unwrap().len(), 1, "one Ready is published");
+        assert_eq!(lines(dir.join("spawns")).len(), 1, "one transcode");
+        server.storage.delete(Bucket::Private, &upload_key(job.tenant_id, job.asset_id)).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn a_dropped_attempt_kills_the_worker_and_its_children() {
         let test = "hooked::a_dropped_attempt_kills_the_worker_and_its_children";
         let Some(dir) = hooked(test, &[("MEDIA_TEST_WORKER_HANG", "{dir}/pids")]) else { return };

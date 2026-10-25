@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{run, tools};
 
@@ -16,8 +16,8 @@ const AUDIO_CODECS: [&str; 3] = ["aac", "opus", "mp3"];
 const HDR_TRANSFERS: [&str; 2] = ["smpte2084", "arib-std-b67"];
 const MAX_STDOUT: u64 = 4 * 1024 * 1024;
 
-/// What `ffprobe` says about a video upload.
-#[derive(Debug, Clone, PartialEq)]
+/// What `ffprobe` says about a video upload. It serialises, so a supervised worker can hand it to its parent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Probe {
     pub duration_ms: u32,
     /// As displayed, after `rotation`.

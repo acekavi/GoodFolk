@@ -648,7 +648,8 @@ Outside production, every variable marked "dev default" can be left out. With `A
 | `PORT` | media-svc | Listen port, default 8090 (core-api's is 8080). One port serves gRPC, `/work` and `/healthz`. |
 | `MEDIA_WORKERS` | media-svc | Worker subprocesses at once, default `max(1, cpus / 8)`. |
 | `MEDIA_WORKER_THREADS` | media-svc | Threads per worker, default `max(1, cpus / MEDIA_WORKERS)`. |
-| `MEDIA_TMP_DIR` | media-svc | Where video uploads are copied to be probed and transcoded, one directory per asset; default `goodfolk-media` in the system temporary directory. |
+| `MEDIA_TMP_DIR` | media-svc | Where video uploads are copied to be probed and transcoded, one directory per asset; default `goodfolk-media` in the system temporary directory. It needs about 1 GB per video Finalize and per video worker at once (`(MEDIA_VIDEO_FINALIZES + 1) × 1 GB`, 3 GB by default). At startup media-svc removes the directories a previous run left there. |
+| `MEDIA_VIDEO_FINALIZES` | media-svc | Video Finalizes (each streaming its upload to `MEDIA_TMP_DIR` and probing it) at once, default 2. |
 | `JXL_BIN_DIR` | media-svc, tests | Directory holding `cjxl` and `djxl`; default `~/.cache/goodfolk-libjxl/bin`. |
 | `APP_ENV` | media-svc | `production` logs JSON and makes `EVENT_BUS=push` and `SVC_AUTH=secret` errors. |
 | `DEV_CORS_ORIGINS` | `ensure-buckets` | Browser origins allowed to PUT to the private bucket, default `http://localhost:5173,http://localhost:4173`. |

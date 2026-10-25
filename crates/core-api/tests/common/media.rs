@@ -98,6 +98,7 @@ pub async fn stack(opts: PgConnectOptions) -> Stack {
         // As many workers as media-svc runs by default (`MEDIA_WORKERS`), each with its share of the CPUs.
         workers: Arc::new(Semaphore::new(config.workers)),
         video_workers: Arc::new(Semaphore::new(media_svc::config::VIDEO_WORKERS)),
+        video_finalizes: Arc::new(Semaphore::new(config.video_finalizes)),
         worker_exe: media_svc_exe(),
         tmp_dir: config.tmp_dir,
     };

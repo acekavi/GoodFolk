@@ -87,6 +87,7 @@ pub async fn start_with(bus: CaptureBus) -> Server {
         bus: bus.clone(),
         workers: Arc::new(Semaphore::new(2)),
         video_workers: Arc::new(Semaphore::new(media_svc::config::VIDEO_WORKERS)),
+        video_finalizes: Arc::new(Semaphore::new(media_svc::config::DEFAULT_VIDEO_FINALIZES)),
         worker_exe: PathBuf::from(env!("CARGO_BIN_EXE_media-svc")),
         tmp_dir: tmp.0.clone(),
     };

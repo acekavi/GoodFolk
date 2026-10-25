@@ -41,6 +41,8 @@ pub struct MediaSvc {
     pub workers: Arc<Semaphore>,
     /// One permit per video worker subprocess allowed to run at once ([`config::VIDEO_WORKERS`]).
     pub video_workers: Arc<Semaphore>,
+    /// One permit per video Finalize allowed to hold a copy of its upload at once ([`config::Config::video_finalizes`]).
+    pub video_finalizes: Arc<Semaphore>,
     /// The `media-svc` binary, run as `<worker_exe> worker`.
     pub worker_exe: PathBuf,
     /// The root video uploads are copied under ([`config::Config::tmp_dir`]).
@@ -62,6 +64,35 @@ impl ScratchDir {
 
     pub(crate) fn path(&self) -> &Path {
         &self.0
+    }
+
+    /// Removes the directory off the async workers, since it may hold a 500 MB upload.
+    pub(crate) async fn remove(self) {
+        let _ = tokio::task::spawn_blocking(move || drop(self)).await;
+    }
+}
+
+/// Removes what a previous run left under the temporary root (a crash skips `ScratchDir`'s drop). Only directories
+/// named as [`ScratchDir`] names them are touched, so a root set to a shared directory loses nothing else.
+pub fn clear_tmp_dir(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        // `<asset uuid>-<simple uuid>`: 36 characters, a dash, then 32.
+        let name = entry.file_name();
+        let ours = name.to_str().is_some_and(|name| {
+            name.len() == 69
+                && name.get(36..37) == Some("-")
+                && name.get(..36).is_some_and(|asset| Uuid::try_parse(asset).is_ok())
+                && name.get(37..).is_some_and(|suffix| Uuid::try_parse(suffix).is_ok())
+        });
+        if ours && entry.file_type().is_ok_and(|ty| ty.is_dir()) {
+            match std::fs::remove_dir_all(entry.path()) {
+                Ok(()) => tracing::info!(dir = %entry.path().display(), "removed a stale temporary directory"),
+                Err(error) => {
+                    tracing::warn!(%error, dir = %entry.path().display(), "removing a stale directory failed")
+                }
+            }
+        }
     }
 }
 
@@ -122,4 +153,26 @@ async fn grpc_unauthenticated(response: Response) -> Response {
         return tonic::Status::unauthenticated("").into_http();
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_scratch_directories_are_cleared() {
+        let root = std::env::temp_dir().join(format!("media-svc-clear-{}", Uuid::now_v7()));
+        let scratch = root.join(format!("{}-{}", Uuid::now_v7(), Uuid::now_v7().simple()));
+        std::fs::create_dir_all(scratch.join("out")).unwrap();
+        std::fs::write(scratch.join("source"), b"video").unwrap();
+        let other = root.join("keep-me");
+        std::fs::create_dir(&other).unwrap();
+        let file = root.join(format!("{}-{}", Uuid::now_v7(), Uuid::now_v7().simple()) + ".txt");
+        std::fs::write(&file, b"not a directory of ours").unwrap();
+
+        clear_tmp_dir(&root);
+        assert!(!scratch.exists());
+        assert!(other.exists() && file.exists(), "anything else is left alone");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }
