@@ -31,7 +31,12 @@
 
 	const invitation = $derived(preview.data);
 	const profile = $derived(me.data);
-	const loading = $derived(preview.isPending || (me.isPending && !me.isError));
+	const loading = $derived(preview.isPending || me.isPending);
+	// Only a 401 means signed out; any other failure to read the session is shown as an error.
+	const meFailed = $derived(
+		me.error && !(me.error instanceof ApiError && me.error.status === 401) ? me.error : null
+	);
+	let needsSignIn = $state(false);
 
 	let password = $state('');
 	let error = $state('');
@@ -41,6 +46,7 @@
 		event.preventDefault();
 		busy = true;
 		error = '';
+		needsSignIn = false;
 		try {
 			const {
 				data,
@@ -50,12 +56,17 @@
 				body: { token, password: profile ? undefined : password }
 			});
 			if (!data) {
-				error = toApiError(problem, response.status).message;
+				const failure = toApiError(problem, response.status);
+				error = failure.message;
+				needsSignIn = failure.status === 409;
 				return;
 			}
 			client.setQueryData(['me'], data);
-			// The session now belongs to the new tenant: drop the previous one's cached data.
-			void client.resetQueries({ predicate: (query) => query.queryKey[0] !== 'me' });
+			// The session now belongs to the new tenant: drop the previous one's cached data. The invitation's
+			// own query is left alone: its token is used now, and refetching it would be a 410.
+			void client.resetQueries({
+				predicate: (query) => query.queryKey[0] !== 'me' && query.queryKey[0] !== 'invitation'
+			});
 			const property = landingProperty(data);
 			await goto(property ? resolve('/(app)/p/[property]', { property }) : resolve('/'));
 		} catch (err) {
@@ -78,6 +89,9 @@
 			const owner = profile ? ownerOf(profile) : null;
 			client.clear();
 			if (owner) await wipeDevice(owner);
+			// The invitee signs in next, and sign-in returns here.
+			// eslint-disable-next-line svelte/no-navigation-without-resolve -- same-origin path built by inviteSignInHref
+			await goto(inviteSignInHref(token));
 		} catch (err) {
 			error = errorMessage(err);
 		} finally {
@@ -97,6 +111,9 @@
 				: errorMessage(preview.error)}
 		</p>
 		<p><a href={resolve('/login')}>Sign in</a></p>
+	{:else if meFailed}
+		<p class="error" role="alert">{errorMessage(meFailed)}</p>
+		<button onclick={() => me.refetch()}>Retry</button>
 	{:else if invitation}
 		<h1>Join {invitation.tenant_name}</h1>
 		<p>
@@ -138,6 +155,10 @@
 					/>
 				</label>
 				{#if error}<p class="error" role="alert">{error}</p>{/if}
+				{#if needsSignIn}
+					<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- same-origin path built by inviteSignInHref -->
+					<p><a href={inviteSignInHref(token)}>Sign in to accept</a></p>
+				{/if}
 				<button disabled={busy}>Accept</button>
 			</form>
 		{/if}
