@@ -42,7 +42,8 @@ until the system runs with real users (the owner, 2026-10-25).
   - email (`citext`), display name;
   - the grants to give, a list of `{role, property_id | null}`;
   - who invited and when;
-  - `token_hash` (SHA-256 of a 32-byte random token; the token itself is never stored);
+  - `token_hash` (SHA-256 of a 32-byte random token; the token itself is never stored beyond the undelivered
+    outbox row, which is scrubbed on delivery, ruling P9);
   - `expires_at` (7 days);
   - status `pending`, `accepted`, `revoked`, `expired`, with `accepted_at` and `accepted_user_id`.
 
@@ -111,13 +112,18 @@ until the system runs with real users (the owner, 2026-10-25).
   - the last owner can't be removed;
   - an owner can't remove themself;
   - it is audited `membership.revoked`;
-  - the user's next request with an old session cookie is `401`.
+  - the user's next request with an old session cookie is `401`;
+  - their open tab is signed out, idle or not (rulings P8 and P10): a `staff:<tenant>` event makes core-api recheck
+    each open event stream's session, ending the stream unless it is still a member and otherwise refreshing its
+    grants, and the SPA signs a tab out (clears its caches, wipes the device, goes to sign-in) on a `401` from any
+    API call or from its profile check after the stream closes.
 - **Roles are fixed** (no custom roles in v1): owner, manager, front_desk, housekeeping, hk_supervisor, accountant,
   and the new **`pos`** role, which allows `PosPost` only.
 - **A POS is an API client, not a screen user.** **Builder's call:** `PosPost` also allows the two reads a till needs,
   the property's active outlets and GraphQL `posInHouse(propertyId)` (in-house stays with `reservation_room` id, room
-  number and guest name, and nothing else). No SPA pages are shown to a `pos`-only user. "Nothing else" is tested
-  against every other route group.
+  number and guest name, and nothing else). No SPA pages are shown to a `pos`-only user: signed in, it sees only
+  "This account is for a point-of-sale till and has no pages" and **Sign out**, with no navigation (rulings P7 and
+  P11). "Nothing else" is tested against every other route group.
 - **The new permission `StaffManage`** goes to owners and managers (the owner, 2026-10-25). What a manager may do is
   limited:
   - A **junior role** is `front_desk`, `housekeeping`, `hk_supervisor`, `accountant` or `pos`.
