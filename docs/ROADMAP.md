@@ -168,7 +168,7 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
 - **Roles and permissions: done.** A `hk_supervisor` role (any condition, bulk, assign, copy yesterday, resolve issues) and four permissions (`HousekeepingView`, `HousekeepingUpdate`, `HousekeepingSupervise`, `RoomIssuesReport`). Ruling: `hk_supervisor` also gets the housekeeping role's base reads (properties, rooms, inventory, rates and reservations view), since a role without them cannot open the app; supervisors therefore see rates and reservations read-only. Ruling: **Block room** (from a high issue, in the board's issue list) is shown only to people who hold both `InventoryBlock` and `HousekeepingSupervise` (owner, manager): the front desk may block rooms elsewhere (**Inventory**) but does not supervise, and an `hk_supervisor` supervises but may not block; widening either is the owner's call.
 - **Board, assignments and issues: done.** `housekeepingBoard` (one statement; occupancy derived at read time from stays and the business date), bulk conditions (at most 500 rooms), assignments for the business date and **Copy yesterday**, and issue reports with severity and an idempotency key. Events: `hk:<property>` (conditions, assignments, check-in, check-out, undo check-in, blocks, reservation create/assign/unassign/cancel/modify, and room create/update/reorder, so the board and My rooms never go stale) and `issues:<property>`. The board is virtualized: it draws only the tile rows in view (an owner decision, 2026-10-03, to keep the 50 ms gate at 500 rooms). The tape chart's room rail shows a condition dot and the reservation modal the room's condition.
 - **Housekeeper app: done.** `/hk` in the same SvelteKit app, installable (web app manifest, `GoodFolk Housekeeping`), **My rooms** with **Start cleaning** / **Done**, **Report issue**. A service worker caches the app shell (never the API or GraphQL); changes and reports queue in IndexedDB and replay strictly in order on reconnect or focus. A refused change is a visible conflict (**Retry** / **Discard**) that does not hold up the rest; a queue replayed after the business date rolled says so. The queue is tagged per user: a **fresh** `/api/v1/me` is read before every replay and the owner must match, a staff sign-out wipes the signer's own items and saved list, and one user's unsent work is never sent or shown under another. Sign-in redirects follow same-origin paths only (re-checked after URL normalisation). An expired session keeps the queue and asks to sign in.
-- **Interim `add-staff` command: done.** `cargo run -p core-api -- add-staff` adds a user with a role (README, "Adding staff"), as the schema owner, because nothing else can create a housekeeper before Phase 8's invitations. To be replaced then (an admin command to remove).
+- **Interim `add-staff` command: done.** `cargo run -p core-api -- add-staff` adds a user with a role (README, "Adding staff"), as the schema owner, because nothing else can create a housekeeper before Phase 8's invitations. Phase 8a added invitations; the command stays as a development and seeding tool (README, "Adding staff").
 - **Performance gates: done**, on `powersave` with no other heavy job running (the 500-room fixtures check themselves, as for the tape chart):
 
   | Gate | Spec | Measured |
@@ -268,7 +268,7 @@ Phase 7 was split three ways (the owner, 2026-10-16): 7a here, then 7b and 7c be
 - Carried over from the Phase 7a reviews:
   - **Rust 1.99** (from 1.97), with `avif-decode` 3 (rav1d in place of libaom, which drops `owning_ref`); `rustls` and `yoke-derive` were upgraded.
   - **Advisory ignores in `deny.toml`** (the owner's ruling): two `quick-xml` denial-of-service advisories reachable only through Typst's bibliography loading, which the renderer never exposes; five unmaintained crates with no fixed release via Typst (`bincode`, `yaml-rust`, `unsafe-libyaml`, `rustybuzz`, `ttf-parser`); and `paste`, an unmaintained proc-macro via rav1e and hayagriva. `cargo deny check` passes. Review them on every Typst upgrade (`quick-xml` 0.41 or later fixes the first two).
-  - **A dedicated POS role.** A POS signs in as a manager-role user set aside for it (`PosPost`: owner, manager); Phase 8 adds a POS role with `PosPost` alone.
+  - **A dedicated POS role.** A POS signs in as a manager-role user set aside for it (`PosPost`: owner, manager); Phase 8a added the `pos` role with `PosPost` alone.
   - **A POS bill settled at the outlet cannot be refunded or voided.** It is attached to no folio, so there is no folio to refund from. A wrong walk-in payment cannot be corrected from the desk yet; 7b's night audit lists these bills, and their refunds are still open (see the Phase 7b carry-overs).
   - **The invoice layout waits for the IRD specification.** The template follows ARCHITECTURE §7.6.4 as far as it is known; the layout is a Typst file, so the published specification should need no code change. Pending the IRD.
   - **7b takes over the exchange-rate import and the media sweep in `jobs-svc`, and locks each day's rates at the close: done.**
@@ -353,9 +353,36 @@ Built after 7b, since guest laundry charges post to the folio. The owner asked f
 - Needs sandbox merchant accounts from the owner first. A `PaymentProvider` trait, with 7a's desk payments as the `manual` provider; **CyberSource** (Unified Checkout, TMS tokens, authorize/capture, 3-D Secure, JWT auth, encrypted webhooks) and the **Mastercard Gateway (MPGS)** (Hosted Checkout, tokens, 3-D Secure, per-property host, webhook secret check plus order re-fetch); payments.lk optional (LKR only). Per-property merchant credentials in Secret Manager, refunds and voids.
 - `docs/guides/payments/`: common technical guides plus one page per bank, written from current bank documentation and checked with each bank.
 
-## Phase 8 — Settings completeness and channels ([spec](specs/phase-8-settings-channels.md))
+## Phase 8a — Staff, invitations and settings ([spec](specs/phase-8a-settings-staff.md), [plan](superpowers/plans/2026-10-25-phase-8a-settings-staff.md))
 
-- Property settings, policies, reason codes, users and roles UI, staff invitations.
+Phase 8 was split (the owner, 2026-10-25): 8a is staff and settings, 8b is Channex. Migrations `0035` to `0037`.
+
+- **Invitations by email: done.** An owner or manager invites by email with a role, tenant-wide or per property. The token is 32 random bytes, stored as SHA-256, valid 7 days, single use, and every dead token answers one `410` "This invitation is no longer valid". Preview and accept are public routes; resend issues a new token and kills the old; revoke kills the link. An existing account must be signed in as the invited email; a new one sets a password and gets a session for the tenant. Idempotent create, audited (`invitation.created`, `.resent`, `.revoked`, `.accepted`), live in the `staff:<tenant>` event.
+- **Mail: done.** A `mail` crate (`Mailer`, `DevMailer`, `SesMailer`), sent by jobs-svc from the `mail-send` outbox topic (`POST /mail`). The SES client is `aws-sigv4` with `reqwest`, tested against AWS's SigV4 vector; the official SDK would add 22 crates, an older TLS stack and seven advisories. README "Email" has the set-up.
+- **Staff and roles: done.** Change a member's grants (`If-Match` on the new `membership.version`, effective at their next request), revoke a membership (sessions for the tenant end, the next request is `401`), the last owner protected, the permissions matrix generated from `rbac.rs`. New permission `StaffManage` (owner, manager) with managers limited to junior roles; new role `pos` holding `PosPost` alone, which also reads the active outlets and `posInHouse`.
+- **Settings: done.** One Settings area; General (name, times, audit time), the SLTDA licence number on Taxes and invoices and the invoice, Block reasons.
+- **Advisory deposits: done.** A deposit rule per rate plan, copied onto each booking; due and outstanding on the review step and the reservation modal, and a **Deposits outstanding** list in the night audit. Never blocks.
+- **Tests:** 101 default end-to-end tests, including invitations, revocation, a manager's limits and deposits; the isolation suite covers `invitation`.
+- **Deviations and rulings**, each made during the phase:
+  - **Builder's calls from the spec:** the mailer client is `aws-sigv4` with `reqwest`; mail is sent by jobs-svc so SES keys stay out of core-api; grant edits apply at the next request and keep open sessions; sign-in works for a user with no memberships; `PosPost` also allows the outlet and in-house reads; the matrix reveals nothing tenant-specific; `add-staff` stays, and the e2e helpers keep using it; time zone and base currency are read-only on General.
+  - **P1:** the first migration also creates `app.invitation_by_id`, which jobs-svc's `/mail` needs.
+  - **P2:** `MailJob` lives in the `mail` crate so it has no identity dependency.
+  - **P3:** SES uses static AWS keys only. Cloud Run supplies no AWS role. A credential provider can come later.
+  - **P4:** a manager acts on a member only if every grant is junior *and* at a property the manager manages, the scope they may give.
+  - **P5:** a preview of an invitation whose granted property was deleted answers `410`, like accept.
+  - **P6:** preview and accept keep the CSRF header check (as sign-up does in code), so a cross-site page cannot make a signed-in user accept an attacker's invitation.
+  - **P7:** a user whose every grant is `pos` sees no navigation to Settings, Staff or Permissions.
+  - **P8:** a `401` from any API call or the event stream signs the tab out (caches cleared, to `/login`).
+  - **Empty grant set refused** (remove the member instead); a deposit folio refuses payment by charge to account; the deposit is due when its due date is on or before the business date; `roomNumber` on `posInHouse` is nullable; the new-reservation review step computes its deposit client-side.
+- **Carried over from the Phase 8a reviews:**
+  - **Set for the phase's final fix wave (check the commit log for what landed):** SES `403` and `SendingPaused`/`LimitExceeded` treated as retryable; the push bus refused with `SVC_AUTH=google`; config tests for `APP_BASE_URL`; the accepting actor's grants reloaded after the lock; internal doc remarks kept out of `openapi.json`.
+  - **Still open:** a lazily expired invitation is not audited; `validate_grants` takes no tenant filter; an HTTP test for a manager against a manager-level invitation; `in_house_guests` sorts room numbers as text; one bad `deposit_terms` row fails the whole night-audit review, and the deposit list refreshes only for folios in the client's cache; the dev outbox directory is never cleaned.
+- **Deferred: Redis.** Caching waits until the system runs with real users (the owner, 2026-10-25). Nothing measured justifies a cache and a service to invalidate.
+
+## Phase 8b — Channels (Channex) ([spec](specs/phase-8-settings-channels.md), "Channels")
+
+**Next, once a Channex sandbox account exists** (nothing else blocks it).
+
 - `channel-svc` with Channex: connect a property, import and map room types, ARI push (debounced and batched), webhook booking ingestion.
 
 ## Phase 9 — IBE ([spec outline](specs/phase-9-ibe.md))

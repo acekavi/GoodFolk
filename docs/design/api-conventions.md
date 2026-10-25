@@ -25,34 +25,37 @@ Simple single-object reads that bootstrap the app (`GET /api/v1/me`) may be REST
   - Both are resolved once per request and cached in request extensions.
 - Authorisation: `ctx.require(Permission::X, Some(property_id))?` at the top of every handler. Add new actions to `identity::Permission` and to each role's `permits`, with a test (`modules/identity/tests/rbac.rs` pins the whole matrix). A grant with a role this build does not know is skipped with a warning.
 
-  | Permission | Owner | Manager | Front desk | Housekeeping | Accountant | HK supervisor |
-  |---|---|---|---|---|---|---|
-  | `PropertiesView`, `RoomsView`, `InventoryView`, `RatesView`, `ReservationsView` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-  | `PropertiesCreate` | ✓ | | | | |  |
-  | `PropertiesManage` (property settings, the audit time; sees the `audit` and `drift` ops alerts), `RoomsManage` (room types, rooms, sections, block reasons) | ✓ | ✓ | | | |  |
-  | `InventoryBlock` (block and release rooms) | ✓ | ✓ | ✓ | | |  |
-  | `RatesManage` (rate plans, prices, bulk changes, restrictions, meal supplements, cancellation policies) | ✓ | ✓ | | | |  |
-  | `ReservationsManage` (guests, create reservations, cancel, assign and unassign rooms, modify a room, occupants, accounts) | ✓ | ✓ | ✓ | | |  |
-  | `FrontDeskCheckIn` (check in, undo a same-day check-in, check out) | ✓ | ✓ | ✓ | | |  |
-  | `HousekeepingView` (the board, My rooms, issues) | ✓ | ✓ | ✓ | ✓ | | ✓ |
-  | `HousekeepingUpdate` (own assigned rooms, `dirty → cleaning → clean`) | ✓ | ✓ | | ✓ | | ✓ |
-  | `HousekeepingSupervise` (any condition, bulk, assign, copy yesterday, resolve issues) | ✓ | ✓ | | | | ✓ |
-  | `RoomIssuesReport` | ✓ | ✓ | ✓ | ✓ | | ✓ |
-  | `MediaManage` (upload, reorder, caption and remove gallery photos) | ✓ | ✓ | | | |  |
-  | `GuestDocumentsManage` (upload, view through an audited link, and delete guest ID documents) | ✓ | ✓ | ✓ | | |  |
-  | `FolioView` (folios, lines, payments, invoices, tax rules, outlets and exchange rates, and the `folio:` and `fx:` events) | ✓ | ✓ | ✓ | | ✓ |  |
-  | `FolioPost` (post a charge, take a payment) | ✓ | ✓ | ✓ | | |  |
-  | `FolioAdjust` (reverse, transfer, refund, set routing, credit notes, post tonight's charges) | ✓ | ✓ | | | |  |
-  | `InvoiceIssue` (issue an invoice, fetch an invoice link) | ✓ | ✓ | ✓ | | ✓ |  |
-  | `TaxSettingsManage` (tax rules, apply the preset, outlets, the property's tax settings) | ✓ | | | | |  |
-  | `FxOverride` (set an exchange rate by hand; sees the exchange-rate alert) | ✓ | ✓ | | | |  |
-  | `PosPost` (post POS bills) | ✓ | ✓ | | | |  |
-  | `NightAudit` (the night-audit review, starting and retrying the close, the audit history, and the `audit:` events) | ✓ | ✓ | ✓ | | |  |
-  | `LinenView` (linen stock, movements and batches, and the `linen:` events) | ✓ | ✓ | | ✓ | | ✓ |
-  | `LinenMove` (receive, transfer, send and return linen, and settle a batch by a return) | ✓ | ✓ | | ✓ | | ✓ |
-  | `LinenManage` (linen items, locations, par, write-offs and settling a batch by a write-off; sees the `linen` ops alert) | ✓ | ✓ | | | | ✓ |
-  | `LaundryOrders` (view, take and move guest laundry orders, and the `laundry:` events) | ✓ | ✓ | ✓ | ✓ | | ✓ |
-  | `LaundryPricesManage` (the guest laundry price list) | ✓ | ✓ | | | |  |
+  | Permission | Owner | Manager | Front desk | Housekeeping | Accountant | HK supervisor | POS |
+  |---|---|---|---|---|---|---|---|
+  | `PropertiesView`, `RoomsView`, `InventoryView`, `RatesView`, `ReservationsView` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |
+  | `PropertiesCreate` | ✓ | | | | |  |  |
+  | `PropertiesManage` (property settings, the audit time; sees the `audit` and `drift` ops alerts), `RoomsManage` (room types, rooms, sections, block reasons) | ✓ | ✓ | | | |  |  |
+  | `InventoryBlock` (block and release rooms) | ✓ | ✓ | ✓ | | |  |  |
+  | `RatesManage` (rate plans, prices, bulk changes, restrictions, meal supplements, cancellation policies) | ✓ | ✓ | | | |  |  |
+  | `ReservationsManage` (guests, create reservations, cancel, assign and unassign rooms, modify a room, occupants, accounts) | ✓ | ✓ | ✓ | | |  |  |
+  | `FrontDeskCheckIn` (check in, undo a same-day check-in, check out) | ✓ | ✓ | ✓ | | |  |  |
+  | `HousekeepingView` (the board, My rooms, issues) | ✓ | ✓ | ✓ | ✓ | | ✓ |  |
+  | `HousekeepingUpdate` (own assigned rooms, `dirty → cleaning → clean`) | ✓ | ✓ | | ✓ | | ✓ |  |
+  | `HousekeepingSupervise` (any condition, bulk, assign, copy yesterday, resolve issues) | ✓ | ✓ | | | | ✓ |  |
+  | `RoomIssuesReport` | ✓ | ✓ | ✓ | ✓ | | ✓ |  |
+  | `MediaManage` (upload, reorder, caption and remove gallery photos) | ✓ | ✓ | | | |  |  |
+  | `GuestDocumentsManage` (upload, view through an audited link, and delete guest ID documents) | ✓ | ✓ | ✓ | | |  |  |
+  | `FolioView` (folios, lines, payments, invoices, tax rules, outlets and exchange rates, and the `folio:` and `fx:` events) | ✓ | ✓ | ✓ | | ✓ |  |  |
+  | `FolioPost` (post a charge, take a payment) | ✓ | ✓ | ✓ | | |  |  |
+  | `FolioAdjust` (reverse, transfer, refund, set routing, credit notes, post tonight's charges) | ✓ | ✓ | | | |  |  |
+  | `InvoiceIssue` (issue an invoice, fetch an invoice link) | ✓ | ✓ | ✓ | | ✓ |  |  |
+  | `TaxSettingsManage` (tax rules, apply the preset, outlets, the property's tax settings) | ✓ | | | | |  |  |
+  | `FxOverride` (set an exchange rate by hand; sees the exchange-rate alert) | ✓ | ✓ | | | |  |  |
+  | `PosPost` (post POS bills) | ✓ | ✓ | | | |  | ✓ |
+  | `NightAudit` (the night-audit review, starting and retrying the close, the audit history, and the `audit:` events) | ✓ | ✓ | ✓ | | |  |  |
+  | `LinenView` (linen stock, movements and batches, and the `linen:` events) | ✓ | ✓ | | ✓ | | ✓ |  |
+  | `LinenMove` (receive, transfer, send and return linen, and settle a batch by a return) | ✓ | ✓ | | ✓ | | ✓ |  |
+  | `LinenManage` (linen items, locations, par, write-offs and settling a batch by a write-off; sees the `linen` ops alert) | ✓ | ✓ | | | | ✓ |  |
+  | `LaundryOrders` (view, take and move guest laundry orders, and the `laundry:` events) | ✓ | ✓ | ✓ | ✓ | | ✓ |  |
+  | `LaundryPricesManage` (the guest laundry price list) | ✓ | ✓ | | | |  |  |
+  | `StaffManage` (invitations, member grants and revocation; managers only for junior roles, below) | ✓ | ✓ | | | | | |
+
+  The `pos` role holds `PosPost` alone, and `PosPost` also allows two reads a till needs: the property's active outlets (the GraphQL `outlets` read) and GraphQL `posInHouse(propertyId)`, which returns the in-house stays as `reservation_room` id, room number (nullable) and guest name, and nothing else. A `pos`-only user has no SPA pages, and a test checks every other route group answers `403`. `StaffManage` is held by owners and managers; a manager is further limited to *junior* roles (`front_desk`, `housekeeping`, `hk_supervisor`, `accountant`, `pos`): they act (invite, re-grant, remove, resend, revoke) only on members and invitations whose every grant is junior and at a property they manage, and give only junior grants at properties where they hold `manager` (a tenant-wide junior grant needs a tenant-wide `manager`). Only owners grant `manager`, nobody grants `owner`, and the refusal is `403` naming the role or property (`identity::rbac::check_may_give` and `check_may_act_on`).
 
   `hk_supervisor` also gets the first row's base reads (a role without them cannot open the app). It does not get `InventoryBlock`, so the board shows **Block room** only to those who hold it. An override of a dirty room at check-in needs `FrontDeskCheckIn` and `HousekeepingSupervise` together (owner and manager). The audit history (`auditRuns`) and `dailyStats` need `NightAudit` or `FolioView`, so an accountant reads them; the review's row actions keep their own permissions (no-show, delay arrival and extend are `FrontDeskCheckIn`, like check-out). The interim `core-api add-staff` command (README, "Adding staff") is how staff get a role until Phase 8's invitations, and is to be replaced then; it runs as the schema owner, takes the password from a file, never a flag, and is safe to repeat.
 - Data access: `db::begin(&state.pool, Scope::tenant(ctx.tenant))` and never anything else. RLS is the safety net, but queries still filter by `property_id` explicitly.
@@ -78,6 +81,7 @@ Every non-GET/HEAD/OPTIONS request must send `x-goodfolk-csrf: 1` (`crates/core-
 | 405 | The route exists but not for this method (the router's method-not-allowed fallback) |
 | 409 | Uniqueness conflict, double booking (exclusion violation), idempotent request still running |
 | 412 | `If-Match` version mismatch |
+| 410 | An invitation token that is unknown, expired, revoked or already used (one message, "This invitation is no longer valid", for all four, so tokens cannot be probed) |
 | 422 | Body of the wrong shape (missing or mistyped field), validation failed (`garde`), business rule violated, idempotency key reused for a different request |
 | 428 | An update without `If-Match` |
 | 429 | Sign-in throttled: 5 failed attempts for one email within 15 minutes (the same answer whether or not the account exists) |
@@ -130,6 +134,10 @@ After a successful write, in the same transaction, call `db::notify(&mut tx, &Ev
 
 Keep events small: `pg_notify` payloads must stay under 8000 bytes. Inventory month keys are clamped to the counter window (`[business date, business date + 730 days)`, `rooms::inventory::clamped_month_keys`, crate-internal), which caps a change at 25 month keys, and blocks may not end past the window. A new key family that grows with a date range needs the same kind of bound. Rate keys grow with the number of plans too (a change to a plan with many derived plans), so `rates` writes only inside the same 730-day window and sends its keys in as many events as it takes to keep each payload under 6000 bytes of keys.
 
+### Staff keys
+
+`staff:<tenant>` names the tenant's members and invitations (the Staff page). Every invitation or membership command emits it: create, resend, revoke and accept an invitation, change a member's grants, revoke a membership. It reaches only users who hold `StaffManage` (the SSE filter in `events.rs`), and carries no token or password hash. It is a tenant key with no property.
+
 ### Housekeeping keys
 
 `hk:<property>` is the housekeeping board (room conditions, occupancy, assignments, block markers) and the housekeeper app's My rooms; `issues:<property>` is the open-issues list. Neither carries a date, so each is one small key. `hk:` is emitted by the condition commands (single and bulk), assignments (set and copy yesterday), **and by every command that changes what the board shows**: `check_in`, `undo_check_in` and `check_out` (a condition or occupancy), `create_reservation`, `assign_room`, `unassign_room`, `cancel_room` and `modify_room` (who is in a room, and when), the room commands (create, update and reorder: the room list itself) and `rooms::create_block` and `shorten_block` (a block marker). `rooms::hk_key` is the one definition of the key; `housekeeping::hk_key` re-exports it. Issue reports and resolutions emit only `issues:`, so a screen that shows issue counts (the board) listens to both. A command that changes any of these must emit the key in the same event as its others. The event string is one query key element, because `events.ts` invalidates `{ queryKey: [key] }`: the SPA reads the board under `['hk:<property>']`, My rooms under `['hk:<property>', 'mine']`, and the open issues under `['issues:<property>']`. A key spelled as `['hk', property]` would never be invalidated.
@@ -172,9 +180,17 @@ A new command that changes a stay's dates, room, status or existence, or a block
 
 The housekeeper app (`/hk`) queues condition changes and issue reports in IndexedDB while offline and replays them in order (`web/pms/src/lib/hk-queue.ts`, `hk-sync.svelte.ts`). Anything kept on a device is tagged with the user who made it, because a device can be shared: a queued item, the saved My rooms snapshot and the room choices carry their owner. Before every replay the client reads a **fresh** `GET /api/v1/me` (never the cached copy, which can be 30 s old) and sends an item only if its owner is the signed-in user; another user's items stay, are never sent and never shown, and can be discarded by the user who finds them. Signing out wipes the signer's own items and snapshot only, after warning if changes have not been sent. A new feature that keeps work on the device must follow the same rule. After sign-in the login page follows the `redirect` parameter only when it is a same-origin path, checked again after URL normalisation (`web/pms/src/lib/redirect.ts`: `/.//evil.com` becomes `//evil.com`).
 
+## Staff and invitation routes
+
+- **Authenticated (`StaffManage`):** `POST /api/v1/invitations` (idempotent: `Idempotency-Key`; `409` for an email that is already a member, `422` for `owner`), `POST /api/v1/invitations/{id}/resend`, `POST /api/v1/invitations/{id}/revoke`, `PUT /api/v1/members/{user}/grants` (`If-Match` on `membership.version`; replaces 1 to 50 grants) and `DELETE /api/v1/members/{user}`. GraphQL reads: `members`, `invitations(status)` (`pending`, `accepted`, `revoked`, `expired`) and `permissionMatrix` (every member may read it; it reveals nothing tenant-specific). The invitation resource never returns its token.
+- **Public (no session):** `POST /api/v1/invitations/preview` and `POST /api/v1/invitations/accept`, each with `{token}` (accept also takes a `password` for a new account), throttled like sign-in, and **inside the CSRF layer**: they need `x-goodfolk-csrf: 1` as sign-up does (ruling P6). A dead token answers `410`. An accept for an email with an account answers `409` "Sign in as <email> to accept" when signed out, and `403` when signed in as someone else.
+- **Revocation and the 401.** `DELETE /api/v1/members/{user}` deletes the membership, its grants and the user's sessions with that tenant, so their next request is `401`. The SPA signs the tab out on a `401` from any API call or the event stream.
+- The property `PATCH` takes `name`, the tax settings `PATCH` takes `sltda_licence` (at most 50 characters) and the rate plan create and `PATCH` take `deposit_rule` (`null` clears it). GraphQL adds `depositDue { currency, amount, dueDate, paid, outstanding }` on the reservation and `depositsOutstanding` on the night audit.
+- **Audit:** `invitation.created`, `.resent`, `.revoked`, `.accepted`, `membership.grants_changed`, `membership.revoked`, `property.updated`. No row holds a token.
+
 ## Internal endpoints
 
-`POST /internal/events` on core-api, media-svc's `POST /work` (and its gRPC service) and jobs-svc's `POST /tick` (and its gRPC service, `StartClose` and `RetryClose`) are called by other services, not browsers:
+`POST /internal/events` on core-api, media-svc's `POST /work` (and its gRPC service) and jobs-svc's `POST /tick` and `POST /mail` (and its gRPC service, `StartClose` and `RetryClose`) are called by other services, not browsers:
 
 - They sit behind the `svc-auth` layer (`crates/svc-auth`): a Google-signed ID token with the expected audience and an allowed service account in production, a bearer `INTERNAL_SHARED_SECRET` locally (`SVC_AUTH=secret`, refused when `APP_ENV=production`). A missing or wrong credential is a 401 problem (for gRPC, `UNAUTHENTICATED`).
 - They are mounted **outside the session and CSRF layers** and the 15 s request timeout (`routes::router`): there is no cookie or `x-goodfolk-csrf` header, and the caller owns its timeout, since a timed-out delivery is simply sent again. On media-svc only the health checks (`/healthz`, `grpc.health.v1`) are unauthenticated, so platform probes can reach them; on jobs-svc only `/healthz`.

@@ -81,7 +81,7 @@ core-api's outbox relay delivers the `media-process` push when an upload complet
 
 ### jobs-svc
 
-`jobs-svc` runs the night audit's close and all scheduled work: it resumes a crashed close, retries a failed automatic one, closes each property nobody closed by its audit moment, and runs the daily jobs (the Central Bank exchange-rate import, the media sweep, the inventory window extension, the cleanup of expired sessions, old sign-in failures and idempotency keys, and the inventory drift check). core-api runs none of these any more: it calls jobs-svc over gRPC when someone presses **Close the day** or **Retry**, and answers `503` `The jobs service is unavailable` when it is not running. `FX_IMPORT` moved from core-api to jobs-svc with the import.
+`jobs-svc` runs the night audit's close and all scheduled work: it resumes a crashed close, retries a failed automatic one, closes each property nobody closed by its audit moment, sends the staff invitations' email (`POST /mail`, see [Email](#email)), and runs the daily jobs (the Central Bank exchange-rate import, the media sweep, the inventory window extension, the cleanup of expired sessions, old sign-in failures and idempotency keys, and the inventory drift check). core-api runs none of these any more: it calls jobs-svc over gRPC when someone presses **Close the day** or **Retry**, and answers `503` `The jobs service is unavailable` when it is not running. `FX_IMPORT` moved from core-api to jobs-svc with the import.
 
 It needs Postgres and, for the media sweep, the storage of Media services (the same local defaults). It connects as `goodfolk_api` (`DATABASE_URL`, refusing a role that bypasses row-level security) and shares core-api's service credentials (`SVC_AUTH`, `INTERNAL_SHARED_SECRET`); core-api finds it at `JOBS_SVC_URL`, `http://localhost:8091` by default. Run it next to core-api, with the exports from Development:
 
@@ -98,6 +98,32 @@ curl -s -X POST -H "Authorization: Bearer $INTERNAL_SHARED_SECRET" http://localh
 The answer lists each job that did something, as `{"jobs":[{"job":"cleanup","key":"","outcome":"ran"}, …]}`, with a property id as the `key` of a per-property job. A job that is not due is left out; `skipped` means another tick or instance holds its lock, and `failed: …` that the next tick tries it again. Without a token the call is `401`.
 
 **Before its first tick on an existing development database**, note that every property whose business date never rolled (anything made before Phase 7b) is past its audit moment, so the tick closes it automatically, one day per property per tick: unresolved arrivals become no-shows (with their fees), tentative ones are cancelled, and a stay left in house past its departure fails the close, which is retried until its third attempt and then raises the `Night audit` banner. Start it with `JOBS_TICK=off` to keep such data as it is.
+
+### Email
+
+GoodFolk sends one kind of email so far, the staff invitation. It never leaves core-api's request path: creating or resending an invitation writes the invitation and an outbox row on the topic `mail-send` in one transaction, core-api's relay pushes that row to jobs-svc's `POST /mail`, and jobs-svc renders the message and hands it to the mailer. A failed send is retried by the bus, like the other topics. The outbox row carries the invitation's token (it has to, to build the link) and nothing else logs or stores it: the mailers log the recipient and subject only, and the invitation table keeps a SHA-256 of the token.
+
+jobs-svc picks the mailer from `APP_ENV`:
+
+- **Development (the default): the dev outbox.** Each message becomes a JSON file `{to, subject, text, html}` in `MAIL_OUTBOX_DIR` (default `target/mail-outbox`, relative to where jobs-svc runs), named by a time-ordered UUID, so the newest file sorts last. Nothing is sent. The invitation link is in the `text` field:
+
+  ```sh
+  ls target/mail-outbox
+  jq -r '.to, .subject, .text' "$(ls -t target/mail-outbox/*.json | head -1)"
+  ```
+
+  The end-to-end suite reads the same directory to follow the link (`MAIL_OUTBOX_DIR` in `playwright.config.ts`). Nothing cleans the directory.
+- **Production: Amazon SES.** `APP_ENV=production` requires the SES mailer and refuses the dev mailer; a missing variable stops jobs-svc at startup, naming it. It calls the SES v2 `SendEmail` API over HTTPS, signed with SigV4 (`aws-sigv4` and `reqwest`; the official SDK pulled in 22 more crates, an older TLS stack and seven advisories). Set up:
+  1. In SES, in the region you will use (`AWS_REGION`), verify an identity for the address or domain of `MAIL_FROM`, and request production access: a new SES account can only send to verified addresses.
+  2. Create an IAM user allowed `ses:SendEmail`, and give jobs-svc its static access key (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`). Cloud Run supplies no AWS role, so there is no instance-role path (`AWS_SESSION_TOKEN` is read if you hold temporary credentials). Keep the keys in Secret Manager.
+  3. Set `APP_BASE_URL` to the web app's public origin. It must be `https://` in production; jobs-svc refuses to start otherwise. Every link in an email is `<APP_BASE_URL>/invite/<token>`. Outside production it defaults to `http://localhost:5173`.
+
+The invitation email has the subject `<inviter> invited you to <tenant> on GoodFolk`, the properties and roles in plain words, the link, the expiry date, and text and simple HTML versions. The link works once and for 7 days.
+
+Deploy notes for the `mail-send` topic (ARCHITECTURE §5.3, §8.5):
+
+- **Pub/Sub.** Create the topic `mail-send` and a push subscription to jobs-svc `POST /mail`, with OIDC authentication whose audience is `JOBS_SVC_AUDIENCE` and a push service account of its own. That account must be in jobs-svc's `ALLOWED_SERVICE_EMAILS`. Give the subscription a dead-letter topic, as for the others. core-api publishes with `EVENT_BUS=pubsub`.
+- **Locally,** `EVENT_BUS=push` needs `PUSH_ENDPOINT_MAIL_SEND=http://localhost:8091/mail` on core-api, or it refuses to start. core-api's push bus signs every push with the media-svc credentials, which is right only for `SVC_AUTH=secret`; the push bus is refused in production anyway.
 
 ### Checks
 
@@ -503,6 +529,54 @@ This script sets up its own small hotel and uses two people: the owner, and a ho
 
 Not exercised here: the stock property test and the concurrent opposite-direction transfers (`modules/laundry/tests`, which check that stock equals the sum of movements after random sequences and that two transfers in opposite directions do not deadlock), a pantry's par (a housekeeping section's pantry is Σ over the active rooms in its section; add a section on **Rooms**, a `Pantry` location for it, and watch the store's par drop by the section's rooms), the vendor location kind (a batch to an outside laundry works as to the in-house one), and the tenant isolation of every new table (`crates/db/tests/isolation.rs`). The browser flows are in `web/pms/tests/e2e/laundry.spec.ts`.
 
+### Trying staff and settings by hand
+
+This script sets up a hotel and walks the owner through the settings pages, a rate plan deposit, and an invitation from the email to a signed-in clerk, then a revocation, a manager's limits and the permissions matrix. It uses the owner in one window and the invitee in a private window (a second browser profile). D is today.
+
+1. Start the services and apply the migrations (through `0037`), as the schema owner, each in its own shell with the exports from Development, including `PUSH_ENDPOINT_MAIL_SEND`. Invitations need core-api and jobs-svc, which sends the mail to the dev outbox (see [Email](#email)); media-svc can stay off:
+
+   ```sh
+   docker compose up -d postgres              # or your own Postgres on :5432
+   cargo run -p core-api -- migrate
+   cargo run -p core-api              # http://localhost:8080
+   cargo run -p jobs-svc              # http://localhost:8091
+   cd web/pms && bun run dev          # http://localhost:5173
+   ```
+
+2. The hotel. Sign up as the owner (`owner@example.com`, tenant `Lagoon Hotels`) and add a property coded `STF`. On **Room types** add `DLX` and on **Rooms** the rooms `101` to `104`. On **Rate plans** add `BAR` (standard, USD, segment IBE, meal plan RO only) and bulk-change it to `100.00` a night for the next two weeks, then set a `USD` rate on **Exchange rates**.
+3. The Settings index. Open **Settings**. **Properties** lists `STF`; open it for the property's index, grouped as Property (**General**, **Taxes and invoices**, **Currencies and exchange rates**), Operations (**Sections**, **Block reasons**, **Outlets**, **Laundry prices**), Rates (**Cancellation policies**, which opens Rate plans) and Staff. The index shows exactly the pages you may open: a front desk clerk sees fewer links, and a user whose every grant is `pos` sees no Settings, Staff or Permissions links at all.
+4. General. **General**: change the name, `Check-in time`, `Check-out time` and audit time, **Save settings** (`Saved.`). The time zone and base currency are shown but not editable: moving either would move the business date and every stored base amount. The edit is `If-Match` on the property, so a stale window gets `412` instead of overwriting.
+5. Taxes and invoices. **Taxes and invoices** now has an **SLTDA licence** field (up to 50 characters; the tourism authority's licence number, printed on invoices under the TIN when set). Enter `SLTDA/2026/0042` and **Save settings**. Leave it empty to print nothing. Only the owner changes tax settings.
+6. Block reasons. **Block reasons** lists the four seeded reasons (`RENOVATION`, `CONSTRUCTION`, `MAINTENANCE`, `OTHER`). Under **Add a reason** add `POWER` / `Power cut`, **Add reason**. **Rename** it to `Power outage` and **Save**; **Deactivate** hides it from new blocks, while blocks already made keep it. The code can't be changed later.
+7. A deposit rule. On **Rate plans** edit `BAR`. In the **Deposit (advisory: shown and listed, never enforced)** group choose **Asks for** `A percentage of the stay`, `Percentage (%)` `30`, **Due** `At booking`, and save: the plan's table row reads `30% of the stay, at booking`. The other kinds are `The first nights` (`Nights`, 1 to 30) and `A fixed amount`, and **Due** `Days before arrival` takes a number of days (0 to 365). **No deposit** clears the rule.
+8. A booking under it. **New reservation** for `STF`, 3 nights from D + 10, 1 room `DLX`, `BAR`. The review step shows `Deposit due USD 90.00 by <D>` (30% of 300.00, due at booking). Book it. Open the reservation: the **Deposit** row reads `Due USD 90.00 by D · paid USD 0.00 · outstanding USD 90.00`. Edit the plan's rule to `50%`: the existing reservation still says 90.00, since it keeps the rule it was booked under, and a new booking uses the new one. A deposit never blocks a booking, a check-in or the close.
+9. Deposits outstanding. On **Night audit** the sixth list, **Deposits outstanding (1)**, shows the reservation with guest, booking, arrival, due and paid, because its due date (D) is not after today. It is not part of the blocking count. Take a USD `90.00` payment on the reservation's deposit folio (see the folios walkthrough): the line leaves the list and the modal reads `outstanding USD 0.00` without a reload.
+10. Invite. As the owner open **Settings**, **Staff**. The **Members** table lists you; **Invitations** says `No invitations waiting.` Click **Invite**. In **Invite someone**: **Email** `kasun@example.com`, **Name** `Kasun Fernando`, **Role 1** `Front desk`, **Where 1** `STF · <property name>` (or `All properties` for a tenant-wide grant), then **Send invitation**. The **Invitations** table lists it with `Sent <date>, expires <date>`. Owners are not invited in this phase, and the dialog does not offer the role.
+11. The email. jobs-svc received the message through core-api's outbox and wrote it to the dev outbox:
+
+    ```sh
+    jq -r '.to, .subject, .text' "$(ls -t target/mail-outbox/*.json | head -1)"
+    ```
+
+    The subject is `<your name> invited you to Lagoon Hotels on GoodFolk`; the body lists `Front desk` at the property, the expiry date and a link `http://localhost:5173/invite/<token>`. The token is in no log line (check the core-api and jobs-svc output) and not in the database, which keeps its SHA-256.
+12. Accept. In the private window open the link. The page says `Join Lagoon Hotels`, who invited him and `Front desk · STF`. Enter a password of at least 12 characters under **Set a password** and **Accept**: he lands in the property with the front-desk navigation. Open `/settings/staff` as him: `Only owners and managers manage staff.` Reload the link: `This invitation is no longer valid`, the same answer as for an unknown, revoked or expired token. As the owner, the member list now has Kasun and the invitation row is gone, without a reload.
+13. An email that already has an account. Invite a second user who already has an account (sign one up in another window), as a `Housekeeping` clerk. Opening the link signed out offers **Sign in to accept**; he keeps his own password. Signed in as a different user the page offers **Sign out to accept** (the server answers `403` "this invitation is for …", or `409` "Sign in as <email> to accept" signed out through the API). Signed in as the right user, **Accept** adds the tenant and switches the session to it.
+14. Resend and revoke. Invite `meena@example.com`. **Resend to meena@example.com** issues a new token and moves the expiry to 7 days from now: the second email's link works and the first answers `This invitation is no longer valid`. **Revoke the invitation to meena@example.com** (confirm) makes the second one refuse too. Only one invitation per email can be pending; inviting an existing member is `409`.
+15. Change roles. On Kasun's row **Change roles**: add a second grant (`Accountant`, `All properties`) or change the first, **Save roles**. It replaces his grants and takes effect on his next request, without signing him out; the save is `If-Match` on the membership's new `version`, so a stale dialog gets `412`. You cannot change your own roles, and the last owner can't lose the `owner` grant.
+16. Remove. **Remove Kasun Fernando** (confirm `They lose access to every property at once and are signed out here.`): the notice says `Kasun Fernando has been removed.` His membership, grants and sessions for this tenant are gone, and his open tab is signed out at its next API call or live-update message (`401`), which goes to the sign-in page without a reload. You can't remove yourself or the last owner.
+17. A manager's limits. Add a manager with `core-api add-staff` (see [Adding staff](#adding-staff)), `--role manager --property STF`, and sign in as him in the private window. **Staff**, **Invite**: **Role 1** offers `Front desk`, `Housekeeping`, `HK supervisor`, `Accountant` and `POS`, not `Manager` or `Owner`. Invite a `Housekeeping` clerk: allowed. A forged request for the `manager` role is `403`, naming the role. He sees no **Change roles**, **Remove**, **Resend** or **Revoke** on a member or invitation that holds `manager` or `owner`, or a property he does not manage, and the server refuses them too.
+18. The matrix. **Settings**, **Permissions** (every member sees it): a table of roles by permissions, each cell the "Allows: …" wording, generated from the code (`rbac.rs`) so it cannot drift. It reveals nothing about this tenant.
+19. A POS. `core-api add-staff --role pos` makes a till user. It signs in through the API only (no SPA pages): `PosPost` posts a POS bill and also reads the property's active outlets and GraphQL `posInHouse(propertyId)` (the in-house stays, with the stay's id, room number and guest name, and nothing else). Every other route answers `403`.
+20. The audit log:
+
+    ```sh
+    bun -e 'const sql = new Bun.SQL(process.env.DATABASE_OWNER_URL); console.table(await sql`select at, action, actor_user_id, data from audit_log where action ~ ${"^(invitation|membership|property)\\."} order by at desc limit 30`); await sql.close()'
+    ```
+
+    Newest first: `membership.revoked`, `membership.grants_changed` (previous and new grants), `invitation.accepted`, `invitation.revoked`, `invitation.resent`, `invitation.created`, and `property.updated` (with the new name). No row holds a token.
+
+Not exercised here: an invitation's expiry (a token is refused after 7 days and a lazily expired one reads `expired`), the concurrent-demotion race on the last owner (a per-tenant advisory lock; `modules/identity/tests`), SES itself (the signing is tested against AWS's published SigV4 vector; sending needs a verified identity), and the isolation of `invitation` (`crates/db/tests/isolation.rs`). The browser flows are in `web/pms/tests/e2e/staff.spec.ts`.
+
 ### Configuration
 
 The API (`core-api serve`) reads:
@@ -530,13 +604,18 @@ core-api no longer reads `FX_IMPORT`: the exchange-rate import moved to jobs-svc
 |---|---|
 | `DATABASE_URL` | Pooled connection string, as the `goodfolk_api` role (required). Like the API, it refuses a role that bypasses row-level security. |
 | `DATABASE_DIRECT_URL` | Direct, unpooled connection string for the jobs' session advisory locks (a transaction-mode pooler cannot hold one). Required when `APP_ENV=production`; otherwise defaults to `DATABASE_URL`. |
-| `APP_ENV` | `production` logs JSON, requires `DATABASE_DIRECT_URL` and the storage variables, turns the tick off by default, and refuses `SVC_AUTH=secret`. |
-| `PORT` | Listen port (default 8091). One port serves gRPC, `POST /tick` and `/healthz`. |
-| `SVC_AUTH`, `INTERNAL_SHARED_SECRET`, `ALLOWED_SERVICE_EMAILS` | Service auth, as for media-svc (below). With `SVC_AUTH=google`, `ALLOWED_SERVICE_EMAILS` lists core-api's runtime service account and the Cloud Scheduler job's service account. |
-| `JOBS_SVC_AUDIENCE` | With `SVC_AUTH=google`: the audience jobs-svc requires on its gRPC calls and `POST /tick`; the Cloud Scheduler job's OIDC token uses it too. |
+| `APP_ENV` | `production` logs JSON, requires `DATABASE_DIRECT_URL`, the storage variables, `APP_BASE_URL` and the SES variables, turns the tick off by default, and refuses `SVC_AUTH=secret` and the dev mailer. |
+| `PORT` | Listen port (default 8091). One port serves gRPC, `POST /tick`, `POST /mail` and `/healthz`. |
+| `SVC_AUTH`, `INTERNAL_SHARED_SECRET`, `ALLOWED_SERVICE_EMAILS` | Service auth, as for media-svc (below). With `SVC_AUTH=google`, `ALLOWED_SERVICE_EMAILS` lists core-api's runtime service account, the Cloud Scheduler job's service account and the `mail-send` push subscription's service account. |
+| `JOBS_SVC_AUDIENCE` | With `SVC_AUTH=google`: the audience jobs-svc requires on its gRPC calls, `POST /tick` and `POST /mail`; the Cloud Scheduler job's OIDC token and the `mail-send` subscription's use it too. |
 | `JOBS_TICK` | `internal` (the default outside production) ticks every 15 minutes, starting at once; `off` (the production default) waits for `POST /tick` or the gRPC `Tick`. The end-to-end suite sets `off`. |
 | `FX_IMPORT` | `on` (default) or `off`: whether the tick imports the Central Bank's exchange rates (moved from core-api in Phase 7b). An operations switch, allowed in production too: with `off`, rates are set by hand (`PUT …/fx-rates/{date}/{currency}`). The end-to-end suite sets `off`. |
 | `S3_*`, `MEDIA_PUBLIC_BASE_URL` | Storage, for the media sweep, with the same dev defaults as core-api's (see Media engine). |
+| `APP_BASE_URL` | The web app's origin, for the links in emails (`<APP_BASE_URL>/invite/<token>`). Required and `https://` in production; dev default `http://localhost:5173`. |
+| `MAIL_FROM` | Production: the sender address, which SES must have verified. Required. |
+| `AWS_REGION` | Production: the SES region (for example `ap-southeast-1`). Required. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Production: static keys for an IAM user allowed `ses:SendEmail`. Required: Cloud Run has no AWS instance role. `AWS_SESSION_TOKEN` is optional, for temporary keys. Never printed. |
+| `MAIL_OUTBOX_DIR` | Outside production: the directory the dev mailer writes each message to as JSON. Default `target/mail-outbox`. Ignored in production. |
 
 #### Exchange rates
 
@@ -593,7 +672,7 @@ PUSH_ENDPOINT_MAIL_SEND=http://localhost:8091/mail
 
 ### Adding staff
 
-Until invitations arrive (Phase 8), a hotel owner's staff are added from the command line, as the schema owner:
+Staff are invited from **Settings**, **Staff** (see [Email](#email) and Trying staff and settings by hand). `add-staff` stays as a development and seeding tool: it creates a user with a role directly, as the schema owner, with no email, no invitation and no audit of an inviter. The end-to-end suite uses it for speed, and it is how you make a `pos` user or a test manager. Do not use it as the way to onboard staff in production:
 
 ```sh
 printf '%s' 'a password of at least 12 characters' > /tmp/staff-password
@@ -603,7 +682,7 @@ DATABASE_OWNER_URL=$DATABASE_OWNER_URL cargo run -p core-api -- add-staff \
 rm /tmp/staff-password
 ```
 
-`--role` is `owner`, `manager`, `front_desk`, `housekeeping`, `accountant` or `hk_supervisor`. `--property` is a property
+`--role` is `owner`, `manager`, `front_desk`, `housekeeping`, `accountant`, `hk_supervisor` or `pos`. `--property` is a property
 code of the owner's tenant and limits the role to that property; without it the role covers the whole tenant.
 `--tenant` is needed only when `--owner-email` owns more than one tenant. The password is read from the file only (never
 an argument or environment variable) and is used only for a new user: an existing user keeps their password and name.
