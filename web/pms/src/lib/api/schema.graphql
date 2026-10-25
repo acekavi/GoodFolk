@@ -649,10 +649,6 @@ type GuestDocumentNode {
 	The uploader's display name; null once their account is gone.
 	"""
 	uploadedByName: String
-	"""
-	Whether a thumbnail can be linked (size `thumb`): a PDF's first page, or an image.
-	"""
-	hasThumbnail: Boolean!
 }
 
 """

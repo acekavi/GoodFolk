@@ -22,8 +22,6 @@ pub struct GuestDocumentRow {
     /// The uploader's display name; `None` once their account is gone.
     pub uploaded_by_name: Option<String>,
     pub uploaded_at: OffsetDateTime,
-    /// Whether the document has a `thumb` file to link to (a PDF's first page, or any image).
-    pub has_thumbnail: bool,
 }
 
 /// The most documents [`guest_documents`] returns.
@@ -33,9 +31,7 @@ pub const MAX_LISTED_DOCUMENTS: i64 = 50;
 pub async fn guest_documents(tx: &mut Tx, property: Uuid, guest: Uuid) -> Result<Vec<GuestDocumentRow>, MediaError> {
     Ok(sqlx::query_as(
         "select d.id, d.guest_id, d.asset_id, d.kind, a.status, a.mime, d.uploaded_by,
-                u.display_name as uploaded_by_name, d.uploaded_at,
-                exists (select 1 from jsonb_array_elements(a.renditions) r
-                        where r ->> 'size' = 'thumb' and r ->> 'format' = 'webp') as has_thumbnail
+                u.display_name as uploaded_by_name, d.uploaded_at
          from guest_document d join media_asset a on a.id = d.asset_id
          left join app_user u on u.id = d.uploaded_by
          where d.guest_id = $1 and a.property_id = $2

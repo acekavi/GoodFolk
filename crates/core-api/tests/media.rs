@@ -419,7 +419,7 @@ async fn no_graphql_field_exposes_guest_document_urls(_: PgPoolOptions, opts: Pg
 
     let fields: Vec<&str> =
         body["data"]["__type"]["fields"].as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap()).collect();
-    assert_eq!(fields, ["id", "kind", "status", "mime", "uploadedAt", "uploadedBy", "uploadedByName", "hasThumbnail"]);
+    assert_eq!(fields, ["id", "kind", "status", "mime", "uploadedAt", "uploadedBy", "uploadedByName"]);
     for field in fields {
         let lower = field.to_lowercase();
         assert!(!["url", "link", "key", "href", "src"].iter().any(|bad| lower.contains(bad)), "{field}");

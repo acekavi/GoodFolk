@@ -3,8 +3,8 @@
 	file), view and delete. Rendered only for `GuestDocumentsManage`. Collapsed at first: the list is
 	read only once it is opened, so a reservation with many guests does not query them all. A view fetches a fresh 5-minute
 	link each time (each is audited) and never keeps it: an image opens at its `md` size in a dialog, a
-	PDF in a new tab, or, if the browser blocks the tab, as a link in the dialog. A row whose document has
-	a thumbnail shows it in place of the icon; fetching it is a view of size `thumb`, audited like any other.
+	PDF in a new tab, or, if the browser blocks the tab, as a link in the dialog. The list shows no
+	thumbnails, since each would cost an audited link.
 -->
 <script lang="ts">
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
@@ -24,7 +24,6 @@
 	import { Pending } from '$lib/pending.svelte';
 	import type { DocumentKind } from '$lib/upload';
 	import { percent, PROCESSING_FAILED, Uploads } from '$lib/uploads.svelte';
-	import GuestDocumentThumbnail from './GuestDocumentThumbnail.svelte';
 	import MediaUploader from './MediaUploader.svelte';
 
 	interface Props {
@@ -133,17 +132,7 @@
 			<ul class="rows" aria-label="ID documents">
 				{#each documents.data as document (document.id)}
 					<li>
-						{#if document.hasThumbnail && document.status === 'READY'}
-							<GuestDocumentThumbnail
-								{propertyId}
-								documentId={document.id}
-								alt="{documentKindLabel(document.kind)} of {guestName}"
-							>
-								{#snippet fallback()}{@render icon()}{/snippet}
-							</GuestDocumentThumbnail>
-						{:else}
-							{@render icon()}
-						{/if}
+						{@render icon()}
 						<span class="what">
 							<strong>{documentKindLabel(document.kind)}</strong>
 							<span class="hint">
