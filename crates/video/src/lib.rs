@@ -1,6 +1,12 @@
-//! Video and PDF finishing: locates the external tools (ffmpeg, ffprobe, qpdf, PDFium) the pipeline runs.
+//! Video and PDF finishing: locates the external tools (ffmpeg, ffprobe, qpdf, PDFium) the pipeline runs, probes and
+//! transcodes video uploads, and scores renditions with VMAF.
 
 pub mod probe;
+mod run;
 pub mod tools;
+mod transcode;
+mod vmaf;
 
 pub use probe::{Probe, Refusal, VideoError, accept, probe};
+pub use transcode::{Encoded, Options, poster_png, transcode};
+pub use vmaf::{VmafScore, vmaf};

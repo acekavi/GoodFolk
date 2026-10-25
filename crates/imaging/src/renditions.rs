@@ -158,6 +158,14 @@ pub fn process(bytes: &[u8], ty: SourceType, profile: Profile) -> Result<Process
     })
 }
 
+/// A video's poster as gallery renditions: the `Profile::Gallery` ladder of `png`, quality-gated as [`process`] does
+/// it, with no archive (the video upload is the poster's archive).
+pub fn poster_renditions(png: &[u8]) -> Result<Vec<Rendition>, ImagingError> {
+    dimensions(png, SourceType::Png)?;
+    let img = decode(png, SourceType::Png)?;
+    ladder(&img, Profile::Gallery).and_then(render)
+}
+
 /// A format's searched quality, and the encode the search made at it (taken by the one job that can reuse it).
 struct Chosen {
     format: Format,

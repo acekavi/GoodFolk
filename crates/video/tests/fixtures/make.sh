@@ -62,7 +62,8 @@ ffmpeg -stream_loop 15 -i "$dir/tiny-e2e.mp4" -c copy -t 61 -movflags +faststart
 # MPEG-2 video, which no upload may use.
 ffmpeg -f lavfi -i testsrc2=size=640x360:rate=25:duration=2 -c:v mpeg2video -b:v 1M "$dir/wrong-codec.mkv"
 
-# 4 s of real PQ (SMPTE 2084, BT.2020) 4K material, re-encoded as 10-bit HEVC in a MOV.
-ffmpeg -init_hw_device vaapi=va:/dev/dri/renderD128 -ss 10 -t 4 -i "$cache/eclipse-4k-hdr.webm" -an \
-    -vf format=p010le,hwupload -filter_hw_device va -c:v hevc_vaapi -profile:v main10 -b:v 6M -tag:v hvc1 \
+# 4 s of real PQ (SMPTE 2084, BT.2020) 4K material, re-encoded as 10-bit HEVC in a MOV. The parameter sets stay
+# in-band (`hev1`): tagged `hvc1`, the VAAPI stream decodes as garbage.
+ffmpeg -init_hw_device vaapi=va:/dev/dri/renderD128 -ss 14.5 -t 4 -i "$cache/eclipse-4k-hdr.webm" -an \
+    -vf format=p010le,hwupload -filter_hw_device va -c:v hevc_vaapi -profile:v main10 -b:v 6M \
     -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc -color_range tv "$dir/hdr-4k-hevc.mov"

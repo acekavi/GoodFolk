@@ -1,16 +1,12 @@
 //! `ffprobe` on an upload, and the rules that decide whether the pipeline takes it.
 
-use std::io::{self, Read};
-use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::thread;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
-use rustix::process::{Pid, Signal, kill_process_group};
 use serde::Deserialize;
 
-use crate::tools;
+use crate::{run, tools};
 
 const MAX_DURATION_MS: u32 = 60_000;
 const MAX_LONG_SIDE: u32 = 3840;
@@ -19,8 +15,6 @@ const VIDEO_CODECS: [&str; 4] = ["h264", "hevc", "vp9", "av1"];
 const AUDIO_CODECS: [&str; 3] = ["aac", "opus", "mp3"];
 const HDR_TRANSFERS: [&str; 2] = ["smpte2084", "arib-std-b67"];
 const MAX_STDOUT: u64 = 4 * 1024 * 1024;
-const MAX_STDERR: u64 = 64 * 1024;
-const POLL: Duration = Duration::from_millis(10);
 
 /// What `ffprobe` says about a video upload.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,10 +39,10 @@ pub enum VideoError {
     /// `ffprobe` could not make sense of the file.
     #[error("unreadable video: {0}")]
     Unreadable(String),
-    /// `ffprobe` could not be run, or printed something unexpected.
-    #[error("ffprobe failed: {0}")]
+    /// `ffprobe` or `ffmpeg` could not be run, failed, or printed something unexpected.
+    #[error("video tool failed: {0}")]
     Tool(String),
-    #[error("ffprobe timed out")]
+    #[error("video tool timed out")]
     TimedOut,
 }
 
@@ -132,59 +126,20 @@ pub fn probe(path: &Path, timeout: Duration) -> Result<Probe, VideoError> {
 }
 
 fn run_ffprobe(path: &Path, timeout: Duration) -> Result<Vec<u8>, VideoError> {
-    let mut child = Command::new(tools::ffprobe())
-        .args(["-v", "error", "-print_format", "json", "-show_streams", "-show_format"])
-        .arg(path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // Its own process group, so a timeout can take the whole group down.
-        .process_group(0)
-        .spawn()
-        .map_err(|e| VideoError::Tool(e.to_string()))?;
-    let stdout = drain(child.stdout.take(), MAX_STDOUT);
-    let stderr = drain(child.stderr.take(), MAX_STDERR);
-
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) if Instant::now() >= deadline => break Err(VideoError::TimedOut),
-            Ok(None) => thread::sleep(POLL),
-            Err(e) => break Err(VideoError::Tool(e.to_string())),
-        }
-    };
-    if status.is_err() {
-        if let Some(group) = i32::try_from(child.id()).ok().and_then(Pid::from_raw) {
-            let _ = kill_process_group(group, Signal::KILL);
-        }
-        let _ = child.kill();
-        let _ = child.wait();
+    let ran = run::run(
+        Command::new(tools::ffprobe())
+            .args(["-v", "error", "-print_format", "json", "-show_streams", "-show_format"])
+            .arg(path),
+        Instant::now() + timeout,
+        MAX_STDOUT,
+    )?;
+    if !ran.status.success() {
+        return Err(VideoError::Unreadable(ran.stderr()));
     }
-    let (stdout, stdout_over) = stdout.join().unwrap_or_default();
-    let (stderr, _) = stderr.join().unwrap_or_default();
-    let status = status?;
-    if !status.success() {
-        return Err(VideoError::Unreadable(String::from_utf8_lossy(&stderr).trim().to_owned()));
-    }
-    if stdout_over {
+    if ran.stdout_over {
         return Err(VideoError::Unreadable("probe output too large".into()));
     }
-    Ok(stdout)
-}
-
-/// Reads `pipe` to its end, keeping the first `cap` bytes and whether there were more. The rest is discarded as it
-/// arrives, so ffprobe never blocks on a full pipe.
-fn drain(pipe: Option<impl Read + Send + 'static>, cap: u64) -> thread::JoinHandle<(Vec<u8>, bool)> {
-    thread::spawn(move || {
-        let mut buf = Vec::new();
-        let mut over = false;
-        if let Some(mut pipe) = pipe {
-            let _ = (&mut pipe).take(cap).read_to_end(&mut buf);
-            over = io::copy(&mut pipe, &mut io::sink()).is_ok_and(|rest| rest > 0);
-        }
-        (buf, over)
-    })
+    Ok(ran.stdout)
 }
 
 fn parse(json: &[u8]) -> Result<Probe, VideoError> {

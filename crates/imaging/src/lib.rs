@@ -18,7 +18,7 @@ pub use decode::{decode, dimensions};
 pub use encode::{encode_avif, encode_webp};
 pub use media_types::{Format, Profile, Size};
 pub use quality::{QUALITY_TARGET, score};
-pub use renditions::{Processed, Rendition, process};
+pub use renditions::{Processed, Rendition, poster_renditions, process};
 pub use ssim2::Reference;
 
 /// Images above this many pixels are refused before they are decoded.
