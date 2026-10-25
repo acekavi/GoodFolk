@@ -1,6 +1,6 @@
 mod common;
 
-use common::{SECRET, Server, fixture, http, start};
+use common::{SECRET, Server, fixture, http, start, video_fixture};
 use proto::media::finalize_response::Result as Outcome;
 use proto::media::media_client::MediaClient;
 use proto::media::{CompletedPart, CreateUploadRequest, FinalizeRequest, Purpose};
@@ -72,6 +72,7 @@ async fn refused(server: &Server, purpose: Purpose, body: &[u8], sha256: Vec<u8>
     }
     let left = server.storage.head(Bucket::Private, &upload_key(tenant, asset)).await.unwrap();
     assert_eq!(left, None, "a refused upload is deleted");
+    assert!(server.tmp.entries_for(asset).is_empty(), "no temporary copy is left");
 }
 
 #[tokio::test]
@@ -238,4 +239,64 @@ async fn finalize_rejects_a_malformed_request_before_completing() {
     // A gallery file is at most 25 MiB: four 8 MiB parts.
     let too_many_parts = client.finalize(request(vec![0; 32], 5)).await.unwrap_err();
     assert_eq!(too_many_parts.code(), Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn video_finalize_verifies_a_phone_clip() {
+    let server = start().await;
+    let body = video_fixture("phone-1080p-h264.mp4");
+    let (tenant, asset, outcome) = upload(&server, Purpose::GalleryVideo, &body, sha(&body)).await;
+    let Outcome::Verified(verified) = outcome else { panic!("refused: {outcome:?}") };
+    assert_eq!(verified.blake3, blake3::hash(&body).as_bytes());
+    assert_eq!(verified.mime, "video/mp4");
+    assert_eq!(verified.bytes, body.len() as u64);
+    assert_eq!((verified.width, verified.height), (1920, 1080));
+    assert!(verified.duration_ms.abs_diff(10_000) < 100, "{} ms", verified.duration_ms);
+    let key = upload_key(tenant, asset);
+    assert_eq!(server.storage.head(Bucket::Private, &key).await.unwrap(), Some(body.len() as u64));
+    assert!(server.tmp.entries_for(asset).is_empty(), "the temporary copy is gone");
+    server.storage.delete(Bucket::Private, &key).await.unwrap();
+}
+
+#[tokio::test]
+async fn video_finalize_refuses_a_long_clip() {
+    let server = start().await;
+    let body = video_fixture("long-61s.mp4");
+    refused(&server, Purpose::GalleryVideo, &body, sha(&body), "Videos can be at most 60 seconds").await;
+}
+
+#[tokio::test]
+async fn video_finalize_refuses_a_photo() {
+    let server = start().await;
+    let body = fixture("small.jpg");
+    refused(&server, Purpose::GalleryVideo, &body, sha(&body), "This file type is not accepted here").await;
+}
+
+#[tokio::test]
+async fn video_finalize_refuses_checksum_mismatch() {
+    let server = start().await;
+    let body = video_fixture("tiny-e2e.mp4");
+    refused(&server, Purpose::GalleryVideo, &body, sha(b"something else"), "The file does not match its checksum")
+        .await;
+}
+
+#[tokio::test]
+async fn photo_finalize_refuses_a_video() {
+    let server = start().await;
+    let body = video_fixture("phone-1080p-h264.mp4");
+    refused(&server, Purpose::Gallery, &body, sha(&body), "This file type is not accepted here").await;
+}
+
+#[tokio::test]
+async fn video_create_upload_caps_at_500_mb() {
+    let server = start().await;
+    let mut client = client(&server).await;
+    let (tenant, asset) = (Uuid::now_v7(), Uuid::now_v7());
+    let error = client.create_upload(create(tenant, asset, Purpose::GalleryVideo, 524_288_001)).await.unwrap_err();
+    assert_eq!(error.code(), Code::InvalidArgument);
+
+    let created =
+        client.create_upload(create(tenant, asset, Purpose::GalleryVideo, 524_288_000)).await.unwrap().into_inner();
+    assert_eq!(created.parts.len(), 63, "62.5 parts of 8 MiB");
+    server.storage.abort_multipart(Bucket::Private, &upload_key(tenant, asset), &created.s3_upload_id).await.unwrap();
 }

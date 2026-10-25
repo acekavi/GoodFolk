@@ -1,55 +1,12 @@
 mod common;
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
-use common::{CaptureBus, SECRET, Server, fixture, http, start, start_with};
-use events::{PushEnvelope, PushMessage};
-use media_types::{MediaResult, ProcessJob, Profile, Size};
+use common::{CaptureBus, SECRET, fixture, http, post_work, process, start, start_with, uploaded, video_fixture};
+use media_types::{Format, MediaResult, ProcessJob, Profile, Size};
 use storage::{Bucket, IMMUTABLE, upload_key};
 use uuid::Uuid;
-
-fn envelope(job: &ProcessJob) -> PushEnvelope {
-    let id = Uuid::now_v7().to_string();
-    PushEnvelope {
-        message: PushMessage {
-            data: STANDARD.encode(serde_json::to_vec(job).unwrap()),
-            message_id: id.clone(),
-            attributes: BTreeMap::from([("message_id".to_owned(), id)]),
-        },
-        subscription: "push/media-process".to_owned(),
-    }
-}
-
-async fn post_work(server: &Server, job: &ProcessJob, auth: Option<&str>) -> reqwest::StatusCode {
-    let mut request = http()
-        .post(format!("http://{}/work", server.addr))
-        .header("content-type", "application/json")
-        .body(serde_json::to_vec(&envelope(job)).unwrap());
-    if let Some(auth) = auth {
-        request = request.header("authorization", auth);
-    }
-    request.send().await.unwrap().status()
-}
-
-/// Puts `body` where an upload of a new asset lands and returns the job for it.
-async fn uploaded(server: &Server, purpose: Profile, body: Vec<u8>, mime: &str) -> ProcessJob {
-    let job = ProcessJob { tenant_id: Uuid::now_v7(), asset_id: Uuid::now_v7(), purpose, mime: mime.to_owned() };
-    let key = upload_key(job.tenant_id, job.asset_id);
-    server.storage.put(Bucket::Private, &key, body, mime, None).await.unwrap();
-    job
-}
-
-async fn process(server: &Server, job: &ProcessJob) -> MediaResult {
-    assert_eq!(post_work(server, job, Some(&format!("Bearer {SECRET}"))).await, 200);
-    let sent = server.bus.sent.lock().unwrap();
-    assert_eq!(sent.len(), 1, "one result is published");
-    assert_eq!(sent[0].topic, "media-results");
-    serde_json::from_value(sent[0].payload.clone()).unwrap()
-}
 
 #[tokio::test]
 async fn work_writes_renditions_and_publishes_ready() {
@@ -160,6 +117,82 @@ async fn a_zero_byte_upload_fails_cleanly() {
     assert_eq!(reason, "This file could not be read");
     let response = http().get(format!("http://{}/healthz", server.addr)).send().await.unwrap();
     assert_eq!(response.status(), 200, "the service keeps serving");
+    server.storage.delete(Bucket::Private, &upload_key(job.tenant_id, job.asset_id)).await.unwrap();
+}
+
+#[tokio::test]
+async fn video_job_publishes_ready() {
+    let server = start().await;
+    let job = uploaded(&server, Profile::GalleryVideo, video_fixture("phone-1080p-h264.mp4"), "video/mp4").await;
+    let MediaResult::Ready { width, height, archive_key, renditions, .. } = process(&server, &job).await else {
+        panic!("not ready")
+    };
+    assert_eq!((width, height), (1920, 1080));
+    let upload = upload_key(job.tenant_id, job.asset_id);
+    assert_eq!(archive_key, upload, "the upload is the archive");
+
+    let (videos, posters): (Vec<_>, Vec<_>) =
+        renditions.iter().partition(|r| matches!(r.format, Format::Av1 | Format::H264));
+    let shapes: Vec<_> = videos.iter().map(|r| (r.size, r.format, r.width, r.height)).collect();
+    assert_eq!(
+        shapes,
+        [
+            (Size::V1080, Format::Av1, 1920, 1080),
+            (Size::V1080, Format::H264, 1920, 1080),
+            (Size::V720, Format::Av1, 1280, 720),
+            (Size::V720, Format::H264, 1280, 720),
+        ]
+    );
+    assert!(renditions[0].key.ends_with("/1080p.av1.mp4"), "{}", renditions[0].key);
+    for video in &videos {
+        let duration = video.duration_ms.expect("a video rendition has a duration");
+        assert!(duration.abs_diff(10_000) < 100, "{} is {duration} ms", video.key);
+    }
+    // The poster's own size is 1920 wide, so the Gallery ladder stops below xl.
+    assert_eq!(posters.len(), 8);
+    assert!(posters.iter().all(|r| matches!(r.format, Format::Avif | Format::Webp) && r.duration_ms.is_none()));
+    assert!(!posters.iter().any(|r| r.size == Size::Xl));
+
+    for rendition in &renditions {
+        let response = http().get(server.storage.public_url(&rendition.key)).send().await.unwrap();
+        assert_eq!(response.status(), 200, "{} is public", rendition.key);
+        assert_eq!(response.headers()["cache-control"], IMMUTABLE);
+        assert_eq!(response.headers()["content-type"], rendition.format.content_type());
+        assert_eq!(response.bytes().await.unwrap().len() as u64, rendition.bytes);
+    }
+    let kept = server.storage.head(Bucket::Private, &upload).await.unwrap();
+    assert_eq!(kept, Some(video_fixture("phone-1080p-h264.mp4").len() as u64), "the upload is kept as the archive");
+    assert!(server.tmp.entries_for(job.asset_id).is_empty(), "the job's temporary files are gone");
+    server.storage.delete(Bucket::Private, &upload).await.unwrap();
+}
+
+#[tokio::test]
+async fn video_job_redelivered_after_ready_is_a_no_op() {
+    let server = start().await;
+    let job = uploaded(&server, Profile::GalleryVideo, video_fixture("tiny-e2e.mp4"), "video/mp4").await;
+    let MediaResult::Ready { .. } = process(&server, &job).await else { panic!("not ready") };
+    assert_eq!(post_work(&server, &job, Some(&format!("Bearer {SECRET}"))).await, 200);
+    assert_eq!(server.bus.sent.lock().unwrap().len(), 1, "the repeat publishes nothing");
+    let upload = upload_key(job.tenant_id, job.asset_id);
+    assert!(server.storage.head(Bucket::Private, &upload).await.unwrap().is_some(), "the archive is kept");
+    server.storage.delete(Bucket::Private, &upload).await.unwrap();
+}
+
+#[tokio::test]
+async fn video_temp_dir_is_cleaned() {
+    let server = start().await;
+    let job = uploaded(&server, Profile::GalleryVideo, video_fixture("tiny-e2e.mp4"), "video/mp4").await;
+    let MediaResult::Ready { .. } = process(&server, &job).await else { panic!("not ready") };
+    assert!(server.tmp.path().exists(), "the job worked under the temporary root");
+    assert!(server.tmp.entries_for(job.asset_id).is_empty());
+    server.storage.delete(Bucket::Private, &upload_key(job.tenant_id, job.asset_id)).await.unwrap();
+
+    // A file that is no video fails in the worker, and leaves nothing behind either.
+    let server = start().await;
+    let job = uploaded(&server, Profile::GalleryVideo, fixture("small.jpg"), "video/mp4").await;
+    let MediaResult::Failed { reason, .. } = process(&server, &job).await else { panic!("not failed") };
+    assert_eq!(reason, "This file could not be read");
+    assert!(server.tmp.entries_for(job.asset_id).is_empty());
     server.storage.delete(Bucket::Private, &upload_key(job.tenant_id, job.asset_id)).await.unwrap();
 }
 

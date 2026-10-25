@@ -3,6 +3,7 @@
 //! The answer is 200 only once a result has been published; anything else is 503, so the bus delivers the job again.
 //! Object keys are deterministic, so a redelivered job rewrites the same objects.
 
+use std::path::Path;
 use std::time::Duration;
 
 use axum::Json;
@@ -11,12 +12,13 @@ use axum::http::StatusCode;
 use events::{Message, PushEnvelope};
 use futures::future;
 use imaging::SourceType;
-use media_types::{MediaResult, ProcessJob, Profile, RenditionOut};
+use media_types::{Format, MediaResult, ProcessJob, Profile, RenditionOut};
 use storage::{Bucket, IMMUTABLE, StorageError, archive_key, rendition_key, upload_key};
 use uuid::Uuid;
 
-use crate::worker::{self, Outcome, Output};
-use crate::{MediaSvc, RESULTS_TOPIC};
+use crate::limits::limits;
+use crate::worker::{self, Outcome, Output, VideoOutput, WorkerError};
+use crate::{MediaSvc, RESULTS_TOPIC, ScratchDir};
 
 const ATTEMPTS: usize = 3;
 /// The pause after each failed attempt but the last.
@@ -49,6 +51,9 @@ pub(crate) async fn work(State(state): State<WorkState>, Json(envelope): Json<Pu
 
 /// `Ok` once a result is published, or when there is nothing left to do.
 async fn handle(state: &WorkState, job: &ProcessJob) -> anyhow::Result<()> {
+    if job.purpose == Profile::GalleryVideo {
+        return handle_video(state, job).await;
+    }
     let svc = &state.svc;
     let upload = upload_key(job.tenant_id, job.asset_id);
     let processed = {
@@ -68,7 +73,8 @@ async fn handle(state: &WorkState, job: &ProcessJob) -> anyhow::Result<()> {
         if SourceType::from_mime(&job.mime).is_none_or(|ty| ty == SourceType::Heic) {
             return publish(svc, failed(job, UNREADABLE)).await;
         }
-        attempts(state, job, &bytes).await
+        let (exe, bytes) = (&svc.worker_exe, &bytes[..]);
+        attempts(job, move || worker::run(exe, job, bytes, state.rayon_threads, worker::timeout())).await
     };
 
     let result = match processed {
@@ -86,18 +92,74 @@ async fn handle(state: &WorkState, job: &ProcessJob) -> anyhow::Result<()> {
     Ok(())
 }
 
-enum Attempts {
-    Done(Output),
+/// A video job. Its upload is its archive and is never deleted, so unlike an image's, a missing upload cannot tell a
+/// repeat delivery that the work is done; the marker written once `Ready` is out does.
+async fn handle_video(state: &WorkState, job: &ProcessJob) -> anyhow::Result<()> {
+    let svc = &state.svc;
+    let upload = upload_key(job.tenant_id, job.asset_id);
+    if SourceType::from_mime(&job.mime).is_none_or(|ty| !ty.is_video()) {
+        return publish(svc, failed(job, UNREADABLE)).await;
+    }
+    let permit = svc.video_workers.clone().acquire_owned().await?;
+    // Checked once the permit is held, so a repeat delivery that queued behind the first finds its marker.
+    let marker = ready_marker(job.tenant_id, job.asset_id);
+    if svc.storage.head(Bucket::Private, &marker).await?.is_some() {
+        tracing::info!(asset = %job.asset_id, "the video's result was already published");
+        return Ok(());
+    }
+    let dir = ScratchDir::new(&svc.tmp_dir, job.asset_id).await?;
+    let input = dir.path().join("source");
+    match svc.storage.get_to_file(Bucket::Private, &upload, &input, limits(Profile::GalleryVideo).max_bytes).await {
+        Ok(_) => {}
+        Err(StorageError::Status { status, .. }) if status == 404 => {
+            // The asset was removed; the sweep fails a video left `processing` for any other reason.
+            tracing::info!(asset = %job.asset_id, "no upload to process");
+            return Ok(());
+        }
+        Err(StorageError::TooLarge { .. }) => return publish(svc, failed(job, UNREADABLE)).await,
+        Err(error) => return Err(error.into()),
+    }
+    let out_dir = dir.path().join("out");
+    tokio::fs::create_dir(&out_dir).await?;
+    let (exe, input, out) = (&svc.worker_exe, &input, &out_dir);
+    let processed =
+        attempts(job, move || worker::run_video(exe, job, input, out, state.rayon_threads, worker::VIDEO_TIMEOUT))
+            .await;
+    drop(permit);
+
+    let result = match processed {
+        Attempts::Done(output) => store_video(svc, job, &out_dir, output).await?,
+        Attempts::Unreadable => failed(job, UNREADABLE),
+        Attempts::Exhausted => failed(job, FAILED),
+    };
+    let ready = matches!(result, MediaResult::Ready { .. });
+    publish(svc, result).await?;
+    if ready && let Err(error) = svc.storage.put(Bucket::Private, &marker, Vec::new(), "text/plain", None).await {
+        tracing::warn!(asset = %job.asset_id, %error, "marking the video done failed; a repeat delivery redoes it");
+    }
+    Ok(())
+}
+
+/// Written once a video's `Ready` is published.
+fn ready_marker(tenant: Uuid, asset: Uuid) -> String {
+    format!("t/{tenant}/a/{asset}/ready")
+}
+
+enum Attempts<T> {
+    Done(T),
     Unreadable,
     /// Out of attempts, or out of address space.
     Exhausted,
 }
 
-/// Up to [`ATTEMPTS`] runs: a crash, a timeout or a non-zero exit is retried; an unreadable file or a job too big
-/// for a worker's address space is not.
-async fn attempts(state: &WorkState, job: &ProcessJob, bytes: &[u8]) -> Attempts {
+/// Up to [`ATTEMPTS`] runs of `run`: a crash, a timeout or a non-zero exit is retried; an unreadable file or a job
+/// too big for a worker's address space is not.
+async fn attempts<T, F>(job: &ProcessJob, run: impl Fn() -> F) -> Attempts<T>
+where
+    F: Future<Output = Result<Outcome<T>, WorkerError>>,
+{
     for attempt in 0..ATTEMPTS {
-        match worker::run(&state.svc.worker_exe, job, bytes, state.rayon_threads, worker::timeout()).await {
+        match run().await {
             Ok(Outcome::Done(output)) => return Attempts::Done(output),
             Ok(Outcome::Unreadable(detail)) => {
                 tracing::info!(asset = %job.asset_id, detail, "the file cannot be read");
@@ -168,6 +230,41 @@ async fn store(svc: &MediaSvc, job: &ProcessJob, output: Output) -> anyhow::Resu
         width: output.width,
         height: output.height,
         archive_key: archive,
+        renditions,
+    })
+}
+
+/// Puts each file a video job made into the public bucket and describes them, video renditions first. One file at a
+/// time: a rendition can be tens of megabytes, so they are never all in memory together.
+async fn store_video(
+    svc: &MediaSvc,
+    job: &ProcessJob,
+    out_dir: &Path,
+    output: VideoOutput,
+) -> anyhow::Result<MediaResult> {
+    let (tenant, asset) = (job.tenant_id, job.asset_id);
+    let mut renditions = Vec::with_capacity(output.files.len());
+    for file in output.files {
+        let bytes = tokio::fs::read(out_dir.join(&file.name)).await?;
+        let len = bytes.len() as u64;
+        let key = rendition_key(tenant, asset, file.size.as_str(), file.format.as_str());
+        svc.storage.put(Bucket::Public, &key, bytes, file.format.content_type(), Some(IMMUTABLE)).await?;
+        renditions.push(RenditionOut {
+            size: file.size,
+            format: file.format,
+            width: file.width,
+            height: file.height,
+            bytes: len,
+            key,
+            duration_ms: matches!(file.format, Format::Av1 | Format::H264).then_some(output.duration_ms),
+        });
+    }
+    Ok(MediaResult::Ready {
+        tenant_id: tenant,
+        asset_id: asset,
+        width: output.width,
+        height: output.height,
+        archive_key: upload_key(tenant, asset),
         renditions,
     })
 }

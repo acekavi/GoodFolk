@@ -89,14 +89,17 @@ pub async fn stack(opts: PgConnectOptions) -> Stack {
     let core = core_listener.local_addr().unwrap();
 
     let results = format!("http://{core}/internal/events").parse().unwrap();
+    let config = Config::from_env().unwrap();
     let svc = MediaSvc {
         storage: storage.clone(),
         bus: Arc::new(
             PushBus::new(HashMap::from([("media-results".to_owned(), results)]), Some(secret_header())).unwrap(),
         ),
         // As many workers as media-svc runs by default (`MEDIA_WORKERS`), each with its share of the CPUs.
-        workers: Arc::new(Semaphore::new(Config::from_env().unwrap().workers)),
+        workers: Arc::new(Semaphore::new(config.workers)),
+        video_workers: Arc::new(Semaphore::new(media_svc::config::VIDEO_WORKERS)),
         worker_exe: media_svc_exe(),
+        tmp_dir: config.tmp_dir,
     };
     let media_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let media_svc = media_listener.local_addr().unwrap();
