@@ -71,7 +71,10 @@ export type IdDocType =
   | 'PASSPORT';
 
 export type ImageFormat =
+  | 'AV1'
   | 'AVIF'
+  | 'H264'
+  | 'PDF'
   | 'WEBP';
 
 export type InvitationStatus =
@@ -192,8 +195,11 @@ export type PriceChangeMode =
 export type RenditionSize =
   | 'LG'
   | 'MD'
+  | 'ORIGINAL'
   | 'SM'
   | 'THUMB'
+  | 'V720'
+  | 'V1080'
   | 'XL';
 
 /**
@@ -332,7 +338,7 @@ export type GuestDocumentsQueryVariables = Exact<{
 }>;
 
 
-export type GuestDocumentsQuery = { guestDocuments: Array<{ id: string, kind: DocumentKind, status: MediaStatus, mime: string | null, uploadedAt: string, uploadedByName: string | null }> };
+export type GuestDocumentsQuery = { guestDocuments: Array<{ id: string, kind: DocumentKind, status: MediaStatus, mime: string | null, uploadedAt: string, uploadedByName: string | null, hasThumbnail: boolean }> };
 
 export type HousekeepingBoardQueryVariables = Exact<{
   propertyId: string;
@@ -796,9 +802,10 @@ export const GuestDocumentsDocument = new TypedDocumentString(`
     mime
     uploadedAt
     uploadedByName
+    hasThumbnail
   }
 }
-    `, {"hash":"sha256:2d1c5d5d5c5fadf5222abbbae3c6e843eb0aa5e587f291da49f4be6922fdd472"}) as unknown as TypedDocumentString<GuestDocumentsQuery, GuestDocumentsQueryVariables>;
+    `, {"hash":"sha256:0e1b1ea12a8cbb20222062e77eb47aaa6b929d1788dec94e1180c6130275e2d8"}) as unknown as TypedDocumentString<GuestDocumentsQuery, GuestDocumentsQueryVariables>;
 export const HousekeepingBoardDocument = new TypedDocumentString(`
     query HousekeepingBoard($propertyId: UUID!) {
   housekeepingBoard(propertyId: $propertyId) {

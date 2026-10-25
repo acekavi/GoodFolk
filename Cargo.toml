@@ -57,6 +57,7 @@ jiff = "0.2"
 infer = "0.22"
 mimalloc = "0.1"
 moxcms = "0.8"
+pdfium-render = { version = "0.9", default-features = false, features = ["pdfium_latest", "thread_safe"] }
 proptest = "1"
 prost = "0.14"
 protox = "0.10"

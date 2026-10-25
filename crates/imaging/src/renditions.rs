@@ -13,7 +13,7 @@ use crate::{
     Format, ImagingError, Profile, Size, SourceType,
     archive::{archive_jpeg, lossless_pixels},
     decode::{decode, jpeg_is_complete},
-    dimensions,
+    dimensions, pdf,
     quality::{Encoded, climb, search},
     ssim2::Reference,
 };
@@ -53,7 +53,7 @@ fn resize(src: &RgbaImage, width: u32, height: u32, square: bool, opaque: bool) 
 }
 
 /// The size of `src` scaled so its long edge is `edge`.
-fn fit_long_edge(width: u32, height: u32, edge: u32) -> (u32, u32) {
+pub(crate) fn fit_long_edge(width: u32, height: u32, edge: u32) -> (u32, u32) {
     let scale = |side: u32, long: u32| {
         u32::try_from((u64::from(side) * u64::from(edge) + u64::from(long) / 2) / u64::from(long))
     };
@@ -110,7 +110,7 @@ fn search_level(levels: &[(Size, RgbaImage)]) -> Option<usize> {
 /// got. A rendition can come back below 80 only at the encoder's ceiling (an AVIF at quality 100; a
 /// WebP is stored lossless instead) or for dimensions the metric cannot score (a side under 8 pixels,
 /// which scores 0), so a caller that needs the guarantee checks the score.
-/// A PDF is returned as its own archive with no renditions. Work runs on rayon's global pool, which
+/// A PDF is archived as uploaded; see [`finish_pdf`]. Work runs on rayon's global pool, which
 /// the caller sizes with `RAYON_NUM_THREADS`.
 pub fn process(bytes: &[u8], ty: SourceType, profile: Profile) -> Result<Processed, ImagingError> {
     match ty {
@@ -118,13 +118,7 @@ pub fn process(bytes: &[u8], ty: SourceType, profile: Profile) -> Result<Process
             return Err(ImagingError::Unsupported);
         }
         SourceType::Pdf => {
-            return Ok(Processed {
-                width: 0,
-                height: 0,
-                archive: bytes.to_vec(),
-                archive_ext: "pdf",
-                renditions: Vec::new(),
-            });
+            return finish_pdf(bytes);
         }
         SourceType::Jpeg | SourceType::Png | SourceType::Webp => {}
     }
@@ -156,6 +150,28 @@ pub fn process(bytes: &[u8], ty: SourceType, profile: Profile) -> Result<Process
         };
         Ok(Processed { width, height, archive, archive_ext, renditions: renditions? })
     })
+}
+
+/// A PDF's job: the original bytes are the archive, and the renditions are the qpdf-linearized copy (`original`, omitted
+/// if qpdf cannot make one) and, when page 1 renders, the guest-document ladder of that page. The width and height stay
+/// 0. A password-protected, damaged or over-long PDF is still ready, without the thumbnail.
+pub fn finish_pdf(bytes: &[u8]) -> Result<Processed, ImagingError> {
+    let mut renditions = Vec::new();
+    if let Some(linearized) = pdf::linearize(bytes)? {
+        renditions.push(Rendition {
+            size: Size::Original,
+            format: Format::Pdf,
+            width: 0,
+            height: 0,
+            bytes: linearized,
+            score: 0.0,
+        });
+    }
+    if let Some(page) = pdf::first_page(bytes)? {
+        let mut thumbnails = ladder(&page, Profile::GuestDocument).and_then(render)?;
+        renditions.append(&mut thumbnails);
+    }
+    Ok(Processed { width: 0, height: 0, archive: bytes.to_vec(), archive_ext: "pdf", renditions })
 }
 
 /// A video's poster as gallery renditions: the `Profile::Gallery` ladder of `png`, quality-gated as [`process`] does

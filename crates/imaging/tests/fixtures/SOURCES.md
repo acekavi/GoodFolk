@@ -24,6 +24,8 @@ Total size stays under 12 MB.
 | `photo.webp` | `small.jpg` as lossy WebP, quality 80 |
 | `bomb.png` | a PNG header claiming 20000x20000 pixels, with no pixel data |
 | `doc.pdf` | a generated one page PDF |
+| `long.pdf` | `doc.pdf` repeated to 51 pages, with qpdf |
+| `encrypted.pdf` | `doc.pdf` with a user password, AES-256, with qpdf |
 | `fake.jpg` | the bytes of `doc.pdf` |
 | `cmyk.jpg` | a generated 64x48 baseline JPEG with four components (Adobe CMYK, flat 8x8 blocks), which cjxl cannot transcode |
 | `elf.png` | 4 KiB starting `\x7fELF` with an x86-64 header-like prefix and deterministic filler |

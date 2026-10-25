@@ -262,12 +262,23 @@ async fn ready_asset(
 
 /// A ready PDF guest document of the hotel's guest; returns the document's id.
 async fn guest_document(superuser: &PgPool, storage: &Storage, hotel: &Hotel) -> Uuid {
+    guest_document_with(superuser, storage, hotel, &[]).await
+}
+
+/// As [`guest_document`], with the given renditions.
+async fn guest_document_with(
+    superuser: &PgPool,
+    storage: &Storage,
+    hotel: &Hotel,
+    renditions: &[(&str, &str)],
+) -> Uuid {
     let link = format!(
         "insert into guest_document (id, tenant_id, guest_id, asset_id, kind) values ('{}', $1, '{}', $2, 'passport')",
         Uuid::now_v7(),
         hotel.guest
     );
-    let asset = ready_asset(superuser, storage, hotel, "guest_document", "application/pdf", &[], "pdf", &link).await;
+    let asset =
+        ready_asset(superuser, storage, hotel, "guest_document", "application/pdf", renditions, "pdf", &link).await;
     sqlx::query_scalar("select id from guest_document where asset_id = $1")
         .bind(asset)
         .fetch_one(superuser)
@@ -324,6 +335,28 @@ async fn guest_document_link_expires_and_audits(_: PgPoolOptions, opts: PgConnec
     assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{:?}", deleted.body);
     let after = app.send(Method::GET, &link, Some(&desk), None).await;
     assert_eq!(after.status, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn guest_pdf_original_link_serves_the_linearized_copy(_: PgPoolOptions, opts: PgConnectOptions) {
+    let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
+    let app = TestApp::new(opts).await;
+    let storage = storage().await;
+    let hotel = Hotel::new(&app, "owner@example.com", "GAL").await;
+    let desk = app.staff(&superuser, &hotel.owner, "desk@example.com", "front_desk").await;
+    let document = guest_document_with(&superuser, &storage, &hotel, &[("original", "pdf"), ("thumb", "webp")]).await;
+    let link = |size: &str| format!("{}/guest-documents/{document}/link?size={size}", hotel.path);
+
+    let original = app.send(Method::GET, &link("original"), Some(&desk), None).await;
+    let thumb = app.send(Method::GET, &link("thumb"), Some(&desk), None).await;
+
+    assert_eq!(original.status, StatusCode::OK, "{:?}", original.body);
+    let url = original.body["url"].as_str().unwrap();
+    assert!(url.split('?').next().unwrap().ends_with("original.pdf"), "the linearized copy: {url}");
+    assert_eq!(http().get(url).send().await.unwrap().status(), 200);
+    assert_eq!(thumb.status, StatusCode::OK, "{:?}", thumb.body);
+    let response = http().get(thumb.body["url"].as_str().unwrap()).send().await.unwrap();
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"thumb.webp");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -386,7 +419,7 @@ async fn no_graphql_field_exposes_guest_document_urls(_: PgPoolOptions, opts: Pg
 
     let fields: Vec<&str> =
         body["data"]["__type"]["fields"].as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap()).collect();
-    assert_eq!(fields, ["id", "kind", "status", "mime", "uploadedAt", "uploadedBy", "uploadedByName"]);
+    assert_eq!(fields, ["id", "kind", "status", "mime", "uploadedAt", "uploadedBy", "uploadedByName", "hasThumbnail"]);
     for field in fields {
         let lower = field.to_lowercase();
         assert!(!["url", "link", "key", "href", "src"].iter().any(|bad| lower.contains(bad)), "{field}");

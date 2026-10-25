@@ -456,6 +456,8 @@ pub struct GuestDocumentNode {
     pub uploaded_by: Option<Uuid>,
     /// The uploader's display name; null once their account is gone.
     pub uploaded_by_name: Option<String>,
+    /// Whether a thumbnail can be linked (size `thumb`): a PDF's first page, or an image.
+    pub has_thumbnail: bool,
 }
 
 impl From<media::GuestDocumentRow> for GuestDocumentNode {
@@ -468,6 +470,7 @@ impl From<media::GuestDocumentRow> for GuestDocumentNode {
             uploaded_at: document.uploaded_at,
             uploaded_by: document.uploaded_by,
             uploaded_by_name: document.uploaded_by_name,
+            has_thumbnail: document.has_thumbnail,
         }
     }
 }

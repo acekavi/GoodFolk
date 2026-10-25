@@ -130,14 +130,64 @@ fn guest_document_gets_thumb_and_md_only() {
     );
 }
 
+fn qpdf() -> PathBuf {
+    let dir = std::env::var_os("QPDF_BIN_DIR").map_or_else(
+        || PathBuf::from(std::env::var_os("HOME").unwrap()).join(".cache/goodfolk-qpdf/bin"),
+        PathBuf::from,
+    );
+    dir.join("qpdf")
+}
+
+fn original_of(done: &Processed) -> &[u8] {
+    &done.renditions.iter().find(|r| (r.size, r.format) == (Size::Original, Format::Pdf)).expect("an original").bytes
+}
+
+fn images_of(done: &Processed) -> Vec<(Size, Format)> {
+    done.renditions.iter().filter(|r| r.format != Format::Pdf).map(|r| (r.size, r.format)).collect()
+}
+
 #[test]
-fn pdf_has_archive_and_no_renditions() {
+fn pdf_is_linearized() {
     let pdf = fixture("doc.pdf");
     let done = process(&pdf, SourceType::Pdf, Profile::GuestDocument).unwrap();
     assert_eq!(done.archive, pdf);
     assert_eq!(done.archive_ext, "pdf");
-    assert!(done.renditions.is_empty());
     assert_eq!((done.width, done.height), (0, 0));
+
+    let path = std::env::temp_dir().join(format!("goodfolk-linearized-{}.pdf", std::process::id()));
+    fs::write(&path, original_of(&done)).unwrap();
+    let check = std::process::Command::new(qpdf()).arg("--check-linearization").arg(&path).status().unwrap();
+    fs::remove_file(&path).unwrap();
+    assert!(check.success(), "qpdf --check-linearization: {check}");
+}
+
+#[test]
+fn pdf_gets_a_first_page_thumbnail() {
+    let done = process(&fixture("doc.pdf"), SourceType::Pdf, Profile::GuestDocument).unwrap();
+    assert_eq!(
+        images_of(&done),
+        [(Size::Thumb, Format::Avif), (Size::Thumb, Format::Webp), (Size::Md, Format::Avif), (Size::Md, Format::Webp)]
+    );
+    // A US Letter page at 1024 px on the long edge, on white.
+    let md = done.renditions.iter().find(|r| (r.size, r.format) == (Size::Md, Format::Webp)).unwrap();
+    assert_eq!((md.width, md.height), (791, 1024));
+    let pixels = webp_pixels(&md.bytes);
+    assert_eq!(pixels.get_pixel(5, 5).0[..3], [255, 255, 255]);
+}
+
+#[test]
+fn encrypted_pdf_is_kept_without_thumbnail() {
+    let pdf = fixture("encrypted.pdf");
+    let done = process(&pdf, SourceType::Pdf, Profile::GuestDocument).unwrap();
+    assert_eq!(done.archive, pdf);
+    assert!(images_of(&done).is_empty());
+}
+
+#[test]
+fn long_pdf_has_no_thumbnail() {
+    let done = process(&fixture("long.pdf"), SourceType::Pdf, Profile::GuestDocument).unwrap();
+    assert!(images_of(&done).is_empty());
+    assert!(!original_of(&done).is_empty());
 }
 
 #[test]

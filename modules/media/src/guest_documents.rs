@@ -3,7 +3,7 @@
 
 use crate::{AssetStatus, DocumentKind, LinkSize, MediaError, Visibility, audit, notify};
 use db::{TenantId, Tx, UserId};
-use media_types::{Format, RenditionOut};
+use media_types::{Format, RenditionOut, Size};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -22,6 +22,8 @@ pub struct GuestDocumentRow {
     /// The uploader's display name; `None` once their account is gone.
     pub uploaded_by_name: Option<String>,
     pub uploaded_at: OffsetDateTime,
+    /// Whether the document has a `thumb` file to link to (a PDF's first page, or any image).
+    pub has_thumbnail: bool,
 }
 
 /// The most documents [`guest_documents`] returns.
@@ -31,7 +33,9 @@ pub const MAX_LISTED_DOCUMENTS: i64 = 50;
 pub async fn guest_documents(tx: &mut Tx, property: Uuid, guest: Uuid) -> Result<Vec<GuestDocumentRow>, MediaError> {
     Ok(sqlx::query_as(
         "select d.id, d.guest_id, d.asset_id, d.kind, a.status, a.mime, d.uploaded_by,
-                u.display_name as uploaded_by_name, d.uploaded_at
+                u.display_name as uploaded_by_name, d.uploaded_at,
+                exists (select 1 from jsonb_array_elements(a.renditions) r
+                        where r ->> 'size' = 'thumb' and r ->> 'format' = 'webp') as has_thumbnail
          from guest_document d join media_asset a on a.id = d.asset_id
          left join app_user u on u.id = d.uploaded_by
          where d.guest_id = $1 and a.property_id = $2
@@ -86,10 +90,10 @@ struct LinkRow {
 }
 
 /// The bucket and key to sign for the document's `size`: the WebP rendition for `thumb` and `md`, and for a PDF only,
-/// the PDF as uploaded for `original` (an image's archive is JPEG XL, which browsers cannot show). Writes a
-/// `guest_document.viewed` audit entry for each call. An unknown document, or one uploaded at another property, is
-/// `NotFound`, one not yet ready is
-/// `Conflict`, and a size the document has no file for (a PDF's preview, an image's original) is `Invalid`.
+/// the linearized PDF for `original`, else the PDF as uploaded (an image's archive is JPEG XL, which browsers cannot
+/// show). Writes a `guest_document.viewed` audit entry for each call. An unknown document, or one uploaded at another
+/// property, is `NotFound`, one not yet ready is `Conflict`, and a size the document has no file for (an image's
+/// original, or a PDF's preview when it has no thumbnail) is `Invalid`.
 pub async fn guest_document_link_key(
     tx: &mut Tx,
     tenant: TenantId,
@@ -116,7 +120,11 @@ pub async fn guest_document_link_key(
         LinkSize::Original if mime.as_deref() != Some(PDF) => {
             return Err(MediaError::Invalid("Images are viewed at the md size".into()));
         }
-        LinkSize::Original => archive_key,
+        LinkSize::Original => renditions
+            .into_iter()
+            .find(|r| r.size == Size::Original && r.format == Format::Pdf)
+            .map(|r| r.key)
+            .or(archive_key),
         LinkSize::Thumb | LinkSize::Md => {
             renditions.into_iter().find(|r| r.size.as_str() == size.as_str() && r.format == Format::Webp).map(|r| r.key)
         }

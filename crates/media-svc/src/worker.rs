@@ -352,8 +352,8 @@ async fn supervise(
     }
 }
 
-/// The variables a worker inherits: where the JPEG XL tools and ffmpeg are (`JXL_BIN_DIR` and `FFMPEG_BIN_DIR`, else
-/// under `HOME`), `PATH` and `RUST_LOG`, plus the test hooks' `MEDIA_TEST_WORKER_*` in debug builds.
+/// The variables a worker inherits: where the JPEG XL tools, ffmpeg, qpdf and PDFium are (`JXL_BIN_DIR`,
+/// `FFMPEG_BIN_DIR`, `QPDF_BIN_DIR` and `PDFIUM_LIB_DIR`, else under `HOME`), `PATH` and `RUST_LOG`, plus the test hooks' `MEDIA_TEST_WORKER_*` in debug builds.
 /// `RAYON_NUM_THREADS` is set per worker.
 fn forwarded_env() -> impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)> {
     std::env::vars_os().filter(|(name, _)| {
@@ -362,7 +362,10 @@ fn forwarded_env() -> impl Iterator<Item = (std::ffi::OsString, std::ffi::OsStri
         if name.starts_with("MEDIA_TEST_WORKER_") {
             return true;
         }
-        matches!(name, "JXL_BIN_DIR" | "FFMPEG_BIN_DIR" | "HOME" | "PATH" | "RUST_LOG")
+        matches!(
+            name,
+            "JXL_BIN_DIR" | "FFMPEG_BIN_DIR" | "QPDF_BIN_DIR" | "PDFIUM_LIB_DIR" | "HOME" | "PATH" | "RUST_LOG"
+        )
     })
 }
 
@@ -396,6 +399,15 @@ fn parse(out: &[u8]) -> Result<Outcome, WorkerError> {
         }
         Header::Done { archive_ext, .. } if !matches!(archive_ext.as_str(), "jxl" | "jpg" | "pdf") => {
             return Err(WorkerError::Malformed("unknown archive type"));
+        }
+        // A PDF's linearized copy is the one rendition that is not an image, and only a PDF has one.
+        Header::Done { archive_ext, renditions, .. }
+            if renditions.iter().any(|p| {
+                (p.size == Size::Original) != (p.format == Format::Pdf)
+                    || (p.size == Size::Original && archive_ext != "pdf")
+            }) =>
+        {
+            return Err(WorkerError::Malformed("unexpected rendition"));
         }
         Header::Done { width, height, archive_ext, archive_len, renditions } => {
             let archive = take(archive_len)?;
@@ -808,6 +820,27 @@ mod tests {
             let header = Header::Done { width, height, archive_ext: ext.into(), archive_len, renditions };
             let Outcome::Done(output) = parse(&frame(&header, b"abcde")).unwrap() else { panic!("not done") };
             assert_eq!(output.archive_ext, ext);
+        }
+    }
+
+    #[test]
+    fn a_linearized_copy_is_accepted_only_for_a_pdf() {
+        let with = |ext: &str, size, format| Header::Done {
+            width: 0,
+            height: 0,
+            archive_ext: ext.into(),
+            archive_len: 3,
+            renditions: vec![PieceHeader { size, format, width: 0, height: 0, len: 2 }],
+        };
+        let pdf = with("pdf", Size::Original, Format::Pdf);
+        let Outcome::Done(output) = parse(&frame(&pdf, b"abcde")).unwrap() else { panic!("not done") };
+        assert_eq!((output.renditions[0].size, output.renditions[0].format), (Size::Original, Format::Pdf));
+        for wrong in [
+            with("jxl", Size::Original, Format::Pdf),
+            with("pdf", Size::Md, Format::Pdf),
+            with("pdf", Size::Original, Format::Webp),
+        ] {
+            assert!(matches!(parse(&frame(&wrong, b"abcde")), Err(WorkerError::Malformed(_))));
         }
     }
 

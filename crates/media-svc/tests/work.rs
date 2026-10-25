@@ -51,14 +51,32 @@ async fn issue_photo_renditions_are_private() {
 }
 
 #[tokio::test]
-async fn a_pdf_is_archived_as_uploaded() {
+async fn a_pdf_is_archived_as_uploaded_with_a_linearized_copy_and_a_thumbnail() {
     let server = start().await;
     let body = fixture("doc.pdf");
     let job = uploaded(&server, Profile::GuestDocument, body.clone(), "application/pdf").await;
     let MediaResult::Ready { archive_key, renditions, .. } = process(&server, &job).await else { panic!("not ready") };
-    assert!(renditions.is_empty());
+    let got: Vec<_> = renditions.iter().map(|r| (r.size, r.format)).collect();
+    assert_eq!(
+        got,
+        [
+            (Size::Original, Format::Pdf),
+            (Size::Thumb, Format::Avif),
+            (Size::Thumb, Format::Webp),
+            (Size::Md, Format::Avif),
+            (Size::Md, Format::Webp),
+        ]
+    );
     assert!(archive_key.ends_with("/archive.pdf"));
     assert_eq!(server.storage.get(Bucket::Private, &archive_key).await.unwrap(), body);
+    for rendition in &renditions {
+        assert!(server.storage.head(Bucket::Private, &rendition.key).await.unwrap().is_some());
+        assert_eq!(server.storage.head(Bucket::Public, &rendition.key).await.unwrap(), None);
+    }
+    let original = renditions.iter().find(|r| r.size == Size::Original).unwrap();
+    assert!(original.key.ends_with("/original.pdf"));
+    let linearized = server.storage.get(Bucket::Private, &original.key).await.unwrap();
+    assert!(linearized.starts_with(b"%PDF-") && linearized != body);
 }
 
 #[tokio::test]

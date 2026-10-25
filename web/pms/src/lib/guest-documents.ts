@@ -15,6 +15,7 @@ export const GuestDocumentsDocument = graphql(`
 			mime
 			uploadedAt
 			uploadedByName
+			hasThumbnail
 		}
 	}
 `);
