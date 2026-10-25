@@ -36,6 +36,15 @@ const GALLERY: &str = "query ($p: UUID!) {
         id media { assetId status error caption width height renditions { size format width height url } }
     }
 }";
+const GALLERY_VIDEOS: &str = "query ($p: UUID!) {
+    roomTypes(propertyId: $p) {
+        id media {
+            assetId kind status error durationMs width height
+            renditions { size format url }
+            sources { format size width height url mime }
+        }
+    }
+}";
 const ISSUE_PHOTOS: &str = "query ($p: UUID!) {
     roomIssues(propertyId: $p) { id photos { assetId status renditions { size format url } } }
 }";
@@ -216,7 +225,7 @@ async fn ready_asset(
     link: &str,
 ) -> Uuid {
     let asset = Uuid::now_v7();
-    let private = purpose != "gallery";
+    let private = !matches!(purpose, "gallery" | "gallery_video");
     let rendition_bucket = if private { Bucket::Private } else { Bucket::Public };
     let mut out = Vec::new();
     for (size, format) in renditions {
@@ -763,4 +772,158 @@ async fn internal_events_dedupes(_: PgPoolOptions, opts: PgConnectOptions) {
     assert_eq!(push(&app, "not json", Some(&auth)).await, StatusCode::BAD_REQUEST);
     let not_a_result = envelope(Uuid::now_v7(), &json!({"type": "something else"})).to_string();
     assert_eq!(push(&app, &not_a_result, Some(&auth)).await, StatusCode::BAD_REQUEST);
+}
+
+/// A fixture of the `video` crate.
+fn video_fixture(name: &str) -> Vec<u8> {
+    std::fs::read(format!("{}/../video/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn gallery_video_upload_to_ready_lists_sources(_: PgPoolOptions, opts: PgConnectOptions) {
+    let stack = stack(opts).await;
+    let app = &stack.app;
+    let hotel = Hotel::new(app, "owner@example.com", "GAL").await;
+
+    // 1920×1080, 10 s: both sizes in both encodings, and a poster in the gallery's ladder up to its own size.
+    let clip = video_fixture("phone-1080p-h264.mp4");
+    let completed =
+        upload(app, &hotel.owner, &hotel.path, start_body("gallery_video", hotel.room_type, &clip), &clip).await;
+    assert_eq!(completed.status, StatusCode::OK, "{:?}", completed.body);
+    assert_eq!(completed.body["purpose"], "gallery_video");
+    assert_eq!(completed.body["status"], "processing");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(240);
+    let media = loop {
+        let body = graphql(app, &hotel.owner, GALLERY_VIDEOS, json!({"p": hotel.id})).await;
+        let media = body["data"]["roomTypes"][0]["media"][0].clone();
+        if media["status"] == "READY" {
+            break media;
+        }
+        assert_ne!(media["status"], "FAILED", "{media:?}");
+        assert!(tokio::time::Instant::now() < deadline, "the video was not ready in time");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+
+    assert_eq!(media["kind"], "VIDEO");
+    let duration = media["durationMs"].as_i64().unwrap();
+    assert!((9_800..=10_200).contains(&duration), "{duration}");
+    let sources = media["sources"].as_array().unwrap();
+    let listed: Vec<(&str, &str)> =
+        sources.iter().map(|s| (s["format"].as_str().unwrap(), s["size"].as_str().unwrap())).collect();
+    assert_eq!(listed, [("AV1", "V1080"), ("H264", "V1080"), ("AV1", "V720"), ("H264", "V720")]);
+    assert_eq!(sources[0]["mime"], r#"video/mp4; codecs="av01.0.08M.10, opus""#);
+    assert_eq!(sources[1]["mime"], r#"video/mp4; codecs="avc1.640028, mp4a.40.2""#);
+    assert_eq!((sources[0]["width"].as_i64(), sources[0]["height"].as_i64()), (Some(1920), Some(1080)));
+    let renditions = media["renditions"].as_array().unwrap();
+    assert_eq!(renditions.len(), 8, "the poster: thumb, sm, md and lg as AVIF and WebP: {renditions:?}");
+    for url in sources.iter().chain(renditions).map(|r| r["url"].as_str().unwrap()) {
+        assert!(!url.contains("X-Amz-Signature"), "gallery URLs are permanent: {url}");
+        let response = http().head(url).send().await.unwrap();
+        assert_eq!(response.status(), 200, "{url}");
+    }
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn housekeeper_cannot_start_a_video_upload(_: PgPoolOptions, opts: PgConnectOptions) {
+    let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
+    let app = TestApp::new(opts).await;
+    let hotel = Hotel::new(&app, "owner@example.com", "GAL").await;
+    let housekeeper = app.staff(&superuser, &hotel.owner, "hk@example.com", "housekeeping").await;
+    let clip = video_fixture("tiny-e2e.mp4");
+
+    let started = post(
+        &app,
+        &housekeeper,
+        &format!("{}/media/uploads", hotel.path),
+        start_body("gallery_video", hotel.room_type, &clip),
+    )
+    .await;
+
+    assert_eq!(started.status, StatusCode::FORBIDDEN, "{:?}", started.body);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn removing_a_video_unlinks_it(_: PgPoolOptions, opts: PgConnectOptions) {
+    let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
+    let app = TestApp::new(opts).await;
+    let storage = storage().await;
+    let hotel = Hotel::new(&app, "owner@example.com", "GAL").await;
+    let link = format!(
+        "insert into room_type_media (tenant_id, room_type_id, asset_id, position) values ($1, '{}', $2, 0)",
+        hotel.room_type
+    );
+    let video =
+        ready_asset(&superuser, &storage, &hotel, "gallery_video", "video/mp4", &[("v1080", "av1")], "mp4", &link)
+            .await;
+    sqlx::query("update media_asset set created_at = now() - interval '2 days' where id = $1")
+        .bind(video)
+        .execute(&superuser)
+        .await
+        .unwrap();
+    assert!(media::sweep(&app.pool).await.unwrap().orphans.is_empty(), "a linked video is not an orphan");
+
+    let removed = app
+        .send(
+            Method::DELETE,
+            &format!("{}/room-types/{}/media/{video}", hotel.path, hotel.room_type),
+            Some(&hotel.owner),
+            None,
+        )
+        .await;
+
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
+    let body = graphql(&app, &hotel.owner, GALLERY_VIDEOS, json!({"p": hotel.id})).await;
+    assert_eq!(body["data"]["roomTypes"][0]["media"], json!([]));
+    let report = media::sweep(&app.pool).await.unwrap();
+    assert_eq!(report.failures, 0);
+    let orphans: Vec<_> = report.orphans.iter().map(|(_, asset, purpose, _)| (*asset, *purpose)).collect();
+    assert_eq!(orphans, [(video, media::Purpose::GalleryVideo)]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn audit_records_kind(_: PgPoolOptions, opts: PgConnectOptions) {
+    let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
+    let stack = stack(opts).await;
+    let app = &stack.app;
+    let hotel = Hotel::new(app, "owner@example.com", "GAL").await;
+    let clip = video_fixture("tiny-e2e.mp4");
+    let photo = fixture("small.jpg");
+
+    let video =
+        upload(app, &hotel.owner, &hotel.path, start_body("gallery_video", hotel.room_type, &clip), &clip).await;
+    let image = upload(app, &hotel.owner, &hotel.path, start_body("gallery", hotel.room_type, &photo), &photo).await;
+    assert_eq!((video.status, image.status), (StatusCode::OK, StatusCode::OK), "{:?} {:?}", video.body, image.body);
+    let removed = app
+        .send(
+            Method::DELETE,
+            &format!(
+                "{}/room-types/{}/media/{}",
+                hotel.path,
+                hotel.room_type,
+                video.body["asset_id"].as_str().unwrap()
+            ),
+            Some(&hotel.owner),
+            None,
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
+
+    let kinds: Vec<(String, Uuid, String)> = sqlx::query_as(
+        "select action, entity_id, data ->> 'kind' from audit_log where action in ('media.uploaded', 'media.removed')
+         order by id",
+    )
+    .fetch_all(&superuser)
+    .await
+    .unwrap();
+    let video_id = uuid(&video.body["asset_id"]);
+    let image_id = uuid(&image.body["asset_id"]);
+    assert_eq!(
+        kinds,
+        [
+            ("media.uploaded".to_owned(), video_id, "video".to_owned()),
+            ("media.uploaded".to_owned(), image_id, "image".to_owned()),
+            ("media.removed".to_owned(), video_id, "video".to_owned()),
+        ]
+    );
 }

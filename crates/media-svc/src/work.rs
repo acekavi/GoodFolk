@@ -13,7 +13,7 @@ use events::{Message, PushEnvelope};
 use futures::future;
 use imaging::SourceType;
 use media_types::{Format, MediaResult, ProcessJob, Profile, RenditionOut};
-use storage::{Bucket, IMMUTABLE, StorageError, archive_key, rendition_key, upload_key};
+use storage::{Bucket, IMMUTABLE, StorageError, archive_key, ready_marker_key, rendition_key, upload_key};
 use uuid::Uuid;
 
 use crate::limits::limits;
@@ -101,7 +101,7 @@ async fn handle_video(state: &WorkState, job: &ProcessJob) -> anyhow::Result<()>
     }
     // Held until the marker is written, so a repeat delivery queued behind this one finds it and does nothing.
     let _permit = svc.video_workers.clone().acquire_owned().await?;
-    let marker = ready_marker(job.tenant_id, job.asset_id);
+    let marker = ready_marker_key(job.tenant_id, job.asset_id);
     if svc.storage.head(Bucket::Private, &marker).await?.is_some() {
         tracing::info!(asset = %job.asset_id, "the video's result was already published");
         return Ok(());
@@ -149,11 +149,6 @@ async fn video_job(state: &WorkState, job: &ProcessJob, dir: &ScratchDir, marker
         tracing::warn!(asset = %job.asset_id, %error, "marking the video done failed; a repeat delivery redoes it");
     }
     Ok(())
-}
-
-/// Written once a video's `Ready` is published.
-fn ready_marker(tenant: Uuid, asset: Uuid) -> String {
-    format!("t/{tenant}/a/{asset}/ready")
 }
 
 enum Attempts<T> {

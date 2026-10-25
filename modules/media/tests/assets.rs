@@ -382,3 +382,101 @@ async fn refusing_deletes_only_an_upload_in_progress(_: PgPoolOptions, opts: PgC
     let err = media::refuse_upload(&mut hotel.tx().await, hotel.property, done).await.unwrap_err();
     assert!(matches!(err, MediaError::NotFound("upload")), "{err:?}");
 }
+
+const VIDEO_CAP: &str = "A room type can have at most 3 videos";
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn fourth_video_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let target = Target::RoomTypeVideo(hotel.room_type);
+
+    // Finished and in-progress videos count alike; photos do not count.
+    hotel.upload(target, 1).await;
+    hotel.upload(Target::RoomType(hotel.room_type), 2).await;
+    hotel.start(target, 1000).await.unwrap();
+    hotel.start(target, 1000).await.unwrap();
+    let err = hotel.start(target, 1000).await.unwrap_err();
+
+    assert!(matches!(&err, MediaError::Conflict(m) if m == VIDEO_CAP), "{err:?}");
+    hotel.start(Target::RoomType(hotel.room_type), 1000).await.unwrap();
+    let suite = hotel.add_room_type(hotel.property, "STE").await;
+    hotel.start(Target::RoomTypeVideo(suite), 1000).await.unwrap();
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn failed_videos_do_not_count(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let target = Target::RoomTypeVideo(hotel.room_type);
+    let mut videos = Vec::new();
+    for file in 1..=3 {
+        videos.push(asset_of(&hotel.upload(target, file).await));
+    }
+    assert!(matches!(hotel.start(target, 1000).await, Err(MediaError::Conflict(_))));
+
+    let failed = MediaResult::Failed {
+        tenant_id: hotel.tenant.0,
+        asset_id: videos[1],
+        reason: "This video could not be read".into(),
+    };
+    hotel.apply(&failed).await;
+
+    assert_eq!(hotel.status(videos[1]).await.as_deref(), Some("failed"));
+    hotel.start(target, 1000).await.unwrap();
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn concurrent_video_starts_hold_the_cap(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = std::sync::Arc::new(Hotel::new(opts).await);
+    let target = Target::RoomTypeVideo(hotel.room_type);
+    hotel.start(target, 1000).await.unwrap();
+    hotel.start(target, 1000).await.unwrap();
+
+    // The first transaction holds the room type's lock until it commits, so the second counts the third video.
+    let mut first = hotel.tx().await;
+    media::start_upload(&mut first, hotel.tenant, hotel.user, hotel.property, target, "tour.mp4", 1000, [7; 32])
+        .await
+        .unwrap();
+    let second = {
+        let hotel = hotel.clone();
+        tokio::spawn(async move { hotel.start(target, 1000).await })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!second.is_finished(), "the second start waits for the first");
+    first.commit().await.unwrap();
+
+    let err = second.await.unwrap().unwrap_err();
+    assert!(matches!(&err, MediaError::Conflict(m) if m == VIDEO_CAP), "{err:?}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn video_over_500_mb_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let target = Target::RoomTypeVideo(hotel.room_type);
+
+    let err = hotel.start(target, 500 * MIB + 1).await.unwrap_err();
+
+    assert!(matches!(&err, MediaError::Invalid(m) if m == "Videos can be at most 500 MB"), "{err:?}");
+    assert_eq!(hotel.assets().await, 0);
+    hotel.start(target, 500 * MIB).await.unwrap();
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_video_is_public_and_processed_with_the_video_profile(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let upload = hotel.start(Target::RoomTypeVideo(hotel.room_type), 1000).await.unwrap();
+    assert_eq!(upload.purpose, Purpose::GalleryVideo);
+
+    let Completed::Processing(asset) = hotel.complete(upload.asset_id, 1).await.unwrap() else {
+        panic!("a new file is processed")
+    };
+
+    assert_eq!((asset.purpose, asset.visibility), (Purpose::GalleryVideo, media::Visibility::Public));
+    let items = gallery(&mut hotel.tx().await, hotel.room_type).await.unwrap();
+    assert_eq!(items.iter().map(|i| (i.asset_id, i.purpose)).collect::<Vec<_>>(), [(asset.id, Purpose::GalleryVideo)]);
+    assert_eq!(
+        hotel.outbox("media-process").await,
+        [serde_json::json!({
+            "tenant_id": hotel.tenant.0, "asset_id": asset.id, "purpose": "gallery_video", "mime": "image/jpeg"
+        })]
+    );
+}

@@ -24,9 +24,9 @@ pub struct StaleUpload {
 pub struct SweepReport {
     /// Guest documents deleted by the retention rule.
     pub expired_documents: u32,
-    /// Assets deleted because nothing linked to them, with every object key they may have: the raw upload and the
-    /// archive in the private bucket, and the renditions (in the public bucket for a [`Purpose::Gallery`] asset, else
-    /// the private one). Some may already be gone.
+    /// Assets deleted because nothing linked to them, with every object key they may have: the raw upload, the
+    /// archive and a video's `ready` marker in the private bucket, and the renditions (in the public bucket for a
+    /// [`Purpose::Gallery`] or [`Purpose::GalleryVideo`] asset, else the private one). Some may already be gone.
     pub orphans: Vec<(TenantId, Uuid, Purpose, Vec<String>)>,
     pub stale_uploads: Vec<StaleUpload>,
     /// Assets processing for over an hour, now failed.
@@ -223,9 +223,14 @@ async fn delete_orphan(
     .fetch_optional(&mut **tx)
     .await?;
     Ok(deleted.map(|row| {
-        let keys = std::iter::once(storage::upload_key(tenant.0, asset))
-            .chain(row.archive_key)
+        // A video's archive is its upload, listed once; any asset may have the marker, which media-svc keeps in the
+        // private bucket.
+        let upload = storage::upload_key(tenant.0, asset);
+        let archive = row.archive_key.filter(|key| *key != upload);
+        let keys = std::iter::once(upload)
+            .chain(archive)
             .chain(row.renditions.into_iter().map(|r| r.key))
+            .chain([storage::ready_marker_key(tenant.0, asset)])
             .collect();
         (row.purpose, keys)
     }))

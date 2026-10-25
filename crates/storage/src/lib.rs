@@ -429,6 +429,11 @@ pub fn archive_key(tenant: Uuid, asset: Uuid, ext: &str) -> String {
     format!("t/{tenant}/a/{asset}/archive.{ext}")
 }
 
+/// The empty object media-svc writes in the private bucket once a video's result is published.
+pub fn ready_marker_key(tenant: Uuid, asset: Uuid) -> String {
+    format!("t/{tenant}/a/{asset}/ready")
+}
+
 /// A delivered rendition: in the public bucket for a gallery photo, in the private bucket otherwise.
 pub fn rendition_key(tenant: Uuid, asset: Uuid, size: &str, format: &str) -> String {
     format!("t/{tenant}/a/{asset}/{size}.{format}")

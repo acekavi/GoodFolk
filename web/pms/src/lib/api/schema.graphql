@@ -1096,7 +1096,15 @@ type MealSupplementNode {
 }
 
 """
-A photo. Its renditions exist once it is ready.
+Whether a gallery item is a photo or a video.
+"""
+enum MediaKind {
+	IMAGE
+	VIDEO
+}
+
+"""
+A photo or a video. Its renditions and sources exist once it is ready.
 """
 type MediaNode {
 	assetId: UUID!
@@ -1111,7 +1119,19 @@ type MediaNode {
 	error: String
 	width: Int
 	height: Int
+	kind: MediaKind!
+	"""
+	A ready video's length in milliseconds.
+	"""
+	durationMs: Int
+	"""
+	The images: a photo's, or a video's poster.
+	"""
 	renditions: [RenditionNode!]!
+	"""
+	A video's encodings, AV1 first at each size; empty for a photo.
+	"""
+	sources: [VideoSourceNode!]!
 }
 
 """
@@ -2248,6 +2268,21 @@ type UnassignedStayNode {
 	Send as `If-Match: "<version>"` with the stay's commands.
 	"""
 	version: Int!
+}
+
+"""
+One delivered encoding of a video at one size.
+"""
+type VideoSourceNode {
+	format: ImageFormat!
+	size: RenditionSize!
+	width: Int!
+	height: Int!
+	url: String!
+	"""
+	The `type` for a `<source>`: the container with its codecs, such as `video/mp4; codecs="av01.0.08M.10, opus"`.
+	"""
+	mime: String!
 }
 
 enum ViolationKind {

@@ -1,7 +1,7 @@
-//! Room type galleries and room issue photos: listing, ordering, captions and unlinking. An unlinked asset's files go
-//! when the sweep finds it unused.
+//! Room type galleries (photos and videos) and room issue photos: listing, ordering, captions and unlinking. An
+//! unlinked asset's files go when the sweep finds it unused.
 
-use crate::{ASSET_COLUMNS_A, AssetRow, AssetStatus, MediaError, audit, notify};
+use crate::{ASSET_COLUMNS_A, AssetRow, AssetStatus, MediaError, Purpose, audit, notify};
 use db::{TenantId, Tx, UserId};
 use media_types::RenditionOut;
 use std::collections::HashMap;
@@ -10,10 +10,13 @@ use uuid::Uuid;
 /// The longest caption, in characters.
 const MAX_CAPTION: usize = 200;
 
-/// One photo of a room type's gallery.
+/// One photo or video of a room type's gallery.
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct GalleryItem {
     pub asset_id: Uuid,
+    /// `Gallery` for a photo, `GalleryVideo` for a video.
+    #[sqlx(try_from = "String")]
+    pub purpose: Purpose,
     pub position: i32,
     pub caption: String,
     #[sqlx(try_from = "String")]
@@ -26,7 +29,8 @@ pub struct GalleryItem {
     pub renditions: Vec<RenditionOut>,
 }
 
-/// Puts the room type's photos in the order of `asset_ids`, which must be exactly its photos, each once (`Invalid`).
+/// Puts the room type's photos and videos in the order of `asset_ids`, which must be exactly its items, each once
+/// (`Invalid`).
 /// The room type must belong to the property (`NotFound`).
 pub async fn reorder_gallery(
     tx: &mut Tx,
@@ -46,7 +50,7 @@ pub async fn reorder_gallery(
     current.sort_unstable();
     wanted.sort_unstable();
     if wanted != current {
-        return Err(MediaError::Invalid("List every photo of the room type exactly once".into()));
+        return Err(MediaError::Invalid("List every photo and video of the room type exactly once".into()));
     }
     sqlx::query(
         "update room_type_media m set position = o.ord - 1
@@ -63,7 +67,7 @@ pub async fn reorder_gallery(
     Ok(())
 }
 
-/// Sets the caption (at most 200 characters once trimmed, `Invalid`) of a photo in the room type's gallery
+/// Sets the caption (at most 200 characters once trimmed, `Invalid`) of an item in the room type's gallery
 /// (`NotFound`).
 pub async fn set_caption(
     tx: &mut Tx,
@@ -98,7 +102,7 @@ pub async fn set_caption(
     Ok(())
 }
 
-/// Removes a photo from the room type's gallery (`NotFound` if it is not there).
+/// Removes a photo or video from the room type's gallery (`NotFound` if it is not there).
 pub async fn unlink_gallery(
     tx: &mut Tx,
     tenant: TenantId,
@@ -107,20 +111,20 @@ pub async fn unlink_gallery(
     room_type: Uuid,
     asset: Uuid,
 ) -> Result<(), MediaError> {
-    let deleted = sqlx::query(
-        "delete from room_type_media m using room_type t
-         where m.room_type_id = $1 and m.asset_id = $2 and t.id = m.room_type_id and t.property_id = $3",
+    let purpose: Option<String> = sqlx::query_scalar(
+        "delete from room_type_media m using room_type t, media_asset a
+         where m.room_type_id = $1 and m.asset_id = $2 and t.id = m.room_type_id and t.property_id = $3
+           and a.id = m.asset_id
+         returning a.purpose",
     )
     .bind(room_type)
     .bind(asset)
     .bind(property)
-    .execute(&mut **tx)
-    .await?
-    .rows_affected();
-    if deleted == 0 {
-        return Err(MediaError::NotFound("photo"));
-    }
-    let data = serde_json::json!({ "room_type_id": room_type });
+    .fetch_optional(&mut **tx)
+    .await?;
+    let purpose = purpose.ok_or(MediaError::NotFound("photo"))?;
+    let kind = if purpose == Purpose::GalleryVideo.as_str() { "video" } else { "image" };
+    let data = serde_json::json!({ "room_type_id": room_type, "kind": kind });
     audit(tx, tenant, Some(user), "media.removed", "media_asset", asset, data).await?;
     notify(tx, tenant, property).await?;
     Ok(())
@@ -159,7 +163,7 @@ pub async fn unlink_issue_photo(
         .bind(asset)
         .execute(&mut **tx)
         .await?;
-    let data = serde_json::json!({ "issue_id": issue });
+    let data = serde_json::json!({ "issue_id": issue, "kind": "image" });
     audit(tx, tenant, Some(user), "media.removed", "media_asset", asset, data).await?;
     notify(tx, tenant, property).await?;
     Ok(())
@@ -177,10 +181,10 @@ struct GalleryRow {
     item: GalleryItem,
 }
 
-/// The galleries of each of `room_types` that has any photos, in order.
+/// The galleries of each of `room_types` that has any items, in order.
 pub async fn galleries(tx: &mut Tx, room_types: &[Uuid]) -> Result<HashMap<Uuid, Vec<GalleryItem>>, MediaError> {
     let rows: Vec<GalleryRow> = sqlx::query_as(
-        "select m.room_type_id, a.id as asset_id, m.position, m.caption, a.status, a.error, a.width, a.height, a.renditions
+        "select m.room_type_id, a.id as asset_id, a.purpose, m.position, m.caption, a.status, a.error, a.width, a.height, a.renditions
          from room_type_media m join media_asset a on a.id = m.asset_id
          where m.room_type_id = any($1)
          order by m.room_type_id, m.position, a.id",

@@ -3,6 +3,7 @@ mod common;
 use common::{Hotel, asset_of, guest_target, verified};
 use db::{Scope, begin};
 use media::{Completed, Purpose, StaleUpload, Target, complete_upload, gallery, guest_documents, sweep};
+use media_types::{Format, MediaResult, RenditionOut, Size};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use uuid::Uuid;
 
@@ -117,7 +118,7 @@ async fn sweep_deletes_expired_documents_and_orphans(_: PgPoolOptions, opts: PgC
     assert_eq!(hotel.documents_of(guest).await, 0);
     let prefix = |asset: Uuid| format!("t/{}/a/{asset}", hotel.tenant.0);
     let keys = |asset: Uuid| {
-        ["upload", "archive.jxl", "thumb.avif", "thumb.webp", "md.avif", "md.webp"]
+        ["upload", "archive.jxl", "thumb.avif", "thumb.webp", "md.avif", "md.webp", "ready"]
             .map(|name| format!("{}/{name}", prefix(asset)))
             .to_vec()
     };
@@ -251,4 +252,44 @@ async fn kept_documents_wait_for_their_next_possible_expiry(_: PgPoolOptions, op
         sqlx::query_as("select tenant_id, kind, id from app.media_sweep_due()").fetch_all(&hotel.pool).await.unwrap();
     assert!(due.iter().all(|(_, kind, _)| kind != "expired_document"), "kept documents are not listed: {due:?}");
     assert_eq!(sweep(&hotel.pool).await.unwrap(), media::SweepReport::default());
+}
+
+/// A removed video's upload is its archive, listed once, and the `ready` marker media-svc wrote is listed too.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn sweep_lists_a_removed_videos_objects_and_marker(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let video = asset_of(&hotel.upload(Target::RoomTypeVideo(hotel.room_type), 1).await);
+    let prefix = format!("t/{}/a/{video}", hotel.tenant.0);
+    let rendition = |size: Size, format: Format, name: &str| RenditionOut {
+        size,
+        format,
+        width: 1920,
+        height: 1080,
+        bytes: 100,
+        duration_ms: (size == Size::V1080).then_some(10_000),
+        key: format!("{prefix}/{name}"),
+    };
+    hotel
+        .apply(&MediaResult::Ready {
+            tenant_id: hotel.tenant.0,
+            asset_id: video,
+            width: 1920,
+            height: 1080,
+            archive_key: format!("{prefix}/upload"),
+            renditions: vec![
+                rendition(Size::V1080, Format::Av1, "1080p.av1.mp4"),
+                rendition(Size::Thumb, Format::Avif, "thumb.avif"),
+            ],
+        })
+        .await;
+    let mut tx = hotel.tx().await;
+    media::unlink_gallery(&mut tx, hotel.tenant, hotel.user, hotel.property, hotel.room_type, video).await.unwrap();
+    tx.commit().await.unwrap();
+    hotel.exec("update media_asset set created_at = now() - interval '2 days' where id = $1", video).await;
+
+    let report = sweep(&hotel.pool).await.unwrap();
+
+    let keys = ["upload", "1080p.av1.mp4", "thumb.avif", "ready"].map(|name| format!("{prefix}/{name}")).to_vec();
+    assert_eq!(report.orphans, [(hotel.tenant, video, Purpose::GalleryVideo, keys)]);
+    assert_eq!(hotel.status(video).await, None);
 }

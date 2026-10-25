@@ -1,4 +1,4 @@
-//! Photos and documents: the asset records, the gallery, issue and guest-document links that use them,
+//! Photos, videos and documents: the asset records, the gallery, issue and guest-document links that use them,
 //! deduplication, processing results, signed-link keys and the retention sweep.
 //!
 //! Every function except [`sweep`] takes a transaction scoped to the caller's tenant. Writes record an audit entry in
@@ -29,7 +29,12 @@ use uuid::Uuid;
 
 db::text_enum!(
     /// What an asset is for. It decides the visibility, the size limit and the renditions.
-    Purpose { Gallery = "gallery", IssuePhoto = "issue_photo", GuestDocument = "guest_document" }
+    Purpose {
+        Gallery = "gallery",
+        IssuePhoto = "issue_photo",
+        GuestDocument = "guest_document",
+        GalleryVideo = "gallery_video"
+    }
 );
 
 db::text_enum!(
@@ -61,13 +66,14 @@ impl Purpose {
         match self {
             Purpose::Gallery | Purpose::IssuePhoto => 25 * MIB,
             Purpose::GuestDocument => 15 * MIB,
+            Purpose::GalleryVideo => 500 * MIB,
         }
     }
 
-    /// `public` for gallery photos, `private` for everything else.
+    /// `public` for gallery photos and videos, `private` for everything else.
     pub fn visibility(self) -> &'static str {
         match self {
-            Purpose::Gallery => Visibility::Public.as_str(),
+            Purpose::Gallery | Purpose::GalleryVideo => Visibility::Public.as_str(),
             Purpose::IssuePhoto | Purpose::GuestDocument => Visibility::Private.as_str(),
         }
     }
@@ -78,14 +84,17 @@ impl Purpose {
             Purpose::Gallery => Profile::Gallery,
             Purpose::IssuePhoto => Profile::IssuePhoto,
             Purpose::GuestDocument => Profile::GuestDocument,
+            Purpose::GalleryVideo => Profile::GalleryVideo,
         }
     }
 }
 
-/// What an upload is for: a room type's gallery, a room issue, or a guest's ID document of `kind`.
+/// What an upload is for: a photo or a video in a room type's gallery, a room issue, or a guest's ID document of
+/// `kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     RoomType(Uuid),
+    RoomTypeVideo(Uuid),
     RoomIssue(Uuid),
     Guest { guest: Uuid, kind: DocumentKind },
 }
@@ -94,6 +103,7 @@ impl Target {
     pub fn purpose(self) -> Purpose {
         match self {
             Target::RoomType(_) => Purpose::Gallery,
+            Target::RoomTypeVideo(_) => Purpose::GalleryVideo,
             Target::RoomIssue(_) => Purpose::IssuePhoto,
             Target::Guest { .. } => Purpose::GuestDocument,
         }
@@ -102,6 +112,9 @@ impl Target {
 
 /// The most photos one room issue can have, counting uploads still in progress.
 pub const MAX_ISSUE_PHOTOS: i64 = 5;
+
+/// The most videos one room type can have, counting uploads still in progress.
+pub const MAX_ROOM_TYPE_VIDEOS: i64 = 3;
 
 /// Cache key for a property's media: galleries, issue photos and guest documents.
 pub fn media_key(property: Uuid) -> String {

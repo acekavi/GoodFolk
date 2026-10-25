@@ -953,7 +953,8 @@ export interface paths {
         /**
          * Starts an upload: records the asset and has media-svc open a multipart upload, whose part URLs work for an hour.
          *     Needs `MediaManage` for a gallery photo, `RoomIssuesReport` for an issue photo and `GuestDocumentsManage` for a
-         *     guest document. An issue holds at most 5 photos, counting uploads in progress (409). When media-svc cannot be
+         *     guest document, and `MediaManage` for a room type's video (`gallery_video`). An issue holds at most 5 photos and a
+         *     room type at most 3 videos, counting uploads in progress (409). A video can be up to 500 MB. When media-svc cannot be
          *     reached in 2 s the answer is 502 and nothing is recorded. A retried request with the same `Idempotency-Key` is
          *     answered without starting another upload.
          */
@@ -1598,7 +1599,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Puts the room type's photos in a new order; `asset_ids` must name each of them exactly once (422). */
+        /** Puts the room type's photos and videos in a new order; `asset_ids` must name each of them exactly once (422). */
         put: operations["reorder_room_type_media"];
         post?: never;
         delete?: never;
@@ -2812,7 +2813,7 @@ export interface components {
             version: number;
         };
         /**
-         * @description An uploaded file. Its delivered images, once ready, are read through GraphQL; a guest document's only through
+         * @description An uploaded file. Its delivered images and videos, once ready, are read through GraphQL; a guest document's only through
          *     its signed link.
          */
         MediaAsset: {
@@ -2820,6 +2821,11 @@ export interface components {
             asset_id: string;
             /** Format: int64 */
             bytes?: number | null;
+            /**
+             * Format: int32
+             * @description A ready video's length, in milliseconds.
+             */
+            duration_ms?: number | null;
             /** @description Why processing failed, for a `failed` asset. */
             error?: string | null;
             filename: string;
@@ -3324,7 +3330,7 @@ export interface components {
          * @description What an asset is for. It decides the visibility, the size limit and the renditions.
          * @enum {string}
          */
-        Purpose: "gallery" | "issue_photo" | "guest_document";
+        Purpose: "gallery" | "issue_photo" | "guest_document" | "gallery_video";
         RatePlan: {
             active: boolean;
             allowed_meal_plans: components["schemas"]["MealPlan"][];
@@ -3720,7 +3726,7 @@ export interface components {
         StartUploadRequest: {
             /**
              * Format: int64
-             * @description The file's size: at most 25 MiB for photos and 15 MiB for guest documents.
+             * @description The file's size: at most 25 MiB for photos, 15 MiB for guest documents and 500 MB for videos.
              */
             bytes: number;
             /** @description 1 to 255 characters. Only shown; the file's type is decided from its bytes. */
@@ -3731,7 +3737,7 @@ export interface components {
             sha256: string;
             /**
              * Format: uuid
-             * @description The room type (`gallery`), room issue (`issue_photo`) or guest (`guest_document`).
+             * @description The room type (`gallery`, `gallery_video`), room issue (`issue_photo`) or guest (`guest_document`).
              */
             target_id: string;
         };
