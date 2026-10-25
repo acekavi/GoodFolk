@@ -13,10 +13,14 @@ pub enum Size {
     Md,
     Lg,
     Xl,
+    V1080,
+    V720,
+    Original,
 }
 
 impl Size {
-    /// The long edge in pixels. The thumb is a square of this side.
+    /// The long edge in pixels. The thumb is a square of this side. `Original` is never scaled, so it has no edge
+    /// and returns `u32::MAX`.
     pub fn long_edge(self) -> u32 {
         match self {
             Self::Thumb => 320,
@@ -24,6 +28,9 @@ impl Size {
             Self::Md => 1024,
             Self::Lg => 1600,
             Self::Xl => 2400,
+            Self::V1080 => 1920,
+            Self::V720 => 1280,
+            Self::Original => u32::MAX,
         }
     }
 
@@ -34,6 +41,9 @@ impl Size {
             Self::Md => "md",
             Self::Lg => "lg",
             Self::Xl => "xl",
+            Self::V1080 => "1080p",
+            Self::V720 => "720p",
+            Self::Original => "original",
         }
     }
 }
@@ -43,6 +53,9 @@ impl Size {
 pub enum Format {
     Avif,
     Webp,
+    Av1,
+    H264,
+    Pdf,
 }
 
 impl Format {
@@ -50,6 +63,18 @@ impl Format {
         match self {
             Self::Avif => "avif",
             Self::Webp => "webp",
+            Self::Av1 => "av1.mp4",
+            Self::H264 => "h264.mp4",
+            Self::Pdf => "pdf",
+        }
+    }
+
+    pub fn content_type(self) -> &'static str {
+        match self {
+            Self::Avif => "image/avif",
+            Self::Webp => "image/webp",
+            Self::Av1 | Self::H264 => "video/mp4",
+            Self::Pdf => "application/pdf",
         }
     }
 }
@@ -60,6 +85,7 @@ pub enum Profile {
     Gallery,
     IssuePhoto,
     GuestDocument,
+    GalleryVideo,
 }
 
 impl Profile {
@@ -68,6 +94,7 @@ impl Profile {
             Self::Gallery => &[Size::Thumb, Size::Sm, Size::Md, Size::Lg, Size::Xl],
             Self::IssuePhoto => &[Size::Thumb, Size::Sm, Size::Md, Size::Lg],
             Self::GuestDocument => &[Size::Thumb, Size::Md],
+            Self::GalleryVideo => &[Size::V1080, Size::V720],
         }
     }
 }
@@ -88,6 +115,9 @@ pub struct RenditionOut {
     pub height: u32,
     pub bytes: u64,
     pub key: String,
+    /// The length of a video rendition; absent for an image and for renditions stored before videos existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -264,6 +294,7 @@ mod tests {
                 height: 320,
                 bytes: 1234,
                 key: "t/a/thumb.avif".into(),
+                duration_ms: None,
             }],
         };
         let json = serde_json::to_value(&result).unwrap();
@@ -299,6 +330,26 @@ mod tests {
         assert_eq!(Profile::GuestDocument.sizes(), [Size::Thumb, Size::Md]);
         assert_eq!(Profile::IssuePhoto.sizes().len(), 4);
         assert_eq!((Format::Avif.as_str(), Format::Webp.as_str()), ("avif", "webp"));
+    }
+
+    #[test]
+    fn rendition_out_without_duration_parses() {
+        let stored = r#"{"size":"thumb","format":"avif","width":320,"height":320,"bytes":1,"key":"k"}"#;
+        let out: RenditionOut = serde_json::from_str(stored).unwrap();
+        assert_eq!(out.duration_ms, None);
+        assert!(serde_json::to_value(&out).unwrap().get("duration_ms").is_none());
+    }
+
+    #[test]
+    fn video_sizes_and_formats_name_their_keys() {
+        assert_eq!(Size::V1080.as_str(), "1080p");
+        assert_eq!(Size::V720.as_str(), "720p");
+        assert_eq!(Size::Original.as_str(), "original");
+        assert_eq!((Size::V1080.long_edge(), Size::V720.long_edge()), (1920, 1280));
+        assert_eq!(Format::Av1.as_str(), "av1.mp4");
+        assert_eq!(Format::H264.as_str(), "h264.mp4");
+        assert_eq!(Format::Pdf.as_str(), "pdf");
+        assert_eq!(Profile::GalleryVideo.sizes(), [Size::V1080, Size::V720]);
     }
 
     fn credit_note() -> InvoiceData {

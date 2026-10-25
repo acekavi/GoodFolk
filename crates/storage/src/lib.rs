@@ -3,6 +3,7 @@
 //! Production talks to Cloudflare R2; development and tests talk to RustFS (`deploy/dev/rustfs.sh`). Requests are
 //! built and signed by `rusty-s3` and sent with `reqwest`.
 
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -13,6 +14,7 @@ use rusty_s3::actions::{
     HeadObject, PutObject, S3Action, UploadPart,
 };
 use rusty_s3::{Bucket as S3Bucket, Credentials, Method, UrlStyle, signing};
+use tokio::io::AsyncWriteExt;
 use url::Url;
 use uuid::Uuid;
 
@@ -277,6 +279,37 @@ impl Storage {
             body.extend_from_slice(&chunk);
         }
         Ok(Bytes::from(body))
+    }
+
+    /// Streams an object into the file at `path` (created or truncated) and returns the bytes written. An object
+    /// larger than `limit` is refused with [`StorageError::TooLarge`], and the partial file is removed.
+    pub async fn get_to_file(&self, bucket: Bucket, key: &str, path: &Path, limit: u64) -> Result<u64, StorageError> {
+        let result = self.stream_to_file(bucket, key, path, limit).await;
+        if result.is_err() {
+            // Best effort: the error being returned matters more than a leftover file.
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        result
+    }
+
+    async fn stream_to_file(&self, bucket: Bucket, key: &str, path: &Path, limit: u64) -> Result<u64, StorageError> {
+        let action = GetObject::new(self.bucket(bucket), Some(&self.credentials), key);
+        let mut response = self.send(HttpMethod::GET, action.sign(REQUEST_TTL), &[], Bytes::new()).await?;
+        if response.content_length().is_some_and(|length| length > limit) {
+            return Err(StorageError::TooLarge { limit });
+        }
+        let io = |error: std::io::Error| StorageError::Unreadable(format!("writing {}: {error}", path.display()));
+        let mut file = tokio::fs::File::create(path).await.map_err(io)?;
+        let mut written: u64 = 0;
+        while let Some(chunk) = response.chunk().await? {
+            written = written.saturating_add(chunk.len() as u64);
+            if written > limit {
+                return Err(StorageError::TooLarge { limit });
+            }
+            file.write_all(&chunk).await.map_err(io)?;
+        }
+        file.flush().await.map_err(io)?;
+        Ok(written)
     }
 
     /// The object's size, or `None` when it does not exist.

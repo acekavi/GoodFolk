@@ -702,6 +702,9 @@ enum IdDocType {
 enum ImageFormat {
 	AVIF
 	WEBP
+	AV_1
+	H264
+	PDF
 }
 
 """
@@ -1746,6 +1749,9 @@ enum RenditionSize {
 	MD
 	LG
 	XL
+	V1080
+	V720
+	ORIGINAL
 }
 
 """

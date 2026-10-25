@@ -114,7 +114,9 @@ fn search_level(levels: &[(Size, RgbaImage)]) -> Option<usize> {
 /// the caller sizes with `RAYON_NUM_THREADS`.
 pub fn process(bytes: &[u8], ty: SourceType, profile: Profile) -> Result<Processed, ImagingError> {
     match ty {
-        SourceType::Heic => return Err(ImagingError::Unsupported),
+        SourceType::Heic | SourceType::Mp4 | SourceType::Quicktime | SourceType::Webm | SourceType::Matroska => {
+            return Err(ImagingError::Unsupported);
+        }
         SourceType::Pdf => {
             return Ok(Processed {
                 width: 0,

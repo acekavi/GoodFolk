@@ -293,9 +293,9 @@ mirror_enum!(
 );
 mirror_enum!(
     /// A delivered image's size: `THUMB` is a 320 px square, the others are long edges of 640 to 2400 px.
-    RenditionSizeNode as "RenditionSize" from media_types::Size { Thumb, Sm, Md, Lg, Xl }
+    RenditionSizeNode as "RenditionSize" from media_types::Size { Thumb, Sm, Md, Lg, Xl, V1080, V720, Original }
 );
-mirror_enum!(ImageFormatNode as "ImageFormat" from media_types::Format { Avif, Webp });
+mirror_enum!(ImageFormatNode as "ImageFormat" from media_types::Format { Avif, Webp, Av1, H264, Pdf });
 mirror_enum!(DocumentKindNode as "DocumentKind" from media::DocumentKind { Passport, Nic, DrivingLicence, Other });
 
 /// One delivered image of a photo.

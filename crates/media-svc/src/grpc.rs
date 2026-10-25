@@ -35,6 +35,7 @@ fn profile(purpose: Purpose) -> Result<Profile, Status> {
         Purpose::Gallery => Ok(Profile::Gallery),
         Purpose::IssuePhoto => Ok(Profile::IssuePhoto),
         Purpose::GuestDocument => Ok(Profile::GuestDocument),
+        Purpose::GalleryVideo => Ok(Profile::GalleryVideo),
         Purpose::Unspecified => Err(Status::invalid_argument("purpose is required")),
     }
 }
@@ -214,7 +215,14 @@ fn verify(
             _ => UNREADABLE,
         })?,
     };
-    Ok(Verified { blake3: blake3.as_bytes().to_vec(), mime: ty.mime().to_owned(), bytes: len, width, height })
+    Ok(Verified {
+        blake3: blake3.as_bytes().to_vec(),
+        mime: ty.mime().to_owned(),
+        bytes: len,
+        width,
+        height,
+        duration_ms: 0,
+    })
 }
 
 #[cfg(test)]

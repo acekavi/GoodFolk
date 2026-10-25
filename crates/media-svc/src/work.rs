@@ -123,7 +123,7 @@ async fn store(svc: &MediaSvc, job: &ProcessJob, output: Output) -> anyhow::Resu
     let (tenant, asset) = (job.tenant_id, job.asset_id);
     // Only gallery renditions are public; archives never are.
     let (rendition_bucket, cache_control) = match job.purpose {
-        Profile::Gallery => (Bucket::Public, Some(IMMUTABLE)),
+        Profile::Gallery | Profile::GalleryVideo => (Bucket::Public, Some(IMMUTABLE)),
         Profile::IssuePhoto | Profile::GuestDocument => (Bucket::Private, None),
     };
 
@@ -137,14 +137,11 @@ async fn store(svc: &MediaSvc, job: &ProcessJob, output: Output) -> anyhow::Resu
             height: piece.height,
             bytes: piece.bytes.len() as u64,
             key: rendition_key(tenant, asset, piece.size.as_str(), piece.format.as_str()),
+            duration_ms: None,
         })
         .collect();
     let rendition_puts = output.renditions.into_iter().zip(&renditions).map(|(piece, out)| {
-        let content_type = match piece.format {
-            media_types::Format::Avif => "image/avif",
-            media_types::Format::Webp => "image/webp",
-        };
-        svc.storage.put(rendition_bucket, &out.key, piece.bytes, content_type, cache_control)
+        svc.storage.put(rendition_bucket, &out.key, piece.bytes, piece.format.content_type(), cache_control)
     });
 
     let archive = archive_key(tenant, asset, &output.archive_ext);

@@ -24,7 +24,12 @@ pub fn archive(bytes: &[u8], ty: SourceType) -> Result<(Vec<u8>, &'static str), 
             archive_jpeg(bytes)
         }
         SourceType::Png | SourceType::Webp => Ok((lossless_pixels(&decode(bytes, ty)?)?, "jxl")),
-        SourceType::Heic | SourceType::Pdf => Err(ImagingError::Unsupported),
+        SourceType::Heic
+        | SourceType::Pdf
+        | SourceType::Mp4
+        | SourceType::Quicktime
+        | SourceType::Webm
+        | SourceType::Matroska => Err(ImagingError::Unsupported),
     }
 }
 

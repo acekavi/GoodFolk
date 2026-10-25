@@ -13,7 +13,12 @@ fn format_of(ty: SourceType) -> Result<ImageFormat, ImagingError> {
         SourceType::Jpeg => Ok(ImageFormat::Jpeg),
         SourceType::Png => Ok(ImageFormat::Png),
         SourceType::Webp => Ok(ImageFormat::WebP),
-        SourceType::Heic | SourceType::Pdf => Err(ImagingError::Unsupported),
+        SourceType::Heic
+        | SourceType::Pdf
+        | SourceType::Mp4
+        | SourceType::Quicktime
+        | SourceType::Webm
+        | SourceType::Matroska => Err(ImagingError::Unsupported),
     }
 }
 

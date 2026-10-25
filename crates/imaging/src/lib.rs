@@ -31,6 +31,10 @@ pub enum SourceType {
     Webp,
     Heic,
     Pdf,
+    Mp4,
+    Quicktime,
+    Webm,
+    Matroska,
 }
 
 impl SourceType {
@@ -41,7 +45,15 @@ impl SourceType {
             Self::Webp => "image/webp",
             Self::Heic => "image/heic",
             Self::Pdf => "application/pdf",
+            Self::Mp4 => "video/mp4",
+            Self::Quicktime => "video/quicktime",
+            Self::Webm => "video/webm",
+            Self::Matroska => "video/x-matroska",
         }
+    }
+
+    pub fn is_video(self) -> bool {
+        matches!(self, Self::Mp4 | Self::Quicktime | Self::Webm | Self::Matroska)
     }
 
     pub fn from_mime(m: &str) -> Option<Self> {
@@ -51,6 +63,10 @@ impl SourceType {
             "image/webp" => Some(Self::Webp),
             "image/heic" | "image/heif" => Some(Self::Heic),
             "application/pdf" => Some(Self::Pdf),
+            "video/mp4" => Some(Self::Mp4),
+            "video/quicktime" => Some(Self::Quicktime),
+            "video/webm" => Some(Self::Webm),
+            "video/x-matroska" => Some(Self::Matroska),
             _ => None,
         }
     }

@@ -25,6 +25,7 @@ mod tests {
                 mime: "image/jpeg".into(),
                 bytes: 8 * 1024 * 1024 + 1024,
                 width: 4000,
+                duration_ms: 0,
                 height: 3000,
             })),
         };

@@ -50,6 +50,7 @@ fn pixels_of(r: &Rendition) -> RgbaImage {
                 _ => panic!("unexpected AVIF sample format"),
             }
         }
+        Format::Av1 | Format::H264 | Format::Pdf => unreachable!("the image ladder never produces {:?}", r.format),
     }
 }
 

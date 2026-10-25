@@ -44,6 +44,7 @@ fn encode(img: &RgbaImage, format: Format, quality: u8) -> Result<Vec<u8>, Imagi
     match format {
         Format::Avif => encode_avif_at(img, quality, AVIF_SPEED),
         Format::Webp => encode_webp(img, quality),
+        Format::Av1 | Format::H264 | Format::Pdf => Err(ImagingError::Unsupported),
     }
 }
 
@@ -132,6 +133,7 @@ fn decode_back(bytes: &[u8], format: Format) -> Result<RgbaImage, ImagingError> 
             };
             RgbaImage::from_raw(width as u32, height as u32, pixels).ok_or_else(|| fail("size mismatch".into()))
         }
+        Format::Av1 | Format::H264 | Format::Pdf => Err(ImagingError::Unsupported),
     }
 }
 
