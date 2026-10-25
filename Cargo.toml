@@ -31,6 +31,7 @@ rooms = { path = "modules/rooms" }
 storage = { path = "crates/storage" }
 svc-auth = { path = "crates/svc-auth" }
 tax = { path = "modules/tax" }
+video = { path = "crates/video" }
 
 anyhow = "1"
 async-trait = "0.1"
