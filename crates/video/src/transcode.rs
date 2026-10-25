@@ -15,6 +15,8 @@ use crate::{Probe, VideoError, probe, run, tools};
 const AV1_CRF: u8 = 36;
 const AUDIO_BITRATE: &str = "128k";
 const MAX_FPS: f64 = 30.0;
+/// The shortest long edge that gets a 1080p rendition.
+const V1080_FROM: u32 = 1600;
 /// A PNG of a 3840x2160 RGB frame is about 25 MB at worst.
 const MAX_POSTER: u64 = 64 * 1024 * 1024;
 
@@ -65,16 +67,16 @@ fn fit(size: Size, width: u32, height: u32) -> (u32, u32) {
     ((w & !1).max(2), (h & !1).max(2))
 }
 
-/// The sizes a displayed `width` x `height` frame gets, largest first: 720p always, and 1080p when that comes out
-/// larger, which is only for a frame beyond 720p's box.
+/// The sizes a displayed `width` x `height` frame gets, largest first: 720p always, and 1080p for a long edge of at
+/// least `V1080_FROM`, so a frame just past 720p does not get a near-duplicate pair.
 fn sizes(width: u32, height: u32) -> Vec<(Size, u32, u32)> {
-    let v720 = fit(Size::V720, width, height);
-    let v1080 = fit(Size::V1080, width, height);
     let mut out = Vec::with_capacity(2);
-    if v1080 != v720 {
-        out.push((Size::V1080, v1080.0, v1080.1));
+    if width.max(height) >= V1080_FROM {
+        let (w, h) = fit(Size::V1080, width, height);
+        out.push((Size::V1080, w, h));
     }
-    out.push((Size::V720, v720.0, v720.1));
+    let (w, h) = fit(Size::V720, width, height);
+    out.push((Size::V720, w, h));
     out
 }
 
@@ -85,7 +87,7 @@ fn sizes(width: u32, height: u32) -> Vec<(Size, u32, u32)> {
 fn bt709(probe: &Probe) -> String {
     let tone_map = if probe.hdr {
         "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,\
-         sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL,"
+         format=yuv420p10le,sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL,"
     } else {
         ""
     };
@@ -164,9 +166,9 @@ fn encode_size(
     deadline: Instant,
 ) -> Result<Vec<Encoded>, VideoError> {
     let path = |format: Format| out_dir.join(format!("{}.{}", size.as_str(), format.as_str()));
-    let graph = format!("[0:v:0]{},split=2[av1][h264]", filter_chain(probe, width, height));
+    let graph = format!("[0:{}]{},split=2[av1][h264]", probe.video_stream, filter_chain(probe, width, height));
     let mut command = ffmpeg();
-    command.arg("-y").arg("-i").arg(input).args(["-filter_complex", &graph]);
+    command.arg("-y").arg("-i").arg(run::file_input(input)).args(["-filter_complex", &graph]);
     command.args(output(probe, opts, size, Format::Av1, "[av1]", &path(Format::Av1)));
     command.args(output(probe, opts, size, Format::H264, "[h264]", &path(Format::H264)));
     let ran = run::run(&mut command, deadline, 0)?;
@@ -214,7 +216,8 @@ pub fn poster_png(input: &Path, probe: &Probe, timeout: Duration) -> Result<Vec<
     if probe.duration_ms >= 1000 {
         command.args(["-ss", "1"]);
     }
-    command.arg("-i").arg(input).args(["-map", "0:v:0", "-frames:v", "1", "-vf"]);
+    command.arg("-i").arg(run::file_input(input)).arg("-map").arg(format!("0:{}", probe.video_stream));
+    command.args(["-frames:v", "1", "-vf"]);
     command.arg(format!("{},format=rgb24", bt709(probe)));
     command.args(["-c:v", "png", "-f", "image2pipe", "-"]);
     let ran = run::run(&mut command, Instant::now() + timeout, MAX_POSTER)?;
@@ -240,10 +243,13 @@ mod tests {
         assert_eq!(sizes(1080, 1920), [(Size::V1080, 1080, 1920), (Size::V720, 720, 1280)]);
         assert_eq!(sizes(3840, 2160), [(Size::V1080, 1920, 1080), (Size::V720, 1280, 720)]);
         assert_eq!(sizes(3840, 1636), [(Size::V1080, 1920, 818), (Size::V720, 1280, 544)]);
-        // Between the boxes: 1080p keeps the source size.
+        // From a 1600 long edge, 1080p keeps the source size.
         assert_eq!(sizes(1600, 900), [(Size::V1080, 1600, 900), (Size::V720, 1280, 720)]);
-        // Within 720p's box, or meeting it: one 720p at the source size, rounded down to even.
+        // Below it, one 720p: scaled into the box, or at the source size, each side rounded down to even.
+        assert_eq!(sizes(1290, 720), [(Size::V720, 1280, 714)]);
+        assert_eq!(sizes(721, 1281), [(Size::V720, 720, 1278)]);
         assert_eq!(sizes(1280, 720), [(Size::V720, 1280, 720)]);
+        assert_eq!(sizes(640, 360), [(Size::V720, 640, 360)]);
         assert_eq!(sizes(641, 361), [(Size::V720, 640, 360)]);
     }
 
@@ -257,6 +263,7 @@ mod tests {
             hdr: true,
             fps: 50.0,
             video_codec: "hevc".into(),
+            video_stream: 0,
             audio_codec: None,
             audio_stream: None,
         };

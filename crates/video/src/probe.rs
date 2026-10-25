@@ -29,6 +29,8 @@ pub struct Probe {
     pub hdr: bool,
     pub fps: f64,
     pub video_codec: String,
+    /// The `ffprobe` index of the video stream every rendition is made from: the first that is not cover art.
+    pub video_stream: usize,
     pub audio_codec: Option<String>,
     /// The `ffprobe` index of the default audio stream, else the first.
     pub audio_stream: Option<usize>,
@@ -129,7 +131,7 @@ fn run_ffprobe(path: &Path, timeout: Duration) -> Result<Vec<u8>, VideoError> {
     let ran = run::run(
         Command::new(tools::ffprobe())
             .args(["-v", "error", "-print_format", "json", "-show_streams", "-show_format"])
-            .arg(path),
+            .arg(run::file_input(path)),
         Instant::now() + timeout,
         MAX_STDOUT,
     )?;
@@ -183,6 +185,7 @@ fn parse(json: &[u8]) -> Result<Probe, VideoError> {
         hdr: video.color_transfer.as_deref().is_some_and(|t| HDR_TRANSFERS.contains(&t)),
         fps,
         video_codec: video.codec_name.clone().unwrap_or_default(),
+        video_stream: video.index,
         audio_codec: audio.and_then(|a| a.codec_name.clone()),
         audio_stream: audio.map(|a| a.index),
     })
@@ -226,6 +229,7 @@ mod tests {
             hdr: false,
             fps: 30.0,
             video_codec: "h264".into(),
+            video_stream: 0,
             audio_codec: Some("aac".into()),
             audio_stream: Some(1),
         }
@@ -245,6 +249,20 @@ mod tests {
             "avg_frame_rate":"{avg}","r_frame_rate":"{r}","duration":"2.5"}}],"format":{{"duration":"{format_duration}"}}}}"#
         )
         .into_bytes()
+    }
+
+    #[test]
+    fn cover_art_is_not_the_video_stream() {
+        let json = br#"{"streams":[
+            {"index":0,"codec_type":"video","codec_name":"mjpeg","width":600,"height":600,"avg_frame_rate":"0/0",
+             "r_frame_rate":"90000/1","disposition":{"default":0,"attached_pic":1}},
+            {"index":1,"codec_type":"audio","codec_name":"aac"},
+            {"index":2,"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"30/1"}
+        ],"format":{"duration":"5.0"}}"#;
+        let p = parse(json).unwrap();
+        assert_eq!(p.video_stream, 2);
+        assert_eq!(p.video_codec, "h264");
+        assert_eq!((p.width, p.height), (1920, 1080));
     }
 
     #[test]

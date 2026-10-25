@@ -36,18 +36,21 @@ struct Metrics {
 }
 
 /// Scores `distorted` against `reference` (the source) put through the renditions' own filter chain at `size_of`, so
-/// both are upright, SDR and the same size. Both are compared as 10-bit 4:2:0, which holds an 8-bit frame exactly.
+/// both are upright, SDR and the same size. Both are compared as 10-bit 4:2:0, which holds an 8-bit frame exactly. The
+/// reference is `probe.video_stream`; the distorted file is a rendition, whose only video stream is its first. A
+/// scoring run still going after a fixed 600 s is killed and returns `TimedOut`.
 pub fn vmaf(reference: &Path, distorted: &Path, probe: &Probe, size_of: (u32, u32)) -> Result<VmafScore, VideoError> {
     let (width, height) = size_of;
     let threads = thread::available_parallelism().map_or(1, |n| n.get());
     let graph = format!(
         "[0:v:0]setpts=PTS-STARTPTS,format=yuv420p10le[distorted];\
-         [1:v:0]{},setpts=PTS-STARTPTS,format=yuv420p10le[reference];\
+         [1:{}]{},setpts=PTS-STARTPTS,format=yuv420p10le[reference];\
          [distorted][reference]libvmaf=log_fmt=json:log_path=/dev/stdout:n_threads={threads}",
+        probe.video_stream,
         filter_chain(probe, width, height)
     );
     let mut command = ffmpeg();
-    command.arg("-i").arg(distorted).arg("-i").arg(reference);
+    command.arg("-i").arg(run::file_input(distorted)).arg("-i").arg(run::file_input(reference));
     command.args(["-lavfi", &graph, "-f", "null", "-"]);
     let ran = run::run(&mut command, Instant::now() + TIMEOUT, MAX_LOG)?;
     if !ran.status.success() {

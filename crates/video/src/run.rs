@@ -2,7 +2,9 @@
 //! its own, so the child stays in the caller's process group, where a supervisor's group kill (media-svc's worker
 //! kill) reaches it too.
 
+use std::ffi::OsString;
 use std::io::{self, Read};
+use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -11,6 +13,13 @@ use crate::VideoError;
 
 const MAX_STDERR: u64 = 64 * 1024;
 const POLL: Duration = Duration::from_millis(10);
+
+/// `path` as an ffmpeg or ffprobe input that is always read as a file, never as a protocol (`http:`, `concat:`, ...).
+pub(crate) fn file_input(path: &Path) -> OsString {
+    let mut input = OsString::from("file:");
+    input.push(path);
+    input
+}
 
 /// What a finished child left behind.
 pub(crate) struct Ran {
