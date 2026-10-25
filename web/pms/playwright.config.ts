@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
 
 // End-to-end tests drive the built SPA against a real API and Postgres, all on localhost.
@@ -14,6 +16,10 @@ const API_PORT = 18080;
 const WEB_PORT = 4173;
 const MEDIA_PORT = 8090;
 const JOBS_PORT = 8091;
+
+// The dev mailer jobs-svc sends invitation emails with writes each message as a file here; the tests read the link
+// out of it (helpers.ts `inviteLink`). Set before the workers start, so that they inherit it.
+process.env.MAIL_OUTBOX_DIR ??= join(tmpdir(), 'goodfolk-e2e-mail-outbox');
 
 // core-api, media-svc and jobs-svc push/call to each other with a test-only shared secret; both reach RustFS on :9000
 // with its local defaults (see global-setup.ts).
@@ -91,6 +97,8 @@ export default defineConfig({
 				DATABASE_URL: database,
 				...SERVICE_AUTH,
 				JOBS_TICK: 'off',
+				MAIL_OUTBOX_DIR: process.env.MAIL_OUTBOX_DIR,
+				APP_BASE_URL: `http://localhost:${WEB_PORT}`,
 				FX_IMPORT: 'off',
 				RUST_LOG: 'warn'
 			},

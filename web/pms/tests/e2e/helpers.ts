@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, type APIRequestContext, type Page, type Request } from '@playwright/test';
@@ -389,4 +389,36 @@ export async function housekeepingProperty(
 	});
 	expect(assignment.status(), await assignment.text()).toBe(204);
 	return { propertyId, housekeeper };
+}
+
+/**
+ * The invitation link (`/invite/<token>`) in the newest message the dev mailer wrote to `email`, once jobs-svc has
+ * sent it. The mailer renames each file into place whole, and its names sort in the order they were sent, so the
+ * newest is the last (a resend replaces an earlier link).
+ */
+export async function inviteLink(email: string): Promise<string> {
+	const dir = process.env.MAIL_OUTBOX_DIR;
+	if (!dir) throw new Error('MAIL_OUTBOX_DIR is set by playwright.config.ts');
+	let link = '';
+	await expect
+		.poll(
+			() => {
+				const files = readdirSync(dir)
+					.filter((name) => name.endsWith('.json'))
+					.sort()
+					.reverse();
+				for (const name of files) {
+					const mail: { to: string; text: string } = JSON.parse(
+						readFileSync(join(dir, name), 'utf8')
+					);
+					if (mail.to !== email) continue;
+					link = /\/invite\/[\w-]+/.exec(mail.text)?.[0] ?? '';
+					return link;
+				}
+				return '';
+			},
+			{ message: `an invitation email to ${email}`, timeout: 30_000 }
+		)
+		.not.toBe('');
+	return link;
 }
