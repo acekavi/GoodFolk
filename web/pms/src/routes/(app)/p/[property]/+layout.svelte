@@ -2,7 +2,7 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { createQuery } from '@tanstack/svelte-query';
-	import { can, fetchMe } from '$lib/session';
+	import { can, fetchMe, posOnly } from '$lib/session';
 	import { fetchOpsAlerts, opsAlertLabel, opsAlertsKey, seesOpsAlerts } from '$lib/night-audit';
 	import { fetchFxAlert, fxAlertKey, seesFxBanner, settingsIndex } from '$lib/settings';
 
@@ -43,7 +43,10 @@
 		{ href: resolve('/(app)/p/[property]/meal-plans', { property }), label: 'Meal plans' }
 	]);
 	// The Settings index lists each settings page the user may open; the link shows when there is one.
-	const seesSettings = $derived(!!me.data && settingsIndex(me.data, property).length > 0);
+	// A till (`posOnly`) is shown no pages.
+	const seesSettings = $derived(
+		!!me.data && !posOnly(me.data) && settingsIndex(me.data, property).length > 0
+	);
 	const settings = $derived(resolve('/(app)/p/[property]/settings', { property }));
 
 	// Owners and managers, who can set a rate by hand, see why the last import left rates missing or stale.

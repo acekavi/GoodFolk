@@ -7,7 +7,7 @@ import type {
 } from './api/gql/graphql';
 import { query } from './api/graphql';
 import { roomsKey } from './rooms';
-import { can, canAnywhere, type Profile } from './session';
+import { can, canAnywhere, posOnly, type Profile } from './session';
 
 /** The Taxes page: the property's tax settings, every rule (ended or not), and the outlets a rule can name. */
 export const TaxSettingsDocument = graphql(`
@@ -215,7 +215,8 @@ export interface SettingsGroup {
  * The Settings index at the property: its groups, each with the pages the user may open, and no group left empty.
  * Each page keeps its own permission: General `PropertiesManage`; Taxes and invoices, Currencies and exchange rates
  * and Outlets `FolioView`; Sections and Block reasons `RoomsManage`; Laundry prices `LaundryPricesManage`;
- * Cancellation policies (on Rate plans) `RatesManage`; Staff `StaffManage` at any property; Permissions every member.
+ * Cancellation policies (on Rate plans) `RatesManage`; Staff `StaffManage` at any property; Permissions every member
+ * but a till (`posOnly`).
  */
 export function settingsIndex(profile: Profile, propertyId: string): SettingsGroup[] {
 	const at = (action: Parameters<typeof can>[1]) => can(profile, action, propertyId);
@@ -258,7 +259,11 @@ export function settingsIndex(profile: Profile, propertyId: string): SettingsGro
 			group: 'Staff',
 			links: [
 				{ link: 'staff', label: 'Staff', shown: canAnywhere(profile, 'staffManage') },
-				{ link: 'permissions', label: 'Permissions', shown: profile.grants.length > 0 }
+				{
+					link: 'permissions',
+					label: 'Permissions',
+					shown: profile.grants.length > 0 && !posOnly(profile)
+				}
 			]
 		}
 	];

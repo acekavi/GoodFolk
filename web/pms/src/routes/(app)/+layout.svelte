@@ -8,7 +8,7 @@
 	import { connectEvents } from '$lib/events';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
 	import { wipeDevice } from '$lib/hk-sync.svelte';
-	import { fetchMe, ownerOf } from '$lib/session';
+	import { fetchMe, ownerOf, posOnly } from '$lib/session';
 
 	let { children } = $props();
 
@@ -115,11 +115,13 @@
 			{/each}
 		</nav>
 		<span class="spacer"></span>
-		<a
-			href={resolve('/(app)/settings')}
-			aria-current={page.url.pathname.startsWith(resolve('/(app)/settings')) ? 'page' : undefined}
-			>Staff and settings</a
-		>
+		{#if !posOnly(me.data)}
+			<a
+				href={resolve('/(app)/settings')}
+				aria-current={page.url.pathname.startsWith(resolve('/(app)/settings')) ? 'page' : undefined}
+				>Staff and settings</a
+			>
+		{/if}
 		<span>{me.data.display_name}</span>
 		<button disabled={busy} onclick={logout}>Sign out</button>
 	</header>

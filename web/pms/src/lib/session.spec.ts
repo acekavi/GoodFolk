@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { can, canAnywhere, isTenantOwner, type Profile } from './session';
+import { can, canAnywhere, isTenantOwner, posOnly, type Profile } from './session';
 
 function profile(grants: Profile['grants']): Profile {
 	return { user_id: 'u', email: 'a@b.lk', display_name: 'A', tenants: [], grants };
@@ -166,5 +166,16 @@ describe('canAnywhere', () => {
 		);
 		expect(canAnywhere(profile([{ role: 'owner' }]), 'staffManage')).toBe(true);
 		expect(canAnywhere(profile([{ role: 'front_desk' }]), 'staffManage')).toBe(false);
+	});
+});
+
+describe('posOnly', () => {
+	it('is true only when every grant is pos', () => {
+		expect(posOnly(profile([{ role: 'pos', property_id: 'p1' }, { role: 'pos' }]))).toBe(true);
+		expect(posOnly(profile([{ role: 'pos' }, { role: 'front_desk', property_id: 'p1' }]))).toBe(
+			false
+		);
+		expect(posOnly(profile([{ role: 'owner' }]))).toBe(false);
+		expect(posOnly(profile([]))).toBe(false);
 	});
 });

@@ -6,7 +6,7 @@
 	import { resolve } from '$app/paths';
 	import { createQuery } from '@tanstack/svelte-query';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
-	import { canAnywhere, fetchMe } from '$lib/session';
+	import { canAnywhere, fetchMe, posOnly } from '$lib/session';
 	import { settingsIndex } from '$lib/settings';
 
 	const me = createQuery(() => ({ queryKey: ['me'], queryFn: fetchMe }));
@@ -31,7 +31,9 @@
 		{#if staff}
 			<li><a href={resolve('/(app)/settings/staff')}>Staff</a></li>
 		{/if}
-		<li><a href={resolve('/(app)/settings/permissions')}>Permissions</a></li>
+		{#if me.data && !posOnly(me.data)}
+			<li><a href={resolve('/(app)/settings/permissions')}>Permissions</a></li>
+		{/if}
 	</ul>
 </section>
 {#if withSettings.length > 0}

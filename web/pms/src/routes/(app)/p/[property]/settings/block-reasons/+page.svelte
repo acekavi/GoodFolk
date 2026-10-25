@@ -26,7 +26,8 @@
 
 	const emptyDraft = () => ({ code: '', label: '', kind: 'out_of_order' as BlockKind });
 	let draft = $state(emptyDraft());
-	let editing = $state<{ id: string; label: string } | null>(null);
+	/** The reason being renamed, with the version it had when Rename was pressed (its `If-Match`). */
+	let editing = $state<{ id: string; version: number; label: string } | null>(null);
 	let error = $state('');
 	const pending = new Pending();
 	const addForm = formKeys();
@@ -67,8 +68,15 @@
 		}
 	}
 
-	/** PATCHes the reason; a stale `If-Match` (412) reloads the list rather than overwrite someone else's change. */
-	async function update(reason: BlockReasonRow, body: { label?: string; active?: boolean }) {
+	/**
+	 * PATCHes the reason at `version`; a stale one (412) reloads the list rather than overwrite someone else's change,
+	 * and a rename in progress starts again from the latest.
+	 */
+	async function update(
+		reason: BlockReasonRow,
+		version: number,
+		body: { label?: string; active?: boolean }
+	) {
 		error = '';
 		try {
 			await pending.run(reason.id, async () =>
@@ -76,7 +84,7 @@
 					await rest.PATCH('/api/v1/properties/{property}/block-reasons/{reason}', {
 						params: {
 							path: { property: propertyId, reason: reason.id },
-							header: ifMatch(reason.version)
+							header: ifMatch(version)
 						},
 						body
 					})
@@ -85,7 +93,12 @@
 			if (editing?.id === reason.id) editing = null;
 		} catch (err) {
 			if (err instanceof ApiError && err.status === 412) {
-				editing = null;
+				await refresh();
+				const fresh = reasons.data?.find((row) => row.id === reason.id);
+				editing =
+					editing?.id === reason.id && fresh
+						? { id: fresh.id, version: fresh.version, label: fresh.label }
+						: null;
 				error =
 					'Someone else changed this reason. The list now shows the latest version; make your change again.';
 			} else {
@@ -137,7 +150,8 @@
 							<button
 								aria-label="Save {reason.code}"
 								disabled={pending.has(reason.id) || !editing.label.trim()}
-								onclick={() => editing && update(reason, { label: editing.label.trim() })}
+								onclick={() =>
+									editing && update(reason, editing.version, { label: editing.label.trim() })}
 								>Save</button
 							>
 							<button class="secondary" onclick={() => (editing = null)}>Cancel</button>
@@ -152,13 +166,15 @@
 									class="secondary"
 									aria-label="Rename {reason.code}"
 									disabled={pending.has(reason.id)}
-									onclick={() => (editing = { id: reason.id, label: reason.label })}>Rename</button
+									onclick={() =>
+										(editing = { id: reason.id, version: reason.version, label: reason.label })}
+									>Rename</button
 								>
 								<button
 									class="secondary"
 									aria-label="{reason.active ? 'Deactivate' : 'Activate'} {reason.code}"
 									disabled={pending.has(reason.id)}
-									onclick={() => update(reason, { active: !reason.active })}
+									onclick={() => update(reason, reason.version, { active: !reason.active })}
 									>{reason.active ? 'Deactivate' : 'Activate'}</button
 								>
 							</td>

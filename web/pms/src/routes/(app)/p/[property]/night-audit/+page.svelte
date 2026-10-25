@@ -1,7 +1,7 @@
 <!--
-	The night audit of the property's business date: the five review lists and the advisory Deposits outstanding, the row actions that resolve each
-	arrival and departure (confirmed in `AuditActionDialog`; Cancel opens the reservation and its own cancel), and
-	Close the day once nothing is left to resolve. The close runs in the background: the step tracker follows the
+	The night audit of the property's business date: the five review lists and the advisory Deposits outstanding,
+	the row actions that resolve each arrival and departure (confirmed in `AuditActionDialog`; Cancel opens the
+	reservation and its own cancel), and Close the day once nothing is left to resolve. The close runs in the background: the step tracker follows the
 	run, which the server's `audit:<property>` events refetch, and the review reloads for the new date when it
 	completes.
 -->

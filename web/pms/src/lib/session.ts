@@ -87,3 +87,8 @@ export function canAnywhere(profile: Profile, action: keyof typeof ACTIONS): boo
 	const roles: Role[] = ACTIONS[action];
 	return profile.grants.some((grant) => roles.includes(grant.role));
 }
+
+/** Whether every grant is `pos`: a till, an API client that is shown no pages. UI hint only. */
+export function posOnly(profile: Pick<Profile, 'grants'>): boolean {
+	return profile.grants.length > 0 && profile.grants.every((grant) => grant.role === 'pos');
+}

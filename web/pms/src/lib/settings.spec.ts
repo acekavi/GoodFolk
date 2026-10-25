@@ -122,6 +122,10 @@ describe('settingsIndex', () => {
 		}
 	});
 
+	it('shows a till nothing', () => {
+		expect(index([{ role: 'pos', property_id: 'p1' }])).toEqual([]);
+	});
+
 	it('shows housekeeping only the permissions', () => {
 		expect(index([{ role: 'housekeeping' }])).toEqual(['Staff: Permissions']);
 		expect(index([{ role: 'hk_supervisor', property_id: 'p1' }])).toEqual(['Staff: Permissions']);
