@@ -137,6 +137,17 @@ Agreed with the owner, 2026-10-25:
 - **e2e:** upload a fixture clip on a room type, see it process to ready, play it in Chromium (the `<video>` reaches
   `playing` and its `currentTime` advances), and remove it.
 
+## Settled while building
+
+- **AV1:** SVT-AV1 preset 6, CRF 36. The lowest score was 93.51 mean and 86.79 at the 5th percentile, for the HDR clip at 1080p.
+- **H.264:** OpenH264, High profile, at the ceilings of 8 Mbps at 1080p and 4 Mbps at 720p.
+- **Sizes:** 1080p is made only when the clip's long edge is at least 1600 px, so a clip just past 720p does not get two near-identical versions. 720p is always made, and nothing is enlarged.
+- **The poster** goes through the gallery ladder at its own size, never enlarged, so a 1080p clip has 8 poster images (no `xl`).
+- **Data:** a video is the purpose `gallery_video`. The GraphQL node has `kind`, `durationMs` and `sources`, and its `renditions` are the poster.
+- **The archive:** the uploaded object is the video's archive. An empty `ready` marker beside it makes a repeated job a no-op.
+- **Guest PDFs:** the list still shows no thumbnails, since each would cost an audited link. The first-page renditions are made and can be linked.
+- **Measured** on the development machine: a 30 s 1080p clip was ready in 54 s, and a 60 s 4K HDR clip (3840×1636) in 160 s.
+
 ## Performance gates
 
 - A **30 s 1080p** clip is ready (every rendition and the poster) in **< 90 s** on the development machine

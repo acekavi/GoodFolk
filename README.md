@@ -45,10 +45,13 @@ cd web/pms && bun install && bun run dev   # app on http://localhost:5173
 
 ### Media services
 
-Photos and documents need three more things beside Postgres: libjxl's command line tools, an S3 server (RustFS) and `media-svc`. None needs Docker.
+Photos, videos and documents need a few more things beside Postgres: libjxl's command line tools, ffmpeg, qpdf and PDFium, an S3 server (RustFS) and `media-svc`. None needs Docker.
 
 ```sh
 deploy/dev/libjxl.sh install       # once: cjxl and djxl into ~/.cache/goodfolk-libjxl/bin (or set JXL_BIN_DIR)
+deploy/dev/ffmpeg.sh install       # once: an LGPL ffmpeg and ffprobe into ~/.cache/goodfolk-ffmpeg/bin (or set FFMPEG_BIN_DIR)
+deploy/dev/qpdf.sh install         # once: qpdf, for guest PDFs, into ~/.cache/goodfolk-qpdf (or set QPDF_BIN_DIR)
+deploy/dev/pdfium.sh install       # once: libpdfium.so, for PDF thumbnails, into ~/.cache/goodfolk-pdfium/lib (or set PDFIUM_LIB_DIR)
 
 deploy/dev/rustfs.sh install      # once: downloads and verifies the RustFS binary into ~/.cache/goodfolk-rustfs
 deploy/dev/rustfs.sh start        # S3 on :9000, web console on :9001; also: stop, status
@@ -130,6 +133,7 @@ Deploy notes for the `mail-send` topic (ARCHITECTURE §5.3, §8.5):
 ```sh
 DATABASE_URL=$DATABASE_OWNER_URL cargo test --workspace   # tests create throwaway databases; they need RustFS on :9000 and libjxl installed
 cargo test -p imaging --release --lib --test quality_gate   # the image quality gate: every rendition of the fixtures scores SSIMULACRA2 >= 80 at full size
+cargo test -p video --test quality_gate   # the video quality gate: every rendition of the fixture clips scores VMAF >= 93 (5th percentile >= 85); about 2 minutes
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 
@@ -162,6 +166,10 @@ Run by hand, because shared CI machines make timings noisy, and one at a time (`
 # the night audit's close for 200 rooms (160 in house, with POS bills and payments): median of three days under 10 s
 # nightAudit for the same 200 rooms: p95 under 100 ms
 DATABASE_URL=$DATABASE_OWNER_URL cargo test --release -p core-api --test perf -- --ignored --nocapture --test-threads=1
+
+# a 30 s 1080p clip is ready (every rendition and the poster) in under 90 s, and a 60 s 4K HDR clip in under 5 min;
+# needs RustFS and ffmpeg, and skips itself in debug builds
+cargo test --release -p media-svc --test video_perf -- --nocapture --test-threads=1
 
 # the month grid for the same property renders in under 60 ms and scrolls at 60 fps (see End-to-end tests;
 # measure with the `performance` CPU governor, or on the server class -- a `powersave` laptop reads 41-58 ms)
@@ -355,7 +363,7 @@ This script reuses the hotel from [Trying housekeeping by hand](#trying-housekee
     bun -e 'const sql = new Bun.SQL(process.env.DATABASE_OWNER_URL); console.table(await sql`select at, action, entity_id from audit_log where action = ${"guest_document.viewed"} order by at desc limit 5`); await sql.close()'
     ```
 
-    One row per **View**. The development owner is a superuser, so row-level security does not hide other tenants' rows; with an owner that is not one, set `app.tenant_id` in a transaction first, as `web/pms/tests/e2e/media.spec.ts` does. The listing has no URLs in it at all: GraphQL returns `{id, kind, status, mime, uploadedAt, uploadedBy}` and nothing to fetch the file with. A PDF is accepted too (15 MB at most), shown with a document icon, and **View** opens the PDF in a new tab.
+    One row per **View**. The development owner is a superuser, so row-level security does not hide other tenants' rows; with an owner that is not one, set `app.tenant_id` in a transaction first, as `web/pms/tests/e2e/media.spec.ts` does. The listing has no URLs in it at all: GraphQL returns `{id, kind, status, mime, uploadedAt, uploadedBy}` and nothing to fetch the file with. A PDF is accepted too (15 MB at most), shown with a document icon, and **View** opens the PDF in a new tab. What it opens is a linearized copy, whose first page shows before the rest has downloaded; the archive keeps the PDF exactly as uploaded. Each PDF also gets a first-page thumbnail, kept for later use: the list shows none, since each would cost an audited link.
 11. As `mala@example.com` open `http://localhost:5173/p/<property>/reservations/<reservation id>` (the address of the modal): the reservation shows, but there is no **ID documents** section, and `{ guestDocuments(propertyId: "…", guestId: "…") { id } }` on `/graphql` answers an error. Only `GuestDocumentsManage` (owner, manager, front desk) opens guest documents.
 12. The archive. Every upload is kept losslessly, in the private bucket only. Open the console on `http://localhost:9001` (`goodfolk` / `goodfolk_dev_secret`) and browse `goodfolk-private` to `t/<tenant>/a/<asset>/`, using the ids from step 6: `archive.jxl` is there (the raw `upload` object is deleted once the archive has been written and read back). Download it and rebuild the JPEG you uploaded:
 
@@ -366,6 +374,46 @@ This script reuses the hotel from [Trying housekeeping by hand](#trying-housekee
 
     The archive is about 20 % smaller than the JPEG. A PNG or WebP becomes a lossless JPEG XL of its pixels instead (`djxl archive.jxl out.png`), a guest PDF is kept as `archive.pdf`, and a JPEG cjxl cannot transcode (CMYK, for one) is kept as uploaded in `archive.jpg`. The delivered AVIF and WebP files carry no EXIF at all (no location), though the archive keeps every byte.
 13. The sweep. Once a day jobs-svc (core-api until Phase 7b) cleans up after the media engine, under an advisory lock so that only one instance does it: guest documents more than a year old whose guest has no stay in the last 365 days or later (audited as `guest_document.deleted`), assets nothing links to after 24 hours (the photos you removed in step 5) with their files, uploads left `uploading` for 24 hours, assets `processing` for more than an hour (marked `failed`, `Processing timed out`), and outbox and receiver-dedupe rows after 7 and 30 days. It runs at jobs-svc's first tick of each UTC day (it logs `media sweep done` with the counts, at the default `info` level); `POST /tick` runs it if today's has not run yet (see [jobs-svc](#jobs-svc)). Everything it deletes is a day or a year old; nothing you did in this script is old enough yet, and the sweep is covered by its tests (`modules/media/tests/sweep.rs`) rather than by hand. To see it remove something, backdate a removed photo's `media_asset.created_at` by two days in the database, then tick on the next UTC day (or restart jobs-svc then) and read that log line.
+
+### Trying room tour videos by hand
+
+This script reuses the hotel and the running services from [Trying media by hand](#trying-media-by-hand) (property `HKP`, room types `DLX` and `STD`, the owner `owner@example.com`), with migrations through `0040` and ffmpeg installed (see Media services). The clips are the test fixtures in `crates/video/tests/fixtures` (credited in its `SOURCES.md`).
+
+1. Apply the new migration and restart media-svc, so that it finds ffmpeg:
+
+   ```sh
+   cargo run -p core-api -- migrate
+   cargo run -p media-svc             # http://localhost:8090
+   ```
+
+2. Sign in as `owner@example.com` and open **Room types**. The section is now **Photos and videos**, and each panel's button reads **Add photos or videos**. Add `phone-1080p-h264.mp4` to `DLX`. Its tile reads `Processing…` and turns into the poster on its own, with a play badge and `0:10`. A 10-second clip takes about 20 seconds: media-svc makes a 1080p and a 720p version, each in AV1 and in H.264, and a poster at 1 s.
+3. Play it. Click the poster: it becomes a player in place, starts with sound, and takes keyboard focus. With the keyboard, Tab to the poster and press Enter. Start a second clip (step 4) while the first plays, and the first pauses: one video plays at a time on the page. The browser picks the first version it can play. Chromium and Firefox play AV1; a browser without AV1 plays the H.264 one.
+4. Add `portrait-rotated.mp4` and `silent-720p.webm` to `DLX`. The portrait clip plays upright (the phone stored it sideways with a rotation flag), and the WebM, which has no sound track, plays silently. Reorder, caption and remove work as for photos; a caption becomes part of the play button's name (`Play video: Sea view, 0:10`).
+5. The files. Copy a poster's address (it looks like `http://localhost:9000/goodfolk-public/t/<tenant>/a/<asset>/md.avif`) and swap the last part for a video's:
+
+   ```sh
+   curl -sI http://localhost:9000/goodfolk-public/t/<tenant>/a/<asset>/1080p.av1.mp4
+   # HTTP/1.1 200 OK
+   # cache-control: public, max-age=31536000, immutable
+   # content-type: video/mp4
+   ~/.cache/goodfolk-ffmpeg/bin/ffprobe -v error -show_entries stream=codec_name,width,height:format_tags \
+       http://localhost:9000/goodfolk-public/t/<tenant>/a/<asset>/1080p.av1.mp4
+   ```
+
+   There are `1080p.av1.mp4`, `1080p.h264.mp4`, `720p.av1.mp4` and `720p.h264.mp4` (AV1 with Opus sound, H.264 with AAC), each at most 30 frames a second, in standard colour and with no location or camera tags. Run the `ffprobe` on the portrait clip's version: there is no `location` tag, although the upload carried one. A clip smaller than 1600 px on its long side gets the 720p versions only, and nothing is ever enlarged. In the console on `http://localhost:9001`, `goodfolk-private` keeps the upload exactly as sent, as `t/<tenant>/a/<asset>/upload` (it is the video's archive), beside an empty `ready` marker that stops a repeated job from encoding it twice.
+6. Refusals. Make an oversized file, then drop each file on the panel:
+
+   ```sh
+   head -c 524288001 /dev/zero > /tmp/huge.mp4   # 500 MB and a byte
+   ```
+
+   `huge.mp4` shows `Videos can be at most 500 MB` and is never sent. These are refused once uploaded, when media-svc has read the file:
+   - `long-61s.mp4` shows `Videos can be at most 60 seconds`;
+   - `wrong-codec.mkv` (MPEG-2) shows `This video's format is not supported`;
+   - a clip renamed `.jpg` shows `This file type is not accepted here`. The server goes by the file's bytes, so a photo renamed `.mp4` is refused the same way.
+7. The limit. `DLX` now has three videos. Drop `tiny-e2e.mp4` on it: it shows `A room type can have at most 3 videos`, and nothing is uploaded. Remove a video and the fourth goes in. A video that failed to process does not count; one still uploading does.
+8. A 4K HDR clip. Add `hdr-4k-hevc.mov` (4 s of HDR footage in HEVC) to `STD`. Its versions are 1080p and 720p in standard colour: HDR is tone-mapped, so it doesn't look washed out on ordinary screens. A minute of 4K HDR is ready in under 5 minutes; [Performance gates](#performance-gates) has the timed run.
+9. A guest PDF. On `HKP-000001`, add a PDF ID document and **View** it: the tab shows the first page before the rest has loaded. That is the linearized copy; `archive.pdf` in `goodfolk-private` is the file as uploaded. A password-protected PDF is accepted too and served as uploaded, with no linearized copy and no thumbnail.
 
 ### Trying folios by hand
 
@@ -651,6 +699,9 @@ Outside production, every variable marked "dev default" can be left out. With `A
 | `MEDIA_TMP_DIR` | media-svc | Where video uploads are copied to be probed and transcoded, one directory per asset; default `goodfolk-media` in the system temporary directory. It needs about 1 GB per video Finalize and per video worker at once (`(MEDIA_VIDEO_FINALIZES + 1) × 1 GB`, 3 GB by default). At startup media-svc removes the directories a previous run left there. |
 | `MEDIA_VIDEO_FINALIZES` | media-svc | Video Finalizes (each streaming its upload to `MEDIA_TMP_DIR` and probing it) at once, default 2. |
 | `JXL_BIN_DIR` | media-svc, tests | Directory holding `cjxl` and `djxl`; default `~/.cache/goodfolk-libjxl/bin`. |
+| `FFMPEG_BIN_DIR` | media-svc, tests | Directory holding `ffmpeg` and `ffprobe`; default `~/.cache/goodfolk-ffmpeg/bin`. |
+| `QPDF_BIN_DIR` | media-svc, tests | Directory holding `qpdf` (its `lib/` beside it); default `~/.cache/goodfolk-qpdf/bin`. |
+| `PDFIUM_LIB_DIR` | media-svc, tests | Directory holding `libpdfium.so`; default `~/.cache/goodfolk-pdfium/lib`. |
 | `APP_ENV` | media-svc | `production` logs JSON and makes `EVENT_BUS=push` and `SVC_AUTH=secret` errors. |
 | `DEV_CORS_ORIGINS` | `ensure-buckets` | Browser origins allowed to PUT to the private bucket, default `http://localhost:5173,http://localhost:4173`. |
 
