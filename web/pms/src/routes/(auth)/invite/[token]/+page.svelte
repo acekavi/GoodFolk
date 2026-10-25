@@ -100,6 +100,11 @@
 	}
 </script>
 
+<svelte:head>
+	<!-- The token is in this page's URL: never send it to another site as a referrer. -->
+	<meta name="referrer" content="no-referrer" />
+</svelte:head>
+
 <main class="form" style="margin: 10vh auto">
 	{#if loading}
 		<p>Loading…</p>

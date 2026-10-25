@@ -423,3 +423,10 @@ fn a_tenant_wide_junior_needs_a_tenant_wide_manager() {
     assert!(check_may_act_on(&[grant(Role::Manager, None)], &member).is_ok());
     assert!(check_may_act_on(&[grant(Role::Manager, None)], &[grant(Role::Pos, Some(OTHER_HOTEL))]).is_ok());
 }
+
+#[test]
+fn a_permissions_name_is_its_variant_name() {
+    for permission in ALL_PERMISSIONS {
+        assert_eq!(permission.name(), format!("{permission:?}"));
+    }
+}

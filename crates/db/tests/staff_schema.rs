@@ -137,65 +137,86 @@ async fn the_app_role_cannot_delete_an_invitation(_: PgPoolOptions, opts: PgConn
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
-async fn invitations_are_found_by_token_across_tenants(_: PgPoolOptions, opts: PgConnectOptions) {
+async fn invitations_are_found_by_token_across_tenants_and_by_id_in_their_own(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
     let owner = PgPoolOptions::new().max_connections(1).connect_with(opts.clone()).await.unwrap();
     let pool = app_pool(opts, 1).await;
+    let other = hotel(&owner, "Other Hotel").await;
     let hotel = hotel(&owner, "Palm Hotel").await;
     let (id, hash) = invite(&owner, &hotel, "kamala@example.com", "7 days").await;
 
     // The app role has no tenant here, as when a person opens the link.
     let by_token = sqlx::query("select * from app.invitation_by_token($1)").bind(&hash).fetch_one(&pool).await.unwrap();
-    let by_id = sqlx::query("select * from app.invitation_by_id($1)").bind(id).fetch_one(&pool).await.unwrap();
     let unknown = sqlx::query("select * from app.invitation_by_token($1)")
         .bind(vec![0u8; 32])
         .fetch_optional(&pool)
         .await
         .unwrap();
+    let by_id = |tenant: Option<Uuid>| {
+        let pool = pool.clone();
+        async move {
+            let scope = Scope { tenant: tenant.map(TenantId), user: None };
+            let mut tx = begin(&pool, scope).await.unwrap();
+            let row = sqlx::query("select * from app.invitation_by_id($1)").bind(id).fetch_optional(&mut *tx).await;
+            tx.commit().await.unwrap();
+            row.unwrap()
+        }
+    };
 
     assert_eq!(by_token.get::<Uuid, _>("id"), id);
     assert_eq!(by_token.get::<Uuid, _>("tenant_id"), hotel.tenant);
     assert_eq!(by_token.get::<String, _>("tenant_name"), "Palm Hotel");
     assert_eq!(by_token.get::<String, _>("inviter_name"), "Inviter");
     assert_eq!(by_token.get::<String, _>("status"), "pending");
-    assert_eq!(by_id.get::<Uuid, _>("tenant_id"), hotel.tenant);
-    assert_eq!(by_id.get::<String, _>("email"), "kamala@example.com");
-    assert_eq!(by_id.get::<String, _>("tenant_name"), "Palm Hotel");
     assert!(unknown.is_none());
+    let own = by_id(Some(hotel.tenant)).await.expect("found in its own tenant");
+    assert_eq!(own.get::<Uuid, _>("tenant_id"), hotel.tenant);
+    assert_eq!(own.get::<String, _>("email"), "kamala@example.com");
+    assert_eq!(own.get::<String, _>("tenant_name"), "Palm Hotel");
+    assert_eq!(own.get::<Vec<u8>, _>("token_hash"), hash);
+    assert!(by_id(Some(other.tenant)).await.is_none(), "found from another tenant");
+    assert!(by_id(None).await.is_none(), "found with no tenant");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
-async fn an_invitation_is_accepted_once_and_only_while_pending_and_unexpired(_: PgPoolOptions, opts: PgConnectOptions) {
+async fn an_invitation_is_accepted_under_row_level_security(_: PgPoolOptions, opts: PgConnectOptions) {
     let owner = PgPoolOptions::new().max_connections(1).connect_with(opts.clone()).await.unwrap();
     let pool = app_pool(opts, 1).await;
+    let other = hotel(&owner, "Other Hotel").await;
     let hotel = hotel(&owner, "Palm Hotel").await;
     let (fresh, _) = invite(&owner, &hotel, "a@example.com", "7 days").await;
-    let (expired, _) = invite(&owner, &hotel, "b@example.com", "-1 hour").await;
-    let (revoked, _) = invite(&owner, &hotel, "c@example.com", "7 days").await;
-    sqlx::query("update invitation set status = 'revoked' where id = $1").bind(revoked).execute(&owner).await.unwrap();
-    let accept = |id: Uuid| {
-        sqlx::query_scalar::<_, bool>("select app.accept_invitation_row($1, $2)")
-            .bind(id)
+    let accept = |tenant: Uuid| {
+        let pool = pool.clone();
+        async move {
+            let mut tx = begin(&pool, Scope::tenant(TenantId(tenant))).await.unwrap();
+            let done = sqlx::query(
+                "update invitation set status = 'accepted', accepted_at = now(), accepted_user_id = $2
+                 where id = $1 and status = 'pending' and expires_at > now()",
+            )
+            .bind(fresh)
             .bind(hotel.inviter)
-            .fetch_one(&pool)
+            .execute(&mut *tx)
+            .await
+            .unwrap()
+            .rows_affected();
+            tx.commit().await.unwrap();
+            done
+        }
     };
 
-    let first = accept(fresh).await.unwrap();
-    let second = accept(fresh).await.unwrap();
-    let late = accept(expired).await.unwrap();
-    let cancelled = accept(revoked).await.unwrap();
-
-    assert!(first);
-    assert!(!second && !late && !cancelled);
-    let row = sqlx::query(
-        "select status, accepted_user_id, accepted_at is not null as stamped from invitation where id = $1",
+    assert_eq!(accept(other.tenant).await, 0, "another tenant accepted it");
+    assert_eq!(accept(hotel.tenant).await, 1);
+    let gone: (bool, bool) = sqlx::query_as(
+        "select exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                        where n.nspname = 'app' and p.proname = 'accept_invitation_row'),
+                exists (select 1 from pg_policy where polname = 'invitation_owner_accept')",
     )
-    .bind(fresh)
     .fetch_one(&owner)
     .await
     .unwrap();
-    assert_eq!(row.get::<String, _>("status"), "accepted");
-    assert_eq!(row.get::<Option<Uuid>, _>("accepted_user_id"), Some(hotel.inviter));
-    assert!(row.get::<bool, _>("stamped"));
+    assert_eq!(gone, (false, false), "the accepting definer and its policy are dropped");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -205,7 +226,7 @@ async fn the_token_definers_pin_their_search_path(_: PgPoolOptions, opts: PgConn
     let pinned: Vec<(String, bool, bool)> = sqlx::query_as(
         "select p.proname, p.prosecdef, 'search_path=pg_catalog, public, pg_temp' = any (p.proconfig)
          from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-         where n.nspname = 'app' and p.proname in ('invitation_by_token', 'invitation_by_id', 'accept_invitation_row')
+         where n.nspname = 'app' and p.proname in ('invitation_by_token', 'invitation_by_id')
          order by p.proname",
     )
     .fetch_all(&owner)
@@ -213,6 +234,6 @@ async fn the_token_definers_pin_their_search_path(_: PgPoolOptions, opts: PgConn
     .unwrap();
 
     let names: Vec<&str> = pinned.iter().map(|(name, _, _)| name.as_str()).collect();
-    assert_eq!(names, ["accept_invitation_row", "invitation_by_id", "invitation_by_token"]);
+    assert_eq!(names, ["invitation_by_id", "invitation_by_token"]);
     assert!(pinned.iter().all(|(_, definer, path)| *definer && *path), "{pinned:?}");
 }

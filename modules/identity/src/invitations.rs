@@ -3,8 +3,8 @@
 //! `mail-send` outbox row, never in an audit row, an error or a log line.
 
 use crate::account::{hash_in_background, insert_user, password_is_valid};
-use crate::rbac::{Grant, Role, check_may_give};
-use crate::session::{new_token, token_hash};
+use crate::rbac::{Grant, Role, check_may_give, load_grants};
+use crate::session::{SessionInfo, new_token, token_hash};
 use db::{Event, Scope, TenantId, Tx, UserId};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -93,8 +93,8 @@ pub struct Preview {
 pub enum Acceptor {
     /// Nobody has the invitation's email yet: create the account with this password.
     NewUser { password: String },
-    /// The signed-in user, whose email must be the invitation's.
-    SignedIn(UserId),
+    /// The signed-in session, whose user's email must be the invitation's. It is switched to the tenant on accepting.
+    SignedIn(SessionInfo),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -135,7 +135,9 @@ fn from_row(row: InvitationRow) -> Invitation {
     Invitation { id, email, display_name, grants, status, invited_by, created_at, expires_at }
 }
 
-/// Marks the pending invitations past their expiry (in `tx`'s tenant) `expired`, optionally for one email only.
+/// Marks the pending invitations past their expiry (in `tx`'s tenant) `expired`, optionally for one email only. It
+/// writes, so its callers (the GraphQL `invitations` read among them) run it in a read-write transaction: the
+/// statuses it stores are what the status filter and the one-pending-per-email index see.
 async fn expire_lapsed(tx: &mut Tx, email: Option<&str>) -> Result<(), sqlx::Error> {
     sqlx::query(
         "update invitation set status = 'expired'
@@ -182,6 +184,17 @@ pub(crate) async fn validate_grants(tx: &mut Tx, grants: &[GrantSpec]) -> Result
         Some(property) => Err(StaffError::Invalid(format!("property {property} is not in this tenant"))),
         None => Ok(()),
     }
+}
+
+/// Serializes staff changes in the tenant (invitations and membership changes alike), then returns `actor`'s grants
+/// as they are now: each change authorizes against these, so one committed while it waited, such as the actor's own
+/// demotion, is honoured.
+pub(crate) async fn lock_staff(tx: &mut Tx, tenant: TenantId, actor: UserId) -> Result<Vec<Grant>, sqlx::Error> {
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('staff:' || $1::text, 0))")
+        .bind(tenant.0)
+        .execute(&mut **tx)
+        .await?;
+    load_grants(tx, actor).await
 }
 
 fn check_rules(actor_grants: &[Grant], grants: &[GrantSpec]) -> Result<(), StaffError> {
@@ -238,13 +251,12 @@ async fn record(
     audit(tx, tenant, actor, action, ("invitation", invitation.id), data).await
 }
 
-/// Invites `email` to the tenant with `grants`, which `actor_grants` must be allowed to give (the manager rules).
+/// Invites `email` to the tenant with `grants`, which `actor` must be allowed to give (the manager rules).
 /// Writes the `mail-send` outbox row in `tx`.
 pub async fn invite(
     tx: &mut Tx,
     tenant: TenantId,
     actor: UserId,
-    actor_grants: &[Grant],
     email: &str,
     display_name: &str,
     grants: &[GrantSpec],
@@ -257,8 +269,9 @@ pub async fn invite(
     if grants.iter().any(|g| g.role == Role::Owner) {
         return Err(StaffError::Invalid("the owner role cannot be given by invitation".into()));
     }
+    let actor_grants = lock_staff(tx, tenant, actor).await?;
     validate_grants(tx, grants).await?;
-    check_rules(actor_grants, grants)?;
+    check_rules(&actor_grants, grants)?;
     let member: bool = sqlx::query_scalar(
         "select exists (select 1 from membership m join app_user u on u.id = m.user_id
                         where m.tenant_id = $2 and u.email = $1::citext)",
@@ -313,15 +326,10 @@ async fn lock(tx: &mut Tx, id: Uuid) -> Result<Invitation, StaffError> {
 
 /// Issues a new token for a pending or expired invitation, moves its expiry to [`INVITATION_TTL`] from now and sends
 /// it again. The old link stops working.
-pub async fn resend(
-    tx: &mut Tx,
-    tenant: TenantId,
-    actor: UserId,
-    actor_grants: &[Grant],
-    id: Uuid,
-) -> Result<Invitation, StaffError> {
+pub async fn resend(tx: &mut Tx, tenant: TenantId, actor: UserId, id: Uuid) -> Result<Invitation, StaffError> {
+    let actor_grants = lock_staff(tx, tenant, actor).await?;
     let current = lock(tx, id).await?;
-    check_rules(actor_grants, &current.grants)?;
+    check_rules(&actor_grants, &current.grants)?;
     if !matches!(current.status, InvitationStatus::Pending | InvitationStatus::Expired) {
         return Err(StaffError::Conflict(format!("the invitation is {}", current.status.as_str())));
     }
@@ -352,11 +360,11 @@ pub async fn revoke_invitation(
     tx: &mut Tx,
     tenant: TenantId,
     actor: UserId,
-    actor_grants: &[Grant],
     id: Uuid,
 ) -> Result<Invitation, StaffError> {
+    let actor_grants = lock_staff(tx, tenant, actor).await?;
     let current = lock(tx, id).await?;
-    check_rules(actor_grants, &current.grants)?;
+    check_rules(&actor_grants, &current.grants)?;
     if current.status != InvitationStatus::Pending {
         return Err(StaffError::Conflict(format!("the invitation is {}", current.status.as_str())));
     }
@@ -372,7 +380,7 @@ pub async fn revoke_invitation(
     Ok(invitation)
 }
 
-/// The tenant's invitations, newest first, optionally of one status. Marks lapsed ones `expired` first.
+/// The tenant's invitations, newest first, optionally of one status. Marks lapsed ones `expired` first, so it writes.
 pub async fn list_invitations(tx: &mut Tx, status: Option<InvitationStatus>) -> Result<Vec<Invitation>, StaffError> {
     expire_lapsed(tx, None).await?;
     let rows = sqlx::query_as::<_, InvitationRow>(with_columns!(
@@ -431,14 +439,15 @@ pub async fn preview(pool: &PgPool, token: &str) -> Result<Preview, StaffError> 
         .fetch_all(&mut *tx)
         .await?;
     tx.commit().await?;
-    let grants = live
-        .grants
-        .iter()
-        .map(|g| {
-            let name = g.property_id.and_then(|p| names.iter().find(|(id, _)| *id == p).map(|(_, n)| n.clone()));
-            (g.role, name)
-        })
-        .collect();
+    // A granted property deleted since the invitation was sent: accepting would answer Gone, so the preview does too.
+    let mut grants = Vec::with_capacity(live.grants.len());
+    for grant in &live.grants {
+        let name = match grant.property_id {
+            None => None,
+            Some(p) => Some(names.iter().find(|(id, _)| *id == p).map(|(_, n)| n.clone()).ok_or(StaffError::Gone)?),
+        };
+        grants.push((grant.role, name));
+    }
     Ok(Preview {
         existing_account: account_exists(pool, &live.email).await?.is_some(),
         tenant_name: live.tenant_name,
@@ -449,21 +458,23 @@ pub async fn preview(pool: &PgPool, token: &str) -> Result<Preview, StaffError> 
 }
 
 /// Accepts the invitation: creates the account for a [`Acceptor::NewUser`], then the membership (version 1) and the
-/// invited grants, marks the invitation accepted and audits `invitation.accepted`, in one transaction. A token works
+/// invited grants, marks the invitation accepted, switches a [`Acceptor::SignedIn`] session to the tenant and audits
+/// `invitation.accepted`, in one transaction. A token works
 /// once, however many accepts race for it. Returns the user and the tenant they joined.
 pub async fn accept(pool: &PgPool, token: &str, acceptor: Acceptor) -> Result<(UserId, TenantId), StaffError> {
     let live = find_live(pool, token).await?;
     let sign_in = || StaffError::Conflict(format!("Sign in as {} to accept", live.email));
-    let (user, new_account) = match acceptor {
+    let (user, new_account, session) = match acceptor {
         Acceptor::NewUser { password } => {
             if !password_is_valid(&password) {
                 return Err(StaffError::Invalid("the password is 12 to 128 characters".into()));
             }
             // An existing account is found by `insert_user` after the liveness re-check below, so a token used by a
             // racing accept is always Gone, never "Sign in as …".
-            (UserId(Uuid::now_v7()), Some(hash_in_background(password).await))
+            (UserId(Uuid::now_v7()), Some(hash_in_background(password).await), None)
         }
-        Acceptor::SignedIn(user) => {
+        Acceptor::SignedIn(session) => {
+            let user = session.user;
             let email: Option<String> = sqlx::query_scalar("select email::text from app_user where id = $1")
                 .bind(user.0)
                 .fetch_optional(pool)
@@ -471,7 +482,7 @@ pub async fn accept(pool: &PgPool, token: &str, acceptor: Acceptor) -> Result<(U
             if !email.is_some_and(|email| email.eq_ignore_ascii_case(&live.email)) {
                 return Err(StaffError::Forbidden(format!("this invitation is for {}", live.email)));
             }
-            (user, None)
+            (user, None, Some(session.id))
         }
     };
 
@@ -528,13 +539,24 @@ pub async fn accept(pool: &PgPool, token: &str, acceptor: Acceptor) -> Result<(U
             Err(err) => return Err(err.into()),
         }
     }
-    let accepted: bool = sqlx::query_scalar("select app.accept_invitation_row($1, $2)")
-        .bind(live.id)
-        .bind(user.0)
-        .fetch_one(&mut *tx)
-        .await?;
-    if !accepted {
+    let accepted = sqlx::query(
+        "update invitation set status = 'accepted', accepted_at = now(), accepted_user_id = $2
+         where id = $1 and status = 'pending' and expires_at > now()",
+    )
+    .bind(live.id)
+    .bind(user.0)
+    .execute(&mut *tx)
+    .await?;
+    if accepted.rows_affected() != 1 {
         return Err(StaffError::Gone);
+    }
+    if let Some(session) = session {
+        // `session` has no row-level security; the app role updates it directly, as switching tenants does.
+        sqlx::query("update session set active_tenant_id = $1 where id = $2")
+            .bind(tenant.0)
+            .bind(session)
+            .execute(&mut *tx)
+            .await?;
     }
     let data = serde_json::json!({ "email": live.email, "grants": live.grants, "new_account": new_account.is_some() });
     audit(&mut tx, tenant, user, "invitation.accepted", ("invitation", live.id), data).await?;

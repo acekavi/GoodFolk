@@ -1,7 +1,7 @@
 //! A tenant's members: listing them, replacing a member's grants and revoking a membership, under the manager and
 //! last-owner rules, plus the read-only permissions matrix.
 
-use crate::invitations::{GrantSpec, StaffError, audit, validate_grants};
+use crate::invitations::{GrantSpec, StaffError, audit, lock_staff, validate_grants};
 use crate::rbac::{ALL_PERMISSIONS, ALL_ROLES, Grant, Role, check_may_act_on, check_may_give, describe};
 use db::{TenantId, Tx, UserId};
 use serde::Serialize;
@@ -57,13 +57,16 @@ pub async fn members(tx: &mut Tx) -> Result<Vec<Member>, StaffError> {
     Ok(fetch(tx, None).await?)
 }
 
-/// Serializes membership changes in the tenant, so two owners demoting each other cannot both pass the last-owner
-/// check, then locks `user`'s membership and returns its version and current grants.
-async fn lock(tx: &mut Tx, tenant: TenantId, user: Uuid) -> Result<(i32, Vec<GrantSpec>), StaffError> {
-    sqlx::query("select pg_advisory_xact_lock(hashtextextended('staff:' || $1::text, 0))")
-        .bind(tenant.0)
-        .execute(&mut **tx)
-        .await?;
+/// Serializes staff changes in the tenant, so two owners demoting each other cannot both succeed: the second sees
+/// the first's change in the actor's grants it returns. Then locks `user`'s membership and returns its version and
+/// current grants too.
+async fn lock(
+    tx: &mut Tx,
+    tenant: TenantId,
+    actor: UserId,
+    user: Uuid,
+) -> Result<(Vec<Grant>, i32, Vec<GrantSpec>), StaffError> {
+    let actor_grants = lock_staff(tx, tenant, actor).await?;
     let version: i32 =
         sqlx::query_scalar("select version from membership where tenant_id = $1 and user_id = $2 for update")
             .bind(tenant.0)
@@ -72,7 +75,7 @@ async fn lock(tx: &mut Tx, tenant: TenantId, user: Uuid) -> Result<(i32, Vec<Gra
             .await?
             .ok_or(StaffError::NotFound("member"))?;
     let grants = fetch(tx, Some(user)).await?.pop().map(|m| m.grants).unwrap_or_default();
-    Ok((version, grants))
+    Ok((actor_grants, version, grants))
 }
 
 fn as_grants(specs: &[GrantSpec]) -> Vec<Grant> {
@@ -100,12 +103,12 @@ pub async fn set_grants(
     tx: &mut Tx,
     tenant: TenantId,
     actor: UserId,
-    actor_grants: &[Grant],
     user: Uuid,
     expected_version: i32,
     grants: &[GrantSpec],
 ) -> Result<Member, StaffError> {
-    let (version, previous) = lock(tx, tenant, user).await?;
+    let (actor_grants, version, previous) = lock(tx, tenant, actor, user).await?;
+    let actor_grants = &actor_grants[..];
     if version != expected_version {
         return Err(StaffError::VersionMismatch);
     }
@@ -150,14 +153,9 @@ pub async fn set_grants(
 
 /// Deletes the membership (grants cascade) and the user's sessions whose active_tenant_id is this tenant.
 /// Nobody revokes themself, the manager rules apply to the member's grants, and the last owner is never revoked.
-pub async fn revoke_member(
-    tx: &mut Tx,
-    tenant: TenantId,
-    actor: UserId,
-    actor_grants: &[Grant],
-    user: Uuid,
-) -> Result<(), StaffError> {
-    let (_, grants) = lock(tx, tenant, user).await?;
+pub async fn revoke_member(tx: &mut Tx, tenant: TenantId, actor: UserId, user: Uuid) -> Result<(), StaffError> {
+    let (actor_grants, _, grants) = lock(tx, tenant, actor, user).await?;
+    let actor_grants = &actor_grants[..];
     if user == actor.0 {
         return Err(StaffError::Forbidden("you cannot remove yourself".into()));
     }

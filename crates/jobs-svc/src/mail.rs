@@ -2,7 +2,7 @@
 //! it is now, read through `app.invitation_by_id`, and sent with the service's [`mail::Mailer`].
 //!
 //! The answer is 204 once the email is sent, and also when there is nothing to send (the invitation is no longer
-//! pending) or the provider refused it for good, which is logged as an error: delivering the job again cannot help.
+//! pending, or a resend has replaced the job's token, so its link would not work) or the provider refused it for good, which is logged as an error: delivering the job again cannot help.
 //! It is 503 when the send may succeed later, so the bus delivers the job again, and 400 for a body that is not a
 //! job. The job carries the invitation's token, so nothing here logs the job, the body or a decoding error (which may
 //! quote the payload).
@@ -17,6 +17,7 @@ use events::PushEnvelope;
 use identity::Role;
 use mail::{MailError, MailJob, Message};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use sqlx::types::Json;
 use time::OffsetDateTime;
 use time::macros::format_description;
@@ -57,7 +58,6 @@ pub(crate) async fn mail(State(svc): State<JobsSvc>, body: Bytes) -> StatusCode 
 
 #[derive(sqlx::FromRow)]
 struct InvitationRow {
-    tenant_id: Uuid,
     email: String,
     display_name: String,
     grants: Json<Vec<Grant>>,
@@ -65,6 +65,7 @@ struct InvitationRow {
     expires_at: OffsetDateTime,
     tenant_name: String,
     inviter_name: Option<String>,
+    token_hash: Vec<u8>,
 }
 
 #[derive(Deserialize)]
@@ -73,7 +74,7 @@ struct Grant {
     property_id: Option<Uuid>,
 }
 
-/// Invitation `id`'s email, or `None` when it is not `tenant`'s or no longer pending.
+/// Invitation `id`'s email, or `None` when it is not `tenant`'s, is no longer pending, or no longer has `token`.
 async fn invitation_message(
     svc: &JobsSvc,
     tenant: TenantId,
@@ -82,18 +83,19 @@ async fn invitation_message(
 ) -> Result<Option<Message>, sqlx::Error> {
     let mut tx = db::begin(&svc.pool, Scope::tenant(tenant)).await?;
     let row: Option<InvitationRow> = sqlx::query_as(
-        "select tenant_id, email::text as email, display_name, grants, status, expires_at, tenant_name, inviter_name
+        "select email::text as email, display_name, grants, status, expires_at, tenant_name, inviter_name, token_hash
          from app.invitation_by_id($1)",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
+    // `invitation_by_id` finds only the transaction's tenant's invitations.
     let Some(row) = row else {
-        tracing::warn!(invitation = %id, "no such invitation; nothing sent");
+        tracing::warn!(invitation = %id, "no such invitation in the tenant; nothing sent");
         return Ok(None);
     };
-    if row.tenant_id != tenant.0 {
-        tracing::error!(invitation = %id, "the invitation belongs to another tenant; nothing sent");
+    if Sha256::digest(token.as_bytes()).as_slice() != row.token_hash.as_slice() {
+        tracing::info!(invitation = %id, "the invitation was resent with a new link since; nothing sent");
         return Ok(None);
     }
     if row.status != "pending" || row.expires_at <= OffsetDateTime::now_utc() {

@@ -14,6 +14,7 @@ use common::{SECRET, http, serve, svc};
 use events::{PushEnvelope, PushMessage};
 use jobs_svc::JobsSvc;
 use mail::{DevMailer, MailJob, Message};
+use sha2::{Digest, Sha256};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tracing_subscriber::fmt::MakeWriter;
 use uuid::Uuid;
@@ -71,9 +72,9 @@ fn mailing(hotel: &Hotel, opts: PgConnectOptions) -> (JobsSvc, PathBuf) {
     (svc, outbox)
 }
 
-/// An invitation of `hotel`'s tenant in `status`, from the hotel's user, as front desk at the hotel and manager
-/// everywhere.
-async fn invitation(hotel: &Hotel, status: &str) -> Uuid {
+/// An invitation of `hotel`'s tenant in `status` whose link carries `token`, from the hotel's user, as front desk at
+/// the hotel and manager everywhere.
+async fn invitation(hotel: &Hotel, status: &str, token: &str) -> Uuid {
     let id = Uuid::now_v7();
     let grants = serde_json::json!([
         { "role": "front_desk", "property_id": hotel.property },
@@ -89,7 +90,7 @@ async fn invitation(hotel: &Hotel, status: &str) -> Uuid {
     .bind(id)
     .bind(hotel.tenant.0)
     .bind(grants)
-    .bind(id.as_bytes().to_vec())
+    .bind(Sha256::digest(token.as_bytes()).to_vec())
     .bind(status)
     .bind(hotel.user.0)
     .execute(&mut *tx)
@@ -141,8 +142,8 @@ async fn a_pending_invitation_sends_one_email_with_the_link(_: PgPoolOptions, op
     let hotel = Hotel::new(opts.clone()).await;
     let (svc, outbox) = mailing(&hotel, opts);
     let addr = serve(svc).await;
-    let id = invitation(&hotel, "pending").await;
     let token = "dG9rZW4tdGhhdC1tdXN0LW5ldmVyLWJlLWxvZ2dlZC0xMjM0";
+    let id = invitation(&hotel, "pending", token).await;
     let job = MailJob::Invitation { invitation_id: id, tenant_id: hotel.tenant.0, token: token.into() };
 
     assert_eq!(post_mail(addr, push(&job), Some(SECRET)).await, 204);
@@ -175,13 +176,53 @@ async fn an_invitation_no_longer_pending_sends_nothing(_: PgPoolOptions, opts: P
     let addr = serve(svc).await;
 
     for status in ["revoked", "accepted", "expired"] {
-        let id = invitation(&hotel, status).await;
-        let job = MailJob::Invitation { invitation_id: id, tenant_id: hotel.tenant.0, token: "token".into() };
+        let id = invitation(&hotel, status, status).await;
+        let job = MailJob::Invitation { invitation_id: id, tenant_id: hotel.tenant.0, token: status.into() };
         assert_eq!(post_mail(addr, push(&job), Some(SECRET)).await, 204, "{status}");
     }
     let unknown = MailJob::Invitation { invitation_id: Uuid::now_v7(), tenant_id: hotel.tenant.0, token: "t".into() };
     assert_eq!(post_mail(addr, push(&unknown), Some(SECRET)).await, 204);
 
+    assert!(sent(&outbox).is_empty());
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_job_whose_token_a_resend_replaced_sends_nothing(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts.clone()).await;
+    let (svc, outbox) = mailing(&hotel, opts);
+    let addr = serve(svc).await;
+    let id = invitation(&hotel, "pending", "old-token").await;
+    // The resend gave the invitation a new token; its own job carries that one.
+    let mut tx = hotel.tx().await;
+    sqlx::query("update invitation set token_hash = $2 where id = $1")
+        .bind(id)
+        .bind(Sha256::digest(b"new-token").to_vec())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let job = |token: &str| MailJob::Invitation { invitation_id: id, tenant_id: hotel.tenant.0, token: token.into() };
+
+    // The bus retries the first job after the resend.
+    assert_eq!(post_mail(addr, push(&job("old-token")), Some(SECRET)).await, 204);
+    assert!(sent(&outbox).is_empty(), "the superseded link was mailed");
+
+    assert_eq!(post_mail(addr, push(&job("new-token")), Some(SECRET)).await, 204);
+    let messages = sent(&outbox);
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].text.contains("/invite/new-token"), "{}", messages[0].text);
+    std::fs::remove_dir_all(outbox).unwrap();
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn an_invitation_of_another_tenant_sends_nothing(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts.clone()).await;
+    let (svc, outbox) = mailing(&hotel, opts);
+    let addr = serve(svc).await;
+    let id = invitation(&hotel, "pending", "token").await;
+
+    let job = MailJob::Invitation { invitation_id: id, tenant_id: Uuid::now_v7(), token: "token".into() };
+    assert_eq!(post_mail(addr, push(&job), Some(SECRET)).await, 204);
     assert!(sent(&outbox).is_empty());
 }
 

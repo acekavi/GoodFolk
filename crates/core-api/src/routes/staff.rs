@@ -34,13 +34,14 @@ pub struct SetGrantsRequest {
     pub grants: Vec<GrantSpec>,
 }
 
-/// The token from an invitation's link. No `Debug`, so it cannot be logged.
+/// The token from an invitation's link.
+// No `Debug`, so it cannot be logged.
 #[derive(Deserialize, ToSchema)]
 pub struct InvitationTokenRequest {
     pub token: String,
 }
 
-/// No `Debug`: it carries the token and a password.
+// No `Debug`: it carries the token and a password.
 #[derive(Deserialize, ToSchema)]
 pub struct AcceptInvitationRequest {
     pub token: String,
@@ -96,10 +97,9 @@ pub async fn invite(
 ) -> Result<(StatusCode, Json<Invitation>), ApiError> {
     ctx.require_somewhere(Permission::StaffManage)?;
     let mut tx = begin(&state, &ctx).await?;
-    let invitation =
-        identity::invite(&mut tx, ctx.tenant, ctx.user, &ctx.grants, &body.email, &body.display_name, &body.grants)
-            .await
-            .map_err(staff_error)?;
+    let invitation = identity::invite(&mut tx, ctx.tenant, ctx.user, &body.email, &body.display_name, &body.grants)
+        .await
+        .map_err(staff_error)?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(invitation)))
 }
@@ -115,7 +115,7 @@ pub async fn resend(
 ) -> Result<Json<Invitation>, ApiError> {
     ctx.require_somewhere(Permission::StaffManage)?;
     let mut tx = begin(&state, &ctx).await?;
-    let resent = identity::resend(&mut tx, ctx.tenant, ctx.user, &ctx.grants, invitation).await.map_err(staff_error)?;
+    let resent = identity::resend(&mut tx, ctx.tenant, ctx.user, invitation).await.map_err(staff_error)?;
     tx.commit().await?;
     Ok(Json(resent))
 }
@@ -131,9 +131,7 @@ pub async fn revoke(
 ) -> Result<Json<Invitation>, ApiError> {
     ctx.require_somewhere(Permission::StaffManage)?;
     let mut tx = begin(&state, &ctx).await?;
-    let revoked = identity::revoke_invitation(&mut tx, ctx.tenant, ctx.user, &ctx.grants, invitation)
-        .await
-        .map_err(staff_error)?;
+    let revoked = identity::revoke_invitation(&mut tx, ctx.tenant, ctx.user, invitation).await.map_err(staff_error)?;
     tx.commit().await?;
     Ok(Json(revoked))
 }
@@ -152,9 +150,8 @@ pub async fn set_grants(
 ) -> Result<Versioned<Member>, ApiError> {
     ctx.require_somewhere(Permission::StaffManage)?;
     let mut tx = begin(&state, &ctx).await?;
-    let member = identity::set_grants(&mut tx, ctx.tenant, ctx.user, &ctx.grants, user, version, &body.grants)
-        .await
-        .map_err(staff_error)?;
+    let member =
+        identity::set_grants(&mut tx, ctx.tenant, ctx.user, user, version, &body.grants).await.map_err(staff_error)?;
     tx.commit().await?;
     Ok(Versioned::ok(member.version, member))
 }
@@ -170,7 +167,7 @@ pub async fn revoke_member(
 ) -> Result<StatusCode, ApiError> {
     ctx.require_somewhere(Permission::StaffManage)?;
     let mut tx = begin(&state, &ctx).await?;
-    identity::revoke_member(&mut tx, ctx.tenant, ctx.user, &ctx.grants, user).await.map_err(staff_error)?;
+    identity::revoke_member(&mut tx, ctx.tenant, ctx.user, user).await.map_err(staff_error)?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -224,19 +221,15 @@ pub async fn accept(
         None => None,
     };
     let acceptor = match (&session, body.password) {
-        (Some(session), _) => Acceptor::SignedIn(session.user),
+        (Some(session), _) => Acceptor::SignedIn(*session),
         (None, Some(password)) => Acceptor::NewUser { password },
         (None, None) => return Err(ApiError::unprocessable("set a password, or sign in, to accept")),
     };
     let (user, tenant) = identity::accept(&state.pool, &body.token, acceptor).await.map_err(staff_error)?;
     identity::clear_login_failures(&state.pool, &key).await?;
+    // A signed-in session was switched to the tenant in the accept's own transaction.
     let jar = match session {
-        Some(session) => {
-            if !identity::switch_tenant(&state.pool, &session, tenant).await? {
-                return Err(ApiError::forbidden("you are not a member of this tenant"));
-            }
-            jar
-        }
+        Some(_) => jar,
         None => {
             let (token, expires) = identity::create_session(&state.pool, user, Some(tenant)).await?;
             jar.add(session_cookie(token, expires, state.production))

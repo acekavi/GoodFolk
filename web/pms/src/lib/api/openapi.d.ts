@@ -1886,7 +1886,6 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** @description No `Debug`: it carries the token and a password. */
         AcceptInvitationRequest: {
             /**
              * @description Needed when no account has the invitation's email (12 to 128 characters, as at sign-up), and ignored when the
@@ -2626,7 +2625,7 @@ export interface components {
         };
         /** @enum {string} */
         InvitationStatus: "pending" | "accepted" | "revoked" | "expired";
-        /** @description The token from an invitation's link. No `Debug`, so it cannot be logged. */
+        /** @description The token from an invitation's link. */
         InvitationTokenRequest: {
             token: string;
         };

@@ -42,6 +42,11 @@
 	}
 </script>
 
+<svelte:head>
+	<!-- The redirect back to an invitation, and so its token, can be in this page's URL: never send it to another site as a referrer. -->
+	<meta name="referrer" content="no-referrer" />
+</svelte:head>
+
 <main class="form" style="margin: 10vh auto">
 	<h1>Sign in</h1>
 	<form class="form" onsubmit={submit}>

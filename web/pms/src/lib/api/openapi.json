@@ -5897,7 +5897,6 @@
     "schemas": {
       "AcceptInvitationRequest": {
         "type": "object",
-        "description": "No `Debug`: it carries the token and a password.",
         "required": [
           "token"
         ],
@@ -7815,7 +7814,7 @@
       },
       "InvitationTokenRequest": {
         "type": "object",
-        "description": "The token from an invitation's link. No `Debug`, so it cannot be logged.",
+        "description": "The token from an invitation's link.",
         "required": [
           "token"
         ],

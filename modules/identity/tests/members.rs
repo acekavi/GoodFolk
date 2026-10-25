@@ -2,8 +2,7 @@ use db::testing::app_pool;
 use db::{Scope, TenantId, UserId, begin};
 use identity::{
     ALL_PERMISSIONS, ALL_ROLES, Acceptor, Grant, GrantSpec, Member, Role, SignupInput, StaffError, accept, allows,
-    create_session, describe, invite, load_grants, members, permission_matrix, resolve_session, revoke_member,
-    set_grants, signup,
+    create_session, describe, invite, members, permission_matrix, resolve_session, revoke_member, set_grants, signup,
 };
 use mail::MailJob;
 use sqlx::PgPool;
@@ -59,17 +58,14 @@ impl Tenant {
         Self { pool, superuser, tenant, owner, hotel: ids[0], other_hotel: ids[1] }
     }
 
-    async fn tx(&self, actor: UserId) -> (db::Tx, Vec<Grant>) {
-        let mut tx = begin(&self.pool, Scope { tenant: Some(self.tenant), user: Some(actor) }).await.unwrap();
-        let grants = load_grants(&mut tx, actor).await.unwrap();
-        (tx, grants)
+    async fn tx(&self, actor: UserId) -> db::Tx {
+        begin(&self.pool, Scope { tenant: Some(self.tenant), user: Some(actor) }).await.unwrap()
     }
 
     /// A member holding `grants`, invited by the owner and accepted as `acceptor`.
     async fn join(&self, email: &str, grants: &[GrantSpec], acceptor: Acceptor) -> UserId {
-        let (mut tx, owner_grants) = self.tx(self.owner).await;
-        let invitation =
-            invite(&mut tx, self.tenant, self.owner, &owner_grants, email, "Kamala", grants).await.unwrap();
+        let mut tx = self.tx(self.owner).await;
+        let invitation = invite(&mut tx, self.tenant, self.owner, email, "Kamala", grants).await.unwrap();
         tx.commit().await.unwrap();
         let payload: serde_json::Value =
             sqlx::query_scalar("select payload from outbox where topic = $1 order by id desc limit 1")
@@ -124,15 +120,15 @@ impl Tenant {
         version: i32,
         grants: &[GrantSpec],
     ) -> Result<Member, StaffError> {
-        let (mut tx, actor_grants) = self.tx(actor).await;
-        let member = set_grants(&mut tx, self.tenant, actor, &actor_grants, user.0, version, grants).await?;
+        let mut tx = self.tx(actor).await;
+        let member = set_grants(&mut tx, self.tenant, actor, user.0, version, grants).await?;
         tx.commit().await.unwrap();
         Ok(member)
     }
 
     async fn revoke_as(&self, actor: UserId, user: UserId) -> Result<(), StaffError> {
-        let (mut tx, actor_grants) = self.tx(actor).await;
-        revoke_member(&mut tx, self.tenant, actor, &actor_grants, user.0).await?;
+        let mut tx = self.tx(actor).await;
+        revoke_member(&mut tx, self.tenant, actor, user.0).await?;
         tx.commit().await.unwrap();
         Ok(())
     }
@@ -200,23 +196,61 @@ async fn the_last_owner_cannot_be_demoted_or_removed(_: PgPoolOptions, opts: PgC
     // Another owner's grants can be edited around their owner grant.
     let kept = [grant(Role::Owner, None), grant(Role::Manager, Some(t.hotel))];
     assert_eq!(t.set_as(t.owner, second, &kept).await.unwrap().grants.len(), 2);
-    // Grants are read before the lock, so the second owner may still act as an owner after being demoted.
-    let (mut tx, stale) = t.tx(second).await;
+    // A transaction begun while the second owner was an owner authorizes against their grants after the lock, so
+    // once demoted they can neither demote nor remove the last owner.
+    let mut tx = t.tx(second).await;
     t.set_as(t.owner, second, &[grant(Role::Manager, None)]).await.unwrap();
 
     let version = t.find(t.owner).await.unwrap().version;
-    let demoted =
-        set_grants(&mut tx, t.tenant, second, &stale, t.owner.0, version, &[grant(Role::Manager, None)]).await;
-    assert!(matches!(demoted, Err(StaffError::Conflict(_))), "{demoted:?}");
-    drop(tx);
-    let (mut tx, _) = t.tx(second).await;
-    let removed = revoke_member(&mut tx, t.tenant, second, &stale, t.owner.0).await;
-    assert!(matches!(removed, Err(StaffError::Conflict(_))), "{removed:?}");
+    let demoted = set_grants(&mut tx, t.tenant, second, t.owner.0, version, &[grant(Role::Manager, None)]).await;
+    assert_eq!(forbidden(demoted), "only owners can manage a member with the owner role");
+    let removed = revoke_member(&mut tx, t.tenant, second, t.owner.0).await;
+    assert_eq!(forbidden(removed), "only owners can manage a member with the owner role");
     drop(tx);
     assert!(t.find(t.owner).await.unwrap().grants.contains(&grant(Role::Owner, None)));
     // With two owners, one may remove the other.
     let third = t.co_owner("third@example.com").await;
     t.revoke_as(t.owner, third).await.unwrap();
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn two_owners_demoting_each_other_at_once_leave_one_owner(_: PgPoolOptions, opts: PgConnectOptions) {
+    let t = Tenant::new(opts).await;
+    let second = t.co_owner("second@example.com").await;
+    let manager = [grant(Role::Manager, None)];
+    let (first_version, second_version) =
+        (t.find(t.owner).await.unwrap().version, t.find(second).await.unwrap().version);
+    // Both requests are under way, each holding its own transaction, before either takes the staff lock.
+    let mut first_tx = t.tx(t.owner).await;
+    let mut second_tx = t.tx(second).await;
+
+    let (first, second_result) = tokio::join!(
+        async {
+            let result = set_grants(&mut first_tx, t.tenant, t.owner, second.0, second_version, &manager).await;
+            if result.is_ok() {
+                first_tx.commit().await.unwrap();
+            }
+            result
+        },
+        async {
+            let result = set_grants(&mut second_tx, t.tenant, second, t.owner.0, first_version, &manager).await;
+            if result.is_ok() {
+                second_tx.commit().await.unwrap();
+            }
+            result
+        },
+    );
+
+    // The staff lock lets one through; the other then sees that it is no longer an owner.
+    let results = [first.map(|_| ()), second_result.map(|_| ())];
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "{results:?}");
+    let refused = results.into_iter().find(Result::is_err).unwrap();
+    assert_eq!(forbidden(refused), "only owners can manage a member with the owner role");
+    let owners: i64 = sqlx::query_scalar("select count(*) from role_grant where role = 'owner'")
+        .fetch_one(&t.superuser)
+        .await
+        .unwrap();
+    assert_eq!(owners, 1);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -275,7 +309,9 @@ async fn managers_act_only_on_junior_members_at_their_properties(_: PgPoolOption
 async fn revoking_ends_only_that_tenants_sessions(_: PgPoolOptions, opts: PgConnectOptions) {
     let t = Tenant::new(opts).await;
     let (kamala, her_tenant) = signup(&t.pool, signup_input("kamala@example.com", "Her Own Hotel")).await.unwrap();
-    t.join("kamala@example.com", &[grant(Role::FrontDesk, None)], Acceptor::SignedIn(kamala)).await;
+    let (token, _) = create_session(&t.pool, kamala, None).await.unwrap();
+    let session = resolve_session(&t.pool, &token).await.unwrap().unwrap();
+    t.join("kamala@example.com", &[grant(Role::FrontDesk, None)], Acceptor::SignedIn(session)).await;
     let (here, _) = create_session(&t.pool, kamala, Some(t.tenant)).await.unwrap();
     let (hers, _) = create_session(&t.pool, kamala, Some(her_tenant)).await.unwrap();
 

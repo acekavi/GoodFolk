@@ -296,7 +296,8 @@ pub fn describe(permission: Permission) -> &'static str {
         PropertiesView => "See properties and their settings.",
         PropertiesCreate => "Create properties.",
         PropertiesManage => {
-            "Change a property's settings, such as its name, check-in and check-out times and audit time."
+            "Change a property's settings, such as its name, check-in and check-out times and audit time, and see its \
+             audit and drift ops alerts."
         }
         RoomsView => "See room types, rooms, sections and block reasons.",
         RoomsManage => "Create, change, deactivate and reorder room types, rooms, sections and block reasons.",

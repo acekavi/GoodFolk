@@ -3,7 +3,7 @@ use db::{Scope, TenantId, UserId, begin};
 use identity::{
     Acceptor, GrantSpec, Invitation, InvitationStatus, Role, SignupInput, StaffError, accept, authenticate,
     create_session, default_tenant, invite, list_invitations, load_grants, load_profile, preview, resend,
-    revoke_invitation, signup,
+    resolve_session, revoke_invitation, signup,
 };
 use mail::MailJob;
 use sqlx::PgPool;
@@ -52,8 +52,7 @@ impl Tenant {
 
     async fn invite_as(&self, actor: UserId, email: &str, grants: &[GrantSpec]) -> Result<Invitation, StaffError> {
         let mut tx = begin(&self.pool, Scope { tenant: Some(self.tenant), user: Some(actor) }).await.unwrap();
-        let actor_grants = load_grants(&mut tx, actor).await.unwrap();
-        let invitation = invite(&mut tx, self.tenant, actor, &actor_grants, email, "Kamala", grants).await?;
+        let invitation = invite(&mut tx, self.tenant, actor, email, "Kamala", grants).await?;
         tx.commit().await.unwrap();
         Ok(invitation)
     }
@@ -64,16 +63,14 @@ impl Tenant {
 
     async fn resend(&self, id: Uuid) -> Invitation {
         let mut tx = begin(&self.pool, Scope { tenant: Some(self.tenant), user: Some(self.owner) }).await.unwrap();
-        let grants = load_grants(&mut tx, self.owner).await.unwrap();
-        let invitation = resend(&mut tx, self.tenant, self.owner, &grants, id).await.unwrap();
+        let invitation = resend(&mut tx, self.tenant, self.owner, id).await.unwrap();
         tx.commit().await.unwrap();
         invitation
     }
 
     async fn revoke(&self, id: Uuid) -> Invitation {
         let mut tx = begin(&self.pool, Scope { tenant: Some(self.tenant), user: Some(self.owner) }).await.unwrap();
-        let grants = load_grants(&mut tx, self.owner).await.unwrap();
-        let invitation = revoke_invitation(&mut tx, self.tenant, self.owner, &grants, id).await.unwrap();
+        let invitation = revoke_invitation(&mut tx, self.tenant, self.owner, id).await.unwrap();
         tx.commit().await.unwrap();
         invitation
     }
@@ -104,6 +101,13 @@ impl Tenant {
             .rev()
             .find_map(|MailJob::Invitation { invitation_id, token, .. }| (invitation_id == invitation).then_some(token))
             .expect("a mail job for the invitation")
+    }
+
+    /// A new session of `user`'s, with no tenant chosen, and its cookie's token.
+    async fn session(&self, user: UserId) -> (Acceptor, String) {
+        let (token, _) = create_session(&self.pool, user, None).await.unwrap();
+        let session = resolve_session(&self.pool, &token).await.unwrap().unwrap();
+        (Acceptor::SignedIn(session), token)
     }
 
     async fn accept_new(&self, token: &str) -> Result<(UserId, TenantId), StaffError> {
@@ -168,7 +172,7 @@ async fn a_new_user_gets_exactly_the_invited_grants_once(_: PgPoolOptions, opts:
     assert_eq!(version, 1);
     assert_eq!(t.list().await[0].status, InvitationStatus::Accepted);
     assert!(matches!(t.accept_new(&token).await, Err(StaffError::Gone)));
-    assert!(matches!(accept(&t.pool, &token, Acceptor::SignedIn(user)).await, Err(StaffError::Gone)));
+    assert!(matches!(accept(&t.pool, &token, t.session(user).await.0).await, Err(StaffError::Gone)));
     assert!(matches!(preview(&t.pool, &token).await, Err(StaffError::Gone)));
 }
 
@@ -269,9 +273,12 @@ async fn an_existing_user_must_be_signed_in_as_the_invited_email(_: PgPoolOption
         Err(StaffError::Conflict(message)) => assert_eq!(message, "Sign in as kamala@example.com to accept"),
         other => panic!("expected a conflict, got {other:?}"),
     }
-    assert!(matches!(accept(&t.pool, &token, Acceptor::SignedIn(stranger)).await, Err(StaffError::Forbidden(_))));
+    assert!(matches!(accept(&t.pool, &token, t.session(stranger).await.0).await, Err(StaffError::Forbidden(_))));
 
-    assert_eq!(accept(&t.pool, &token, Acceptor::SignedIn(kamala)).await.unwrap(), (kamala, t.tenant));
+    let (signed_in, cookie) = t.session(kamala).await;
+    assert_eq!(accept(&t.pool, &token, signed_in).await.unwrap(), (kamala, t.tenant));
+    // Her session was switched to the tenant by the accept itself.
+    assert_eq!(resolve_session(&t.pool, &cookie).await.unwrap().unwrap().tenant, Some(t.tenant));
     assert_eq!(t.grants_of(kamala).await, vec![grant(Role::FrontDesk, Some(t.hotel))]);
     // Their password is unchanged.
     assert_eq!(authenticate(&t.pool, "kamala@example.com", PASSWORD).await.unwrap(), Some(kamala));
@@ -326,9 +333,8 @@ async fn a_manager_cannot_resend_or_revoke_an_invitation_naming_manager(_: PgPoo
     let invitation = t.invite("other-manager@example.com", &[grant(Role::Manager, Some(t.hotel))]).await;
 
     let mut tx = begin(&t.pool, Scope { tenant: Some(t.tenant), user: Some(manager) }).await.unwrap();
-    let grants = load_grants(&mut tx, manager).await.unwrap();
-    let resent = resend(&mut tx, t.tenant, manager, &grants, invitation.id).await;
-    let revoked = revoke_invitation(&mut tx, t.tenant, manager, &grants, invitation.id).await;
+    let resent = resend(&mut tx, t.tenant, manager, invitation.id).await;
+    let revoked = revoke_invitation(&mut tx, t.tenant, manager, invitation.id).await;
 
     assert!(matches!(resent, Err(StaffError::Forbidden(_))));
     assert!(matches!(revoked, Err(StaffError::Forbidden(_))));
@@ -370,10 +376,7 @@ async fn invitations_are_validated(_: PgPoolOptions, opts: PgConnectOptions) {
 async fn the_outbox_row_is_written_in_the_invitations_transaction(_: PgPoolOptions, opts: PgConnectOptions) {
     let t = Tenant::new(opts).await;
     let mut tx = begin(&t.pool, Scope { tenant: Some(t.tenant), user: Some(t.owner) }).await.unwrap();
-    let grants = load_grants(&mut tx, t.owner).await.unwrap();
-    invite(&mut tx, t.tenant, t.owner, &grants, "kamala@example.com", "Kamala", &[grant(Role::Pos, None)])
-        .await
-        .unwrap();
+    invite(&mut tx, t.tenant, t.owner, "kamala@example.com", "Kamala", &[grant(Role::Pos, None)]).await.unwrap();
     tx.rollback().await.unwrap();
 
     assert!(t.mail_jobs().await.is_empty());
@@ -453,10 +456,14 @@ async fn a_token_used_while_a_new_user_accept_waits_is_gone(_: PgPoolOptions, op
         tokio::spawn(async move { accept(&pool, &token, Acceptor::NewUser { password: PASSWORD.into() }).await })
     };
     for _ in 0..500 {
-        let waiting: bool = sqlx::query_scalar("select exists (select 1 from pg_locks where not granted)")
-            .fetch_one(&t.pool)
-            .await
-            .unwrap();
+        let waiting: bool = sqlx::query_scalar(
+            "select exists (select 1 from pg_locks
+                            where not granted
+                              and database = (select oid from pg_database where datname = current_database()))",
+        )
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
         if waiting || loser.is_finished() {
             break;
         }
@@ -482,11 +489,36 @@ async fn an_invitation_to_a_deleted_property_is_gone(_: PgPoolOptions, opts: PgC
     let token = t.token(invitation.id).await;
     sqlx::query("delete from property where id = $1").bind(t.other_hotel).execute(&t.superuser).await.unwrap();
 
+    let shown = preview(&t.pool, &token).await;
     let result = t.accept_new(&token).await;
 
+    // The preview never shows the deleted property's grant as "All properties".
+    assert!(matches!(shown, Err(StaffError::Gone)), "{shown:?}");
     assert!(matches!(result, Err(StaffError::Gone)), "{result:?}");
     // Nothing was kept: no account, and no membership.
     assert_eq!(authenticate(&t.pool, "kamala@example.com", PASSWORD).await.unwrap(), None);
     let members: i64 = sqlx::query_scalar("select count(*) from membership").fetch_one(&t.superuser).await.unwrap();
     assert_eq!(members, 1);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_inviter_demoted_meanwhile_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
+    let t = Tenant::new(opts).await;
+    let manager = t.member("manager@example.com", &[grant(Role::Manager, None)]).await;
+    let invitation = t.invite("kamala@example.com", &[grant(Role::FrontDesk, None)]).await;
+    // The manager's request began while they were a manager; the owner demotes them before it authorizes.
+    let mut tx = begin(&t.pool, Scope { tenant: Some(t.tenant), user: Some(manager) }).await.unwrap();
+    sqlx::query("update role_grant set role = 'front_desk' where user_id = $1")
+        .bind(manager.0)
+        .execute(&t.superuser)
+        .await
+        .unwrap();
+
+    let invited = invite(&mut tx, t.tenant, manager, "sunil@example.com", "Sunil", &[grant(Role::Pos, None)]).await;
+    let resent = resend(&mut tx, t.tenant, manager, invitation.id).await;
+    let revoked = revoke_invitation(&mut tx, t.tenant, manager, invitation.id).await;
+
+    for result in [invited, resent, revoked] {
+        assert!(matches!(result, Err(StaffError::Forbidden(_))), "{result:?}");
+    }
 }
