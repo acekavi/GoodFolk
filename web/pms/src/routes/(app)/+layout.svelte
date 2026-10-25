@@ -19,7 +19,7 @@
 	const properties = createQuery(() => ({
 		queryKey: propertiesKey,
 		queryFn: ({ signal }) => fetchProperties(signal),
-		enabled: !!me.data?.current_tenant
+		enabled: !!me.data?.current_tenant && !posOnly(me.data)
 	}));
 
 	let signingOut = false;
@@ -97,7 +97,14 @@
 	}
 </script>
 
-{#if me.data}
+{#if me.data && posOnly(me.data)}
+	<!-- A till is an API client: it is shown no navigation and no pages. -->
+	<main>
+		<p>This account is for a point-of-sale till and has no pages</p>
+		{#if actionError}<p class="error" role="alert">{actionError}</p>{/if}
+		<button disabled={busy} onclick={logout}>Sign out</button>
+	</main>
+{:else if me.data}
 	<header>
 		{#if me.data.tenants.length > 1}
 			<select
@@ -125,13 +132,11 @@
 			{/each}
 		</nav>
 		<span class="spacer"></span>
-		{#if !posOnly(me.data)}
-			<a
-				href={resolve('/(app)/settings')}
-				aria-current={page.url.pathname.startsWith(resolve('/(app)/settings')) ? 'page' : undefined}
-				>Staff and settings</a
-			>
-		{/if}
+		<a
+			href={resolve('/(app)/settings')}
+			aria-current={page.url.pathname.startsWith(resolve('/(app)/settings')) ? 'page' : undefined}
+			>Staff and settings</a
+		>
 		<span>{me.data.display_name}</span>
 		<button disabled={busy} onclick={logout}>Sign out</button>
 	</header>

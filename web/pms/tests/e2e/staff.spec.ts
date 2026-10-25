@@ -98,3 +98,27 @@ test('a manager invites housekeeping, but cannot give the manager role, in the U
 	});
 	expect(forced.status(), await forced.text()).toBe(403);
 });
+
+test('a till signs in to no pages, only a sign-out', async ({ page, browser }) => {
+	const { email: owner } = await signUp(page);
+	await createProperty(page, 'TIL');
+	const { email } = addStaff(owner, 'pos', 'Till One');
+
+	const context = await browser.newContext();
+	const till = await context.newPage();
+	await till.goto('/login');
+	await till.getByLabel('Email').fill(email);
+	await till.getByLabel('Password').fill(PASSWORD);
+	await till.getByRole('button', { name: 'Sign in' }).click();
+	const panel = till.getByText('This account is for a point-of-sale till and has no pages');
+	await expect(panel).toBeVisible();
+	await expect(till.getByRole('navigation')).toHaveCount(0);
+	await expect(till.getByRole('heading', { name: 'Properties' })).toHaveCount(0);
+	await till.goto('/settings');
+	await expect(panel).toBeVisible();
+	await expect(till.getByRole('link', { name: 'Staff and settings' })).toHaveCount(0);
+
+	await till.getByRole('button', { name: 'Sign out' }).click();
+	await expect(till).toHaveURL(/\/login/);
+	await context.close();
+});
