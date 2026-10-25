@@ -1,6 +1,6 @@
 //! `ffprobe` on an upload, and the rules that decide whether the pipeline takes it.
 
-use std::io::Read;
+use std::io::{self, Read};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -18,6 +18,8 @@ const MAX_SHORT_SIDE: u32 = 2160;
 const VIDEO_CODECS: [&str; 4] = ["h264", "hevc", "vp9", "av1"];
 const AUDIO_CODECS: [&str; 3] = ["aac", "opus", "mp3"];
 const HDR_TRANSFERS: [&str; 2] = ["smpte2084", "arib-std-b67"];
+const MAX_STDOUT: u64 = 4 * 1024 * 1024;
+const MAX_STDERR: u64 = 64 * 1024;
 const POLL: Duration = Duration::from_millis(10);
 
 /// What `ffprobe` says about a video upload.
@@ -27,7 +29,8 @@ pub struct Probe {
     /// As displayed, after `rotation`.
     pub width: u32,
     pub height: u32,
-    /// Degrees the player turns the stored frames; 0 when the file carries no rotation.
+    /// ffprobe's display-matrix `rotation`: counter-clockwise degrees the player turns the stored frames, so 90 shows
+    /// a portrait phone clip upright. 0 when the file carries no rotation.
     pub rotation: i32,
     pub hdr: bool,
     pub fps: f64,
@@ -139,8 +142,8 @@ fn run_ffprobe(path: &Path, timeout: Duration) -> Result<Vec<u8>, VideoError> {
         .process_group(0)
         .spawn()
         .map_err(|e| VideoError::Tool(e.to_string()))?;
-    let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
+    let stdout = drain(child.stdout.take(), MAX_STDOUT);
+    let stderr = drain(child.stderr.take(), MAX_STDERR);
 
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -158,22 +161,29 @@ fn run_ffprobe(path: &Path, timeout: Duration) -> Result<Vec<u8>, VideoError> {
         let _ = child.kill();
         let _ = child.wait();
     }
-    let stdout = stdout.join().unwrap_or_default();
-    let stderr = stderr.join().unwrap_or_default();
+    let (stdout, stdout_over) = stdout.join().unwrap_or_default();
+    let (stderr, _) = stderr.join().unwrap_or_default();
     let status = status?;
     if !status.success() {
         return Err(VideoError::Unreadable(String::from_utf8_lossy(&stderr).trim().to_owned()));
     }
+    if stdout_over {
+        return Err(VideoError::Unreadable("probe output too large".into()));
+    }
     Ok(stdout)
 }
 
-fn drain(pipe: Option<impl Read + Send + 'static>) -> thread::JoinHandle<Vec<u8>> {
+/// Reads `pipe` to its end, keeping the first `cap` bytes and whether there were more. The rest is discarded as it
+/// arrives, so ffprobe never blocks on a full pipe.
+fn drain(pipe: Option<impl Read + Send + 'static>, cap: u64) -> thread::JoinHandle<(Vec<u8>, bool)> {
     thread::spawn(move || {
         let mut buf = Vec::new();
+        let mut over = false;
         if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_end(&mut buf);
+            let _ = (&mut pipe).take(cap).read_to_end(&mut buf);
+            over = io::copy(&mut pipe, &mut io::sink()).is_ok_and(|rest| rest > 0);
         }
-        buf
+        (buf, over)
     })
 }
 
@@ -198,16 +208,17 @@ fn parse(json: &[u8]) -> Result<Probe, VideoError> {
     let rotation = video.side_data_list.iter().find_map(|d| d.rotation).map_or(0, |r| r.round() as i32);
     let (width, height) = if rotation.rem_euclid(180) == 90 { (stored_h, stored_w) } else { (stored_w, stored_h) };
 
-    let seconds = out
-        .format
-        .as_ref()
-        .and_then(|f| f.duration.as_deref())
-        .or(video.duration.as_deref())
-        .and_then(|d| d.parse::<f64>().ok())
-        .filter(|d| d.is_finite() && *d >= 0.0)
+    let seconds = [out.format.as_ref().and_then(|f| f.duration.as_deref()), video.duration.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter_map(|d| d.parse::<f64>().ok())
+        .find(|d| d.is_finite() && *d >= 0.0)
         .ok_or_else(|| VideoError::Unreadable("no duration".into()))?;
-    let fps =
-        [&video.avg_frame_rate, &video.r_frame_rate].into_iter().flatten().find_map(|r| frame_rate(r)).unwrap_or(0.0);
+    let fps = [&video.avg_frame_rate, &video.r_frame_rate]
+        .into_iter()
+        .flatten()
+        .find_map(|r| frame_rate(r))
+        .ok_or_else(|| VideoError::Unreadable("no frame rate".into()))?;
 
     Ok(Probe {
         duration_ms: (seconds * 1000.0).round().min(f64::from(u32::MAX)) as u32,
@@ -271,5 +282,24 @@ mod tests {
         assert_eq!(accept(&probe_of(2160, 3840)), Ok(()));
         assert_eq!(accept(&probe_of(4096, 2160)), Err(Refusal::TooLarge4k));
         assert_eq!(accept(&probe_of(2160, 4096)), Err(Refusal::TooLarge4k));
+    }
+
+    fn json(format_duration: &str, avg: &str, r: &str) -> Vec<u8> {
+        format!(
+            r#"{{"streams":[{{"index":0,"codec_type":"video","codec_name":"h264","width":640,"height":360,
+            "avg_frame_rate":"{avg}","r_frame_rate":"{r}","duration":"2.5"}}],"format":{{"duration":"{format_duration}"}}}}"#
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn a_missing_frame_rate_is_unreadable() {
+        assert!(matches!(parse(&json("2.5", "0/0", "0/0")), Err(VideoError::Unreadable(m)) if m == "no frame rate"));
+        assert_eq!(parse(&json("2.5", "0/0", "25/1")).unwrap().fps, 25.0);
+    }
+
+    #[test]
+    fn an_unparsable_format_duration_falls_back_to_the_stream() {
+        assert_eq!(parse(&json("N/A", "25/1", "25/1")).unwrap().duration_ms, 2_500);
     }
 }
