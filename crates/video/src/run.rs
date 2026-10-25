@@ -1,12 +1,11 @@
-//! Runs one ffmpeg or ffprobe child under supervision: its own process group, a deadline, and capped output.
+//! Runs one ffmpeg or ffprobe child under supervision: a deadline, and capped output. Neither tool starts children of
+//! its own, so the child stays in the caller's process group, where a supervisor's group kill (media-svc's worker
+//! kill) reaches it too.
 
 use std::io::{self, Read};
-use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-
-use rustix::process::{Pid, Signal, kill_process_group};
 
 use crate::VideoError;
 
@@ -28,44 +27,33 @@ impl Ran {
     }
 }
 
-/// A child whose whole process group is killed when this is dropped, unless it has already been reaped (its pid may
-/// then name someone else). A caller that unwinds or gives up mid-run leaves nothing running.
-struct Group {
-    child: Child,
-    group: Option<Pid>,
-}
+/// A child that is killed (SIGKILL) and reaped when this is dropped, so a caller that times out, unwinds or gives up
+/// mid-run leaves nothing running. Once the child has been reaped, `Child::kill` signals nothing.
+struct Supervised(Child);
 
-impl Drop for Group {
+impl Drop for Supervised {
     fn drop(&mut self) {
-        if let Some(group) = self.group {
-            let _ = kill_process_group(group, Signal::KILL);
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
-/// Runs `command` in its own process group with no stdin, keeping the first `stdout_cap` bytes of its stdout. A child
-/// still running at `deadline` is killed, with everything it started.
+/// Runs `command` with no stdin, keeping the first `stdout_cap` bytes of its stdout. A child still running at
+/// `deadline` is killed.
 pub(crate) fn run(command: &mut Command, deadline: Instant, stdout_cap: u64) -> Result<Ran, VideoError> {
     let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .process_group(0)
         .spawn()
         .map_err(|e| VideoError::Tool(e.to_string()))?;
-    let group = i32::try_from(child.id()).ok().and_then(Pid::from_raw);
-    let mut child = Group { child, group };
-    let stdout = drain(child.child.stdout.take(), stdout_cap);
-    let stderr = drain(child.child.stderr.take(), MAX_STDERR);
+    let mut child = Supervised(child);
+    let stdout = drain(child.0.stdout.take(), stdout_cap);
+    let stderr = drain(child.0.stderr.take(), MAX_STDERR);
 
     let status = loop {
-        match child.child.try_wait() {
-            Ok(Some(status)) => {
-                child.group = None;
-                break Ok(status);
-            }
+        match child.0.try_wait() {
+            Ok(Some(status)) => break Ok(status),
             Ok(None) if Instant::now() >= deadline => break Err(VideoError::TimedOut),
             Ok(None) => thread::sleep(POLL),
             Err(e) => break Err(VideoError::Tool(e.to_string())),

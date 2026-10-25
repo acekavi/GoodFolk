@@ -186,7 +186,7 @@ fn encode_size(
 }
 
 /// Encodes `input` into `out_dir` as `<size>.<format>` files: for each size, largest first, the AV1 rendition and
-/// then the H.264 one. Every ffmpeg run is killed, with what it started, once the transcode passes `opts.timeout`.
+/// then the H.264 one. Every ffmpeg run is killed once the transcode passes `opts.timeout`.
 pub fn transcode(input: &Path, probe: &Probe, out_dir: &Path, opts: &Options) -> Result<Vec<Encoded>, VideoError> {
     let deadline = Instant::now() + opts.timeout;
     let sizes = sizes(probe.width, probe.height);

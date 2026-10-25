@@ -119,7 +119,7 @@ impl Stream {
     }
 }
 
-/// Runs `ffprobe` on `path`. A probe still running after `timeout` is killed, with everything it started.
+/// Runs `ffprobe` on `path`. A probe still running after `timeout` is killed.
 pub fn probe(path: &Path, timeout: Duration) -> Result<Probe, VideoError> {
     let json = run_ffprobe(path, timeout)?;
     parse(&json)
