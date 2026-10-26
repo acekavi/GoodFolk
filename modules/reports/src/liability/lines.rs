@@ -34,6 +34,32 @@ pub async fn revenue_lines(
     from: Date,
     to: Date,
 ) -> Result<Vec<RevenueLine>, ReportsError> {
+    let Some(to) = closed_to(tx, property, from, to).await? else {
+        return Ok(Vec::new());
+    };
+    let lines = audit::revenue_lines(tx, property, from, to).await?;
+    with_outlets(tx, property, lines).await
+}
+
+/// The revenue of the lines of `folios`, from `from` to `to` (both included), clamped to the closed days as
+/// [`revenue_lines`] is: no POS bills settled at their outlet. `Invalid` when the range ends before it starts;
+/// `NotFound` for a property not in the tenant.
+pub async fn folio_revenue_lines(
+    tx: &mut Tx,
+    property: Uuid,
+    folios: &[Uuid],
+    from: Date,
+    to: Date,
+) -> Result<Vec<RevenueLine>, ReportsError> {
+    let Some(to) = closed_to(tx, property, from, to).await? else {
+        return Ok(Vec::new());
+    };
+    let lines = audit::folio_revenue_lines(tx, property, folios, from, to).await?;
+    with_outlets(tx, property, lines).await
+}
+
+/// `to`, or the property's last closed date when that is earlier; `None` when no day from `from` is closed.
+async fn closed_to(tx: &mut Tx, property: Uuid, from: Date, to: Date) -> Result<Option<Date>, ReportsError> {
     if to < from {
         return Err(ReportsError::Invalid("the range ends before it starts".into()));
     }
@@ -42,17 +68,22 @@ pub async fn revenue_lines(
         .fetch_optional(&mut **tx)
         .await?
         .ok_or(ReportsError::NotFound("property"))?;
-    let Some(to) = business_date.previous_day().map(|closed| to.min(closed)).filter(|to| from <= *to) else {
-        return Ok(Vec::new());
-    };
+    Ok(business_date.previous_day().map(|closed| to.min(closed)).filter(|to| from <= *to))
+}
+
+/// The night audit's lines, with the outlet each `pos:<OUTLET>` category names.
+async fn with_outlets(
+    tx: &mut Tx,
+    property: Uuid,
+    lines: Vec<audit::RevenueLine>,
+) -> Result<Vec<RevenueLine>, ReportsError> {
     let outlets: HashMap<String, Uuid> = sqlx::query_as("select code, id from outlet where property_id = $1")
         .bind(property)
         .fetch_all(&mut **tx)
         .await?
         .into_iter()
         .collect();
-    Ok(audit::revenue_lines(tx, property, from, to)
-        .await?
+    Ok(lines
         .into_iter()
         .map(|line| RevenueLine {
             business_date: line.business_date,

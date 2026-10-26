@@ -11,9 +11,14 @@ use uuid::Uuid;
 /// The whole of a share, in basis points.
 const WHOLE_BP: i64 = 10_000;
 
-/// A payment's base when it is in foreign currency through a bank (card terminal or bank transfer), else 0.
-const EXEMPT: &str =
-    "case when p.currency <> 'LKR' and p.method in ('card_terminal', 'bank_transfer') then p.base_amount else 0 end";
+/// The base of the payment `alias` when it is in foreign currency through a bank (card terminal or bank transfer),
+/// else 0.
+fn exempt_base(alias: &str) -> String {
+    format!(
+        "case when {alias}.currency <> 'LKR' and {alias}.method in ('card_terminal', 'bank_transfer') \
+         then {alias}.base_amount else 0 end"
+    )
+}
 
 /// A settlement: a folio's balance coming back to zero, covering its lines since its previous settlement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +43,8 @@ struct Entry {
     currency: String,
     /// Lines less payments.
     amount: i64,
-    /// The base of the payments in foreign currency by card terminal or bank transfer, refunds negative.
+    /// The base of the payments in foreign currency by card terminal or bank transfer, refunds negative, and each
+    /// transfer in's share of its source's.
     exempt: i64,
     /// The base of the positive payments.
     paid: i64,
@@ -49,9 +55,12 @@ struct Entry {
 /// currency (as an invoice needs: the base rarely nets to zero, since each night's line and the payment convert at
 /// their own day's rate) a settlement point, when something happened since the previous one. A segment runs
 /// from the previous point (or the folio's first business date) to that one. Payments are signed as stored: a refund
-/// is negative, and a transfer between folios negative on the folio it leaves. A positive transfer, and a charge to
-/// account (`account`), settle the folio but are neither foreign currency nor through a bank, so they lower the
-/// exempt share. A POS bill settled at its outlet is a settlement of its own on its payment's date.
+/// is negative, and a transfer between folios negative on the folio it leaves. A transfer in (a deposit moved to its
+/// stay at check-in) carries its source folio's share: its base times the foreign-through-a-bank share of the source's
+/// own payments up to the transfer's business date. One level deep: a source that was itself funded by a transfer
+/// counts its direct payments only. A charge to account (`account`) settles the folio but is neither foreign currency
+/// nor through a bank, so it lowers the exempt share. A POS bill settled at its outlet is a settlement of its own on
+/// its payment's date.
 ///
 /// Reads every folio with a line or payment in the range, with all its earlier history, in one statement, and the
 /// outlet bills in another. `NotFound` for a property not in the tenant.
@@ -79,10 +88,23 @@ pub async fn segments(tx: &mut Tx, property: Uuid, from: Date, upto: Date) -> Re
                       0::bigint as paid
                from folio_line where folio_id in (select folio_id from folios) and business_date <= $3
                union all
-               select p.folio_id, p.business_date, p.currency::text, -p.amount, {EXEMPT}, greatest(p.base_amount, 0)
-               from payment p where p.folio_id in (select folio_id from folios) and p.business_date <= $3) as entries
+               select p.folio_id, p.business_date, p.currency::text, -p.amount,
+                      case when p.method = 'transfer' then coalesce(source.exempt, 0) else {exempt_p} end,
+                      greatest(p.base_amount, 0)
+               from payment p
+               left join lateral (
+                 select round(p.base_amount * least(greatest(
+                          sum({exempt_q})::numeric / nullif(sum(greatest(q.base_amount, 0)), 0), 0), 1))::bigint
+                          as exempt
+                 from payment q
+                 where q.folio_id = coalesce(p.details->>'from_folio', p.details->>'to_folio')::uuid
+                   and q.method <> 'transfer' and q.business_date <= p.business_date
+               ) source on p.method = 'transfer' and p.base_amount > 0
+               where p.folio_id in (select folio_id from folios) and p.business_date <= $3) as entries
          group by folio_id, business_date, currency
-         order by folio_id, business_date, currency"
+         order by folio_id, business_date, currency",
+        exempt_p = exempt_base("p"),
+        exempt_q = exempt_base("q"),
     )))
     .bind(property)
     .bind(from)
@@ -117,11 +139,12 @@ pub async fn segments(tx: &mut Tx, property: Uuid, from: Date, upto: Date) -> Re
     }
 
     let bills: Vec<(Uuid, Date, i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select p.pos_bill_id, min(p.business_date), sum({EXEMPT})::bigint, sum(greatest(p.base_amount, 0))::bigint
+        "select p.pos_bill_id, min(p.business_date), sum({exempt})::bigint, sum(greatest(p.base_amount, 0))::bigint
          from payment p join pos_bill b on b.id = p.pos_bill_id
          where b.property_id = $1 and b.settled and p.folio_id is null and p.business_date between $2 and $3
          group by p.pos_bill_id
-         order by p.pos_bill_id"
+         order by p.pos_bill_id",
+        exempt = exempt_base("p"),
     )))
     .bind(property)
     .bind(from)

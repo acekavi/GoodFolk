@@ -27,7 +27,8 @@ pub use close::{
 };
 
 pub use stats::{
-    BreakdownRow, DailyStats, LINES_SQL, RevenueLine, RevenueTax, compute, daily_stats, revenue_lines, store,
+    BreakdownRow, DailyStats, LINES_SQL, RevenueLine, RevenueTax, compute, daily_stats, folio_revenue_lines,
+    revenue_lines, store,
 };
 
 pub use review::{

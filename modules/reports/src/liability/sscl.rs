@@ -2,7 +2,7 @@
 
 use crate::ReportsError;
 use crate::everyday::ratio;
-use crate::liability::lines::revenue_lines;
+use crate::liability::lines::{folio_revenue_lines, revenue_lines};
 use crate::liability::settlement::{Segment, segments};
 use db::Tx;
 use serde::Serialize;
@@ -136,11 +136,19 @@ pub async fn sscl(tx: &mut Tx, property: Uuid, quarter: CalendarQuarter) -> Resu
     for segment in &settled {
         by_folio.entry(segment.folio_id).or_default().push(*segment);
     }
-    let lines_from = settled.iter().map(|segment| segment.covers_from).min().map_or(from, |covers| covers.min(from));
+    // The quarter's lines, then the earlier lines of only the folios whose settlements in the quarter reach back
+    // before it (a bill settled at its outlet covers its own date only).
+    let mut lines = revenue_lines(tx, property, from, to).await?;
+    let reaching_back: Vec<&Segment> = settled.iter().filter(|segment| segment.covers_from < from).collect();
+    if let Some(earliest) = reaching_back.iter().map(|segment| segment.covers_from).min() {
+        let folios: Vec<Uuid> = reaching_back.iter().map(|segment| segment.folio_id).collect();
+        let before = from.previous_day().expect("a quarter starting after the earliest settlement has a day before it");
+        lines.extend(folio_revenue_lines(tx, property, &folios, earliest, before).await?);
+    }
 
     // Sums in minor units, and the exemptions in minor units × basis points, rounded once per printed figure.
     let (mut turnover, mut same_month, mut earlier) = ([0i64; 3], [0i64; 3], [0i64; 3]);
-    for line in revenue_lines(tx, property, lines_from, to).await? {
+    for line in lines {
         let sales = line.net + line.taxes.iter().filter(|tax| tax.0 != "VAT").map(|tax| tax.3).sum::<i64>();
         if let Some(at) = month_of(line.business_date) {
             turnover[at] += sales;

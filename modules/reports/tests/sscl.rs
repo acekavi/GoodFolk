@@ -152,6 +152,63 @@ async fn resettled_folio_not_double_counted(_: PgPoolOptions, opts: PgConnectOpt
     assert_eq!(report.quarter_totals.liable, 1_000_000);
 }
 
+/// A deposit paid by USD card and moved to the stay at check-in carries its share: the stay, settled in USD cash for
+/// the rest, is half exempt.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn deposit_transfer_carries_its_share(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    hotel.register_sltda().await;
+    hotel.set_business_date(date(2026, 7, 8)).await;
+    hotel.rate("USD", 300).await;
+    let stay = hotel.stay("checked_in", date(2026, 7, 10), date(2026, 7, 12), None, "Ann", "Perera").await;
+    let mut tx = hotel.tx().await;
+    let reservation: uuid::Uuid = sqlx::query_scalar("select reservation_id from reservation_room where id = $1")
+        .bind(stay)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    let deposit = folio::ensure_deposit_folio(&mut tx, hotel.tenant, hotel.property, reservation).await.unwrap();
+    let guest = folio::ensure_guest_folio(&mut tx, hotel.tenant, hotel.property, stay).await.unwrap();
+    tx.commit().await.unwrap();
+    hotel.pay(deposit, card(), 10_000, "USD").await;
+
+    hotel.set_business_date(date(2026, 7, 10)).await;
+    let mut tx = hotel.tx().await;
+    folio::move_deposit(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, reservation, stay).await.unwrap();
+    tx.commit().await.unwrap();
+    hotel.line_in(guest, date(2026, 7, 10), "room", 20_000, "USD", 6_000_000).await;
+    hotel.set_business_date(date(2026, 7, 11)).await;
+    hotel.pay(guest, Method::Cash, 10_000, "USD").await;
+    hotel.set_business_date(date(2026, 10, 1)).await;
+
+    let found = segments(&mut hotel.tx().await, hotel.property, date(2026, 7, 1), date(2026, 9, 30)).await.unwrap();
+    let stay_segment = found.iter().find(|segment| segment.folio_id == guest).unwrap();
+    assert_eq!((stay_segment.settled_on, stay_segment.exempt_share_bp), (date(2026, 7, 11), 5_000));
+    let july = &sscl(&hotel, Q3).await.months[0];
+    assert_eq!((july.turnover, july.exempt_same_month, july.foreign_cash), (6_000_000, 3_000_000, 3_000_000));
+}
+
+/// Turnover of June settled in July reads June's lines of that folio only: the folio's exemption is in July, as
+/// turnover of earlier months, and another folio's June lines don't enter the quarter.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn earlier_quarter_lines_of_settled_folio(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    hotel.register_sltda().await;
+    hotel.set_business_date(date(2026, 6, 28)).await;
+    hotel.rate("USD", 300).await;
+    let folio = hotel.folio().await;
+    let other = hotel.folio().await;
+    hotel.line_in(folio, date(2026, 6, 28), "room", 10_000, "USD", 3_000_000).await;
+    hotel.line(other, date(2026, 6, 28), "room", "room", 500_000, &[], None).await;
+    hotel.set_business_date(date(2026, 7, 2)).await;
+    hotel.pay(folio, card(), 10_000, "USD").await;
+    hotel.set_business_date(date(2026, 10, 1)).await;
+
+    let july = &sscl(&hotel, Q3).await.months[0];
+
+    assert_eq!((july.turnover, july.exempt_same_month, july.exempt_earlier_months), (0, 0, 3_000_000));
+}
+
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn not_sltda_registered_exempts_nothing(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;

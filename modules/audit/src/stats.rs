@@ -120,33 +120,7 @@ pub async fn revenue_lines(tx: &mut Tx, property: Uuid, from: Date, to: Date) ->
     };
 
     let lines: Vec<Line> = sqlx::query_as(LINES_SQL).bind(property).bind(from).bind(to).fetch_all(&mut **tx).await?;
-    let mut revenue = Vec::with_capacity(lines.len());
-    for line in lines {
-        let mut net = line.base_total;
-        let mut taxes = Vec::with_capacity(line.tax_codes.len());
-        let tax_rows = line.tax_codes.into_iter().zip(line.tax_kinds).zip(line.tax_presentations).zip(line.tax_amounts);
-        for (((code, kind), presentation), amount) in tax_rows {
-            let amount = convert(amount, &line.currency, line.rate)?;
-            if presentation == "on_bill" {
-                net -= amount;
-            }
-            taxes.push(RevenueTax { code, kind, presentation, amount });
-        }
-        revenue.push(RevenueLine {
-            business_date: line.business_date,
-            folio_id: Some(line.folio_id),
-            pos_bill_id: None,
-            category: line.category,
-            net,
-            taxes,
-            link: Some(Link {
-                id: line.id,
-                posting_key: line.posting_key,
-                reverses: line.reverses,
-                transfer_id: line.transfer_id,
-            }),
-        });
-    }
+    let mut revenue = folio_revenue(lines, base_exponent)?;
 
     // The bills settled in the range: by their payment's date, so a late bill counts on the day it posted. A bill
     // dated in the range with no payment at all is read too, to be refused: every settled bill has one.
@@ -190,6 +164,63 @@ pub async fn revenue_lines(tx: &mut Tx, property: Uuid, from: Date, to: Date) ->
                 link: None,
             });
         }
+    }
+    Ok(revenue)
+}
+
+/// The revenue of the lines of `folios` on `property`, dated `from` to `to` (both included), by [`revenue_lines`]' own
+/// rules: for a reader that needs a few folios' lines over a longer range. No POS bills settled at their outlet.
+/// `NotFound` for a property not in the tenant.
+pub async fn folio_revenue_lines(
+    tx: &mut Tx,
+    property: Uuid,
+    folios: &[Uuid],
+    from: Date,
+    to: Date,
+) -> Result<Vec<RevenueLine>, AuditError> {
+    let base: String = sqlx::query_scalar("select base_currency::text from property where id = $1")
+        .bind(property)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(AuditError::NotFound("property"))?;
+    let lines: Vec<Line> = sqlx::query_as(sqlx::AssertSqlSafe(format!("{LINES_SQL} and l.folio_id = any($4)")))
+        .bind(property)
+        .bind(from)
+        .bind(to)
+        .bind(folios)
+        .fetch_all(&mut **tx)
+        .await?;
+    folio_revenue(lines, fx::exponent(&base))
+}
+
+/// Folio lines as revenue: net of their on-bill taxes, each tax converted at the line's rate.
+fn folio_revenue(lines: Vec<Line>, base_exponent: u32) -> Result<Vec<RevenueLine>, AuditError> {
+    let mut revenue = Vec::with_capacity(lines.len());
+    for line in lines {
+        let mut net = line.base_total;
+        let mut taxes = Vec::with_capacity(line.tax_codes.len());
+        let tax_rows = line.tax_codes.into_iter().zip(line.tax_kinds).zip(line.tax_presentations).zip(line.tax_amounts);
+        for (((code, kind), presentation), amount) in tax_rows {
+            let amount = fx::to_base(amount, fx::exponent(&line.currency), base_exponent, line.rate)?;
+            if presentation == "on_bill" {
+                net -= amount;
+            }
+            taxes.push(RevenueTax { code, kind, presentation, amount });
+        }
+        revenue.push(RevenueLine {
+            business_date: line.business_date,
+            folio_id: Some(line.folio_id),
+            pos_bill_id: None,
+            category: line.category,
+            net,
+            taxes,
+            link: Some(Link {
+                id: line.id,
+                posting_key: line.posting_key,
+                reverses: line.reverses,
+                transfer_id: line.transfer_id,
+            }),
+        });
     }
     Ok(revenue)
 }
