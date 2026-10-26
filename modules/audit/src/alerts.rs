@@ -16,6 +16,8 @@ pub enum AlertKind {
     Drift,
     /// Linen stock below par in a pantry or the store.
     Linen,
+    /// A report that could not be built or rendered.
+    Reports,
 }
 
 impl AlertKind {
@@ -24,6 +26,7 @@ impl AlertKind {
             AlertKind::Audit => "audit",
             AlertKind::Drift => "drift",
             AlertKind::Linen => "linen",
+            AlertKind::Reports => "reports",
         }
     }
 
@@ -32,6 +35,7 @@ impl AlertKind {
             "audit" => Some(AlertKind::Audit),
             "drift" => Some(AlertKind::Drift),
             "linen" => Some(AlertKind::Linen),
+            "reports" => Some(AlertKind::Reports),
             _ => None,
         }
     }

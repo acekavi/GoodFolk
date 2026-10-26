@@ -16,6 +16,8 @@ export const TaxSettingsDocument = graphql(`
 			vatRegistered
 			tin
 			sltdaLicence
+			tdlRegistrationNo
+			vatReturnPeriod
 			tdlSmallTurnover
 			legalName
 			address
@@ -56,6 +58,7 @@ export const OutletsDocument = graphql(`
 			serviceCharge
 			active
 			version
+			reportGroup
 		}
 	}
 `);

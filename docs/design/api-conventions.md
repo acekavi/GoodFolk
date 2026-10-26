@@ -54,6 +54,8 @@ Simple single-object reads that bootstrap the app (`GET /api/v1/me`) may be REST
   | `LaundryOrders` (view, take and move guest laundry orders, and the `laundry:` events) | ✓ | ✓ | ✓ | ✓ | | ✓ |  |
   | `LaundryPricesManage` (the guest laundry price list) | ✓ | ✓ | | | |  |  |
   | `StaffManage` (invitations, member grants and revocation; managers only for junior roles, below) | ✓ | ✓ | | | | | |
+  | `ReportsView` (the weekly, monthly and service charge reports) | ✓ | ✓ | | | ✓ | | |
+  | `ReportsLiability` (the TDL, SSCL and VAT reports) | ✓ | | | | ✓ | | |
 
   The `pos` role holds `PosPost` alone, and `PosPost` also allows two reads a till needs: the property's active outlets (the GraphQL `outlets` read) and GraphQL `posInHouse(propertyId)`, which returns the in-house stays as `reservation_room` id, room number (nullable) and guest name, and nothing else. A `pos`-only user has no SPA pages, and a test checks every other route group answers `403`. `StaffManage` is held by owners and managers; a manager is further limited to *junior* roles (`front_desk`, `housekeeping`, `hk_supervisor`, `accountant`, `pos`): they act (invite, re-grant, remove, resend, revoke) only on members and invitations whose every grant is junior and at a property they manage, and give only junior grants at properties where they hold `manager` (a tenant-wide junior grant needs a tenant-wide `manager`). Only owners grant `manager`, nobody grants `owner`, and the refusal is `403` naming the role or property (`identity::rbac::check_may_give` and `check_may_act_on`).
 

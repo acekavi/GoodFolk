@@ -1663,6 +1663,8 @@ pub struct OutletNode {
     pub service_charge: bool,
     pub active: bool,
     pub version: i32,
+    /// `food`, `bar` or `other`: the TDL line the outlet's sales fall under on the business date.
+    pub report_group: String,
 }
 
 impl From<folio::OutletRow> for OutletNode {
@@ -1674,6 +1676,7 @@ impl From<folio::OutletRow> for OutletNode {
             service_charge: o.service_charge,
             active: o.active,
             version: o.version,
+            report_group: o.report_group.as_str().to_owned(),
         }
     }
 }
@@ -1721,6 +1724,9 @@ pub struct TaxSettingsNode {
     pub vat_registered: bool,
     pub tin: Option<String>,
     pub sltda_licence: Option<String>,
+    pub tdl_registration_no: Option<String>,
+    /// `monthly` or `quarterly`.
+    pub vat_return_period: String,
     /// The tourism development levy's small-turnover band, used when the preset is applied.
     pub tdl_small_turnover: bool,
     /// The supplier's name on invoices; the property's name when `null`.
@@ -1738,6 +1744,8 @@ impl From<property::TaxSettings> for TaxSettingsNode {
             vat_registered: s.vat_registered,
             tin: s.tin,
             sltda_licence: s.sltda_licence,
+            tdl_registration_no: s.tdl_registration_no,
+            vat_return_period: s.vat_return_period.as_str().to_owned(),
             tdl_small_turnover: s.tdl_small_turnover,
             legal_name: s.legal_name,
             address: s.address,
@@ -2038,6 +2046,7 @@ mirror_enum!(
         LockFx,
         SnapshotStats,
         AdvanceBusinessDate,
+        RenderReports,
     }
 );
 
@@ -2188,11 +2197,11 @@ impl From<audit::DailyStats> for DailyStatsNode {
     }
 }
 
-mirror_enum!(OpsAlertKindNode as "OpsAlertKind" from audit::AlertKind { Audit, Drift, Linen });
+mirror_enum!(OpsAlertKindNode as "OpsAlertKind" from audit::AlertKind { Audit, Drift, Linen, Reports });
 
 /// A problem a person must look at: an automatic close that failed its third attempt (`AUDIT`), inventory
-/// counters that drifted from the stays they count (`DRIFT`), or linen below par (`LINEN`). Shown until what raised it
-/// is resolved.
+/// counters that drifted from the stays they count (`DRIFT`), linen below par (`LINEN`), or a report that could not
+/// be built (`REPORTS`). Shown until what raised it is resolved.
 #[derive(SimpleObject)]
 pub struct OpsAlertNode {
     pub kind: OpsAlertKindNode,
@@ -3688,8 +3697,8 @@ impl Query {
         Ok(days.into_iter().map(DailyStatsNode::from).collect())
     }
 
-    /// The property's raised ops alerts that the caller may see, by kind; empty when all is well. The `AUDIT` and
-    /// `DRIFT` alerts need `PropertiesManage`, the `LINEN` alert `LinenManage`.
+    /// The property's raised ops alerts that the caller may see, by kind; empty when all is well. The `AUDIT`,
+    /// `DRIFT` and `REPORTS` alerts need `PropertiesManage`, the `LINEN` alert `LinenManage`.
     async fn ops_alerts(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<OpsAlertNode>> {
         let mut tx = scoped_any(ctx, &[Permission::PropertiesManage, Permission::LinenManage], property_id).await?;
         let tenant = ctx.data::<TenantContext>()?;
@@ -3700,7 +3709,7 @@ impl Query {
         Ok(alerts
             .into_iter()
             .filter(|a| match a.kind {
-                audit::AlertKind::Audit | audit::AlertKind::Drift => properties,
+                audit::AlertKind::Audit | audit::AlertKind::Drift | audit::AlertKind::Reports => properties,
                 audit::AlertKind::Linen => linen,
             })
             .map(|a| OpsAlertNode { kind: a.kind.into(), message: a.message, raised_at: a.raised_at })

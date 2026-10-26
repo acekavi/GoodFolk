@@ -1081,7 +1081,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Changes an outlet's name, service charge or whether it is active. Audited. */
+        /** Changes an outlet's name, service charge, report group or whether it is active. Audited. */
         patch: operations["update_outlet"];
         trace?: never;
     };
@@ -1860,7 +1860,7 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Changes the property's tax settings: VAT registration, TIN, the small-turnover levy band, the legal name and
+         * Changes the property's tax settings: VAT registration, TIN, the TDL registration number, the VAT return period, the small-turnover levy band, the legal name and
          *     address printed on invoices, and the accepted currencies. Shares the property's version. Audited with the values
          *     before and after.
          */
@@ -2321,6 +2321,8 @@ export interface components {
             code: string;
             /** @description 1 to 100 characters once trimmed. */
             name: string;
+            /** @description The line of SLTDA's TDL form the outlet's sales fall under; `food` when left out. */
+            report_group?: components["schemas"]["ReportGroup"];
             /** @description Whether the property's service charge applies to the outlet's bills; true when left out. */
             service_charge?: boolean;
         };
@@ -3005,6 +3007,8 @@ export interface components {
             name: string;
             /** Format: uuid */
             property_id: string;
+            /** @description The TDL line the outlet's sales fall under on the property's current business date. */
+            report_group: components["schemas"]["ReportGroup"];
             /** @description Whether the property's service charge applies to the outlet's bills. */
             service_charge: boolean;
             /** Format: int32 */
@@ -3444,6 +3448,11 @@ export interface components {
             /** @description Every id of the collection, in the new display order. */
             ids: string[];
         };
+        /**
+         * @description The line of SLTDA's TDL form an outlet's sales fall under.
+         * @enum {string}
+         */
+        ReportGroup: "food" | "bar" | "other";
         ReportIssueRequest: {
             description: string;
             /** Format: uuid */
@@ -3845,12 +3854,16 @@ export interface components {
             property_id: string;
             /** @description The SLTDA licence number printed under the TIN on invoices. */
             sltda_licence?: string | null;
+            /** @description The registration number printed on the SLTDA tourism development levy return. */
+            tdl_registration_no?: string | null;
             /** @description The tourism development levy's small-turnover band (0.5% instead of 1%), used when the preset is applied. */
             tdl_small_turnover: boolean;
             /** @description The taxpayer identification number printed on invoices. */
             tin?: string | null;
             /** @description VAT applies, and invoices are tax invoices, which need the TIN. */
             vat_registered: boolean;
+            /** @description How often the VAT return is filed; the VAT schedule covers a month or a quarter accordingly. */
+            vat_return_period: components["schemas"]["VatReturnPeriod"];
             /**
              * Format: int32
              * @description The property's version, shared with its other settings: send it as `If-Match`.
@@ -3979,6 +3992,7 @@ export interface components {
             /** @description An inactive outlet takes no new bills; its past bills stay. */
             active?: boolean | null;
             name?: string | null;
+            report_group?: components["schemas"]["ReportGroup"] | null;
             service_charge?: boolean | null;
         };
         UpdatePropertyRequest: {
@@ -4077,7 +4091,10 @@ export interface components {
             /** Format: int32 */
             sequence?: number | null;
         };
-        /** @description Fields left out keep their value; `null` clears `tin`, `sltda_licence`, `legal_name` or `address`. */
+        /**
+         * @description Fields left out keep their value; `null` clears `tin`, `sltda_licence`, `tdl_registration_no`, `legal_name` or
+         *     `address`.
+         */
         UpdateTaxSettingsRequest: {
             /** @description ISO 4217 codes, 1 to 20, including the base currency. */
             accepted_currencies?: string[] | null;
@@ -4085,11 +4102,14 @@ export interface components {
             legal_name?: string | null;
             /** @description 1 to 50 characters, with no whitespace around them. */
             sltda_licence?: string | null;
+            /** @description 1 to 30 characters, with no whitespace around them. */
+            tdl_registration_no?: string | null;
             /** @description The tourism development levy's small-turnover band; takes effect on the rules when the preset is applied. */
             tdl_small_turnover?: boolean | null;
             /** @description 5 to 20 digits, capital letters or `-`. */
             tin?: string | null;
             vat_registered?: boolean | null;
+            vat_return_period?: components["schemas"]["VatReturnPeriod"] | null;
         };
         /** @description A reservation after [`update_reservation`]. */
         UpdatedReservation: {
@@ -4113,6 +4133,11 @@ export interface components {
             /** Format: int32 */
             number: number;
         };
+        /**
+         * @description How often the property files its VAT return.
+         * @enum {string}
+         */
+        VatReturnPeriod: "monthly" | "quarterly";
     };
     responses: never;
     parameters: never;

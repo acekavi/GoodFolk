@@ -21,12 +21,19 @@ pub enum Step {
     LockFx,
     SnapshotStats,
     AdvanceBusinessDate,
+    RenderReports,
 }
 
 impl Step {
     /// Every step, in order.
-    pub const ALL: [Step; 5] =
-        [Step::Resolve, Step::PostCharges, Step::LockFx, Step::SnapshotStats, Step::AdvanceBusinessDate];
+    pub const ALL: [Step; 6] = [
+        Step::Resolve,
+        Step::PostCharges,
+        Step::LockFx,
+        Step::SnapshotStats,
+        Step::AdvanceBusinessDate,
+        Step::RenderReports,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -35,6 +42,7 @@ impl Step {
             Step::LockFx => "lock_fx",
             Step::SnapshotStats => "snapshot_stats",
             Step::AdvanceBusinessDate => "advance_business_date",
+            Step::RenderReports => "render_reports",
         }
     }
 

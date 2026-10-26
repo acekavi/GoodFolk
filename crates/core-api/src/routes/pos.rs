@@ -10,7 +10,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use db::Scope;
-use folio::{NewOutlet, OutletChanges, OutletRow, PosBillIn, PosBillRow, PosItem, PosOutcome, PosTarget};
+use folio::{NewOutlet, OutletChanges, OutletRow, PosBillIn, PosBillRow, PosItem, PosOutcome, PosTarget, ReportGroup};
 use garde::Validate;
 use identity::Permission;
 use serde::Deserialize;
@@ -20,6 +20,10 @@ use uuid::Uuid;
 
 fn yes() -> bool {
     true
+}
+
+fn food() -> ReportGroup {
+    ReportGroup::Food
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -35,6 +39,10 @@ pub struct CreateOutletRequest {
     #[serde(default = "yes")]
     #[garde(skip)]
     pub service_charge: bool,
+    /// The line of SLTDA's TDL form the outlet's sales fall under; `food` when left out.
+    #[serde(default = "food")]
+    #[garde(skip)]
+    pub report_group: ReportGroup,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -46,11 +54,14 @@ pub struct UpdateOutletRequest {
     /// An inactive outlet takes no new bills; its past bills stay.
     #[garde(skip)]
     pub active: Option<bool>,
+    /// Applies from the property's current business date; earlier days keep the group they were reported under.
+    #[garde(skip)]
+    pub report_group: Option<ReportGroup>,
 }
 
 impl Changes for UpdateOutletRequest {
     fn is_empty(&self) -> bool {
-        self.name.is_none() && self.service_charge.is_none() && self.active.is_none()
+        self.name.is_none() && self.service_charge.is_none() && self.active.is_none() && self.report_group.is_none()
     }
 }
 
@@ -68,7 +79,12 @@ pub async fn create_outlet(
 ) -> Result<Versioned<OutletRow>, ApiError> {
     ctx.require(Permission::TaxSettingsManage, Some(property))?;
     validate(&body)?;
-    let input = NewOutlet { code: body.code, name: body.name, service_charge: body.service_charge };
+    let input = NewOutlet {
+        code: body.code,
+        name: body.name,
+        service_charge: body.service_charge,
+        report_group: body.report_group,
+    };
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
     let outlet =
         folio::create_outlet(&mut tx, ctx.tenant, Some(ctx.user), property, input).await.map_err(folio_error)?;
@@ -76,7 +92,7 @@ pub async fn create_outlet(
     Ok(Versioned::created(outlet.version, outlet))
 }
 
-/// Changes an outlet's name, service charge or whether it is active. Audited.
+/// Changes an outlet's name, service charge, report group or whether it is active. Audited.
 #[utoipa::path(patch, operation_id = "update_outlet", path = "/api/v1/properties/{property}/outlets/{outlet}", request_body = UpdateOutletRequest,
     params(("property" = Uuid, Path), ("outlet" = Uuid, Path), ("If-Match" = String, Header)),
     responses((status = 200, body = OutletRow,
@@ -90,7 +106,12 @@ pub async fn update_outlet(
 ) -> Result<Versioned<OutletRow>, ApiError> {
     ctx.require(Permission::TaxSettingsManage, Some(property))?;
     validate_changes(&body)?;
-    let changes = OutletChanges { name: body.name, service_charge: body.service_charge, active: body.active };
+    let changes = OutletChanges {
+        name: body.name,
+        service_charge: body.service_charge,
+        active: body.active,
+        report_group: body.report_group,
+    };
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
     let updated = folio::update_outlet(&mut tx, ctx.tenant, Some(ctx.user), property, outlet, version, changes)
         .await

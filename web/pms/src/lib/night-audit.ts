@@ -228,7 +228,8 @@ export function seesOpsAlerts(profile: Profile, propertyId: string): boolean {
 const OPS_ALERT_LABELS: Record<OpsAlert['kind'], string> = {
 	AUDIT: 'Night audit',
 	DRIFT: 'Inventory counts',
-	LINEN: 'Linen'
+	LINEN: 'Linen',
+	REPORTS: 'Reports'
 };
 
 export function opsAlertLabel(kind: OpsAlert['kind']): string {
@@ -305,7 +306,8 @@ const STEP_LABELS: Record<AuditStep, string> = {
 	POST_CHARGES: "Post tonight's charges",
 	LOCK_FX: 'Lock exchange rates',
 	SNAPSHOT_STATS: 'Snapshot statistics',
-	ADVANCE_BUSINESS_DATE: 'Advance the business date'
+	ADVANCE_BUSINESS_DATE: 'Advance the business date',
+	RENDER_REPORTS: 'Render reports'
 };
 
 export function stepLabel(step: AuditStep): string {

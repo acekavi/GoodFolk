@@ -68,6 +68,7 @@ impl Role {
                     | LaundryOrders
                     | LaundryPricesManage
                     | StaffManage
+                    | ReportsView
             ),
             Role::FrontDesk => matches!(
                 permission,
@@ -129,6 +130,8 @@ impl Role {
                         | ReservationsView
                         | FolioView
                         | InvoiceIssue
+                        | ReportsView
+                        | ReportsLiability
                 )
             }
         }
@@ -202,6 +205,10 @@ pub enum Permission {
     LaundryPricesManage,
     /// See [`describe`].
     StaffManage,
+    /// See [`describe`].
+    ReportsView,
+    /// See [`describe`].
+    ReportsLiability,
 }
 
 impl Permission {
@@ -241,12 +248,14 @@ impl Permission {
             LaundryOrders => "LaundryOrders",
             LaundryPricesManage => "LaundryPricesManage",
             StaffManage => "StaffManage",
+            ReportsView => "ReportsView",
+            ReportsLiability => "ReportsLiability",
         }
     }
 }
 
 /// Every permission, in declaration order.
-pub const ALL_PERMISSIONS: [Permission; 32] = [
+pub const ALL_PERMISSIONS: [Permission; 34] = [
     Permission::PropertiesView,
     Permission::PropertiesCreate,
     Permission::PropertiesManage,
@@ -279,6 +288,8 @@ pub const ALL_PERMISSIONS: [Permission; 32] = [
     Permission::LaundryOrders,
     Permission::LaundryPricesManage,
     Permission::StaffManage,
+    Permission::ReportsView,
+    Permission::ReportsLiability,
 ];
 
 /// Every role.
@@ -342,6 +353,8 @@ pub fn describe(permission: Permission) -> &'static str {
         StaffManage => {
             "Invite staff, change their roles and remove them; managers only for junior roles at their properties."
         }
+        ReportsView => "See the weekly and monthly reports and the service charge report, and run an on-demand report.",
+        ReportsLiability => "See and download the TDL, SSCL and VAT reports.",
     }
 }
 

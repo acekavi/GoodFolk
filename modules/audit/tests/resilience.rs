@@ -122,7 +122,8 @@ async fn hotel(opts: PgConnectOptions) -> (Hotel, Vec<String>) {
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_close_interrupted_at_any_point_resumes_to_the_same_end(_: PgPoolOptions, opts: PgConnectOptions) {
-    for step in Step::ALL {
+    // `render_reports` is not part of the close yet.
+    for step in Step::ALL.into_iter().filter(|step| *step != Step::RenderReports) {
         for before in [true, false] {
             let case = format!("{} {}", if before { "before" } else { "after" }, step.as_str());
             let (hotel, keys) = hotel(opts.clone()).await;

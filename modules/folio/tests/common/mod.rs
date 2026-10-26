@@ -103,7 +103,12 @@ impl Hotel {
     /// An active outlet of the hotel's property.
     pub async fn outlet(&self, code: &str, name: &str, service_charge: bool) -> folio::OutletRow {
         let mut tx = self.tx().await;
-        let input = folio::NewOutlet { code: code.into(), name: name.into(), service_charge };
+        let input = folio::NewOutlet {
+            code: code.into(),
+            name: name.into(),
+            service_charge,
+            report_group: folio::ReportGroup::Food,
+        };
         let outlet = folio::create_outlet(&mut tx, self.tenant, Some(self.user), self.property, input).await.unwrap();
         tx.commit().await.unwrap();
         outlet

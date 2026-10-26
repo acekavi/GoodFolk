@@ -22,6 +22,7 @@ export type AuditStep =
   | 'ADVANCE_BUSINESS_DATE'
   | 'LOCK_FX'
   | 'POST_CHARGES'
+  | 'RENDER_REPORTS'
   | 'RESOLVE'
   | 'SNAPSHOT_STATS';
 
@@ -179,7 +180,8 @@ export type Occupancy =
 export type OpsAlertKind =
   | 'AUDIT'
   | 'DRIFT'
-  | 'LINEN';
+  | 'LINEN'
+  | 'REPORTS';
 
 export type PenaltyKind =
   | 'AMOUNT'
@@ -606,14 +608,14 @@ export type TaxSettingsQueryVariables = Exact<{
 }>;
 
 
-export type TaxSettingsQuery = { propertyTaxSettings: { vatRegistered: boolean, tin: string | null, sltdaLicence: string | null, tdlSmallTurnover: boolean, legalName: string | null, address: string | null, baseCurrency: string, acceptedCurrencies: Array<string>, version: number }, taxRules: Array<{ id: string, code: string, name: string, kind: TaxKind, rateBp: number, appliesTo: Array<string>, base: Array<string>, sequence: number, presentation: TaxPresentation, condition: unknown, effectiveFrom: string, effectiveTo: string | null, version: number }>, outlets: Array<{ code: string, name: string, active: boolean }> };
+export type TaxSettingsQuery = { propertyTaxSettings: { vatRegistered: boolean, tin: string | null, sltdaLicence: string | null, tdlRegistrationNo: string | null, vatReturnPeriod: string, tdlSmallTurnover: boolean, legalName: string | null, address: string | null, baseCurrency: string, acceptedCurrencies: Array<string>, version: number }, taxRules: Array<{ id: string, code: string, name: string, kind: TaxKind, rateBp: number, appliesTo: Array<string>, base: Array<string>, sequence: number, presentation: TaxPresentation, condition: unknown, effectiveFrom: string, effectiveTo: string | null, version: number }>, outlets: Array<{ code: string, name: string, active: boolean }> };
 
 export type OutletsQueryVariables = Exact<{
   propertyId: string;
 }>;
 
 
-export type OutletsQuery = { outlets: Array<{ id: string, code: string, name: string, serviceCharge: boolean, active: boolean, version: number }> };
+export type OutletsQuery = { outlets: Array<{ id: string, code: string, name: string, serviceCharge: boolean, active: boolean, version: number, reportGroup: string }> };
 
 export type ExchangeRatesQueryVariables = Exact<{
   propertyId: string;
@@ -1626,6 +1628,8 @@ export const TaxSettingsDocument = new TypedDocumentString(`
     vatRegistered
     tin
     sltdaLicence
+    tdlRegistrationNo
+    vatReturnPeriod
     tdlSmallTurnover
     legalName
     address
@@ -1654,7 +1658,7 @@ export const TaxSettingsDocument = new TypedDocumentString(`
     active
   }
 }
-    `, {"hash":"sha256:2ad597ef9813904dca734131ed7c9921157fd2acb7b4554db1e2fadceef5b093"}) as unknown as TypedDocumentString<TaxSettingsQuery, TaxSettingsQueryVariables>;
+    `, {"hash":"sha256:5df4d50e6ec4d1a28561f7b9d519430047f70484646bc2139e9575f680ccf224"}) as unknown as TypedDocumentString<TaxSettingsQuery, TaxSettingsQueryVariables>;
 export const OutletsDocument = new TypedDocumentString(`
     query Outlets($propertyId: UUID!) {
   outlets(propertyId: $propertyId) {
@@ -1664,9 +1668,10 @@ export const OutletsDocument = new TypedDocumentString(`
     serviceCharge
     active
     version
+    reportGroup
   }
 }
-    `, {"hash":"sha256:1a3fff7da8b5e4c157994174167fd7d89bf1a31ccb0562ff1de5dfc734ff53be"}) as unknown as TypedDocumentString<OutletsQuery, OutletsQueryVariables>;
+    `, {"hash":"sha256:372d71b5a66a5670b725be6895fd30b1e8cd82b0cbf2b49c0b0970812d8d4c89"}) as unknown as TypedDocumentString<OutletsQuery, OutletsQueryVariables>;
 export const ExchangeRatesDocument = new TypedDocumentString(`
     query ExchangeRates($propertyId: UUID!, $from: Date!, $to: Date!) {
   fxRates(propertyId: $propertyId, from: $from, to: $to) {

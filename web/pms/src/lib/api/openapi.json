@@ -3100,7 +3100,7 @@
         "tags": [
           "crate::routes::pos"
         ],
-        "summary": "Changes an outlet's name, service charge or whether it is active. Audited.",
+        "summary": "Changes an outlet's name, service charge, report group or whether it is active. Audited.",
         "operationId": "update_outlet",
         "parameters": [
           {
@@ -5804,7 +5804,7 @@
         "tags": [
           "crate::routes::taxes"
         ],
-        "summary": "Changes the property's tax settings: VAT registration, TIN, the small-turnover levy band, the legal name and\naddress printed on invoices, and the accepted currencies. Shares the property's version. Audited with the values\nbefore and after.",
+        "summary": "Changes the property's tax settings: VAT registration, TIN, the TDL registration number, the VAT return period, the small-turnover levy band, the legal name and\naddress printed on invoices, and the accepted currencies. Shares the property's version. Audited with the values\nbefore and after.",
         "operationId": "update_tax_settings",
         "parameters": [
           {
@@ -7013,6 +7013,10 @@
           "name": {
             "type": "string",
             "description": "1 to 100 characters once trimmed."
+          },
+          "report_group": {
+            "$ref": "#/components/schemas/ReportGroup",
+            "description": "The line of SLTDA's TDL form the outlet's sales fall under; `food` when left out."
           },
           "service_charge": {
             "type": "boolean",
@@ -8739,7 +8743,8 @@
           "name",
           "service_charge",
           "active",
-          "version"
+          "version",
+          "report_group"
         ],
         "properties": {
           "active": {
@@ -8759,6 +8764,10 @@
           "property_id": {
             "type": "string",
             "format": "uuid"
+          },
+          "report_group": {
+            "$ref": "#/components/schemas/ReportGroup",
+            "description": "The TDL line the outlet's sales fall under on the property's current business date."
           },
           "service_charge": {
             "type": "boolean",
@@ -9846,6 +9855,15 @@
           }
         }
       },
+      "ReportGroup": {
+        "type": "string",
+        "description": "The line of SLTDA's TDL form an outlet's sales fall under.",
+        "enum": [
+          "food",
+          "bar",
+          "other"
+        ]
+      },
       "ReportIssueRequest": {
         "type": "object",
         "required": [
@@ -10882,6 +10900,7 @@
         "required": [
           "property_id",
           "vat_registered",
+          "vat_return_period",
           "tdl_small_turnover",
           "base_currency",
           "accepted_currencies",
@@ -10922,6 +10941,13 @@
             ],
             "description": "The SLTDA licence number printed under the TIN on invoices."
           },
+          "tdl_registration_no": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The registration number printed on the SLTDA tourism development levy return."
+          },
           "tdl_small_turnover": {
             "type": "boolean",
             "description": "The tourism development levy's small-turnover band (0.5% instead of 1%), used when the preset is applied."
@@ -10936,6 +10962,10 @@
           "vat_registered": {
             "type": "boolean",
             "description": "VAT applies, and invoices are tax invoices, which need the TIN."
+          },
+          "vat_return_period": {
+            "$ref": "#/components/schemas/VatReturnPeriod",
+            "description": "How often the VAT return is filed; the VAT schedule covers a month or a quarter accordingly."
           },
           "version": {
             "type": "integer",
@@ -11374,6 +11404,17 @@
               "null"
             ]
           },
+          "report_group": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReportGroup",
+                "description": "Applies from the property's current business date; earlier days keep the group they were reported under."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "service_charge": {
             "type": [
               "boolean",
@@ -11748,7 +11789,7 @@
       },
       "UpdateTaxSettingsRequest": {
         "type": "object",
-        "description": "Fields left out keep their value; `null` clears `tin`, `sltda_licence`, `legal_name` or `address`.",
+        "description": "Fields left out keep their value; `null` clears `tin`, `sltda_licence`, `tdl_registration_no`, `legal_name` or\n`address`.",
         "properties": {
           "accepted_currencies": {
             "type": [
@@ -11779,6 +11820,13 @@
             ],
             "description": "1 to 50 characters, with no whitespace around them."
           },
+          "tdl_registration_no": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "1 to 30 characters, with no whitespace around them."
+          },
           "tdl_small_turnover": {
             "type": [
               "boolean",
@@ -11797,6 +11845,17 @@
             "type": [
               "boolean",
               "null"
+            ]
+          },
+          "vat_return_period": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/VatReturnPeriod",
+                "description": "`monthly` or `quarterly`."
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         }
@@ -11865,6 +11924,14 @@
             "minimum": 0
           }
         }
+      },
+      "VatReturnPeriod": {
+        "type": "string",
+        "description": "How often the property files its VAT return.",
+        "enum": [
+          "monthly",
+          "quarterly"
+        ]
       }
     }
   }

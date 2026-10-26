@@ -204,6 +204,7 @@ enum AuditStep {
 	LOCK_FX
 	SNAPSHOT_STATS
 	ADVANCE_BUSINESS_DATE
+	RENDER_REPORTS
 }
 
 """
@@ -1243,12 +1244,13 @@ enum OpsAlertKind {
 	AUDIT
 	DRIFT
 	LINEN
+	REPORTS
 }
 
 """
 A problem a person must look at: an automatic close that failed its third attempt (`AUDIT`), inventory
-counters that drifted from the stays they count (`DRIFT`), or linen below par (`LINEN`). Shown until what raised it
-is resolved.
+counters that drifted from the stays they count (`DRIFT`), linen below par (`LINEN`), or a report that could not
+be built (`REPORTS`). Shown until what raised it is resolved.
 """
 type OpsAlertNode {
 	kind: OpsAlertKind!
@@ -1269,6 +1271,10 @@ type OutletNode {
 	serviceCharge: Boolean!
 	active: Boolean!
 	version: Int!
+	"""
+	`food`, `bar` or `other`: the TDL line the outlet's sales fall under on the business date.
+	"""
+	reportGroup: String!
 }
 
 type PageInfo {
@@ -1668,8 +1674,8 @@ type Query {
 	"""
 	dailyStats(propertyId: UUID!, from: Date!, to: Date!): [DailyStatsNode!]!
 	"""
-	The property's raised ops alerts that the caller may see, by kind; empty when all is well. The `AUDIT` and
-	`DRIFT` alerts need `PropertiesManage`, the `LINEN` alert `LinenManage`.
+	The property's raised ops alerts that the caller may see, by kind; empty when all is well. The `AUDIT`,
+	`DRIFT` and `REPORTS` alerts need `PropertiesManage`, the `LINEN` alert `LinenManage`.
 	"""
 	opsAlerts(propertyId: UUID!): [OpsAlertNode!]!
 }
@@ -2216,6 +2222,11 @@ type TaxSettingsNode {
 	vatRegistered: Boolean!
 	tin: String
 	sltdaLicence: String
+	tdlRegistrationNo: String
+	"""
+	`monthly` or `quarterly`.
+	"""
+	vatReturnPeriod: String!
 	"""
 	The tourism development levy's small-turnover band, used when the preset is applied.
 	"""

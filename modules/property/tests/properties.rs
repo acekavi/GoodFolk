@@ -1,8 +1,8 @@
 use db::testing::app_pool;
 use db::{Scope, TenantId, UserId, begin};
 use property::{
-    NewProperty, PropertyChanges, PropertyError, TaxSettingsChanges, create_property, list_properties, tax_settings,
-    update_property, update_tax_settings,
+    NewProperty, PropertyChanges, PropertyError, TaxSettingsChanges, VatReturnPeriod, create_property, list_properties,
+    tax_settings, update_property, update_tax_settings,
 };
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -95,4 +95,49 @@ async fn the_name_and_the_sltda_licence_round_trip(_: PgPoolOptions, opts: PgCon
     let cleared = TaxSettingsChanges { sltda_licence: Some(None), ..Default::default() };
     let cleared = update_tax_settings(&mut tx, tenant, user, galle.id, untouched.version, cleared).await.unwrap();
     assert_eq!(cleared.sltda_licence, None);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_tdl_registration_number_and_vat_return_period_round_trip_and_are_audited(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let pool = app_pool(opts, 1).await;
+    let (tenant, user) = tenant_with_user(&pool).await;
+    let mut tx = begin(&pool, Scope::tenant(tenant)).await.unwrap();
+    let galle = create_property(&mut tx, tenant, user, hotel("GAL", "Asia/Colombo")).await.unwrap();
+    let initial = tax_settings(&mut tx, galle.id).await.unwrap();
+    assert_eq!((initial.tdl_registration_no.as_deref(), initial.vat_return_period), (None, VatReturnPeriod::Quarterly));
+
+    let set = TaxSettingsChanges {
+        tdl_registration_no: Some(Some("TDL/GAL/0007".into())),
+        vat_return_period: Some(VatReturnPeriod::Monthly),
+        ..Default::default()
+    };
+    let set = update_tax_settings(&mut tx, tenant, user, galle.id, galle.version, set).await.unwrap();
+    assert_eq!(set.tdl_registration_no.as_deref(), Some("TDL/GAL/0007"));
+    assert_eq!(set.vat_return_period, VatReturnPeriod::Monthly);
+    assert_eq!(tax_settings(&mut tx, galle.id).await.unwrap(), set);
+
+    let untouched = TaxSettingsChanges { vat_registered: Some(true), ..Default::default() };
+    let untouched = update_tax_settings(&mut tx, tenant, user, galle.id, set.version, untouched).await.unwrap();
+    assert_eq!(untouched.tdl_registration_no.as_deref(), Some("TDL/GAL/0007"), "left out keeps it");
+    assert_eq!(untouched.vat_return_period, VatReturnPeriod::Monthly);
+
+    let cleared = TaxSettingsChanges { tdl_registration_no: Some(None), ..Default::default() };
+    let cleared = update_tax_settings(&mut tx, tenant, user, galle.id, untouched.version, cleared).await.unwrap();
+    assert_eq!(cleared.tdl_registration_no, None);
+
+    let audited: Vec<serde_json::Value> = sqlx::query_scalar(
+        "select data from audit_log where action = 'property.tax_settings_updated' and entity_id = $1
+         order by id",
+    )
+    .bind(galle.id)
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(audited[0]["before"]["tdl_registration_no"], serde_json::Value::Null);
+    assert_eq!(audited[0]["before"]["vat_return_period"], "quarterly");
+    assert_eq!(audited[0]["after"]["tdl_registration_no"], "TDL/GAL/0007");
+    assert_eq!(audited[0]["after"]["vat_return_period"], "monthly");
 }

@@ -78,6 +78,7 @@ fn each_role_has_exactly_its_permissions() {
                 LaundryOrders,
                 LaundryPricesManage,
                 StaffManage,
+                ReportsView,
             ],
         ),
         (
@@ -119,7 +120,17 @@ fn each_role_has_exactly_its_permissions() {
         ),
         (
             Role::Accountant,
-            &[PropertiesView, RoomsView, InventoryView, RatesView, ReservationsView, FolioView, InvoiceIssue],
+            &[
+                PropertiesView,
+                RoomsView,
+                InventoryView,
+                RatesView,
+                ReservationsView,
+                FolioView,
+                InvoiceIssue,
+                ReportsView,
+                ReportsLiability,
+            ],
         ),
         (
             Role::HkSupervisor,
@@ -270,6 +281,22 @@ fn only_owners_and_managers_manage_staff() {
 }
 
 #[test]
+fn reports_are_for_owners_managers_and_accountants_and_liability_reports_for_owners_and_accountants() {
+    assert_eq!(roles_allowed(Permission::ReportsView), [Role::Owner, Role::Manager, Role::Accountant]);
+    assert_eq!(roles_allowed(Permission::ReportsLiability), [Role::Owner, Role::Accountant]);
+}
+
+#[test]
+fn a_manager_reads_reports_only_at_the_property_they_manage() {
+    let other = Uuid::now_v7();
+    let grants = [grant(Role::Manager, Some(HOTEL))];
+
+    assert!(allows(&grants, Permission::ReportsView, Some(HOTEL)));
+    assert!(!allows(&grants, Permission::ReportsView, Some(other)));
+    assert!(!allows(&grants, Permission::ReportsLiability, Some(HOTEL)));
+}
+
+#[test]
 fn the_pos_role_posts_bills_and_nothing_else() {
     let grants = [Grant { property_id: None, role: Role::Pos }];
 
@@ -329,6 +356,8 @@ fn slot(permission: Permission) -> usize {
         LaundryOrders => 29,
         LaundryPricesManage => 30,
         StaffManage => 31,
+        ReportsView => 32,
+        ReportsLiability => 33,
     }
 }
 

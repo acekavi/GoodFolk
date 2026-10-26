@@ -1544,7 +1544,12 @@ impl NightHotel {
     async fn audit_setup(&self, user: db::UserId) -> Vec<Uuid> {
         let mut tx = self.tx(user).await;
         for (code, name) in [("BAR", "Bar"), ("REST", "Restaurant")] {
-            let outlet = folio::NewOutlet { code: code.into(), name: name.into(), service_charge: true };
+            let outlet = folio::NewOutlet {
+                code: code.into(),
+                name: name.into(),
+                service_charge: true,
+                report_group: folio::ReportGroup::Food,
+            };
             folio::create_outlet(&mut tx, self.tenant, Some(user), self.property, outlet).await.unwrap();
         }
         fx::set_manual(&mut tx, self.tenant, user, self.property, self.day0, "USD", rust_decimal::Decimal::new(300, 0))

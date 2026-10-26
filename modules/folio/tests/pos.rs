@@ -3,7 +3,7 @@ mod common;
 use common::Hotel;
 use folio::{
     FolioError, FolioQuery, LineWithTaxes, Method, NewOutlet, OutletChanges, PaymentRow, PosBillIn, PosBillRow,
-    PosItem, PosOutcome, PosTarget, Source,
+    PosItem, PosOutcome, PosTarget, ReportGroup, Source,
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use uuid::Uuid;
@@ -289,7 +289,12 @@ async fn outlets_and_stays_of_another_property_are_not_found(_: PgPoolOptions, o
     let kandy = hotel.add_property("KAN").await;
     let here = hotel.outlet("BAR", "Bar", true).await;
     let mut tx = hotel.tx().await;
-    let input = NewOutlet { code: "KBAR".into(), name: "Kandy bar".into(), service_charge: true };
+    let input = NewOutlet {
+        code: "KBAR".into(),
+        name: "Kandy bar".into(),
+        service_charge: true,
+        report_group: ReportGroup::Bar,
+    };
     folio::create_outlet(&mut tx, hotel.tenant, Some(hotel.user), kandy, input).await.unwrap();
     tx.commit().await.unwrap();
     let there = hotel.book_in(kandy, 1, None, None).await;
@@ -366,13 +371,15 @@ async fn outlets_are_created_updated_and_listed_with_unique_codes(_: PgPoolOptio
     );
 
     let mut tx = hotel.tx().await;
-    let duplicate = NewOutlet { code: "BAR".into(), name: "Other".into(), service_charge: false };
+    let duplicate =
+        NewOutlet { code: "BAR".into(), name: "Other".into(), service_charge: false, report_group: ReportGroup::Food };
     let result = folio::create_outlet(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, duplicate).await;
     assert!(matches!(result, Err(FolioError::Conflict(_))), "{result:?}");
     drop(tx);
     for (code, name) in [("bar", "Bar"), ("B-1", "Bar"), ("ABCDEFGHIJK", "Bar"), ("SPA", " ")] {
         let mut tx = hotel.tx().await;
-        let input = NewOutlet { code: code.into(), name: name.into(), service_charge: true };
+        let input =
+            NewOutlet { code: code.into(), name: name.into(), service_charge: true, report_group: ReportGroup::Food };
         invalid(folio::create_outlet(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, input).await);
     }
     let spa = hotel.outlet("SPA", "Spa", false).await;
@@ -390,7 +397,12 @@ async fn outlets_are_created_updated_and_listed_with_unique_codes(_: PgPoolOptio
     )
     .await;
     assert!(matches!(stale, Err(FolioError::VersionMismatch("outlet"))), "{stale:?}");
-    let changes = OutletChanges { name: Some(" Lobby Bar ".into()), service_charge: Some(false), active: Some(false) };
+    let changes = OutletChanges {
+        name: Some(" Lobby Bar ".into()),
+        service_charge: Some(false),
+        active: Some(false),
+        report_group: None,
+    };
     let updated =
         folio::update_outlet(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, bar.id, bar.version, changes)
             .await
@@ -418,7 +430,8 @@ async fn outlets_are_created_updated_and_listed_with_unique_codes(_: PgPoolOptio
                 "name": "Lobby Bar",
                 "service_charge": false,
                 "active": false,
-                "previous": { "name": "Pool Bar", "service_charge": true, "active": true },
+                "report_group": "food",
+                "previous": { "name": "Pool Bar", "service_charge": true, "active": true, "report_group": "food" },
             })
         )]
     );
@@ -426,7 +439,12 @@ async fn outlets_are_created_updated_and_listed_with_unique_codes(_: PgPoolOptio
     // Changes that change nothing are refused, and nothing is audited.
     for changes in [
         OutletChanges::default(),
-        OutletChanges { name: Some("Lobby Bar ".into()), service_charge: Some(false), active: Some(false) },
+        OutletChanges {
+            name: Some("Lobby Bar ".into()),
+            service_charge: Some(false),
+            active: Some(false),
+            report_group: Some(ReportGroup::Food),
+        },
     ] {
         let mut tx = hotel.tx().await;
         let result =
@@ -434,4 +452,71 @@ async fn outlets_are_created_updated_and_listed_with_unique_codes(_: PgPoolOptio
         assert_eq!(invalid(result), "Nothing to change");
     }
     assert_eq!(hotel.audited("outlet.updated").await.len(), 1);
+}
+
+async fn group_on(hotel: &Hotel, outlet: Uuid, date: time::Date) -> ReportGroup {
+    let mut tx = hotel.tx().await;
+    folio::outlet_report_group(&mut tx, outlet, date).await.unwrap()
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_outlets_report_group_changes_from_the_business_date_and_is_audited(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts).await;
+    let bar = hotel.outlet("BAR", "Pool Bar", true).await;
+    let today = hotel.business_date;
+    let group = |date| group_on(&hotel, bar.id, date);
+    assert_eq!(bar.report_group, ReportGroup::Food);
+    assert_eq!(group(today).await, ReportGroup::Food);
+
+    let to = |group| OutletChanges { report_group: Some(group), ..OutletChanges::default() };
+    let mut tx = hotel.tx().await;
+    let changed =
+        folio::update_outlet(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, bar.id, 1, to(ReportGroup::Bar))
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!((changed.report_group, changed.version), (ReportGroup::Bar, 2));
+    assert_eq!(group(today).await, ReportGroup::Bar);
+    assert_eq!(group(today - time::Duration::days(1)).await, ReportGroup::Food, "before the change: the old group");
+    assert_eq!(group(today + time::Duration::days(5)).await, ReportGroup::Bar);
+
+    // A second change on the same business date replaces the first's row.
+    let mut tx = hotel.tx().await;
+    folio::update_outlet(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, bar.id, 2, to(ReportGroup::Other))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(group(today).await, ReportGroup::Other);
+    assert_eq!(group(today - time::Duration::days(1)).await, ReportGroup::Food);
+
+    // After the business date moves, a change leaves the earlier day as it was reported.
+    sqlx::query("update property set business_date = business_date + 1 where id = $1")
+        .bind(hotel.property)
+        .execute(&hotel.owner)
+        .await
+        .unwrap();
+    let listed = folio::list_outlets(&mut hotel.tx().await, hotel.property).await.unwrap();
+    assert_eq!(listed[0].report_group, ReportGroup::Other);
+    let mut tx = hotel.tx().await;
+    folio::update_outlet(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, bar.id, 3, to(ReportGroup::Food))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(group(today).await, ReportGroup::Other);
+    assert_eq!(group(today + time::Duration::days(1)).await, ReportGroup::Food);
+
+    let audited = hotel.audited("outlet.updated").await;
+    assert_eq!(audited.len(), 3);
+    assert_eq!(audited[0].1["report_group"], "bar");
+    assert_eq!(audited[0].1["previous"]["report_group"], "food");
+    assert_eq!(audited[2].1["report_group"], "food");
+    assert_eq!(audited[2].1["previous"]["report_group"], "other");
+    let missing = {
+        let mut tx = hotel.tx().await;
+        folio::outlet_report_group(&mut tx, Uuid::now_v7(), today).await
+    };
+    assert!(matches!(missing, Err(FolioError::NotFound("outlet"))), "{missing:?}");
 }

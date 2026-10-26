@@ -33,6 +33,11 @@ const OUTLET_CODE_KEY: &str = "outlet_property_id_code_key";
 /// The index that keeps a bill number to one bill per outlet.
 const BILL_NO_KEY: &str = "pos_bill_property_id_outlet_id_bill_no_key";
 
+db::text_enum!(
+    /// The line of SLTDA's TDL form an outlet's sales fall under.
+    ReportGroup { Food = "food", Bar = "bar", Other = "other" }
+);
+
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow, Serialize, utoipa::ToSchema)]
 pub struct OutletRow {
     pub id: Uuid,
@@ -44,15 +49,25 @@ pub struct OutletRow {
     /// An inactive outlet takes no new bills; its past bills stay.
     pub active: bool,
     pub version: i32,
+    /// The TDL line the outlet's sales fall under on the property's current business date.
+    #[sqlx(try_from = "String")]
+    pub report_group: ReportGroup,
 }
 
-const OUTLET_COLUMNS: &str = "id, property_id, code, name, service_charge, active, version";
+const OUTLET_COLUMNS: &str = "o.id, o.property_id, o.code, o.name, o.service_charge, o.active, o.version,
+     (select g.report_group from outlet_report_group g
+      where g.outlet_id = o.id and g.effective_from <= p.business_date
+      order by g.effective_from desc limit 1) as report_group";
+
+/// `OUTLET_COLUMNS` from outlets `o` of their property `p`.
+const OUTLET_FROM: &str = "from outlet o join property p on p.id = o.property_id";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewOutlet {
     pub code: String,
     pub name: String,
     pub service_charge: bool,
+    pub report_group: ReportGroup,
 }
 
 /// The fields to change; `None` keeps the current value. The code never changes: it names the outlet's category.
@@ -61,6 +76,8 @@ pub struct OutletChanges {
     pub name: Option<String>,
     pub service_charge: Option<bool>,
     pub active: Option<bool>,
+    /// Applies from the property's business date; the days before keep the group they were reported under.
+    pub report_group: Option<ReportGroup>,
 }
 
 /// One item of a POS bill: `quantity × unit_net`, before taxes.
@@ -159,18 +176,18 @@ pub async fn create_outlet(
     }
     let name = outlet_name(&input.name)?;
     business_date(tx, property).await?;
-    let outlet: OutletRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    let id = Uuid::now_v7();
+    sqlx::query(
         "insert into outlet (id, tenant_id, property_id, code, name, service_charge)
-         values ($1, $2, $3, $4, $5, $6)
-         returning {OUTLET_COLUMNS}"
-    )))
-    .bind(Uuid::now_v7())
+         values ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(id)
     .bind(tenant.0)
     .bind(property)
     .bind(&input.code)
     .bind(name)
     .bind(input.service_charge)
-    .fetch_one(&mut **tx)
+    .execute(&mut **tx)
     .await
     .map_err(|err| {
         if violates(&err, OUTLET_CODE_KEY) {
@@ -179,10 +196,21 @@ pub async fn create_outlet(
             err.into()
         }
     })?;
+    sqlx::query(
+        "insert into outlet_report_group (tenant_id, outlet_id, report_group, effective_from)
+         values ($1, $2, $3, date '2000-01-01')",
+    )
+    .bind(tenant.0)
+    .bind(id)
+    .bind(input.report_group.as_str())
+    .execute(&mut **tx)
+    .await?;
+    let outlet = outlet_row(tx, id).await?;
     let data = serde_json::json!({
         "code": outlet.code,
         "name": outlet.name,
         "service_charge": outlet.service_charge,
+        "report_group": outlet.report_group,
     });
     audit(tx, tenant, user, "outlet.created", "outlet", outlet.id, data).await?;
     Ok(outlet)
@@ -202,7 +230,7 @@ pub async fn update_outlet(
 ) -> Result<OutletRow, FolioError> {
     let name = changes.name.as_deref().map(outlet_name).transpose()?;
     let current: OutletRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select {OUTLET_COLUMNS} from outlet where id = $1 and property_id = $2 for update"
+        "select {OUTLET_COLUMNS} {OUTLET_FROM} where o.id = $1 and o.property_id = $2 for update of o"
     )))
     .bind(id)
     .bind(property)
@@ -214,30 +242,46 @@ pub async fn update_outlet(
     }
     let unchanged = name.is_none_or(|name| name == current.name)
         && changes.service_charge.is_none_or(|on| on == current.service_charge)
-        && changes.active.is_none_or(|active| active == current.active);
+        && changes.active.is_none_or(|active| active == current.active)
+        && changes.report_group.is_none_or(|group| group == current.report_group);
     if unchanged {
         return Err(FolioError::Invalid("Nothing to change".into()));
     }
-    let updated: OutletRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    sqlx::query(
         "update outlet set name = coalesce($2, name), service_charge = coalesce($3, service_charge),
                 active = coalesce($4, active), version = version + 1
-         where id = $1
-         returning {OUTLET_COLUMNS}"
-    )))
+         where id = $1",
+    )
     .bind(id)
     .bind(name)
     .bind(changes.service_charge)
     .bind(changes.active)
-    .fetch_one(&mut **tx)
+    .execute(&mut **tx)
     .await?;
+    if let Some(group) = changes.report_group.filter(|group| *group != current.report_group) {
+        sqlx::query(
+            "insert into outlet_report_group (tenant_id, outlet_id, report_group, effective_from)
+             select $1, $2, $3, business_date from property where id = $4
+             on conflict (outlet_id, effective_from) do update set report_group = excluded.report_group",
+        )
+        .bind(tenant.0)
+        .bind(id)
+        .bind(group.as_str())
+        .bind(property)
+        .execute(&mut **tx)
+        .await?;
+    }
+    let updated = outlet_row(tx, id).await?;
     let data = serde_json::json!({
         "name": updated.name,
         "service_charge": updated.service_charge,
         "active": updated.active,
+        "report_group": updated.report_group,
         "previous": {
             "name": current.name,
             "service_charge": current.service_charge,
             "active": current.active,
+            "report_group": current.report_group,
         },
     });
     audit(tx, tenant, user, "outlet.updated", "outlet", id, data).await?;
@@ -247,11 +291,37 @@ pub async fn update_outlet(
 /// Every outlet of the property, active or not, by code.
 pub async fn list_outlets(tx: &mut Tx, property: Uuid) -> Result<Vec<OutletRow>, sqlx::Error> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select {OUTLET_COLUMNS} from outlet where property_id = $1 order by code"
+        "select {OUTLET_COLUMNS} {OUTLET_FROM} where o.property_id = $1 order by o.code"
     )))
     .bind(property)
     .fetch_all(&mut **tx)
     .await
+}
+
+/// The outlet `id`, read after a write so its report group is the one in force now.
+async fn outlet_row(tx: &mut Tx, id: Uuid) -> Result<OutletRow, sqlx::Error> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!("select {OUTLET_COLUMNS} {OUTLET_FROM} where o.id = $1")))
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await
+}
+
+/// The TDL line the outlet's sales fall under on `date`: the group in force from the latest change on or before it
+/// (`NotFound` if the outlet is not in the tenant). A change applies from the business date it was made on, so a
+/// closed day keeps the group it was reported under.
+pub async fn outlet_report_group(tx: &mut Tx, outlet: Uuid, date: Date) -> Result<ReportGroup, FolioError> {
+    let group: Option<String> = sqlx::query_scalar(
+        "select report_group from outlet_report_group
+         where outlet_id = $1 and effective_from <= $2
+         order by effective_from desc limit 1",
+    )
+    .bind(outlet)
+    .bind(date)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let group = group.ok_or(FolioError::NotFound("outlet"))?;
+    ReportGroup::parse(&group)
+        .ok_or_else(|| sqlx::Error::Decode(format!("unknown report group {group:?}").into()).into())
 }
 
 /// The trimmed name, 1 to [`MAX_OUTLET_NAME`] characters (`Invalid`).

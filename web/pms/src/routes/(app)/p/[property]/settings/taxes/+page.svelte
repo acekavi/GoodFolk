@@ -49,6 +49,8 @@
 			vatRegistered: settings.vatRegistered,
 			tin: settings.tin ?? '',
 			sltdaLicence: settings.sltdaLicence ?? '',
+			tdlRegistrationNo: settings.tdlRegistrationNo ?? '',
+			vatReturnPeriod: settings.vatReturnPeriod,
 			tdlSmallTurnover: settings.tdlSmallTurnover,
 			legalName: settings.legalName ?? '',
 			address: settings.address ?? '',
@@ -102,6 +104,8 @@
 			vat_registered: draft.vatRegistered,
 			tin: draft.tin.trim() || null,
 			sltda_licence: draft.sltdaLicence.trim() || null,
+			tdl_registration_no: draft.tdlRegistrationNo.trim() || null,
+			vat_return_period: draft.vatReturnPeriod as 'monthly' | 'quarterly',
 			tdl_small_turnover: draft.tdlSmallTurnover,
 			legal_name: draft.legalName.trim() || null,
 			address: draft.address.trim() || null,
@@ -246,6 +250,18 @@
 					<span class="hint"
 						>The tourism authority's licence number, printed on invoices under the TIN.</span
 					>
+				</label>
+				<label>
+					TDL registration number
+					<input maxlength="30" bind:value={draft.tdlRegistrationNo} />
+					<span class="hint">Printed on the tourism development levy return.</span>
+				</label>
+				<label>
+					VAT return period
+					<select bind:value={draft.vatReturnPeriod}>
+						<option value="monthly">Monthly</option>
+						<option value="quarterly">Quarterly</option>
+					</select>
 				</label>
 				<label class="check">
 					<input type="checkbox" bind:checked={draft.tdlSmallTurnover} /> Small-turnover TDL band (0.5%)
