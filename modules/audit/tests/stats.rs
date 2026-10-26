@@ -414,8 +414,9 @@ async fn the_days_lines_are_read_through_the_business_date_index(_: PgPoolOption
     sqlx::query("analyze folio_line").execute(&owner).await.unwrap();
 
     let mut tx = hotel.tx().await;
-    let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("explain {}", audit::DAY_LINES_SQL)))
+    let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("explain {}", audit::LINES_SQL)))
         .bind(p)
+        .bind(hotel.business_date)
         .bind(hotel.business_date)
         .fetch_all(&mut *tx)
         .await

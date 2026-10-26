@@ -8,8 +8,8 @@
 //!
 //! The review only reads, so it takes no locks.
 //!
-//! [`compute`] takes a business date's statistics, [`store`] snapshots them when the day closes, and [`daily_stats`]
-//! reads them back by date range.
+//! [`revenue_lines`] reads the revenue of a range of business dates, [`compute`] takes a business date's statistics,
+//! [`store`] snapshots them when the day closes, and [`daily_stats`] reads them back by date range.
 //!
 //! [`start_run`] opens the close of the business date, and [`execute`] runs its steps (`resolve`, `post_charges`,
 //! `lock_fx`, then `snapshot_stats` and `advance_business_date` together), each committed with its step row, under the
@@ -26,7 +26,9 @@ pub use close::{
     AuditRun, CloseHooks, Mode, NoHooks, RunStatus, RunStep, Step, execute, get_run, list_runs, retry_run, start_run,
 };
 
-pub use stats::{BreakdownRow, DAY_LINES_SQL, DailyStats, compute, daily_stats, store};
+pub use stats::{
+    BreakdownRow, DailyStats, LINES_SQL, RevenueLine, RevenueTax, compute, daily_stats, revenue_lines, store,
+};
 
 pub use review::{
     ARRIVALS_SQL, ArrivalRow, BookingBills, CategoryTotal, DEPARTURES_SQL, DEPOSITS_SQL, DepartureRow, DepositRow,

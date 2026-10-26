@@ -145,7 +145,7 @@ pub struct Summary {
 }
 
 /// `numerator / denominator` rounded half away from zero; 0 for an empty denominator.
-fn ratio(numerator: i64, denominator: i64) -> i64 {
+pub(crate) fn ratio(numerator: i64, denominator: i64) -> i64 {
     if denominator == 0 {
         return 0;
     }

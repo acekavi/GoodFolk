@@ -223,4 +223,101 @@ impl Hotel {
         tx.commit().await.unwrap();
         id
     }
+
+    /// A guest folio on a new checked-out stay.
+    pub async fn folio(&self) -> Uuid {
+        let stay = self.stay("checked_out", date(2026, 4, 1), date(2026, 4, 2), None, "Ann", "Perera").await;
+        let id = Uuid::now_v7();
+        let mut tx = self.tx().await;
+        sqlx::query(
+            "insert into folio (id, tenant_id, property_id, kind, reservation_room_id) values ($1, $2, $3, 'guest', $4)",
+        )
+        .bind(id)
+        .bind(self.tenant.0)
+        .bind(self.property)
+        .bind(stay)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        id
+    }
+
+    /// An LKR line of `net` on `folio`, dated `business_date`, from `source`, reversing `reverses` when given, with
+    /// its `(code, kind, presentation, amount)` taxes: the on-bill ones add to its total.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn line(
+        &self,
+        folio: Uuid,
+        business_date: Date,
+        source: &str,
+        category: &str,
+        net: i64,
+        taxes: &[(&str, &str, &str, i64)],
+        reverses: Option<Uuid>,
+    ) -> Uuid {
+        let id = Uuid::now_v7();
+        let total = net + taxes.iter().filter(|tax| tax.2 == "on_bill").map(|tax| tax.3).sum::<i64>();
+        let mut tx = self.tx().await;
+        sqlx::query(
+            "insert into folio_line (id, tenant_id, folio_id, source, category, description, net, total, currency,
+                                     base_total, rate, rate_date, business_date, reverses)
+             values ($1, $2, $3, $4, $5, 'Line', $6, $7, 'LKR', $7, 1, $8, $8, $9)",
+        )
+        .bind(id)
+        .bind(self.tenant.0)
+        .bind(folio)
+        .bind(source)
+        .bind(category)
+        .bind(net)
+        .bind(total)
+        .bind(business_date)
+        .bind(reverses)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        for &(code, kind, presentation, amount) in taxes {
+            sqlx::query(
+                "insert into folio_line_tax (tenant_id, line_id, code, name, kind, rate_bp, base, amount, presentation)
+                 values ($1, $2, $3, $3, $4, 0, $5, $6, $7)",
+            )
+            .bind(self.tenant.0)
+            .bind(id)
+            .bind(code)
+            .bind(kind)
+            .bind(net)
+            .bind(amount)
+            .bind(presentation)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+        id
+    }
+
+    /// An outlet `code` whose sales fall under `group`.
+    pub async fn outlet(&self, code: &str, group: folio::ReportGroup) -> Uuid {
+        let mut tx = self.tx().await;
+        let input =
+            folio::NewOutlet { code: code.into(), name: code.into(), service_charge: false, report_group: group };
+        let outlet = folio::create_outlet(&mut tx, self.tenant, Some(self.user), self.property, input).await.unwrap();
+        tx.commit().await.unwrap();
+        outlet.id
+    }
+
+    /// A one-item LKR bill of `unit_net` at `outlet`, paid there in cash on the property's business date.
+    pub async fn settled_bill(&self, outlet: &str, bill_no: &str, unit_net: i64) {
+        let mut tx = self.tx().await;
+        let bill = folio::PosBillIn {
+            outlet: outlet.into(),
+            bill_no: bill_no.into(),
+            business_date: None,
+            currency: "LKR".into(),
+            items: vec![folio::PosItem { description: "Item".into(), quantity: 1, unit_net, category: None }],
+            target: folio::PosTarget::Settled { method: folio::Method::Cash },
+        };
+        folio::post_pos_bill(&mut tx, self.tenant, Some(self.user), self.property, bill).await.unwrap();
+        tx.commit().await.unwrap();
+    }
 }

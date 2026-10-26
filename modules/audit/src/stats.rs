@@ -61,37 +61,52 @@ pub struct BreakdownRow {
     pub revenue: i64,
 }
 
-/// D's folio lines on the property's folios (`$1`, `$2`), adjustments aside, with their taxes. Public so a test can
-/// `EXPLAIN` it: `business_date` is a leakproof comparison, so `folio_line_business_date_idx` serves it under RLS.
-pub const DAY_LINES_SQL: &str = "select l.id, l.category, l.currency::text as currency, l.base_total, l.rate,
-        l.posting_key, l.reverses, l.transfer_id,
-        coalesce(t.amounts, '{}') as tax_amounts, coalesce(t.codes, '{}') as tax_codes,
-        coalesce(t.on_bill, '{}') as tax_on_bill
+/// The folio lines of the business dates `$2` to `$3` on the property's folios (`$1`), adjustments aside, with their
+/// taxes by code. Public so a test can `EXPLAIN` it: `business_date` is a leakproof comparison, so
+/// `folio_line_business_date_idx` serves it under RLS.
+pub const LINES_SQL: &str = "select l.id, l.business_date, l.folio_id, l.category, l.currency::text as currency,
+        l.base_total, l.rate, l.posting_key, l.reverses, l.transfer_id,
+        coalesce(t.codes, '{}') as tax_codes, coalesce(t.kinds, '{}') as tax_kinds,
+        coalesce(t.presentations, '{}') as tax_presentations, coalesce(t.amounts, '{}') as tax_amounts
  from folio_line l
  join folio f on f.id = l.folio_id
- left join lateral (select array_agg(code order by code) as codes, array_agg(amount order by code) as amounts,
-                           array_agg(presentation = 'on_bill' order by code) as on_bill
+ left join lateral (select array_agg(code order by code) as codes, array_agg(kind order by code) as kinds,
+                           array_agg(presentation order by code) as presentations,
+                           array_agg(amount order by code) as amounts
                     from folio_line_tax where line_id = l.id) t on true
- where l.business_date = $2 and f.property_id = $1 and l.source <> 'adjustment'";
+ where l.business_date between $2 and $3 and f.property_id = $1 and l.source <> 'adjustment'";
 
-/// Computes D's statistics (no writes). Called inside the roll's transaction. `NotFound` for a property not in the
-/// tenant.
-///
-/// - **Rooms:** active rooms; those with an unreleased `out_of_order` block covering D; available is the difference.
-/// - **Sold:** the stays [`folio::in_house_stays`] returns for D, the complimentary ones among them (D's night has a
-///   room amount of 0), and their adults and children.
-/// - **Counts:** arrivals (checked in on D), departures (checked out, leaving D), no-shows and cancellations (on D),
-///   and walk-ins (arrivals booked on D).
-/// - **Revenue:** each of D's lines, net (its base total less its on-bill taxes, each converted at the line's rate),
-///   by category: `room`, `meal_plan`, `pos:*`, `fee`, and the rest as other. The items of the POS bills settled at
-///   their outlet with a payment dated D (a late bill's own date may be earlier) count the same way by their own
-///   category, converted at their payment's rate; a settled bill with no payment is `Invalid`.
-/// - **Taxes** by code, on-bill and absorbed; **payments** by method in base, refunds in, transfers out.
-/// - **Breakdown:** per stay dimension (`segment`, `source`, `residency`, `room_type`), the sold stays and the room
-///   and meal-plan revenue of the stay each line's posting key names (through a reversal to the line it reverses, and
-///   through a transfer to the line its sibling reversal reverses), the rest under `unattributed`; per `outlet`, POS
-///   revenue.
-pub async fn compute(tx: &mut Tx, property: Uuid, date: Date) -> Result<DailyStats, AuditError> {
+/// One folio line, or one item of a POS bill settled at its outlet, as the revenue of its business date: in the
+/// property's base currency, net of its on-bill taxes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevenueLine {
+    /// A folio line's own date; a settled item's is its payment's.
+    pub business_date: Date,
+    /// `None` for a settled item.
+    pub folio_id: Option<Uuid>,
+    pub category: String,
+    pub net: i64,
+    /// By code; on-bill and absorbed.
+    pub taxes: Vec<RevenueTax>,
+    /// A folio line's place in its chain of reversals and transfers; `None` for a settled item.
+    link: Option<Link>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevenueTax {
+    pub code: String,
+    pub kind: String,
+    /// `on_bill` or `absorbed`.
+    pub presentation: String,
+    pub amount: i64,
+}
+
+/// The revenue of `property`'s business dates `from` to `to`, both included (no writes): [`LINES_SQL`]'s lines, net
+/// (the base total less the on-bill taxes, each tax converted at the line's rate), then the items of the POS bills
+/// settled at their outlet with a payment dated in the range (a late bill's own date may be earlier), converted at
+/// their payment's rate. A settled bill with no payment is `Invalid`; `NotFound` for a property not in the tenant.
+/// [`compute`] counts a day's revenue from exactly these lines.
+pub async fn revenue_lines(tx: &mut Tx, property: Uuid, from: Date, to: Date) -> Result<Vec<RevenueLine>, AuditError> {
     let base: String = sqlx::query_scalar("select base_currency::text from property where id = $1")
         .bind(property)
         .fetch_optional(&mut **tx)
@@ -101,6 +116,97 @@ pub async fn compute(tx: &mut Tx, property: Uuid, date: Date) -> Result<DailySta
     let convert = |amount: i64, currency: &str, rate: Decimal| -> Result<i64, AuditError> {
         Ok(fx::to_base(amount, fx::exponent(currency), base_exponent, rate)?)
     };
+
+    let lines: Vec<Line> = sqlx::query_as(LINES_SQL).bind(property).bind(from).bind(to).fetch_all(&mut **tx).await?;
+    let mut revenue = Vec::with_capacity(lines.len());
+    for line in lines {
+        let mut net = line.base_total;
+        let mut taxes = Vec::with_capacity(line.tax_codes.len());
+        let tax_rows = line.tax_codes.into_iter().zip(line.tax_kinds).zip(line.tax_presentations).zip(line.tax_amounts);
+        for (((code, kind), presentation), amount) in tax_rows {
+            let amount = convert(amount, &line.currency, line.rate)?;
+            if presentation == "on_bill" {
+                net -= amount;
+            }
+            taxes.push(RevenueTax { code, kind, presentation, amount });
+        }
+        revenue.push(RevenueLine {
+            business_date: line.business_date,
+            folio_id: Some(line.folio_id),
+            category: line.category,
+            net,
+            taxes,
+            link: Some(Link {
+                id: line.id,
+                posting_key: line.posting_key,
+                reverses: line.reverses,
+                transfer_id: line.transfer_id,
+            }),
+        });
+    }
+
+    // The bills settled in the range: by their payment's date, so a late bill counts on the day it posted. A bill
+    // dated in the range with no payment at all is read too, to be refused: every settled bill has one.
+    let settled: Vec<SettledBill> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select b.bill_no, b.lines, paid.currency, paid.rate, paid.business_date
+         from pos_bill b
+         left join lateral ({SETTLED_PAYMENT}) paid on true
+         where b.property_id = $1 and b.settled
+           and (b.id in (select pos_bill_id from payment
+                         where business_date between $2 and $3 and pos_bill_id is not null and refund_of is null)
+                or b.business_date between $2 and $3)
+           and (paid.business_date between $2 and $3 or paid.business_date is null)"
+    )))
+    .bind(property)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&mut **tx)
+    .await?;
+    for bill in settled {
+        let (Some(currency), Some(rate), Some(business_date)) = (&bill.currency, bill.rate, bill.business_date) else {
+            return Err(AuditError::Invalid(format!("POS bill {} is settled but has no payment", bill.bill_no)));
+        };
+        for line in bill.lines.0 {
+            let mut net = convert(line.total, currency, rate)?;
+            let mut taxes = Vec::with_capacity(line.taxes.len());
+            for tax in line.taxes {
+                let amount = convert(tax.amount, currency, rate)?;
+                if tax.presentation == "on_bill" {
+                    net -= amount;
+                }
+                taxes.push(RevenueTax { code: tax.code, kind: tax.kind, presentation: tax.presentation, amount });
+            }
+            // By the item's own category, as a posted bill's line is: a misc item is other revenue, at no outlet.
+            revenue.push(RevenueLine {
+                business_date,
+                folio_id: None,
+                category: line.category,
+                net,
+                taxes,
+                link: None,
+            });
+        }
+    }
+    Ok(revenue)
+}
+
+/// Computes D's statistics (no writes). Called inside the roll's transaction. `NotFound` for a property not in the
+/// tenant.
+///
+/// - **Rooms:** active rooms; those with an unreleased `out_of_order` block covering D; available is the difference.
+/// - **Sold:** the stays [`folio::in_house_stays`] returns for D, the complimentary ones among them (D's night has a
+///   room amount of 0), and their adults and children.
+/// - **Counts:** arrivals (checked in on D), departures (checked out, leaving D), no-shows and cancellations (on D),
+///   and walk-ins (arrivals booked on D).
+/// - **Revenue:** D's [`revenue_lines`], net, by category: `room`, `meal_plan`, `pos:*`, `fee`, and the rest as
+///   other (a settled bill's items by their own category); a settled bill with no payment is `Invalid`.
+/// - **Taxes** by code, on-bill and absorbed; **payments** by method in base, refunds in, transfers out.
+/// - **Breakdown:** per stay dimension (`segment`, `source`, `residency`, `room_type`), the sold stays and the room
+///   and meal-plan revenue of the stay each line's posting key names (through a reversal to the line it reverses, and
+///   through a transfer to the line its sibling reversal reverses), the rest under `unattributed`; per `outlet`, POS
+///   revenue.
+pub async fn compute(tx: &mut Tx, property: Uuid, date: Date) -> Result<DailyStats, AuditError> {
+    let lines = revenue_lines(tx, property, date, date).await?;
 
     let (rooms_total, rooms_out_of_order): (i32, i32) = sqlx::query_as(
         "select count(*)::int,
@@ -132,7 +238,6 @@ pub async fn compute(tx: &mut Tx, property: Uuid, date: Date) -> Result<DailySta
     .await?;
     let sold = folio::in_house_stays(tx, property, date).await?;
 
-    let lines: Vec<Line> = sqlx::query_as(DAY_LINES_SQL).bind(property).bind(date).fetch_all(&mut **tx).await?;
     let origins = attribute(tx, &lines).await?;
 
     let mut stay_ids: Vec<Uuid> = sold.clone();
@@ -199,22 +304,21 @@ pub async fn compute(tx: &mut Tx, property: Uuid, date: Date) -> Result<DailySta
     }
 
     for line in &lines {
-        let mut on_bill = 0;
-        for ((code, &amount), &is_on_bill) in line.tax_codes.iter().zip(&line.tax_amounts).zip(&line.tax_on_bill) {
-            let amount = convert(amount, &line.currency, line.rate)?;
-            *stats.taxes.entry(code.clone()).or_default() += amount;
-            if is_on_bill {
-                on_bill += amount;
-            }
+        for tax in &line.taxes {
+            *stats.taxes.entry(tax.code.clone()).or_default() += tax.amount;
         }
-        let net = line.base_total - on_bill;
+        let net = line.net;
         let category = line.category.as_str();
         match category {
             "room" | "meal_plan" => {
                 let room = if category == "room" { net } else { 0 };
                 stats.room_revenue += room;
                 stats.meal_plan_revenue += net - room;
-                let stay = origins.get(&line.id).copied().flatten().and_then(|id| stays.get(&id));
+                let stay = line
+                    .link
+                    .as_ref()
+                    .and_then(|link| origins.get(&link.id).copied().flatten())
+                    .and_then(|id| stays.get(&id));
                 let dimensions = match stay {
                     Some(stay) => stay.dimensions(),
                     None => STAY_DIMENSIONS.map(|dimension| (dimension, UNATTRIBUTED)),
@@ -233,46 +337,6 @@ pub async fn compute(tx: &mut Tx, property: Uuid, date: Date) -> Result<DailySta
                 }
                 None => stats.other_revenue += net,
             },
-        }
-    }
-
-    // The bills settled on D: by their payment's date, so a late bill counts on the day it posted. A bill dated D
-    // with no payment at all is read too, to be refused: every settled bill has one.
-    let settled: Vec<SettledBill> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select b.bill_no, b.lines, paid.currency, paid.rate
-         from pos_bill b
-         left join lateral ({SETTLED_PAYMENT}) paid on true
-         where b.property_id = $1 and b.settled
-           and (b.id in (select pos_bill_id from payment
-                         where business_date = $2 and pos_bill_id is not null and refund_of is null)
-                or b.business_date = $2)
-           and (paid.business_date = $2 or paid.business_date is null)"
-    )))
-    .bind(property)
-    .bind(date)
-    .fetch_all(&mut **tx)
-    .await?;
-    for bill in &settled {
-        let (Some(currency), Some(rate)) = (&bill.currency, bill.rate) else {
-            return Err(AuditError::Invalid(format!("POS bill {} is settled but has no payment", bill.bill_no)));
-        };
-        for line in &bill.lines.0 {
-            let mut net = convert(line.total, currency, rate)?;
-            for tax in &line.taxes {
-                let amount = convert(tax.amount, currency, rate)?;
-                *stats.taxes.entry(tax.code.clone()).or_default() += amount;
-                if tax.presentation == "on_bill" {
-                    net -= amount;
-                }
-            }
-            // By the item's own category, as a posted bill's line is: a misc item is other revenue, at no outlet.
-            match line.category.strip_prefix("pos:") {
-                Some(outlet) => {
-                    stats.pos_revenue += net;
-                    breakdown.entry(("outlet", outlet.to_owned())).or_default().2 += net;
-                }
-                None => stats.other_revenue += net,
-            }
         }
     }
 
@@ -464,6 +528,8 @@ struct Counts {
 #[derive(sqlx::FromRow)]
 struct Line {
     id: Uuid,
+    business_date: Date,
+    folio_id: Uuid,
     category: String,
     currency: String,
     base_total: i64,
@@ -471,9 +537,10 @@ struct Line {
     posting_key: Option<String>,
     reverses: Option<Uuid>,
     transfer_id: Option<Uuid>,
-    tax_amounts: Vec<i64>,
     tax_codes: Vec<String>,
-    tax_on_bill: Vec<bool>,
+    tax_kinds: Vec<String>,
+    tax_presentations: Vec<String>,
+    tax_amounts: Vec<i64>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -500,13 +567,14 @@ impl StayRow {
     }
 }
 
-/// A settled bill and its payment's currency and rate (`None` without a payment).
+/// A settled bill and its payment's currency, rate and date (`None` without a payment).
 #[derive(sqlx::FromRow)]
 struct SettledBill {
     bill_no: String,
     lines: Json<Vec<folio::PosLine>>,
     currency: Option<String>,
     rate: Option<Decimal>,
+    business_date: Option<Date>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -547,7 +615,7 @@ struct StoredBreakdown {
 }
 
 /// What attribution needs of a line: its key, the line it reverses and its transfer.
-#[derive(sqlx::FromRow)]
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 struct Link {
     id: Uuid,
     posting_key: Option<String>,
@@ -568,7 +636,7 @@ enum Next {
 /// The stay each room and meal-plan line of `lines` belongs to (`None`: unattributed), by line id. The lines a chain
 /// of reversals and transfers leads back to are read by id, a few at a time; a transfer's reversal is almost always
 /// among D's lines, since both halves of a transfer are posted together.
-async fn attribute(tx: &mut Tx, lines: &[Line]) -> Result<HashMap<Uuid, Option<Uuid>>, AuditError> {
+async fn attribute(tx: &mut Tx, lines: &[RevenueLine]) -> Result<HashMap<Uuid, Option<Uuid>>, AuditError> {
     let mut links: HashMap<Uuid, Link> = HashMap::new();
     // transfer → the line its reversal reverses
     let mut reversed: HashMap<Uuid, Uuid> = HashMap::new();
@@ -579,19 +647,13 @@ async fn attribute(tx: &mut Tx, lines: &[Line]) -> Result<HashMap<Uuid, Option<U
         }
         links.insert(link.id, link);
     };
-    for line in lines {
-        let link = Link {
-            id: line.id,
-            posting_key: line.posting_key.clone(),
-            reverses: line.reverses,
-            transfer_id: line.transfer_id,
-        };
+    for link in lines.iter().filter_map(|line| line.link.clone()) {
         add(&mut links, &mut reversed, link);
     }
     let attributed: Vec<Uuid> = lines
         .iter()
         .filter(|line| matches!(line.category.as_str(), "room" | "meal_plan"))
-        .map(|line| line.id)
+        .filter_map(|line| line.link.as_ref().map(|link| link.id))
         .collect();
     let mut origins = HashMap::new();
     for _ in 0..MAX_CHAIN {
