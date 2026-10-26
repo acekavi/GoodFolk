@@ -8,13 +8,15 @@
 #let d = json("/data.json")
 #show: report.with(d)
 
+// Three figures to a row, so a nine-digit total stays on one line.
 #grid(
-  columns: (1fr,) * d.headline.len(),
+  columns: (1fr,) * 3,
   column-gutter: 3mm,
+  row-gutter: 3mm,
   ..d.headline.map(h => block(width: 100%, fill: band, inset: (x: 3mm, y: 2.5mm), radius: 1.5mm)[
     #label(h.label) \
-    #text(12pt, weight: "bold", h.value)
-    #if h.last_year != none [ \ #small[Last year: #h.last_year] ]
+    #text(12pt, weight: "bold", unbroken(h.value))
+    #if h.last_year != none [ \ #small[Last year: #unbroken(h.last_year)] ]
   ]),
 )
 

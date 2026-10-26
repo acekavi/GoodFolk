@@ -3,20 +3,17 @@
 //! the rounding rules stay in Rust. Money prints as whole rupees, `Rs 1,234,567`: the everyday figures (base LKR minor
 //! units) are rounded once each, the liability figures are already whole rupees.
 
-use crate::ReportsError;
 use crate::everyday::{Dimension, ListKind, RangeKind, Summary, daily_list, ratio, summary};
 use crate::liability::service_charge::{ServiceChargeReport, service_charge};
 use crate::liability::sscl::{CalendarQuarter, SsclReport, sscl};
 use crate::liability::tdl::{FiscalQuarter, TdlForm, tdl};
 use crate::liability::vat::{VatPeriod, VatReport, percent, us_date, vat};
+use crate::{RUPEE, ReportsError};
 use db::Tx;
 use media_types::ReportTemplate;
 use serde_json::{Value, json};
 use time::{Date, Month};
 use uuid::Uuid;
-
-/// One rupee in LKR minor units.
-const RUPEE: i64 = 100;
 
 /// What a liability report says when some day of its period is not closed yet.
 const PERIOD_NOT_CLOSED: &str = "Some days of this period are not closed yet: the figures cover the closed days only.";
@@ -133,7 +130,7 @@ fn summary_data(property: &str, from: Date, to: Date, report: &Summary) -> Value
     let not_closed = (!report.not_closed.is_empty()).then(|| format!("Not closed yet: {}", runs(&report.not_closed)));
     let last_year = report.last_year.as_ref();
     let headline = [
-        ("Occupancy", percent(report.headline.occupancy_bp), last_year.map(|h| percent(h.occupancy_bp))),
+        ("Occupancy", occupancy(report.headline.occupancy_bp), last_year.map(|h| occupancy(h.occupancy_bp))),
         ("ADR", rupees_of(report.headline.adr), last_year.map(|h| rupees_of(h.adr))),
         ("RevPAR", rupees_of(report.headline.revpar), last_year.map(|h| rupees_of(h.revpar))),
         ("Room nights", grouped(report.headline.room_nights), last_year.map(|h| grouped(h.room_nights))),
@@ -147,7 +144,7 @@ fn summary_data(property: &str, from: Date, to: Date, report: &Summary) -> Value
             json!({
                 "date": day_of(day.business_date),
                 "rooms": format!("{} / {}", day.rooms_sold, day.rooms_available),
-                "occupancy": percent(day.occupancy_bp),
+                "occupancy": occupancy(day.occupancy_bp),
                 "adr": rupees_of(day.adr),
                 "revpar": rupees_of(day.revpar),
                 "room_revenue": rupees_of(day.room_revenue),
@@ -213,7 +210,9 @@ fn daily_list_data(property: &str, date: Date, kind: ListKind, rows: &[crate::Li
 }
 
 fn tdl_data(form: &TdlForm) -> Value {
-    let line = |label: &str, value: i64| json!({ "label": label, "value": rupees_of(value) });
+    // Form A prints bare figures under its "Amount in (Rs)" heading.
+    let figure = |minor: i64| grouped(ratio(minor, RUPEE));
+    let line = |label: &str, value: i64| json!({ "label": label, "value": figure(value) });
     let credit_note = form.credit_exceeds_sales.then_some("The quarter's reversals exceed its sales: no TDL is due.");
     with(
         head(
@@ -231,11 +230,11 @@ fn tdl_data(form: &TdlForm) -> Value {
                 line("Bar Sales", form.bar),
                 line("Other Sales", form.other),
             ],
-            "total_turnover": rupees_of(form.total_turnover),
+            "total_turnover": figure(form.total_turnover),
             "deductions": [line("Service Charge", form.service_charge), line("VAT", form.vat)],
-            "base": rupees_of(form.base),
+            "base": figure(form.base),
             "rate": percent(form.rate_bp),
-            "tdl": rupees_of(form.tdl),
+            "tdl": figure(form.tdl),
             "credit_note": credit_note,
         }),
     )
@@ -304,8 +303,8 @@ fn vat_data(property: &str, period: VatPeriod, report: &VatReport) -> Value {
                 "tin": row.purchaser_tin,
                 "name": row.purchaser_name,
                 "description": row.description,
-                "value": rupees(row.value_of_supply),
-                "vat": rupees(row.vat_amount),
+                "value": row.value_of_supply.to_string(),
+                "vat": row.vat_amount.to_string(),
             })
         })
         .collect();
@@ -320,8 +319,8 @@ fn vat_data(property: &str, period: VatPeriod, report: &VatReport) -> Value {
                 "invoice_date": us_date(row.invoice_date),
                 "note_no": row.note_no,
                 "note_date": us_date(row.note_date),
-                "value": rupees(row.value),
-                "vat": rupees(row.vat_amount),
+                "value": row.value.to_string(),
+                "vat": row.vat_amount.to_string(),
             })
         })
         .collect();
@@ -401,6 +400,12 @@ fn rupees_of(minor: i64) -> String {
     rupees(ratio(minor, RUPEE))
 }
 
+/// An occupancy in basis points as a percentage with one decimal, rounded half up: `92.1%`.
+fn occupancy(bp: i32) -> String {
+    let tenths = ratio(i64::from(bp), 10);
+    format!("{}.{}%", tenths / 10, tenths % 10)
+}
+
 /// `19 Oct 2026`.
 fn day_of(date: Date) -> String {
     format!("{} {} {}", date.day(), &date.month().to_string()[..3], date.year())
@@ -447,6 +452,10 @@ mod tests {
         assert_eq!(rupees_of(-1_234_550), "-Rs 12,346");
         assert_eq!(rupees_of(1_234_549), "Rs 12,345");
         assert_eq!(grouped(1_000), "1,000");
+        assert_eq!(
+            (occupancy(9214), occupancy(8805), occupancy(10_000), occupancy(0)),
+            ("92.1%".into(), "88.1%".into(), "100.0%".into(), "0.0%".into())
+        );
     }
 
     #[test]
@@ -483,12 +492,9 @@ mod tests {
         assert_eq!(data["property"], "Galle Fort Hotels (Pvt) Ltd");
         assert_eq!(data["period"], "July – September (2026)");
         assert_eq!(data["not_closed"], Value::Null);
-        assert_eq!(data["sales"][2], json!({ "label": "Bar Sales", "value": "Rs 3,183,537" }));
-        assert_eq!(data["total_turnover"], "Rs 3,477,310");
-        assert_eq!(data["deductions"][0], json!({ "label": "Service Charge", "value": "Rs 23,797" }));
-        assert_eq!(
-            (&data["base"], &data["rate"], &data["tdl"]),
-            (&json!("Rs 3,453,513"), &json!("1%"), &json!("Rs 34,535"))
-        );
+        assert_eq!(data["sales"][2], json!({ "label": "Bar Sales", "value": "3,183,537" }));
+        assert_eq!(data["total_turnover"], "3,477,310");
+        assert_eq!(data["deductions"][0], json!({ "label": "Service Charge", "value": "23,797" }));
+        assert_eq!((&data["base"], &data["rate"], &data["tdl"]), (&json!("3,453,513"), &json!("1%"), &json!("34,535")));
     }
 }

@@ -163,10 +163,10 @@ pub async fn report_viewed(
 }
 
 /// Records the rendered PDF of `report`, for the internal events receiver: `ready`, with its key and when. The key
-/// must be the one media-svc writes, `t/<tenant>/reports/<report>.pdf` (`Invalid` otherwise), so no link is ever
+/// must be the one media-svc writes, [`storage::report_pdf_key`] (`Invalid` otherwise), so no link is ever
 /// signed for another file. A report already ready, or one that doesn't exist, is left as it is.
 pub async fn set_report_pdf(tx: &mut Tx, tenant: TenantId, report: Uuid, key: &str) -> Result<(), ReportsError> {
-    if key != format!("t/{}/reports/{report}.pdf", tenant.0) {
+    if key != storage::report_pdf_key(tenant.0, report) {
         return Err(ReportsError::Invalid(format!("{key:?} is not the PDF of report {report}")));
     }
     sqlx::query(

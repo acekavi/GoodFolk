@@ -7,9 +7,18 @@
 #show: report.with(d)
 
 #figures(
-  (auto, 1fr, auto, auto, auto, auto, auto),
+  (14mm, 1fr, 27mm, 24mm, 24mm, 15mm, 24mm),
   ([Room], [Guest], [Confirmation], [Arrival], [Departure], [Guests], [Status]),
-  d.rows.map(r => (r.room, r.guest, r.confirmation, r.arrival, r.departure, r.guests, r.status)),
+  d.rows.map(r => (
+    r.room,
+    r.guest,
+    r.confirmation,
+    unbroken(r.arrival),
+    unbroken(r.departure),
+    unbroken(r.guests),
+    unbroken(r.status),
+  )),
+  aligns: (left, left, left, left, left, right, left),
 )
 #v(2mm)
 #align(right, small(d.count))

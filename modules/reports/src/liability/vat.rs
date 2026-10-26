@@ -1,9 +1,9 @@
 //! VAT per return period, from the revenue lines, invoices and credit notes of closed business dates, with IRD's
 //! Schedule 01 (output tax invoices) and Schedule 04 (credit and debit notes) upload files.
 
-use crate::ReportsError;
 use crate::everyday::ratio;
 use crate::liability::lines::revenue_lines;
+use crate::{RUPEE, ReportsError};
 use db::Tx;
 use media_types::{InvoiceKind, InvoiceTax, Purchaser};
 use serde::Serialize;
@@ -17,9 +17,6 @@ pub const DUMMY_TIN: &str = "100902885";
 
 /// The name the combined row of invoices without a purchaser TIN carries.
 const NO_TIN_PURCHASERS: &str = "Purchasers without a TIN";
-
-/// One rupee in LKR minor units.
-const RUPEE: i64 = 100;
 
 /// The code of the VAT tax rule.
 const VAT: &str = "VAT";

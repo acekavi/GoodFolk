@@ -333,10 +333,10 @@ fn report_fixture(template: ReportTemplate) -> Value {
                     "period": "19 Oct 2026 – 25 Oct 2026", "not_closed": "Not closed yet: 25 Oct 2026" }),
             json!({
                 "headline": [
-                    { "label": "Occupancy", "value": "72.50%", "last_year": "70.00%" },
+                    { "label": "Occupancy", "value": "72.5%", "last_year": "70.0%" },
                     { "label": "ADR", "value": "Rs 12,345", "last_year": null },
                 ],
-                "days": [{ "date": "19 Oct 2026", "rooms": "29 / 40", "occupancy": "72.50%", "adr": "Rs 12,345",
+                "days": [{ "date": "19 Oct 2026", "rooms": "29 / 40", "occupancy": "72.5%", "adr": "Rs 12,345",
                            "revpar": "Rs 8,950", "room_revenue": "Rs 358,005", "total_revenue": "Rs 401,220" }],
                 "breakdowns": [{ "title": "By room type", "rows": [
                     { "key": "DLX", "room_nights": "29", "room_revenue": "Rs 358,005", "revenue": "Rs 401,220" },
@@ -359,19 +359,19 @@ fn report_fixture(template: ReportTemplate) -> Value {
             json!({
                 "registration_no": "TDL/0042",
                 "sales": [
-                    { "label": "Room Sales", "value": "Rs 55,800" },
-                    { "label": "Food Sales", "value": "Rs 237,973" },
-                    { "label": "Bar Sales", "value": "Rs 3,183,537" },
-                    { "label": "Other Sales", "value": "Rs 0" },
+                    { "label": "Room Sales", "value": "55,800" },
+                    { "label": "Food Sales", "value": "237,973" },
+                    { "label": "Bar Sales", "value": "3,183,537" },
+                    { "label": "Other Sales", "value": "0" },
                 ],
-                "total_turnover": "Rs 3,477,310",
+                "total_turnover": "3,477,310",
                 "deductions": [
-                    { "label": "Service Charge", "value": "Rs 23,797" },
-                    { "label": "VAT", "value": "Rs 0" },
+                    { "label": "Service Charge", "value": "23,797" },
+                    { "label": "VAT", "value": "0" },
                 ],
-                "base": "Rs 3,453,513",
+                "base": "3,453,513",
                 "rate": "1%",
-                "tdl": "Rs 34,535",
+                "tdl": "34,535",
                 "credit_note": null,
             }),
         ),
@@ -407,8 +407,8 @@ fn report_fixture(template: ReportTemplate) -> Value {
                 ],
                 "schedule01": [{ "serial_no": "1", "date": "09/30/2026", "invoice_no": "INCL01_2630",
                                  "tin": "100902885", "name": "Purchasers without a TIN",
-                                 "description": "Inclusive Invoices at 18%", "value": "Rs 100,000",
-                                 "vat": "Rs 18,000" }],
+                                 "description": "Inclusive Invoices at 18%", "value": "100000",
+                                 "vat": "18000" }],
                 "schedule04": [],
                 "timing_difference": [],
             }),
@@ -429,13 +429,16 @@ fn report_fixture(template: ReportTemplate) -> Value {
 #[test]
 fn every_report_template_renders_its_fixture() {
     let expected: [(ReportTemplate, &[&str]); 6] = [
-        (ReportTemplate::Summary, &["Summary report", "Not closed yet: 25 Oct 2026", "72.50%", "BY ROOM TYPE", "DLX"]),
+        (ReportTemplate::Summary, &["Summary report", "Not closed yet: 25 Oct 2026", "72.5%", "BY ROOM TYPE", "DLX"]),
         (ReportTemplate::DailyList, &["Arrivals", "Ada Perera", "GAL-000042", "1 stay"]),
         (
             ReportTemplate::TdlFormA,
             &[
                 "Form A",
+                "Ceylon Tourist – Tourist Development Levy (TDL)",
+                "Institutions falling within the category of Tourist Hotel",
                 "TDL/0042",
+                "Amount in (Rs)",
                 "Room Sales",
                 "Total Turnover",
                 "Service Charge",
@@ -443,12 +446,16 @@ fn every_report_template_renders_its_fixture() {
                 "34,535",
                 "GovPay",
                 "Due before the end of the following quarter",
-                "Director / Proprietor",
+                "Paid through GovPay",
+                "Signature of Director / Proprietor",
                 "Date",
             ],
         ),
         (ReportTemplate::Sscl, &["SSCL", "Levy at 2.5%", "20 Oct 2026", "Exempt: services paid in foreign currency"]),
-        (ReportTemplate::Vat, &["VAT return", "2630", "114567890", "INCL01_2630", "Inclusive Invoices at 18%"]),
+        (
+            ReportTemplate::Vat,
+            &["VAT return", "2630", "114567890", "INCL01_2630", "Inclusive Invoices at 18% 100000 18000"],
+        ),
         (ReportTemplate::ServiceCharge, &["Service charge", "August 2026", "Outlet BAR", "29,377"]),
     ];
     for (template, strings) in expected {
@@ -456,10 +463,13 @@ fn every_report_template_renders_its_fixture() {
         let pdf = render::report_pdf(template, &data).unwrap();
         assert!(pdf.starts_with(b"%PDF-"), "{template:?} is a PDF");
         let document = render::report_layout(template, &data).unwrap();
-        for page in document.pages() {
+        for (at, page) in document.pages().iter().enumerate() {
             let size = page.frame.size();
-            // A4 portrait: 210 × 297 mm.
-            assert!((size.x.to_mm() - 210.0).abs() < 0.5 && (size.y.to_mm() - 297.0).abs() < 0.5, "{template:?}");
+            let (width, height) = (size.x.to_mm(), size.y.to_mm());
+            // A4 portrait, but for the VAT schedules' landscape pages after the first.
+            let (width, height) =
+                if template == ReportTemplate::Vat && at > 0 { (height, width) } else { (width, height) };
+            assert!((width - 210.0).abs() < 0.5 && (height - 297.0).abs() < 0.5, "{template:?} page {at}");
         }
         let text = text_of(&document);
         for expected in ["Galle Fort Hotels (Pvt) Ltd"].iter().chain(strings) {

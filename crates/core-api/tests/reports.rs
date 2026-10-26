@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::time::Duration;
+use time::format_description::well_known::Iso8601;
 use time::macros::date;
 use uuid::Uuid;
 
@@ -314,6 +315,160 @@ async fn on_demand_render_round_trip(_: PgPoolOptions, opts: PgConnectOptions) {
     .await
     .unwrap();
     assert_eq!(stored, 6);
+}
+
+const FOLIOS: &str = "query ($p: UUID!, $rr: UUID) {
+    folios(propertyId: $p, reservationRoomId: $rr) { id balances { currency amount } }
+}";
+
+/// A day of trade, closed: a stay of a guest with a TIN, its room night, a POS bill at the bar, payments in USD and
+/// LKR, a tax invoice and its credit note. Every report renders from it through the in-process media-svc, so each row
+/// the templates lay out is one `document` built from real data.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn every_report_renders_from_a_closed_day_of_trade(_: PgPoolOptions, opts: PgConnectOptions) {
+    let stack = stack(opts.clone()).await;
+    let app = &stack.app;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    let property = json!({"code": "GAL", "name": "Galle", "timezone": "Asia/Colombo", "base_currency": "LKR"});
+    let created = post(app, &owner, "/api/v1/properties", property).await.body;
+    let (id, path) = (uuid(&created["id"]), format!("/api/v1/properties/{}", created["id"].as_str().unwrap()));
+    let day = time::Date::parse(created["business_date"].as_str().unwrap(), &Iso8601::DEFAULT).unwrap();
+    for sql in [
+        "update property set vat_registered = true, tin = '300767028', legal_name = 'Galle Fort Hotels (Pvt) Ltd'
+         where id = $1",
+        "insert into fx_rate (tenant_id, property_id, date, currency, rate_to_base, source, source_date)
+         select tenant_id, id, business_date, 'USD', 300, 'cbsl', business_date from property where id = $1",
+    ] {
+        sqlx::query(sql).bind(id).execute(&superuser).await.unwrap();
+    }
+    let deluxe = json!({"code": "DLX", "name": "Deluxe", "base_occupancy": 2, "max_adults": 2, "max_children": 1,
+                        "max_occupancy": 3});
+    let deluxe = uuid(&post(app, &owner, &format!("{path}/room-types"), deluxe).await.body["id"]);
+    let range = json!({"room_type_id": deluxe, "first": 101, "last": 102});
+    assert_eq!(post(app, &owner, &format!("{path}/rooms/bulk"), range).await.status, StatusCode::CREATED);
+    let bar = json!({"code": "BAR", "name": "Best available", "kind": "standard", "segment": "IBE",
+                     "currency": "USD", "room_type_ids": [deluxe]});
+    let bar = uuid(&post(app, &owner, &format!("{path}/rate-plans"), bar).await.body["id"]);
+    let prices: Vec<Value> = (0..2)
+        .map(|offset| {
+            json!({"room_type_id": deluxe, "date": (day + time::Duration::days(offset)).to_string(),
+                             "occupancy": 2, "amount": 10_000})
+        })
+        .collect();
+    let priced = app
+        .send(Method::PUT, &format!("{path}/rate-plans/{bar}/prices"), Some(&owner), Some(json!({"prices": prices})))
+        .await;
+    assert_eq!(priced.status, StatusCode::NO_CONTENT, "{:?}", priced.body);
+    let outlet = post(app, &owner, &format!("{path}/outlets"), json!({"code": "BAR", "name": "Bar"})).await;
+    assert_eq!(outlet.status, StatusCode::CREATED, "{:?}", outlet.body);
+
+    let guest = json!({"first_name": "Ada", "last_name": "Silva", "residency": "non_resident"});
+    let guest = uuid(&post(app, &owner, &format!("{path}/guests"), guest).await.body["id"]);
+    sqlx::query("update guest set tin = '102345678' where id = $1").bind(guest).execute(&superuser).await.unwrap();
+    let booking = json!({"booker_guest_id": guest, "source": "front_desk",
+        "rooms": [{"room_type_id": deluxe, "rate_plan_id": bar, "meal_plan": "RO", "check_in": day.to_string(),
+                   "check_out": (day + time::Duration::days(2)).to_string(), "adults": 2}]});
+    let booked = post(app, &owner, &format!("{path}/reservations"), booking).await;
+    assert_eq!(booked.status, StatusCode::CREATED, "{:?}", booked.body);
+    let stay = uuid(&booked.body["rooms"][0]["id"]);
+    let checked_in = app
+        .send_with(
+            Method::POST,
+            &format!("{path}/reservation-rooms/{stay}/check-in"),
+            Some(&owner),
+            None,
+            &[("x-goodfolk-csrf", "1"), ("if-match", "\"1\"")],
+        )
+        .await;
+    assert_eq!(checked_in.status, StatusCode::OK, "{:?}", checked_in.body);
+    let posted = post(app, &owner, &format!("{path}/folio/post-charges"), json!({})).await;
+    assert_eq!(posted.status, StatusCode::OK, "{:?}", posted.body);
+    let bill = json!({"outlet": "BAR", "bill_no": "B-1", "currency": "LKR",
+                      "items": [{"description": "Lime juice", "quantity": 2, "unit_net": 50_000}],
+                      "target": {"reservation_room": stay}});
+    let billed = post(app, &owner, &format!("{path}/pos-bills"), bill).await;
+    assert_eq!(billed.status, StatusCode::CREATED, "{:?}", billed.body);
+
+    let read = graphql(app, &owner, FOLIOS, json!({"p": id, "rr": stay})).await;
+    let folio = uuid(&read["data"]["folios"][0]["id"]);
+    for balance in read["data"]["folios"][0]["balances"].as_array().unwrap() {
+        let payment = match balance["currency"].as_str().unwrap() {
+            "USD" => json!({"method": "card_terminal", "details": {"approval": "A1", "last4": "4242", "brand": "Visa"},
+                            "amount": balance["amount"], "currency": "USD"}),
+            currency => json!({"method": "cash", "amount": balance["amount"], "currency": currency}),
+        };
+        let paid = post(app, &owner, &format!("{path}/folios/{folio}/payments"), payment).await;
+        assert_eq!(paid.status, StatusCode::CREATED, "{:?}", paid.body);
+    }
+    let invoice = post(app, &owner, &format!("{path}/folios/{folio}/invoice"), json!({})).await;
+    assert_eq!(invoice.status, StatusCode::CREATED, "{:?}", invoice.body);
+    let note = json!({"reason": "Wrong purchaser"});
+    let credited =
+        post(app, &owner, &format!("{path}/invoices/{}/credit-note", invoice.body["id"].as_str().unwrap()), note).await;
+    assert_eq!(credited.status, StatusCode::CREATED, "{:?}", credited.body);
+
+    // The close of the day, as the night audit stores it, and the business date past it.
+    let tenant: Uuid = sqlx::query_scalar("select tenant_id from property where id = $1")
+        .bind(id)
+        .fetch_one(&superuser)
+        .await
+        .unwrap();
+    let mut tx = db::begin(&app.pool, Scope::tenant(TenantId(tenant))).await.unwrap();
+    let stats = audit::compute(&mut tx, id, day).await.unwrap();
+    audit::store(&mut tx, TenantId(tenant), id, &stats).await.unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query("update property set business_date = business_date + 1 where id = $1")
+        .bind(id)
+        .execute(&superuser)
+        .await
+        .unwrap();
+
+    let (year, month) = (day.year(), u8::from(day.month()));
+    let quarter = (month - 1) / 3 + 1;
+    let (fy_start_year, fiscal_quarter) = if month >= 4 { (year, (month - 4) / 3 + 1) } else { (year - 1, 4) };
+    let vat_period = reports::VatPeriod::Quarter(year, quarter).code();
+    let requests = [
+        json!({"report": "summary", "params": {"from": day.to_string(), "to": day.to_string()}}),
+        json!({"report": "daily_list", "params": {"date": day.to_string(), "kind": "in_house"}}),
+        json!({"report": "tdl", "params": {"fy_start_year": fy_start_year, "quarter": fiscal_quarter}}),
+        json!({"report": "sscl", "params": {"year": year, "quarter": quarter}}),
+        json!({"report": "vat", "params": {"period": vat_period}}),
+        json!({"report": "service_charge", "params": {"year": year, "month": month}}),
+    ];
+    let mut documents = Vec::new();
+    for request in requests {
+        let queued = post(app, &owner, &format!("{path}/reports/render"), request.clone()).await;
+        assert_eq!(queued.status, StatusCode::ACCEPTED, "{request}: {:?}", queued.body);
+        let report = uuid(&queued.body["id"]);
+        let ready = settled(app, &owner, &format!("{path}/reports/{report}")).await;
+        assert_eq!(ready["status"], "ready", "{request}: {ready}");
+        let pdf = http().get(ready["url"].as_str().unwrap()).send().await.unwrap();
+        assert!(pdf.bytes().await.unwrap().starts_with(b"%PDF-"), "{request}");
+        let data: Value = sqlx::query_scalar("select data->'data' from report where id = $1")
+            .bind(report)
+            .fetch_one(&superuser)
+            .await
+            .unwrap();
+        documents.push(data);
+    }
+
+    // Every row path of every template held data.
+    let [summary, list, tdl, sscl, vat, service_charge] = &documents[..] else { unreachable!() };
+    assert_eq!(summary["days"].as_array().unwrap().len(), 1, "{summary}");
+    assert!(!summary["breakdowns"].as_array().unwrap().is_empty(), "{summary}");
+    assert_eq!(list["rows"][0]["guest"], "Ada Silva", "{list}");
+    assert_ne!(tdl["sales"][0]["value"], "0", "room sales: {tdl}");
+    assert_ne!(tdl["sales"][1]["value"], "0", "food sales (an outlet is food until regrouped): {tdl}");
+    assert_ne!(sscl["rows"][0]["values"][3], "Rs 0", "{sscl}");
+    let tin_rows: Vec<&Value> =
+        vat["schedule01"].as_array().unwrap().iter().filter(|row| row["tin"] == "102345678").collect();
+    assert_eq!(tin_rows.len(), 1, "{vat}");
+    assert_eq!(vat["schedule04"].as_array().unwrap().len(), 1, "{vat}");
+    assert!(
+        service_charge["rows"].as_array().unwrap().iter().any(|row| row["label"] == "Outlet BAR"),
+        "{service_charge}"
+    );
 }
 
 /// A report media-svc can never render is marked failed, with no link, and raises the property's `reports` alert.

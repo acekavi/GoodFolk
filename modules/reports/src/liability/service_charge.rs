@@ -1,17 +1,14 @@
 //! The service charge of a month: what was collected on the bill and what was absorbed, by outlet, on rooms and on
 //! everything else. A statement for the hotel's own staff distribution: it does not compute who gets what.
 
-use crate::ReportsError;
 use crate::everyday::ratio;
 use crate::liability::lines::revenue_lines;
+use crate::{RUPEE, ReportsError};
 use db::Tx;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use time::{Date, Month};
 use uuid::Uuid;
-
-/// One rupee in LKR minor units.
-const RUPEE: i64 = 100;
 
 /// Service charge in base LKR minor units, each figure whole rupees.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]

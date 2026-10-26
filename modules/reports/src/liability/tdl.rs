@@ -1,17 +1,14 @@
 //! The Tourism Development Levy of a quarter, in SLTDA's Form A layout.
 
-use crate::ReportsError;
 use crate::everyday::ratio;
 use crate::liability::lines::revenue_lines;
+use crate::{RUPEE, ReportsError};
 use db::Tx;
 use folio::ReportGroup;
 use serde::Serialize;
 use std::collections::HashMap;
 use time::{Date, Month};
 use uuid::Uuid;
-
-/// One rupee in LKR minor units.
-const RUPEE: i64 = 100;
 
 /// The base at or under which the levy is 0.5%: Rs 3,000,000.
 const SMALL_BASE: i64 = 3_000_000 * RUPEE;

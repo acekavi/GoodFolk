@@ -1,17 +1,14 @@
 //! The Social Security Contribution Levy of a calendar quarter, month by month, with the foreign-currency exemption.
 
-use crate::ReportsError;
 use crate::everyday::ratio;
 use crate::liability::lines::{folio_revenue_lines, revenue_lines};
 use crate::liability::settlement::{Segment, segments};
+use crate::{RUPEE, ReportsError};
 use db::Tx;
 use serde::Serialize;
 use std::collections::HashMap;
 use time::{Date, Month};
 use uuid::Uuid;
-
-/// One rupee in LKR minor units.
-const RUPEE: i64 = 100;
 
 /// The levy: 2.5% of the liable turnover, in basis points.
 const LEVY_BP: i64 = 250;

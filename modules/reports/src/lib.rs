@@ -26,6 +26,9 @@ pub use store::{
     set_report_pdf, stored_report,
 };
 
+/// One rupee in LKR minor units.
+pub(crate) const RUPEE: i64 = 100;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ReportsError {
     /// The property does not exist in this tenant.

@@ -13,8 +13,11 @@
   #v(3mm)
 ]
 
+// Both tables share these widths, so the months line up.
+#let widths = (1fr, 27mm, 27mm, 27mm, 29mm)
+
 #figures(
-  (1fr, auto, auto, auto, auto),
+  widths,
   ([], ..d.months, [Quarter]),
   d.rows.map(r => {
     let cell(it) = if r.strong { text(weight: "bold", it) } else { it }
@@ -23,7 +26,7 @@
 )
 #v(3mm)
 #figures(
-  (1fr, auto, auto, auto, auto),
+  widths,
   ([Listed, never exempt], ..d.months, [Quarter]),
   ((d.foreign_cash.label, ..d.foreign_cash.values),),
 )
