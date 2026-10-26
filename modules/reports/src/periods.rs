@@ -2,6 +2,8 @@
 //! financial year), SSCL quarter (calendar), VAT return period (the property's, when it is VAT registered with a TIN)
 //! and service charge month whose last day is closed and that is not stored yet, or failed to render.
 //!
+//! Only the weekly and monthly reports that just ended are emailed (see [`mailed`]).
+//!
 //! **Builder's call:** the scan reaches back 13 months at most, and to periods ending on or after the property's first
 //! closed day, so a property closing for the first time gets its current periods, never years of empty ones.
 
@@ -69,8 +71,8 @@ pub async fn due_periods(
 }
 
 /// Queues the render of each of `property`'s [`due_periods`] closed through `closed_through`, with its data computed
-/// now (a failed one is queued again), and clears the `reports` alert unless a report still failed. Returns how many
-/// were queued. The night audit's `render_reports` step runs it.
+/// now (a failed one is queued again) and marked to be mailed when it is ready if [`mailed`] says so, and clears the
+/// `reports` alert unless a report still failed. Returns how many were queued. The night audit's `render_reports` step runs it.
 pub async fn render_due(
     tx: &mut Tx,
     tenant: TenantId,
@@ -80,11 +82,32 @@ pub async fn render_due(
     let due = due_periods(tx, property, closed_through).await?;
     for &(kind, from, to) in &due {
         let report = document(tx, property, request(kind, from, to)).await?;
-        queue_render(tx, tenant, property, kind, report.period_start, report.period_end, report.template, report.data)
+        let id = queue_render(
+            tx,
+            tenant,
+            property,
+            kind,
+            report.period_start,
+            report.period_end,
+            report.template,
+            report.data,
+        )
+        .await?;
+        sqlx::query("update report set mail = $2 where id = $1")
+            .bind(id)
+            .bind(mailed(kind, to, closed_through))
+            .execute(&mut **tx)
             .await?;
     }
     clear_reports_alert(tx, property).await?;
     Ok(due.len())
+}
+
+/// Whether the close emails the report of `kind` ending `period_end` once it is ready: only a weekly or monthly one
+/// whose period ended within the 7 days through `closed_through`, the period that just finished. A catch-up over
+/// older periods renders and stores them, and mails none, so a late or first close never floods the inbox.
+fn mailed(kind: ReportKind, period_end: Date, closed_through: Date) -> bool {
+    matches!(kind, ReportKind::Weekly | ReportKind::Monthly) && period_end >= closed_through - Duration::days(6)
 }
 
 /// The report of `kind` for the period `from` to `to`, one [`due_periods`] gave.

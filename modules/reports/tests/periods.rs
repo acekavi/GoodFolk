@@ -193,3 +193,58 @@ async fn the_scan_reaches_back_13_months(_: PgPoolOptions, opts: PgConnectOption
     fresh.close_day(date(2026, 10, 21), 10, 5, 50_000, vec![]).await;
     assert_eq!(fresh.due(date(2026, 10, 25)).await, [(ReportKind::Weekly, date(2026, 10, 19), date(2026, 10, 25))]);
 }
+
+/// A first close after 13 months of history renders every period but emails only those that just ended: the week and
+/// the month closed through Sunday 1 November. A catch-up period, rendered, mails no one.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_catch_up_mails_only_the_periods_that_just_ended(_: PgPoolOptions, opts: PgConnectOptions) {
+    let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
+    let hotel = Hotel::new(opts).await;
+    hotel.set_business_date(date(2026, 11, 2)).await;
+    hotel.close_day(date(2024, 6, 5), 10, 5, 50_000, vec![]).await;
+    hotel.close_day(date(2026, 11, 1), 10, 5, 50_000, vec![]).await;
+    let mut tx = hotel.tx().await;
+    sqlx::query("insert into membership (tenant_id, user_id) values ($1, $2)")
+        .bind(hotel.tenant.0)
+        .bind(hotel.user.0)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("insert into role_grant (id, tenant_id, user_id, role) values (gen_random_uuid(), $1, $2, 'owner')")
+        .bind(hotel.tenant.0)
+        .bind(hotel.user.0)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let queued = hotel.render_due(date(2026, 11, 1)).await;
+    assert_eq!(queued, hotel.reports().await.len());
+    assert!(queued > 70, "13 months of weeks, months and quarters: {queued}");
+
+    let rows: Vec<(uuid::Uuid, String, Date)> =
+        sqlx::query_as("select id, kind, period_start from report").fetch_all(&mut *hotel.tx().await).await.unwrap();
+    for (id, _, _) in &rows {
+        let mut tx = hotel.tx().await;
+        let key = storage::report_pdf_key(hotel.tenant.0, *id);
+        reports::set_report_pdf(&mut tx, hotel.tenant, *id, &key).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    let mut mailed: Vec<(String, Date)> = sqlx::query_as(
+        "select r.kind, r.period_start from report_mail m join report r on r.id = m.report_id order by r.kind",
+    )
+    .fetch_all(&superuser)
+    .await
+    .unwrap();
+    mailed.sort();
+    assert_eq!(
+        mailed,
+        [("monthly".to_owned(), date(2026, 10, 1)), ("weekly".to_owned(), date(2026, 10, 26))],
+        "the catch-up's older weeks and months are stored, not mailed"
+    );
+    let jobs: i64 = sqlx::query_scalar("select count(*) from outbox where topic = 'mail-send'")
+        .fetch_one(&superuser)
+        .await
+        .unwrap();
+    assert_eq!(jobs, 2);
+}

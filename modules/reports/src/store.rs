@@ -171,25 +171,26 @@ pub async fn report_viewed(
 /// must be the one media-svc writes, [`storage::report_pdf_key`] (`Invalid` otherwise), so no link is ever
 /// signed for another file. A report already ready, or one that doesn't exist, is left as it is.
 ///
-/// A weekly or monthly report is emailed: a `report_mail` row and a `mail-send` job for each of the property's owners
-/// and managers (a grant for every property counts) who has not turned that email off, each at most once however often
-/// the result comes. The property's `reports` alert clears unless another of its reports failed.
+/// A report the close marked to mail (`report.mail`: a weekly or monthly one that just ended, see
+/// [`crate::render_due`]) is emailed: a `report_mail` row and a `mail-send` job for each of the property's owners and
+/// managers (a grant for every property counts) who has not turned that email off, each at most once however often the
+/// result comes. The property's `reports` alert clears unless another of its reports failed.
 pub async fn set_report_pdf(tx: &mut Tx, tenant: TenantId, report: Uuid, key: &str) -> Result<(), ReportsError> {
     if key != storage::report_pdf_key(tenant.0, report) {
         return Err(ReportsError::Invalid(format!("{key:?} is not the PDF of report {report}")));
     }
-    let ready: Option<(Uuid, String)> = sqlx::query_as(
+    let ready: Option<(Uuid, String, bool)> = sqlx::query_as(
         "update report set status = 'ready', pdf_key = $2, error = null, rendered_at = now()
          where id = $1 and tenant_id = $3 and status <> 'ready'
-         returning property_id, kind",
+         returning property_id, kind, mail",
     )
     .bind(report)
     .bind(key)
     .bind(tenant.0)
     .fetch_optional(&mut **tx)
     .await?;
-    let Some((property, kind)) = ready else { return Ok(()) };
-    if EmailedReport::ALL.iter().any(|report| report.kind().as_str() == kind) {
+    let Some((property, kind, mail)) = ready else { return Ok(()) };
+    if mail {
         let recipients: Vec<Uuid> = sqlx::query_scalar(
             "insert into report_mail (tenant_id, report_id, user_id)
              select distinct $1::uuid, $2::uuid, g.user_id from role_grant g

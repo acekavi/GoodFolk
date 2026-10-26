@@ -585,6 +585,12 @@ async fn rendered(app: &TestApp, hotel: &MediaHotel, kind: ReportKind) -> Uuid {
     let report = reports::queue_render(&mut tx, tenant, hotel.id, kind, from, to, ReportTemplate::Summary, json!({}))
         .await
         .unwrap();
+    // As the close marks the weekly or monthly period that just ended.
+    sqlx::query("update report set mail = kind in ('weekly', 'monthly') where id = $1")
+        .bind(report)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
     deliver(app, hotel, report).await;
     report
