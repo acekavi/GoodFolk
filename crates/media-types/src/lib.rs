@@ -1,5 +1,5 @@
-//! The media job and result types shared by core-api, media-svc and the imaging worker, and the invoice data
-//! media-svc renders. This crate holds no codecs, so core-api can depend on it without linking any.
+//! The media job and result types shared by core-api, media-svc and the imaging worker, and the invoice and report
+//! data media-svc renders. This crate holds no codecs, so core-api can depend on it without linking any.
 
 use serde::{Deserialize, Serialize};
 use time::Date;
@@ -142,6 +142,61 @@ pub enum MediaResult {
         invoice_id: Uuid,
         key: String,
     },
+    /// A report's PDF is stored at `key`.
+    ReportRendered {
+        tenant_id: Uuid,
+        report_id: Uuid,
+        key: String,
+    },
+    /// A report can never be rendered: its data is over [`MAX_REPORT_BYTES`] or its template refused it.
+    ReportFailed {
+        tenant_id: Uuid,
+        report_id: Uuid,
+        reason: String,
+    },
+}
+
+/// The bundled template a report is laid out with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportTemplate {
+    Summary,
+    DailyList,
+    TdlFormA,
+    Sscl,
+    Vat,
+    ServiceCharge,
+}
+
+impl ReportTemplate {
+    pub const ALL: [Self; 6] =
+        [Self::Summary, Self::DailyList, Self::TdlFormA, Self::Sscl, Self::Vat, Self::ServiceCharge];
+
+    /// The template's name, which is also its file's (`templates/reports/<name>.typ`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Summary => "summary",
+            Self::DailyList => "daily_list",
+            Self::TdlFormA => "tdl_form_a",
+            Self::Sscl => "sscl",
+            Self::Vat => "vat",
+            Self::ServiceCharge => "service_charge",
+        }
+    }
+}
+
+/// The largest report data, as JSON: a report job over it is refused for good, by the reports module before it is
+/// queued and by media-svc. It keeps a push under media-svc's body limit.
+pub const MAX_REPORT_BYTES: usize = 4 * 1024 * 1024;
+
+/// A `report-render` job: lay `data` out with `template` as the PDF of `report_id`. `data` is what the template
+/// reads, every printed figure already formatted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportRenderJob {
+    pub tenant_id: Uuid,
+    pub report_id: Uuid,
+    pub template: ReportTemplate,
+    pub data: serde_json::Value,
 }
 
 /// An `invoice-render` job: lay `data` out as the PDF of `invoice_id`.
@@ -430,5 +485,34 @@ mod tests {
         assert_eq!(json["type"], "invoice_rendered");
         assert_eq!(json["key"], "t/a/invoices/b.pdf");
         assert_eq!(serde_json::from_value::<MediaResult>(json).unwrap(), rendered);
+    }
+
+    #[test]
+    fn a_report_job_and_its_results_round_trip_with_their_wire_shape() {
+        let (tenant_id, report_id) = (Uuid::nil(), Uuid::max());
+        let queued = serde_json::json!({
+            "tenant_id": tenant_id, "report_id": report_id, "template": "tdl_form_a", "data": {"title": "Form A"},
+        });
+        let job: ReportRenderJob = serde_json::from_value(queued.clone()).unwrap();
+        assert_eq!(job.template, ReportTemplate::TdlFormA);
+        assert_eq!(serde_json::to_value(&job).unwrap(), queued);
+
+        let rendered = MediaResult::ReportRendered { tenant_id, report_id, key: "t/a/reports/b.pdf".into() };
+        let json = serde_json::to_value(&rendered).unwrap();
+        assert_eq!(json["type"], "report_rendered");
+        assert_eq!(serde_json::from_value::<MediaResult>(json).unwrap(), rendered);
+        let failed = MediaResult::ReportFailed { tenant_id, report_id, reason: "no".into() };
+        let json = serde_json::to_value(&failed).unwrap();
+        assert_eq!(json["type"], "report_failed");
+        assert_eq!(serde_json::from_value::<MediaResult>(json).unwrap(), failed);
+    }
+
+    #[test]
+    fn report_templates_are_named_as_their_files() {
+        let names: Vec<&str> = ReportTemplate::ALL.iter().map(|t| t.as_str()).collect();
+        assert_eq!(names, ["summary", "daily_list", "tdl_form_a", "sscl", "vat", "service_charge"]);
+        for template in ReportTemplate::ALL {
+            assert_eq!(serde_json::to_value(template).unwrap(), template.as_str());
+        }
     }
 }

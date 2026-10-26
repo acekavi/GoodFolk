@@ -1214,6 +1214,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/properties/{property}/reports/render": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Renders a report as a PDF, from the closed days as they are now: 202 with the stored report's id, whose status
+         *     [`report`] reads. Refused as the report itself is (422), such as VAT for a property that is not registered or has
+         *     no TIN. Needs the report's permission: `ReportsView`, also `ReservationsView` for a daily list, and
+         *     `ReportsLiability` for TDL, SSCL, VAT and service charge.
+         */
+        post: operations["render_report"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/reports/vat/{period}/schedule01.csv": {
         parameters: {
             query?: never;
@@ -1248,6 +1270,26 @@ export interface paths {
          *     `ReportsLiability`.
          */
         get: operations["vat_schedule04"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reports/{report}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A stored report's status, `rendering`, `ready` or `failed`, with a link to its PDF once it is ready. Each link
+         *     issued is audited as `report.viewed`. Needs the permission its report needs to render.
+         */
+        get: operations["report_status"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2565,6 +2607,8 @@ export interface components {
              */
             version: number;
         };
+        /** @enum {string} */
+        DailyListKind: "arrivals" | "departures" | "in_house";
         /** @description When a deposit is due: on the business date of the booking, or `days` (0 to 365) before arrival. */
         DepositDue: {
             /** @enum {string} */
@@ -3482,6 +3526,71 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        RenderQueued: {
+            /** Format: uuid */
+            id: string;
+        };
+        /**
+         * @description The report to render and what its on-screen query takes: `summary` (`from`, `to`), `daily_list` (`date`, `kind`),
+         *     `tdl` (`fy_start_year`, `quarter`), `sscl` (`year`, `quarter`), `vat` (`period`, an IRD period code) or
+         *     `service_charge` (`year`, `month`).
+         */
+        RenderReportRequest: {
+            /** @description The everyday reports from `from` to `to`, both included, at most 366 days. */
+            params: {
+                /** Format: date */
+                from: string;
+                /** Format: date */
+                to: string;
+            };
+            /** @enum {string} */
+            report: "summary";
+        } | {
+            params: {
+                /** Format: date */
+                date: string;
+                kind: components["schemas"]["DailyListKind"];
+            };
+            /** @enum {string} */
+            report: "daily_list";
+        } | {
+            /** @description Quarter 1 to 4 (April–June to January–March) of the financial year starting in April `fy_start_year`. */
+            params: {
+                /** Format: int32 */
+                fy_start_year: number;
+                /** Format: int32 */
+                quarter: number;
+            };
+            /** @enum {string} */
+            report: "tdl";
+        } | {
+            /** @description Calendar quarter 1 to 4 of `year`. */
+            params: {
+                /** Format: int32 */
+                quarter: number;
+                /** Format: int32 */
+                year: number;
+            };
+            /** @enum {string} */
+            report: "sscl";
+        } | {
+            /** @description `YYQ0` or `YYQM`, of the kind the property files. */
+            params: {
+                period: string;
+            };
+            /** @enum {string} */
+            report: "vat";
+        } | {
+            /** @description Month 1 to 12 of `year`. */
+            params: {
+                /** Format: int32 */
+                month: number;
+                /** Format: int32 */
+                year: number;
+            };
+            /** @enum {string} */
+            report: "service_charge";
+        };
         ReorderMediaRequest: {
             /** @description Every photo of the room type, each once, in the new order. */
             asset_ids: string[];
@@ -3502,6 +3611,13 @@ export interface components {
             /** @description `low`, `medium` or `high`. */
             severity: components["schemas"]["Severity"];
         };
+        /** @description A stored report's status and, once it is ready, a link to its PDF that works for 5 minutes. */
+        ReportRead: {
+            status: components["schemas"]["ReportStatusNode"];
+            url?: string | null;
+        };
+        /** @enum {string} */
+        ReportStatusNode: "rendering" | "ready" | "failed";
         /** @description One room of a booking: a room type on a rate plan and meal plan for `[check_in, check_out)`. */
         ReservationRoomRequest: {
             /** Format: int32 */
@@ -7474,6 +7590,51 @@ export interface operations {
             };
         };
     };
+    render_report: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenderReportRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderQueued"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     vat_schedule01: {
         parameters: {
             query?: never;
@@ -7549,6 +7710,40 @@ export interface operations {
                 content?: never;
             };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    report_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                report: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportRead"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

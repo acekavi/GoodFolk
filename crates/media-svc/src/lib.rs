@@ -1,10 +1,12 @@
 //! media-svc: verifies uploads over gRPC and turns them into an archive and renditions in supervised worker
-//! subprocesses, and renders invoice PDFs. It has no database; results go back to core-api on the `media-results`
+//! subprocesses, and renders invoice and report PDFs. It has no database; results go back to core-api on the `media-results`
 //! topic.
 //!
 //! One port serves gRPC (`goodfolk.media.v1.Media` and `grpc.health.v1.Health`, over cleartext HTTP/2) and HTTP
-//! (`POST /work` for `media-process` pushes, `POST /render` for `invoice-render` pushes, `GET /healthz`). The media
-//! service, `/work` and `/render` sit behind service auth; the health checks do not, so platform probes can reach them.
+//! (`POST /work` for `media-process` pushes, `POST /render` for `invoice-render` pushes, `POST /render-report` for
+//! `report-render` pushes, `GET /healthz`). Each topic has its own push subscription, so each has its own route. The
+//! media service, `/work`, `/render` and `/render-report` sit behind service auth; the health checks do not, so
+//! platform probes can reach them.
 
 pub mod config;
 mod grpc;
@@ -104,7 +106,8 @@ impl Drop for ScratchDir {
     }
 }
 
-/// gRPC (tonic) + health + HTTP (/work and /render behind svc-auth, /healthz) on one port (tonic's axum router).
+/// gRPC (tonic) + health + HTTP (/work, /render and /render-report behind svc-auth, /healthz) on one port (tonic's axum
+/// router). Invoices and reports share the render permits.
 ///
 /// Each worker's threads come from `MEDIA_WORKER_THREADS`, or else from the permits `svc.workers` holds now, so build
 /// the router before any are taken. This matches what [`config::Config`] reports (see [`config::worker_threads`]).
@@ -127,6 +130,13 @@ pub fn router(svc: MediaSvc, verifier: Arc<Verifier>) -> axum::Router {
         .route(
             "/render",
             post(render::render)
+                .with_state(renders.clone())
+                .layer::<_, std::convert::Infallible>(axum::extract::DefaultBodyLimit::max(render::MAX_RENDER_BODY))
+                .layer(auth.clone()),
+        )
+        .route(
+            "/render-report",
+            post(render::render_report)
                 .with_state(renders)
                 .layer::<_, std::convert::Infallible>(axum::extract::DefaultBodyLimit::max(render::MAX_RENDER_BODY))
                 .layer(auth),

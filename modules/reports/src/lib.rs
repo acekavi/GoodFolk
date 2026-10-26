@@ -1,11 +1,15 @@
 //! The hotel's reports: the everyday reports read from the night audit's stored statistics, the daily lists, and the
 //! liability reports computed live from closed business dates.
 //!
-//! Every function takes a transaction scoped to the caller's tenant and only reads.
+//! Every function takes a transaction scoped to the caller's tenant. The reports only read; [`queue_render`] and the
+//! render results' receivers write the stored reports.
 
+mod document;
 mod everyday;
 pub mod liability;
+mod store;
 
+pub use document::{RenderRequest, ReportDocument, document};
 pub use everyday::{
     BreakdownTotal, DayRow, Dimension, Headline, ListKind, ListRow, RangeKind, Summary, daily_list, last_year_range,
     summary,
@@ -16,6 +20,10 @@ pub use liability::tdl::{FiscalQuarter, TdlForm, tdl};
 pub use liability::vat::{
     DUMMY_TIN, Schedule01Row, Schedule04Row, VAT_DOCUMENTS_SQL, VatPeriod, VatReport, VatTimingDifference,
     schedule_file_name, schedule01_csv, schedule04_csv, vat,
+};
+pub use store::{
+    REPORT_RENDER_TOPIC, ReportKind, ReportStatus, StoredReport, queue_render, report_failed, report_viewed,
+    set_report_pdf, stored_report,
 };
 
 #[derive(Debug, thiserror::Error)]

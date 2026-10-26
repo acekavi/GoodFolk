@@ -1,14 +1,21 @@
 //! The everyday reports and daily lists over GraphQL: `reportSummary` needs `ReportsView`, and `dailyList` also
 //! accepts `ReservationsView`. The liability reports (`tdlReport`, `ssclReport`, `vatReport`, `serviceChargeReport`)
-//! and the VAT schedule downloads need `ReportsLiability`.
+//! and the VAT schedule downloads need `ReportsLiability`. Every report renders as a PDF, on demand or queued by the
+//! close, through the in-process media-svc.
 
 mod common;
 
 use axum::http::{Method, StatusCode, header};
+use common::media::{Hotel as MediaHotel, http, post, stack};
 use common::{TestApp, uuid};
+use db::{Scope, TenantId};
+use media_types::ReportTemplate;
+use reports::ReportKind;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use std::time::Duration;
+use time::macros::date;
 use uuid::Uuid;
 
 async fn graphql(app: &TestApp, cookie: &str, query: &str, variables: Value) -> Value {
@@ -195,4 +202,216 @@ async fn vat_schedules_are_refused_without_registration_or_tin(_: PgPoolOptions,
     assert_eq!(month.body["detail"], "This property files its VAT return quarterly");
     let malformed = app.send(Method::GET, &schedule01("26Q3"), Some(&owner), None).await;
     assert_eq!(malformed.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// The same weekly report queued twice is one report and one render job; an on-demand report is new every time.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn queue_render_is_idempotent(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let (superuser, owner, property) = hotel(&app, opts).await;
+    let tenant = TenantId(uuid(&app.send(Method::GET, "/api/v1/me", Some(&owner), None).await.body["current_tenant"]));
+    let (from, to) = (date!(2026 - 10 - 19), date!(2026 - 10 - 25));
+    let queue = |kind: ReportKind| {
+        let pool = app.pool.clone();
+        async move {
+            let mut tx = db::begin(&pool, Scope::tenant(tenant)).await.unwrap();
+            let id = reports::queue_render(
+                &mut tx,
+                tenant,
+                property,
+                kind,
+                from,
+                to,
+                ReportTemplate::Summary,
+                json!({"title": "Weekly report"}),
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            id
+        }
+    };
+    let count = |sql: &'static str| {
+        let superuser = superuser.clone();
+        async move { sqlx::query_scalar::<_, i64>(sql).fetch_one(&superuser).await.unwrap() }
+    };
+
+    let first = queue(ReportKind::Weekly).await;
+    assert_eq!(queue(ReportKind::Weekly).await, first, "the same key gives the same report");
+    assert_eq!(count("select count(*) from report").await, 1);
+    assert_eq!(count("select count(*) from outbox where topic = 'report-render'").await, 1);
+    let (status, data): (String, Value) = sqlx::query_as("select status, data from report where id = $1")
+        .bind(first)
+        .fetch_one(&superuser)
+        .await
+        .unwrap();
+    assert_eq!(status, "rendering");
+    assert_eq!(data, json!({"template": "summary", "data": {"title": "Weekly report"}}));
+    let job: Value = sqlx::query_scalar("select payload from outbox where topic = 'report-render'")
+        .fetch_one(&superuser)
+        .await
+        .unwrap();
+    assert_eq!(
+        job,
+        json!({"tenant_id": tenant.0, "report_id": first, "template": "summary", "data": {"title": "Weekly report"}})
+    );
+
+    assert_ne!(queue(ReportKind::OnDemand).await, queue(ReportKind::OnDemand).await, "on demand is always new");
+    assert_eq!(count("select count(*) from report").await, 3);
+    assert_eq!(count("select count(*) from outbox where topic = 'report-render'").await, 3);
+}
+
+/// Polls the report until it is no longer rendering, and returns its last read.
+async fn settled(app: &TestApp, cookie: &str, path: &str) -> Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let read = app.send(Method::GET, path, Some(cookie), None).await;
+        assert_eq!(read.status, StatusCode::OK, "{:?}", read.body);
+        if read.body["status"] != "rendering" {
+            return read.body;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the report never rendered: {:?}", read.body);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Every report, rendered on demand by the in-process media-svc: 202 with its id, then ready with a link that works
+/// for a few minutes, each link audited.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn on_demand_render_round_trip(_: PgPoolOptions, opts: PgConnectOptions) {
+    let stack = stack(opts.clone()).await;
+    let app = &stack.app;
+    let hotel = MediaHotel::new(app, "owner@example.com", "GAL").await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    set_vat(&superuser, hotel.id, Some("300767028")).await;
+    let requests = [
+        json!({"report": "summary", "params": {"from": "2026-10-19", "to": "2026-10-25"}}),
+        json!({"report": "daily_list", "params": {"date": "2026-10-26", "kind": "arrivals"}}),
+        json!({"report": "tdl", "params": {"fy_start_year": 2026, "quarter": 2}}),
+        json!({"report": "sscl", "params": {"year": 2026, "quarter": 3}}),
+        json!({"report": "vat", "params": {"period": "2630"}}),
+        json!({"report": "service_charge", "params": {"year": 2026, "month": 8}}),
+    ];
+    for request in requests {
+        let queued = post(app, &hotel.owner, &format!("{}/reports/render", hotel.path), request.clone()).await;
+        assert_eq!(queued.status, StatusCode::ACCEPTED, "{request}: {:?}", queued.body);
+        let path = format!("{}/reports/{}", hotel.path, uuid(&queued.body["id"]));
+        let ready = settled(app, &hotel.owner, &path).await;
+        assert_eq!(ready["status"], "ready", "{request}: {ready}");
+        let pdf = http().get(ready["url"].as_str().unwrap()).send().await.unwrap();
+        assert_eq!(pdf.status(), reqwest::StatusCode::OK);
+        assert!(pdf.bytes().await.unwrap().starts_with(b"%PDF-"), "{request}");
+    }
+    let viewed: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'report.viewed'")
+        .fetch_one(&superuser)
+        .await
+        .unwrap();
+    assert_eq!(viewed, 6, "each link issued is audited");
+    let stored: i64 = sqlx::query_scalar(
+        "select count(*) from report where kind = 'on_demand' and status = 'ready' and rendered_at is not null",
+    )
+    .fetch_one(&superuser)
+    .await
+    .unwrap();
+    assert_eq!(stored, 6);
+}
+
+/// A report media-svc can never render is marked failed, with no link, and raises the property's `reports` alert.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn render_failure_raises_reports_alert(_: PgPoolOptions, opts: PgConnectOptions) {
+    let stack = stack(opts.clone()).await;
+    let app = &stack.app;
+    let hotel = MediaHotel::new(app, "owner@example.com", "GAL").await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let tenant = TenantId(hotel.tenant);
+    let mut tx = db::begin(&app.pool, Scope::tenant(tenant)).await.unwrap();
+    // Data the template cannot read: it has none of the head's fields.
+    let report = reports::queue_render(
+        &mut tx,
+        tenant,
+        hotel.id,
+        ReportKind::Tdl,
+        date!(2026 - 07 - 01),
+        date!(2026 - 09 - 30),
+        ReportTemplate::TdlFormA,
+        json!({"unexpected": true}),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let failed = settled(app, &hotel.owner, &format!("{}/reports/{report}", hotel.path)).await;
+    assert_eq!(failed, json!({"status": "failed"}));
+    let error: Option<String> =
+        sqlx::query_scalar("select error from report where id = $1").bind(report).fetch_one(&superuser).await.unwrap();
+    assert!(error.is_some_and(|error| error.starts_with("laying out the report failed")));
+    let alert: String = sqlx::query_scalar("select message from ops_alert where property_id = $1 and kind = 'reports'")
+        .bind(hotel.id)
+        .fetch_one(&superuser)
+        .await
+        .unwrap();
+    assert_eq!(alert, "The TDL report PDF for 2026-07-01 to 2026-09-30 could not be made");
+}
+
+/// A command with the CSRF header and a fresh `Idempotency-Key`.
+async fn render(app: &TestApp, cookie: &str, property: Uuid, body: Value) -> common::TestResponse {
+    let key = Uuid::now_v7().to_string();
+    let path = format!("/api/v1/properties/{property}/reports/render");
+    app.send_with(Method::POST, &path, Some(cookie), Some(body), &[("x-goodfolk-csrf", "1"), ("idempotency-key", &key)])
+        .await
+}
+
+/// The liability reports render for owners and accountants only, and so do their links; the everyday report for
+/// managers too; a daily list for the front desk too. Parameters are checked as the reports check them.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn liability_render_needs_reports_liability(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let (superuser, owner, property) = hotel(&app, opts).await;
+    let manager = app.staff(&superuser, &owner, "manager@example.com", "manager").await;
+    let accountant = app.staff(&superuser, &owner, "accountant@example.com", "accountant").await;
+    let desk = app.staff(&superuser, &owner, "desk@example.com", "front_desk").await;
+    let tdl = json!({"report": "tdl", "params": {"fy_start_year": 2026, "quarter": 2}});
+    let summary = json!({"report": "summary", "params": {"from": "2026-10-01", "to": "2026-10-07"}});
+    let list = json!({"report": "daily_list", "params": {"date": "2026-10-01", "kind": "in_house"}});
+
+    for liability in [
+        &tdl,
+        &json!({"report": "sscl", "params": {"year": 2026, "quarter": 3}}),
+        &json!({"report": "vat", "params": {"period": "2630"}}),
+        &json!({"report": "service_charge", "params": {"year": 2026, "month": 8}}),
+    ] {
+        assert_eq!(render(&app, &manager, property, liability.clone()).await.status, StatusCode::FORBIDDEN);
+    }
+    let queued = render(&app, &accountant, property, tdl.clone()).await;
+    assert_eq!(queued.status, StatusCode::ACCEPTED, "{:?}", queued.body);
+    let path = format!("/api/v1/properties/{property}/reports/{}", uuid(&queued.body["id"]));
+    assert_eq!(app.send(Method::GET, &path, Some(&manager), None).await.status, StatusCode::FORBIDDEN);
+    let read = app.send(Method::GET, &path, Some(&accountant), None).await;
+    assert_eq!(read.body, json!({"status": "rendering"}), "no link before it is ready");
+
+    assert_eq!(render(&app, &manager, property, summary.clone()).await.status, StatusCode::ACCEPTED);
+    assert_eq!(render(&app, &desk, property, summary).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(render(&app, &desk, property, list.clone()).await.status, StatusCode::ACCEPTED);
+    assert_eq!(render(&app, &desk, property, tdl).await.status, StatusCode::FORBIDDEN);
+
+    let refused = |body: Value| {
+        let (app, owner) = (&app, &owner);
+        async move {
+            let response = render(app, owner, property, body).await;
+            assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", response.body);
+            response.body["detail"].as_str().unwrap_or_default().to_owned()
+        }
+    };
+    let vat = json!({"report": "vat", "params": {"period": "2630"}});
+    assert_eq!(refused(vat.clone()).await, "This property is not VAT registered");
+    set_vat(&superuser, property, None).await;
+    assert_eq!(refused(vat).await, "Set the property's TIN on Settings → Taxes and invoices first");
+    refused(json!({"report": "tdl", "params": {"fy_start_year": 2026, "quarter": 5}})).await;
+    refused(json!({"report": "service_charge", "params": {"year": 2026, "month": 13}})).await;
+    refused(json!({"report": "summary", "params": {"from": "2026-10-07", "to": "2026-10-01"}})).await;
+    refused(json!({"report": "payroll", "params": {}})).await;
+    let other = Uuid::now_v7();
+    let missing =
+        app.send(Method::GET, &format!("/api/v1/properties/{property}/reports/{other}"), Some(&owner), None).await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
 }

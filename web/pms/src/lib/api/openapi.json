@@ -3572,6 +3572,58 @@
         }
       }
     },
+    "/api/v1/properties/{property}/reports/render": {
+      "post": {
+        "tags": [
+          "crate::routes::reports"
+        ],
+        "summary": "Renders a report as a PDF, from the closed days as they are now: 202 with the stored report's id, whose status\n[`report`] reads. Refused as the report itself is (422), such as VAT for a property that is not registered or has\nno TIN. Needs the report's permission: `ReportsView`, also `ReservationsView` for a daily list, and\n`ReportsLiability` for TDL, SSCL, VAT and service charge.",
+        "operationId": "render_report",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenderReportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderQueued"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/reports/vat/{period}/schedule01.csv": {
       "get": {
         "tags": [
@@ -3655,6 +3707,48 @@
           "403": {},
           "404": {},
           "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/reports/{report}": {
+      "get": {
+        "tags": [
+          "crate::routes::reports"
+        ],
+        "summary": "A stored report's status, `rendering`, `ready` or `failed`, with a link to its PDF once it is ready. Each link\nissued is audited as `report.viewed`. Needs the permission its report needs to render.",
+        "operationId": "report_status",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "report",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportRead"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {}
         }
       }
     },
@@ -7595,6 +7689,14 @@
           }
         }
       },
+      "DailyListKind": {
+        "type": "string",
+        "enum": [
+          "arrivals",
+          "departures",
+          "in_house"
+        ]
+      },
       "DepositDue": {
         "oneOf": [
           {
@@ -9909,6 +10011,221 @@
           }
         }
       },
+      "RenderQueued": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "RenderReportRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The everyday reports from `from` to `to`, both included, at most 366 days.",
+            "required": [
+              "params",
+              "report"
+            ],
+            "properties": {
+              "params": {
+                "type": "object",
+                "description": "The everyday reports from `from` to `to`, both included, at most 366 days.",
+                "required": [
+                  "from",
+                  "to"
+                ],
+                "properties": {
+                  "from": {
+                    "type": "string",
+                    "format": "date"
+                  },
+                  "to": {
+                    "type": "string",
+                    "format": "date"
+                  }
+                }
+              },
+              "report": {
+                "type": "string",
+                "enum": [
+                  "summary"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "params",
+              "report"
+            ],
+            "properties": {
+              "params": {
+                "type": "object",
+                "required": [
+                  "date",
+                  "kind"
+                ],
+                "properties": {
+                  "date": {
+                    "type": "string",
+                    "format": "date"
+                  },
+                  "kind": {
+                    "$ref": "#/components/schemas/DailyListKind"
+                  }
+                }
+              },
+              "report": {
+                "type": "string",
+                "enum": [
+                  "daily_list"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Quarter 1 to 4 (April–June to January–March) of the financial year starting in April `fy_start_year`.",
+            "required": [
+              "params",
+              "report"
+            ],
+            "properties": {
+              "params": {
+                "type": "object",
+                "description": "Quarter 1 to 4 (April–June to January–March) of the financial year starting in April `fy_start_year`.",
+                "required": [
+                  "fy_start_year",
+                  "quarter"
+                ],
+                "properties": {
+                  "fy_start_year": {
+                    "type": "integer",
+                    "format": "int32"
+                  },
+                  "quarter": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              },
+              "report": {
+                "type": "string",
+                "enum": [
+                  "tdl"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Calendar quarter 1 to 4 of `year`.",
+            "required": [
+              "params",
+              "report"
+            ],
+            "properties": {
+              "params": {
+                "type": "object",
+                "description": "Calendar quarter 1 to 4 of `year`.",
+                "required": [
+                  "year",
+                  "quarter"
+                ],
+                "properties": {
+                  "quarter": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  },
+                  "year": {
+                    "type": "integer",
+                    "format": "int32"
+                  }
+                }
+              },
+              "report": {
+                "type": "string",
+                "enum": [
+                  "sscl"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "`YYQ0` or `YYQM`, of the kind the property files.",
+            "required": [
+              "params",
+              "report"
+            ],
+            "properties": {
+              "params": {
+                "type": "object",
+                "description": "`YYQ0` or `YYQM`, of the kind the property files.",
+                "required": [
+                  "period"
+                ],
+                "properties": {
+                  "period": {
+                    "type": "string"
+                  }
+                }
+              },
+              "report": {
+                "type": "string",
+                "enum": [
+                  "vat"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Month 1 to 12 of `year`.",
+            "required": [
+              "params",
+              "report"
+            ],
+            "properties": {
+              "params": {
+                "type": "object",
+                "description": "Month 1 to 12 of `year`.",
+                "required": [
+                  "year",
+                  "month"
+                ],
+                "properties": {
+                  "month": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  },
+                  "year": {
+                    "type": "integer",
+                    "format": "int32"
+                  }
+                }
+              },
+              "report": {
+                "type": "string",
+                "enum": [
+                  "service_charge"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "The report to render and what its on-screen query takes: `summary` (`from`, `to`), `daily_list` (`date`, `kind`),\n`tdl` (`fy_start_year`, `quarter`), `sscl` (`year`, `quarter`), `vat` (`period`, an IRD period code) or\n`service_charge` (`year`, `month`)."
+      },
       "ReorderMediaRequest": {
         "type": "object",
         "required": [
@@ -9970,6 +10287,32 @@
             "description": "`low`, `medium` or `high`."
           }
         }
+      },
+      "ReportRead": {
+        "type": "object",
+        "description": "A stored report's status and, once it is ready, a link to its PDF that works for 5 minutes.",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/ReportStatusNode"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ReportStatusNode": {
+        "type": "string",
+        "enum": [
+          "rendering",
+          "ready",
+          "failed"
+        ]
       },
       "ReservationRoomRequest": {
         "type": "object",

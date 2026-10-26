@@ -35,6 +35,12 @@ pub struct CalendarQuarter {
 }
 
 impl CalendarQuarter {
+    /// The quarter's first and last days. `Invalid` for a quarter outside 1 to 4 or a year out of range.
+    pub fn range(self) -> Result<(Date, Date), ReportsError> {
+        let months = self.months()?;
+        Ok((months[0].0, months[2].1))
+    }
+
     /// The first and last day of each of the quarter's months. `Invalid` for a quarter outside 1 to 4 or a year out of
     /// range.
     fn months(self) -> Result<[(Date, Date); 3], ReportsError> {

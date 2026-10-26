@@ -69,7 +69,8 @@ pub fn services(storage: Arc<Storage>, media_svc: SocketAddr) -> MediaServices {
 }
 
 /// core-api served on a random port with an in-process media-svc on another, each pushing to the other: the relay
-/// sends `media-process` to media-svc's `/work` and `invoice-render` to its `/render`, which publish `media-results` to
+/// sends `media-process` to media-svc's `/work`, `invoice-render` to its `/render` and `report-render` to its
+/// `/render-report`, which publish `media-results` to
 /// core-api's `/internal/events`.
 /// core-api's event listener runs too, so event streams hear changes and an enqueue wakes the relay.
 pub struct Stack {
@@ -119,7 +120,12 @@ pub async fn stack(opts: PgConnectOptions) -> Stack {
     let shutdown = CancellationToken::new();
     let work = format!("http://{media_svc}/work").parse().unwrap();
     let render = format!("http://{media_svc}/render").parse().unwrap();
-    let endpoints = HashMap::from([("media-process".to_owned(), work), ("invoice-render".to_owned(), render)]);
+    let render_report = format!("http://{media_svc}/render-report").parse().unwrap();
+    let endpoints = HashMap::from([
+        ("media-process".to_owned(), work),
+        ("invoice-render".to_owned(), render),
+        ("report-render".to_owned(), render_report),
+    ]);
     let bus = PushBus::new(endpoints, Some(secret_header())).unwrap();
     tokio::spawn(events::run_relay(pool.clone(), Arc::new(bus), outbox_wake, shutdown.clone()));
     Stack { app: TestApp { router: router(state.clone()), state, pool }, shutdown }

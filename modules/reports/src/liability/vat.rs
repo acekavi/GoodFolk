@@ -377,7 +377,7 @@ fn by_rate(taxes: &[&InvoiceTax], total_lkr: i64) -> Vec<(i32, i64, i64)> {
 }
 
 /// A rate in basis points as a percentage: `18%`, or `12.5%`.
-fn percent(rate_bp: i32) -> String {
+pub(crate) fn percent(rate_bp: i32) -> String {
     let (whole, fraction) = (rate_bp / 100, rate_bp % 100);
     if fraction == 0 {
         format!("{whole}%")
@@ -461,7 +461,7 @@ fn csv_name(name: &str) -> &str {
     name.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '=' | '+' | '-' | '@'))
 }
 
-fn us_date(date: Date) -> String {
+pub(crate) fn us_date(date: Date) -> String {
     format!("{:02}/{:02}/{:04}", u8::from(date.month()), date.day(), date.year())
 }
 

@@ -126,6 +126,7 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/outlets"), post(pos::create_outlet))
         .route(&format!("{PROPERTY}/tax-rules"), post(taxes::create_rule))
         .route(&format!("{PROPERTY}/tax-rules/apply-preset"), post(taxes::apply_preset))
+        .route(&format!("{PROPERTY}/reports/render"), post(reports::render))
         .route("/api/v1/invitations", post(staff::invite))
         .route_layer(from_fn_with_state(state.clone(), idempotency::idempotent));
     // A command with a longer timeout of its own, so kept outside the request timeout.
@@ -207,6 +208,7 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/night-audit/runs/{{run}}/retry"), post(night_audit::retry))
         .route(&format!("{PROPERTY}/reports/vat/{{period}}/schedule01.csv"), get(reports::vat_schedule01))
         .route(&format!("{PROPERTY}/reports/vat/{{period}}/schedule04.csv"), get(reports::vat_schedule04))
+        .route(&format!("{PROPERTY}/reports/{{report}}"), get(reports::report))
         .route("/graphql", post(graphql::handler))
         .merge(commands)
         .layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)))
