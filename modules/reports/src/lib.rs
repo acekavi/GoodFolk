@@ -10,6 +10,7 @@ pub use everyday::{
     BreakdownTotal, DayRow, Dimension, Headline, ListKind, ListRow, RangeKind, Summary, daily_list, last_year_range,
     summary,
 };
+pub use liability::sscl::{CalendarQuarter, SsclMonth, SsclReport, SsclTotals, sscl};
 pub use liability::tdl::{FiscalQuarter, TdlForm, tdl};
 
 #[derive(Debug, thiserror::Error)]

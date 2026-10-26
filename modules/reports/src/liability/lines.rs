@@ -13,6 +13,8 @@ pub struct RevenueLine {
     pub business_date: Date,
     /// `None` for an item of a bill settled at its outlet.
     pub folio_id: Option<Uuid>,
+    /// The bill of an item settled at its outlet; `None` for a folio line.
+    pub pos_bill_id: Option<Uuid>,
     /// `room`, `meal_plan`, `laundry`, `misc`, `fee` or `pos:<OUTLET>`.
     pub category: String,
     /// The outlet a `pos:<OUTLET>` category names; `None` for every other category.
@@ -55,6 +57,7 @@ pub async fn revenue_lines(
         .map(|line| RevenueLine {
             business_date: line.business_date,
             folio_id: line.folio_id,
+            pos_bill_id: line.pos_bill_id,
             outlet: line.category.strip_prefix("pos:").and_then(|code| outlets.get(code).copied()),
             category: line.category,
             net: line.net,

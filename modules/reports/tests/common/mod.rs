@@ -3,6 +3,7 @@
 use audit::{BreakdownRow, DailyStats};
 use db::testing::app_pool;
 use db::{Scope, TenantId, Tx, UserId, begin};
+use rust_decimal::Decimal;
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
 use std::collections::BTreeMap;
@@ -308,16 +309,101 @@ impl Hotel {
 
     /// A one-item LKR bill of `unit_net` at `outlet`, paid there in cash on the property's business date.
     pub async fn settled_bill(&self, outlet: &str, bill_no: &str, unit_net: i64) {
+        self.settled_bill_in(outlet, bill_no, unit_net, "LKR", folio::Method::Cash).await;
+    }
+
+    /// A one-item bill of `unit_net` in `currency` at `outlet`, paid there by `method` on the property's business
+    /// date.
+    pub async fn settled_bill_in(
+        &self,
+        outlet: &str,
+        bill_no: &str,
+        unit_net: i64,
+        currency: &str,
+        method: folio::Method,
+    ) {
         let mut tx = self.tx().await;
         let bill = folio::PosBillIn {
             outlet: outlet.into(),
             bill_no: bill_no.into(),
             business_date: None,
-            currency: "LKR".into(),
+            currency: currency.into(),
             items: vec![folio::PosItem { description: "Item".into(), quantity: 1, unit_net, category: None }],
-            target: folio::PosTarget::Settled { method: folio::Method::Cash },
+            target: folio::PosTarget::Settled { method },
         };
         folio::post_pos_bill(&mut tx, self.tenant, Some(self.user), self.property, bill).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    /// An untaxed line of `total` in `currency` on `folio`, dated `business_date`, worth `base_total` in LKR.
+    pub async fn line_in(
+        &self,
+        folio: Uuid,
+        business_date: Date,
+        category: &str,
+        total: i64,
+        currency: &str,
+        base_total: i64,
+    ) -> Uuid {
+        let id = Uuid::now_v7();
+        let mut tx = self.tx().await;
+        sqlx::query(
+            "insert into folio_line (id, tenant_id, folio_id, source, category, description, net, total, currency,
+                                     base_total, rate, rate_date, business_date)
+             values ($1, $2, $3, 'manual', $4, 'Line', $5, $5, $6, $7, $7::numeric / $5, $8, $8)",
+        )
+        .bind(id)
+        .bind(self.tenant.0)
+        .bind(folio)
+        .bind(category)
+        .bind(total)
+        .bind(currency)
+        .bind(base_total)
+        .bind(business_date)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        id
+    }
+
+    /// Sets `currency`'s rate to `rate` LKR from the property's business date.
+    pub async fn rate(&self, currency: &str, rate: i64) {
+        let mut tx = self.tx().await;
+        let today = folio::business_date(&mut tx, self.property).await.unwrap();
+        fx::set_manual(&mut tx, self.tenant, self.user, self.property, today, currency, Decimal::from(rate))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    /// A payment of `amount` in `currency` by `method` on `folio`, on the property's business date.
+    pub async fn pay(&self, folio: Uuid, method: folio::Method, amount: i64, currency: &str) {
+        let mut tx = self.tx().await;
+        folio::take_payment(
+            &mut tx,
+            self.tenant,
+            Some(self.user),
+            self.property,
+            folio,
+            method,
+            amount,
+            currency,
+            None,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    /// Fills in the property's SLTDA licence.
+    pub async fn register_sltda(&self) {
+        let mut tx = self.tx().await;
+        sqlx::query("update property set sltda_licence = 'SLTDA/HT/0042' where id = $1")
+            .bind(self.property)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
     }
 }

@@ -84,6 +84,8 @@ pub struct RevenueLine {
     pub business_date: Date,
     /// `None` for a settled item.
     pub folio_id: Option<Uuid>,
+    /// A settled item's bill; `None` for a folio line.
+    pub pos_bill_id: Option<Uuid>,
     pub category: String,
     pub net: i64,
     /// By code; on-bill and absorbed.
@@ -133,6 +135,7 @@ pub async fn revenue_lines(tx: &mut Tx, property: Uuid, from: Date, to: Date) ->
         revenue.push(RevenueLine {
             business_date: line.business_date,
             folio_id: Some(line.folio_id),
+            pos_bill_id: None,
             category: line.category,
             net,
             taxes,
@@ -148,7 +151,7 @@ pub async fn revenue_lines(tx: &mut Tx, property: Uuid, from: Date, to: Date) ->
     // The bills settled in the range: by their payment's date, so a late bill counts on the day it posted. A bill
     // dated in the range with no payment at all is read too, to be refused: every settled bill has one.
     let settled: Vec<SettledBill> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select b.bill_no, b.lines, paid.currency, paid.rate, paid.business_date
+        "select b.id, b.bill_no, b.lines, paid.currency, paid.rate, paid.business_date
          from pos_bill b
          left join lateral ({SETTLED_PAYMENT}) paid on true
          where b.property_id = $1 and b.settled
@@ -180,6 +183,7 @@ pub async fn revenue_lines(tx: &mut Tx, property: Uuid, from: Date, to: Date) ->
             revenue.push(RevenueLine {
                 business_date,
                 folio_id: None,
+                pos_bill_id: Some(bill.id),
                 category: line.category,
                 net,
                 taxes,
@@ -570,6 +574,7 @@ impl StayRow {
 /// A settled bill and its payment's currency, rate and date (`None` without a payment).
 #[derive(sqlx::FromRow)]
 struct SettledBill {
+    id: Uuid,
     bill_no: String,
     lines: Json<Vec<folio::PosLine>>,
     currency: Option<String>,
