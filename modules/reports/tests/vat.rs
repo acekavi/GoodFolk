@@ -127,6 +127,13 @@ async fn vat(hotel: &Hotel, period: VatPeriod) -> Result<VatReport, reports::Rep
     reports::vat(&mut hotel.tx().await, hotel.property, period).await
 }
 
+/// Schedule 01 less Schedule 04 is the return's net.
+fn assert_reconciles(report: &VatReport) {
+    let issued = report.schedule01.iter().fold((0, 0), |(v, t), row| (v + row.value_of_supply, t + row.vat_amount));
+    let credited = report.schedule04.iter().fold((0, 0), |(v, t), row| (v + row.value, t + row.vat_amount));
+    assert_eq!((issued.0 - credited.0, issued.1 - credited.1), (report.net_value, report.net_vat), "{report:?}");
+}
+
 fn refusal(result: Result<VatReport, reports::ReportsError>) -> String {
     match result {
         Err(reports::ReportsError::Invalid(message)) => message,
@@ -185,10 +192,7 @@ async fn schedule01_exact_columns_and_dates(_: PgPoolOptions, opts: PgConnectOpt
     assert_eq!((report.net_value, report.net_vat), (66_000, 11_880));
     // With no timing difference, the totals are the rows'.
     assert!(report.timing_difference.is_empty());
-    let rows = |report: &VatReport| -> (i64, i64) {
-        report.schedule01.iter().fold((0, 0), |(value, vat), row| (value + row.value_of_supply, vat + row.vat_amount))
-    };
-    assert_eq!(rows(&report), (report.value_of_supply, report.output_vat));
+    assert_reconciles(&report);
     assert_eq!(
         reports::schedule01_csv(&report),
         format!(
@@ -202,8 +206,8 @@ async fn schedule01_exact_columns_and_dates(_: PgPoolOptions, opts: PgConnectOpt
 }
 
 /// A credit note issued in October goes to Schedule 04 of Q4 with the original's number and date and its purchaser's
-/// TIN, or the dummy TIN; Q3 never changes. It is shown for information: the totals are the period's supplies, which a
-/// credit note alone does not reverse.
+/// TIN, or the dummy TIN; Q3 never changes. The totals are the period's supplies, which a credit note alone does not
+/// reverse, so Q4's combined row carries the notes and Schedule 01 less Schedule 04 is the net.
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn credit_note_reduces_its_own_period_and_is_schedule04(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = registered(opts).await;
@@ -224,6 +228,11 @@ async fn credit_note_reduces_its_own_period_and_is_schedule04(_: PgPoolOptions, 
     assert_eq!((q4.value_of_supply, q4.output_vat), (11_000, 1_980));
     assert_eq!((q4.credit_notes_value, q4.credit_notes_vat), (22_000, 3_960));
     assert_eq!((q4.net_value, q4.net_vat), (11_000, 1_980));
+    let rows: Vec<(&str, i64, i64)> =
+        q4.schedule01.iter().map(|row| (row.invoice_no.as_str(), row.value_of_supply, row.vat_amount)).collect();
+    assert_eq!(rows, [("INCL01_2640", 33_000, 5_940)]);
+    assert!(q4.timing_difference.is_empty());
+    assert_reconciles(&q4);
     assert_eq!(
         reports::schedule04_csv(&q4),
         format!(
@@ -232,6 +241,67 @@ async fn credit_note_reduces_its_own_period_and_is_schedule04(_: PgPoolOptions, 
              2,100902885,09/01/2026,GAL-2026-000002,Credit,10/06/2026,CN-GAL-2026-000002,11000,1980,Y\r\n"
         )
     );
+}
+
+/// An invoice credited and issued again in the same period: both invoices are TIN rows and the note a Schedule 04
+/// row, which together are the one supply, so there is no combined row and no false timing difference.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_credit_and_reissue_in_one_period_reconciles(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = registered(opts).await;
+    let first = invoice(&hotel, date(2026, 8, 1), "Ceylon", "Traders", Some("100200300")).await;
+    credit(&hotel, first, date(2026, 8, 5)).await;
+    let folio: Uuid = sqlx::query_scalar("select folio_id from invoice where id = $1")
+        .bind(first)
+        .fetch_one(&mut *hotel.tx().await)
+        .await
+        .unwrap();
+    let mut tx = hotel.tx().await;
+    folio::issue_invoice(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, folio).await.unwrap();
+    tx.commit().await.unwrap();
+    hotel.set_business_date(date(2026, 10, 1)).await;
+
+    let report = vat(&hotel, Q3).await.unwrap();
+    assert_eq!((report.net_value, report.net_vat), (11_000, 1_980));
+    let rows: Vec<&str> = report.schedule01.iter().map(|row| row.invoice_no.as_str()).collect();
+    assert_eq!(rows, ["GAL-2026-000001", "GAL-2026-000002"]);
+    assert_eq!((report.credit_notes_value, report.credit_notes_vat), (11_000, 1_980));
+    assert!(report.timing_difference.is_empty());
+    assert_reconciles(&report);
+}
+
+/// A period's invoices are found through `invoice_issued_on_idx`, as the application role under row-level security,
+/// among two years of the property's invoices (analyzed).
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_periods_invoices_are_read_through_the_issued_on_index(_: PgPoolOptions, opts: PgConnectOptions) {
+    let owner = PgPoolOptions::new().max_connections(1).connect_with(opts.clone()).await.unwrap();
+    let hotel = registered(opts).await;
+    let folio = hotel.folio().await;
+    sqlx::query(
+        "insert into invoice (id, tenant_id, property_id, folio_id, kind, serial, data, total_lkr)
+         select gen_random_uuid(), $1, $2, $3, 'invoice', 'GAL-2026-' || lpad(g::text, 6, '0'),
+                jsonb_build_object('issued_on', to_char(date '2025-01-01' + g % 730, 'YYYY-MM-DD'),
+                                   'purchaser', jsonb_build_object('name', 'Walk In', 'tin', null), 'taxes', '[]'),
+                0
+         from generate_series(1, 5000) as g",
+    )
+    .bind(hotel.tenant.0)
+    .bind(hotel.property)
+    .bind(folio)
+    .execute(&owner)
+    .await
+    .unwrap();
+    sqlx::query("analyze invoice").execute(&owner).await.unwrap();
+
+    let mut tx = hotel.tx().await;
+    let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("explain {}", reports::VAT_DOCUMENTS_SQL)))
+        .bind(hotel.property)
+        .bind(date(2026, 7, 1))
+        .bind(date(2026, 9, 30))
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    let plan = plan.join("\n");
+    assert!(plan.contains("invoice_issued_on_idx"), "{plan}");
 }
 
 /// An invoice issued before taxes carried their code is read by the property's VAT rule names: its VAT is named as the
@@ -282,6 +352,7 @@ async fn uninvoiced_and_absorbed_vat_are_in_the_combined_row(_: PgPoolOptions, o
         report.schedule01.iter().map(|row| (row.invoice_no.as_str(), row.value_of_supply, row.vat_amount)).collect();
     assert_eq!(rows, [("GAL-2026-000001", 11_000, 1_980), ("INCL01_2630", 22_000, 3_960)]);
     assert!(report.timing_difference.is_empty());
+    assert_reconciles(&report);
 }
 
 /// A TIN invoice issued in October for a September supply: Q3 has the supply in its combined row, and Q4's TIN row
@@ -305,6 +376,7 @@ async fn an_invoice_for_an_earlier_supply_is_a_timing_difference(_: PgPoolOption
     let q4 = vat(&hotel, VatPeriod::Quarter(2026, 4)).await.unwrap();
     assert_eq!(rows(&q4), [("GAL-2026-000001".to_owned(), 11_000, 1_980), ("INCL01_2640".to_owned(), 11_000, 1_980)]);
     assert!(q4.timing_difference.is_empty());
+    assert_reconciles(&q4);
 
     // Q1 2027 has the TIN invoice of a December supply and no supply of its own.
     invoice_for(&hotel, date(2026, 12, 31), date(2027, 1, 1), "Lanka", "Tours", Some("400500600")).await;

@@ -181,6 +181,7 @@ async fn vat_schedules_are_refused_without_registration_or_tin(_: PgPoolOptions,
     let unregistered = app.send(Method::GET, &schedule01("2630"), Some(&owner), None).await;
     assert_eq!(unregistered.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(unregistered.body["detail"], "This property is not VAT registered");
+    assert!(unregistered.headers.get(header::CONTENT_DISPOSITION).is_none());
 
     set_vat(&superuser, property, None).await;
     let no_tin = app.send(Method::GET, &schedule01("2630"), Some(&owner), None).await;

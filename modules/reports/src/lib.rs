@@ -14,8 +14,8 @@ pub use liability::service_charge::{OutletServiceCharge, ServiceCharge, ServiceC
 pub use liability::sscl::{CalendarQuarter, SsclMonth, SsclReport, SsclTotals, sscl};
 pub use liability::tdl::{FiscalQuarter, TdlForm, tdl};
 pub use liability::vat::{
-    DUMMY_TIN, Schedule01Row, Schedule04Row, VatPeriod, VatReport, VatTimingDifference, schedule_file_name,
-    schedule01_csv, schedule04_csv, vat,
+    DUMMY_TIN, Schedule01Row, Schedule04Row, VAT_DOCUMENTS_SQL, VatPeriod, VatReport, VatTimingDifference,
+    schedule_file_name, schedule01_csv, schedule04_csv, vat,
 };
 
 #[derive(Debug, thiserror::Error)]

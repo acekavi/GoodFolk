@@ -5,7 +5,7 @@ use crate::ReportsError;
 use crate::everyday::ratio;
 use crate::liability::lines::revenue_lines;
 use db::Tx;
-use media_types::{InvoiceTax, Purchaser};
+use media_types::{InvoiceKind, InvoiceTax, Purchaser};
 use serde::Serialize;
 use sqlx::types::Json;
 use std::collections::{BTreeMap, HashSet};
@@ -112,7 +112,7 @@ pub struct Schedule04Row {
 }
 
 /// Tax invoices issued in a period for supplies of an earlier one, at one rate: what the TIN rows of Schedule 01 hold
-/// beyond the period's own supplies, which the combined row could not take below 0. Whole LKR.
+/// beyond the period's own supplies (with its credit notes), which no combined row can carry. Whole LKR.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VatTimingDifference {
     pub rate_bp: i32,
@@ -125,7 +125,8 @@ pub struct VatTimingDifference {
 /// The totals are the period's supplies: every revenue line of its closed days with VAT on it, on the bill or
 /// absorbed, so a folio never invoiced counts too, and a reversal or transfer reduces the period of its own business
 /// date. The value of supply excludes VAT and, under the cascade, includes the service charge and the TDL and SSCL.
-/// Credit notes are listed for information only: their reversals are already in the totals.
+/// Credit notes do not reduce the totals again (their reversals already do): Schedule 01's combined row carries them,
+/// so Schedule 01 less Schedule 04 is the net, unless there is a timing difference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VatReport {
     pub period_code: String,
@@ -135,7 +136,7 @@ pub struct VatReport {
     pub generated_on: Date,
     pub value_of_supply: i64,
     pub output_vat: i64,
-    /// The credit notes issued in the period (Schedule 04), positive, for information.
+    /// The credit notes issued in the period (Schedule 04), positive; the totals are already net of them.
     pub credit_notes_value: i64,
     pub credit_notes_vat: i64,
     /// The return's cage A: the value of supply, already net of the period's reversals.
@@ -151,10 +152,21 @@ pub struct VatReport {
     pub not_closed: bool,
 }
 
+/// The invoices and credit notes of a property (`$1`) issued from `$2` to `$3`, both included, by date and serial,
+/// with the serial and date of the invoice each credit note credits. Public so a test can `EXPLAIN` it: `issued_on` is
+/// a leakproof date comparison, so `invoice_issued_on_idx` serves it under row-level security.
+pub const VAT_DOCUMENTS_SQL: &str = "select i.kind, i.serial, i.issued_on, i.data->'purchaser' as purchaser,
+        i.data->'taxes' as taxes, i.total_lkr, o.serial as credited_serial, o.issued_on as credited_on
+ from invoice i
+ left join invoice o on o.id = i.credits
+ where i.property_id = $1 and i.issued_on between $2 and $3
+ order by i.issued_on, i.serial";
+
 /// One invoice or credit note of the period, as its snapshot printed it.
 #[derive(sqlx::FromRow)]
 struct Document {
-    kind: String,
+    #[sqlx(try_from = "String")]
+    kind: InvoiceKind,
     serial: String,
     issued_on: Date,
     purchaser: Json<Purchaser>,
@@ -172,12 +184,13 @@ struct Document {
 ///   minor units and rounded once to whole rupees per rate.
 /// - **Schedule 01:** each VAT rate of a tax invoice (`kind = 'invoice'`) issued in the period to a purchaser with a
 ///   TIN is a row, from the invoice's snapshot, so it matches the printed invoice. A tax there is VAT by its code, or,
-///   on an invoice issued before taxes carried their code, by the name of one of the property's `VAT` rules. The rest
-///   of each rate's total is one combined row under [`DUMMY_TIN`]: every supply without a TIN invoice, invoiced or
-///   not. When the TIN rows exceed a rate's total (invoices issued this period for supplies of an earlier one), the
-///   combined row stops at 0 and the excess is that rate's [`VatTimingDifference`]. A combined row of 0 is left out.
-/// - **Schedule 04:** each VAT rate of a credit note issued in the period is a row, from its snapshot. The credit
-///   notes reduce nothing here: the lines their folio reverses already reduce the totals on their own dates.
+///   on an invoice issued before taxes carried their code, by the name of one of the property's `VAT` rules. Its
+///   value of supply is the VAT over the rate ([`by_rate`]).
+/// - **Schedule 04:** each VAT rate of a credit note issued in the period is a row, from its snapshot.
+/// - **The combined row** of each rate, under [`DUMMY_TIN`], is the rate's total plus its Schedule 04 values less its
+///   TIN rows: every supply without a TIN invoice, invoiced or not, so that Schedule 01 less Schedule 04 is the net.
+///   When that is not above 0 in both value and VAT (TIN invoices issued this period for supplies of an earlier one),
+///   there is no combined row and the pair, negated, is that rate's [`VatTimingDifference`].
 ///
 /// `Invalid` with "This property is not VAT registered", "Set the property's TIN on Settings → Taxes and invoices
 /// first", for a period of the kind the property does not file (a month for a quarterly filer), or for a malformed
@@ -232,33 +245,20 @@ pub async fn vat(tx: &mut Tx, property: Uuid, period: VatPeriod) -> Result<VatRe
     let is_vat = |tax: &InvoiceTax| tax.code == VAT || (tax.code.is_empty() && vat_names.contains(&tax.name));
 
     let closed_to = business_date.previous_day().map(|closed| to.min(closed));
-    let documents: Vec<Document> =
-        match closed_to.filter(|closed_to| from <= *closed_to) {
-            // ISO dates sort as text, so the period is a range of `invoice_issued_on_idx`.
-            Some(closed_to) => sqlx::query_as(
-                "select i.kind, i.serial, (i.data->>'issued_on')::date as issued_on, i.data->'purchaser' as purchaser,
-                        i.data->'taxes' as taxes, i.total_lkr, o.serial as credited_serial,
-                        (o.data->>'issued_on')::date as credited_on
-                 from invoice i
-                 left join invoice o on o.id = i.credits
-                 where i.property_id = $1 and i.data->>'issued_on' between $2 and $3
-                 order by i.data->>'issued_on', i.serial",
-            )
-            .bind(property)
-            .bind(from.to_string())
-            .bind(closed_to.to_string())
-            .fetch_all(&mut **tx)
-            .await?,
-            None => Vec::new(),
-        };
+    let documents: Vec<Document> = match closed_to.filter(|closed_to| from <= *closed_to) {
+        Some(closed_to) => {
+            sqlx::query_as(VAT_DOCUMENTS_SQL).bind(property).bind(from).bind(closed_to).fetch_all(&mut **tx).await?
+        }
+        None => Vec::new(),
+    };
 
     let (mut schedule01, mut schedule04) = (Vec::new(), Vec::new());
     for document in documents {
         let taxes: Vec<&InvoiceTax> = document.taxes.iter().filter(|tax| is_vat(tax)).collect();
         let tin = document.purchaser.tin.clone();
         for (rate_bp, value, vat_amount) in by_rate(&taxes, document.total_lkr) {
-            match (document.kind.as_str(), &tin) {
-                ("invoice", Some(tin)) => schedule01.push((
+            match (document.kind, &tin) {
+                (InvoiceKind::Invoice, Some(tin)) => schedule01.push((
                     rate_bp,
                     Schedule01Row {
                         serial_no: 0,
@@ -272,37 +272,50 @@ pub async fn vat(tx: &mut Tx, property: Uuid, period: VatPeriod) -> Result<VatRe
                     },
                 )),
                 // An invoice without a TIN is in its rate's combined row, through its lines.
-                ("invoice", None) => {}
-                _ => schedule04.push(Schedule04Row {
-                    serial_no: 0,
-                    tin: tin.clone().unwrap_or_else(|| DUMMY_TIN.into()),
-                    invoice_date: document.credited_on.ok_or(ReportsError::NotFound("credited invoice"))?,
-                    invoice_no: document.credited_serial.clone().ok_or(ReportsError::NotFound("credited invoice"))?,
-                    note_date: document.issued_on,
-                    note_no: document.serial.clone(),
-                    // A credit note's snapshot is its invoice's figures negated.
-                    value: -value,
-                    vat_amount: -vat_amount,
-                }),
+                (InvoiceKind::Invoice, None) => {}
+                (InvoiceKind::CreditNote, _) => schedule04.push((
+                    rate_bp,
+                    Schedule04Row {
+                        serial_no: 0,
+                        tin: tin.clone().unwrap_or_else(|| DUMMY_TIN.into()),
+                        invoice_date: document.credited_on.ok_or(ReportsError::NotFound("credited invoice"))?,
+                        invoice_no: document
+                            .credited_serial
+                            .clone()
+                            .ok_or(ReportsError::NotFound("credited invoice"))?,
+                        note_date: document.issued_on,
+                        note_no: document.serial.clone(),
+                        // A credit note's snapshot is its invoice's figures negated.
+                        value: -value,
+                        vat_amount: -vat_amount,
+                    },
+                )),
             }
         }
     }
 
-    // Each rate's total less its TIN rows: the combined row, or, below 0, the timing difference.
+    // Each rate's total, plus the credit notes Schedule 04 takes off it, less its TIN rows: the combined row, so that
+    // Schedule 01 less Schedule 04 is the return's net. A row that would not be above 0 in both parts is the timing
+    // difference instead.
     let mut rest = totals.clone();
+    for (rate_bp, row) in &schedule04 {
+        let sum = rest.entry(*rate_bp).or_default();
+        sum.0 += row.value;
+        sum.1 += row.vat_amount;
+    }
     for (rate_bp, row) in &schedule01 {
         let sum = rest.entry(*rate_bp).or_default();
         sum.0 -= row.value_of_supply;
         sum.1 -= row.vat_amount;
     }
     let mut schedule01: Vec<Schedule01Row> = schedule01.into_iter().map(|(_, row)| row).collect();
+    let mut schedule04: Vec<Schedule04Row> = schedule04.into_iter().map(|(_, row)| row).collect();
     let mut timing_difference = Vec::new();
-    for (rate_bp, (value, vat)) in rest {
-        if value < 0 || vat < 0 {
-            timing_difference.push(VatTimingDifference { rate_bp, value: (-value).max(0), vat: (-vat).max(0) });
-        }
-        let (value, vat_amount) = (value.max(0), vat.max(0));
-        if (value, vat_amount) == (0, 0) {
+    for (rate_bp, (value, vat_amount)) in rest {
+        if value <= 0 || vat_amount <= 0 {
+            if (value, vat_amount) != (0, 0) {
+                timing_difference.push(VatTimingDifference { rate_bp, value: -value, vat: -vat_amount });
+            }
             continue;
         }
         schedule01.push(Schedule01Row {
@@ -342,36 +355,25 @@ pub async fn vat(tx: &mut Tx, property: Uuid, period: VatPeriod) -> Result<VatRe
     })
 }
 
-/// A document's VAT by rate, `(rate, value of supply, VAT)`, from its VAT taxes and its total. The value of supply is
-/// the total less the VAT; a document with several rates shares it by each rate's taxable base (its VAT over its
-/// rate), the last rate taking the remainder so the shares add up to it.
+/// A document's VAT by rate, `(rate, value of supply, VAT)`. The value of supply at a rate is its VAT over the rate,
+/// rounded to whole rupees, so value × rate gives the VAT, as IRD's e-filing checks each row: the document's total less
+/// its VAT would also hold any part of it that bears no VAT. A 0% rate carries what is left of that total.
 fn by_rate(taxes: &[&InvoiceTax], total_lkr: i64) -> Vec<(i32, i64, i64)> {
     let mut rates: BTreeMap<i32, i64> = BTreeMap::new();
     for tax in taxes {
         *rates.entry(tax.rate_bp).or_default() += tax.amount_lkr;
     }
-    let value = total_lkr - rates.values().sum::<i64>();
-    let bases: Vec<i128> = rates
-        .iter()
-        .map(|(&rate_bp, &amount)| if rate_bp == 0 { 0 } else { i128::from(amount) * 10_000 / i128::from(rate_bp) })
-        .collect();
-    let all_bases: i128 = bases.iter().sum();
-    let mut left = value;
-    let count = rates.len();
-    rates
-        .into_iter()
-        .zip(bases)
-        .enumerate()
-        .map(|(at, ((rate_bp, amount), base))| {
-            let share = if at + 1 == count || all_bases == 0 {
-                left
-            } else {
-                i64::try_from(i128::from(value) * base / all_bases).expect("a share of an i64 fits an i64")
-            };
-            left -= share;
-            (rate_bp, share, amount)
-        })
-        .collect()
+    let mut left = total_lkr - rates.values().sum::<i64>();
+    let mut rows: Vec<(i32, i64, i64)> = Vec::with_capacity(rates.len());
+    for (&rate_bp, &amount) in rates.iter().filter(|(rate_bp, _)| **rate_bp != 0) {
+        let value = ratio(amount.saturating_mul(10_000), i64::from(rate_bp));
+        left -= value;
+        rows.push((rate_bp, value, amount));
+    }
+    if let Some(&amount) = rates.get(&0) {
+        rows.insert(0, (0, left, amount));
+    }
+    rows
 }
 
 /// A rate in basis points as a percentage: `18%`, or `12.5%`.
@@ -403,7 +405,7 @@ pub fn schedule01_csv(report: &VatReport) -> String {
             &us_date(row.invoice_date),
             &row.invoice_no,
             &row.purchaser_tin,
-            &row.purchaser_name,
+            csv_name(&row.purchaser_name),
             &row.description,
             &row.value_of_supply.to_string(),
             &row.vat_amount.to_string(),
@@ -454,6 +456,11 @@ pub fn schedule_file_name(tin: &str, schedule: u8, period_code: &str, today: Dat
     )
 }
 
+/// `name` without the leading characters (and the spaces before them) a spreadsheet would read as a formula.
+fn csv_name(name: &str) -> &str {
+    name.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '=' | '+' | '-' | '@'))
+}
+
 fn us_date(date: Date) -> String {
     format!("{:02}/{:02}/{:04}", u8::from(date.month()), date.day(), date.year())
 }
@@ -481,12 +488,24 @@ mod tests {
     }
 
     #[test]
-    fn several_rates_share_the_value_of_supply_by_their_bases() {
+    fn the_value_of_supply_is_the_vat_over_its_rate() {
         let (standard, reduced) = (tax(VAT, 1800, 1_800), tax(VAT, 800, 400));
-        // Bases of 10,000 and 5,000; the value of supply is 15,000.
         assert_eq!(by_rate(&[&standard, &reduced], 17_200), [(800, 5_000, 400), (1800, 10_000, 1_800)]);
-        assert_eq!(by_rate(&[&standard], 11_800), [(1800, 10_000, 1_800)]);
+        // Rs 200 of the total bears no VAT, so it is in no row.
+        assert_eq!(by_rate(&[&standard], 12_000), [(1800, 10_000, 1_800)]);
+        // 1,001 / 18% is 5,561.1.
+        assert_eq!(by_rate(&[&tax(VAT, 1800, 1_001)], 7_000), [(1800, 5_561, 1_001)]);
+        assert_eq!(by_rate(&[&tax(VAT, 1800, -1_800)], -11_800), [(1800, -10_000, -1_800)]);
+        // A 0% rate carries what is left.
+        assert_eq!(by_rate(&[&standard, &tax(VAT, 0, 0)], 12_000), [(0, 200, 0), (1800, 10_000, 1_800)]);
         assert!(by_rate(&[], 11_800).is_empty());
+    }
+
+    #[test]
+    fn a_name_never_starts_as_a_formula() {
+        assert_eq!(csv_name(" =HYPERLINK(\"x\")"), "HYPERLINK(\"x\")");
+        assert_eq!(csv_name("+-@ Ann"), "Ann");
+        assert_eq!(csv_name("Ann-Marie = Perera"), "Ann-Marie = Perera");
     }
 
     #[test]
