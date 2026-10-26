@@ -159,7 +159,8 @@ The quarter's totals and the return's due date (the 20th of the month after the 
 **The foreign-currency exemption** (SSCL Act, First Schedule, Part II, item 10):
 - Hotel, guest house and restaurant services are exempt when payment is received in foreign currency through a bank and
   the business is registered with SLTDA.
-- The property gains an **SLTDA registered** setting. Without it, nothing is exempt and the report says why.
+- **Builder's call:** a property counts as SLTDA registered when its existing **SLTDA licence** setting (Phase 8a) is
+  filled in. Without it, nothing is exempt and the report says why.
 - **Builder's call:** what "received in foreign currency through a bank" covers:
   - **Payments counted:** in a currency other than LKR, made by card terminal or bank transfer. Foreign-currency cash
     is not "through a bank", and it is listed separately so the hotel can see it.
@@ -270,7 +271,6 @@ All of these are **Builder's calls**, made after the builder check.
 - **`ReportsLiability`:** the liability reports. Owners and accountants.
 - **New property settings**, on Settings → Taxes and invoices, saved with `If-Match` and audited like the existing ones:
   - TDL registration number;
-  - SLTDA registered;
   - VAT return period.
 - **New outlet field:** report group, on Settings → Outlets.
 - **New per-user settings:** the weekly and monthly report emails, each on or off (default on).
