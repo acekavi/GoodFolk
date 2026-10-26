@@ -71,7 +71,10 @@ export type IdDocType =
   | 'PASSPORT';
 
 export type ImageFormat =
+  | 'AV1'
   | 'AVIF'
+  | 'H264'
+  | 'PDF'
   | 'WEBP';
 
 export type InvitationStatus =
@@ -147,6 +150,11 @@ export type MealPlan =
   | 'HB'
   | 'RO';
 
+/** Whether a gallery item is a photo or a video. */
+export type MediaKind =
+  | 'IMAGE'
+  | 'VIDEO';
+
 /** Where an uploaded file is: uploading, processing, then ready or failed. */
 export type MediaStatus =
   | 'FAILED'
@@ -188,12 +196,18 @@ export type PriceChangeMode =
   | 'PERCENT'
   | 'SET';
 
-/** A delivered image's size: `THUMB` is a 320 px square, the others are long edges of 640 to 2400 px. */
+/**
+ * A delivered file's size: `THUMB` is a 320 px square, `SM` to `XL` are image long edges of 640 to 2400 px,
+ * `V1080` and `V720` are videos that fit 1920×1080 and 1280×720, and `ORIGINAL` is a guest PDF's linearized copy.
+ */
 export type RenditionSize =
   | 'LG'
   | 'MD'
+  | 'ORIGINAL'
   | 'SM'
   | 'THUMB'
+  | 'V720'
+  | 'V1080'
   | 'XL';
 
 /**
@@ -430,7 +444,7 @@ export type RoomTypeGalleriesQueryVariables = Exact<{
 }>;
 
 
-export type RoomTypeGalleriesQuery = { roomTypes: Array<{ id: string, media: Array<{ assetId: string, status: MediaStatus, error: string | null, caption: string | null, width: number | null, height: number | null, renditions: Array<{ size: RenditionSize, format: ImageFormat, width: number, height: number, url: string }> }> }> };
+export type RoomTypeGalleriesQuery = { roomTypes: Array<{ id: string, media: Array<{ assetId: string, status: MediaStatus, error: string | null, caption: string | null, width: number | null, height: number | null, kind: MediaKind, durationMs: number | null, sources: Array<{ format: ImageFormat, size: RenditionSize, width: number, height: number, url: string, mime: string }>, renditions: Array<{ size: RenditionSize, format: ImageFormat, width: number, height: number, url: string }> }> }> };
 
 export type NightAuditQueryVariables = Exact<{
   propertyId: string;
@@ -1049,6 +1063,16 @@ export const RoomTypeGalleriesDocument = new TypedDocumentString(`
       caption
       width
       height
+      kind
+      durationMs
+      sources {
+        format
+        size
+        width
+        height
+        url
+        mime
+      }
       renditions {
         size
         format
@@ -1059,7 +1083,7 @@ export const RoomTypeGalleriesDocument = new TypedDocumentString(`
     }
   }
 }
-    `, {"hash":"sha256:98199afa545df6979c304af243fc998f32d6e775527f04fbd6b2d1ca1b6e538c"}) as unknown as TypedDocumentString<RoomTypeGalleriesQuery, RoomTypeGalleriesQueryVariables>;
+    `, {"hash":"sha256:5741d759bb6b94c866f5143f3cb7f877ba92a21e8c58538256c212213773d3ac"}) as unknown as TypedDocumentString<RoomTypeGalleriesQuery, RoomTypeGalleriesQueryVariables>;
 export const NightAuditDocument = new TypedDocumentString(`
     query NightAudit($propertyId: UUID!) {
   nightAudit(propertyId: $propertyId) {

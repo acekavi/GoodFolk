@@ -1,17 +1,36 @@
 <!--
-	A room type's Photos panel. Anyone who sees room types sees the gallery; with `manage`
-	(`MediaManage`) photos can also be uploaded, dragged into a new order (or moved with the arrows),
-	captioned and removed. Uploads show as tiles with their progress, then "Processing…" until the
-	`media:<property>` event refetches the gallery with the finished photo. Self-contained: it runs its
+	A room type's Photos and videos panel. Anyone who sees room types sees the gallery; with `manage`
+	(`MediaManage`) photos and videos can also be uploaded, dragged into a new order (or moved with the
+	arrows), captioned and removed. Uploads show as tiles with their progress, then "Processing…" until
+	the `media:<property>` event refetches the gallery with the finished file. A ready video shows its
+	poster with a play button; tapping it swaps in the player (sound on) and plays it, and only one
+	video is open at a time. Self-contained: it runs its
 	own commands and refetches the galleries after each.
 -->
+<script module lang="ts">
+	/** The video playing anywhere on the page: starting another pauses it. */
+	let current: HTMLVideoElement | undefined;
+</script>
+
 <script lang="ts">
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import { onDestroy } from 'svelte';
+	import { onDestroy, tick } from 'svelte';
 	import { errorMessage } from '$lib/api/problem';
 	import { rest, unwrap } from '$lib/api/rest';
-	import { dropIndex, mediaKey, type Box, type MediaItem } from '$lib/media';
+	import {
+		countedVideos,
+		dropIndex,
+		formatDuration,
+		MAX_VIDEOS,
+		mediaKey,
+		posterOf,
+		TOO_MANY_VIDEOS,
+		videoSources,
+		type Box,
+		type MediaItem
+	} from '$lib/media';
 	import { moveItem } from '$lib/rooms';
+	import { LIMITS, photoOrVideo, refusal, VIDEOS } from '$lib/upload';
 	import { percent, PROCESSING_FAILED, Uploads } from '$lib/uploads.svelte';
 	import MediaUploader from './MediaUploader.svelte';
 	import Picture from './Picture.svelte';
@@ -42,9 +61,51 @@
 	let busy = $state(false);
 	let captioning = $state<{ assetId: string; caption: string } | null>(null);
 	let removing = $state<string | null>(null);
+	/** The video whose player is open, if any. */
+	let playing = $state<string | null>(null);
+	/** The video that failed to play, if any. */
+	let unplayable = $state<string | null>(null);
+	const players: Record<string, HTMLVideoElement | undefined> = $state({});
+	const ACCEPT = [...LIMITS.gallery.types, ...VIDEOS].join(',');
 
 	function addFiles(files: File[]) {
-		uploads.add(files, { propertyId, purpose: 'gallery', targetId: roomType.id });
+		const target = { propertyId, targetId: roomType.id };
+		uploads.add(
+			files.filter((file) => photoOrVideo(file) === 'gallery'),
+			{ ...target, purpose: 'gallery' }
+		);
+		// A room type holds a few videos: those listed and those on their way count. The server decides.
+		let room =
+			MAX_VIDEOS -
+			countedVideos(media) -
+			uploads.items.filter((u) => u.target.purpose === 'gallery_video' && u.state !== 'failed')
+				.length;
+		uploads.add(
+			files.filter((file) => photoOrVideo(file) === 'gallery_video'),
+			{ ...target, purpose: 'gallery_video' },
+			(file) => (refusal(file, 'gallery_video') ? null : room-- > 0 ? null : TOO_MANY_VIDEOS)
+		);
+	}
+
+	const noun = (item: MediaItem) => (item.kind === 'VIDEO' ? 'video' : 'photo');
+
+	/** Swaps a video's poster for its player and plays it, with sound; any other player closes. */
+	async function play(assetId: string) {
+		playing = assetId;
+		unplayable = null;
+		await tick();
+		const video = players[assetId];
+		if (!video) return;
+		// The poster button is gone, so keyboard focus moves to the player.
+		video.focus();
+		if (current && current !== video) current.pause();
+		current = video;
+		try {
+			await video.play();
+		} catch (err) {
+			// A blocked autoplay leaves the controls to start it; anything else cannot play here.
+			if (!(err instanceof DOMException && err.name === 'NotAllowedError')) unplayable = assetId;
+		}
 	}
 
 	/** Runs a command, shows its problem if it fails, and refetches the galleries either way. */
@@ -169,12 +230,12 @@
 	}
 </script>
 
-<section class="gallery" aria-label="Photos of {roomType.code}">
+<section class="gallery" aria-label="Photos and videos of {roomType.code}">
 	<h3>{roomType.code} · {roomType.name}</h3>
 	{#if error}<p class="error" role="alert">{error}</p>{/if}
 
 	{#if media.length === 0 && uploads.items.length === 0}
-		<p class="hint">No photos yet.</p>
+		<p class="hint">No photos or videos yet.</p>
 	{/if}
 
 	<ul class="tiles">
@@ -186,7 +247,44 @@
 				class:target={dropAt === index && dragFrom !== index}
 			>
 				<div class="frame">
-					{#if item.status === 'READY'}
+					{#if item.status === 'READY' && item.kind === 'VIDEO'}
+						{#if playing === item.assetId}
+							<video
+								bind:this={players[item.assetId]}
+								controls
+								playsinline
+								preload="none"
+								poster={posterOf(item.renditions)}
+								aria-label={item.caption ?? `Video ${index + 1} of ${roomType.code}`}
+							>
+								{#each videoSources(item) as source (source.src)}
+									<source src={source.src} type={source.type} />
+								{/each}
+							</video>
+							{#if unplayable === item.assetId}
+								<p class="state error" role="alert">This video can't play in this browser</p>
+							{/if}
+						{:else}
+							<button
+								type="button"
+								class="play"
+								aria-label="Play video{item.caption ? `: ${item.caption}` : ''}, {formatDuration(
+									item.durationMs ?? 0
+								)}"
+								onclick={() => play(item.assetId)}
+							>
+								<Picture
+									renditions={item.renditions.filter((r) => r.size === 'SM')}
+									alt=""
+									sizes="12rem"
+								/>
+								<span class="badge" aria-hidden="true">▶</span>
+								<span class="duration" aria-hidden="true"
+									>{formatDuration(item.durationMs ?? 0)}</span
+								>
+							</button>
+						{/if}
+					{:else if item.status === 'READY'}
 						<Picture
 							renditions={item.renditions}
 							alt={item.caption ?? `Photo ${index + 1} of ${roomType.code}`}
@@ -202,7 +300,7 @@
 						<button
 							type="button"
 							class="secondary handle"
-							aria-label="Drag photo {index + 1} of {roomType.code}"
+							aria-label="Drag {noun(item)} {index + 1} of {roomType.code}"
 							title="Drag to reorder"
 							tabindex="-1"
 							disabled={busy}
@@ -217,7 +315,7 @@
 				{#if captioning?.assetId === item.assetId}
 					<form class="caption-form" aria-label="Caption" onsubmit={saveCaption}>
 						<input
-							aria-label="Caption of photo {index + 1}"
+							aria-label="Caption of {noun(item)} {index + 1}"
 							maxlength={CAPTION_MAX}
 							bind:value={captioning.caption}
 						/>
@@ -230,9 +328,11 @@
 					</form>
 				{:else if removing === item.assetId}
 					<div class="confirm">
-						<p>Remove this photo from the gallery?</p>
+						<p>Remove this {noun(item)} from the gallery?</p>
 						<div class="actions">
-							<button disabled={busy} onclick={() => remove(item.assetId)}>Remove photo</button>
+							<button disabled={busy} onclick={() => remove(item.assetId)}
+								>Remove {noun(item)}</button
+							>
 							<button type="button" class="secondary" onclick={() => (removing = null)}
 								>Keep it</button
 							>
@@ -245,21 +345,21 @@
 							<button
 								type="button"
 								class="secondary"
-								aria-label="Move photo {index + 1} earlier"
+								aria-label="Move {noun(item)} {index + 1} earlier"
 								disabled={busy || index === 0}
 								onclick={() => reorder(index, index - 1)}>←</button
 							>
 							<button
 								type="button"
 								class="secondary"
-								aria-label="Move photo {index + 1} later"
+								aria-label="Move {noun(item)} {index + 1} later"
 								disabled={busy || index === media.length - 1}
 								onclick={() => reorder(index, index + 1)}>→</button
 							>
 							<button
 								type="button"
 								class="secondary"
-								aria-label="Edit caption of photo {index + 1}"
+								aria-label="Edit caption of {noun(item)} {index + 1}"
 								disabled={busy}
 								onclick={() => {
 									removing = null;
@@ -269,7 +369,7 @@
 							<button
 								type="button"
 								class="secondary"
-								aria-label="Remove photo {index + 1}"
+								aria-label="Remove {noun(item)} {index + 1}"
 								disabled={busy}
 								onclick={() => {
 									captioning = null;
@@ -317,7 +417,12 @@
 	</ul>
 
 	{#if manage}
-		<MediaUploader purpose="gallery" label="Add photos" onfiles={addFiles} />
+		<MediaUploader
+			purpose="gallery"
+			accept={ACCEPT}
+			label="Add photos or videos"
+			onfiles={addFiles}
+		/>
 	{/if}
 </section>
 
@@ -362,6 +467,43 @@
 		width: 100%;
 		height: 100%;
 		object-fit: cover;
+	}
+	.play {
+		position: absolute;
+		inset: 0;
+		display: grid;
+		padding: 0;
+		border: 0;
+		border-radius: 0;
+		background: transparent;
+		cursor: pointer;
+	}
+	.badge,
+	.duration {
+		position: absolute;
+		background: rgb(0 0 0 / 0.65);
+		color: #fff;
+		border-radius: 999px;
+	}
+	.badge {
+		inset: 50% auto auto 50%;
+		translate: -50% -50%;
+		width: 2.5rem;
+		height: 2.5rem;
+		display: grid;
+		place-items: center;
+	}
+	.duration {
+		right: 0.35rem;
+		bottom: 0.35rem;
+		padding: 0.1rem 0.45rem;
+		font-size: 0.85rem;
+	}
+	.frame video {
+		width: 100%;
+		height: 100%;
+		object-fit: contain;
+		background: #000;
 	}
 	.state {
 		margin: 0;

@@ -14,11 +14,9 @@ reqwest.workspace = true
 rustls.workspace = true
 rusty-s3.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
 url.workspace = true
 uuid.workspace = true
-
-[dev-dependencies]
-tokio.workspace = true
 
 [lints]
 workspace = true

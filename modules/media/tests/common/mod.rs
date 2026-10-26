@@ -306,6 +306,7 @@ pub fn ready(tenant: TenantId, asset: Uuid) -> MediaResult {
         width: 320,
         height: 320,
         bytes: 100,
+        duration_ms: None,
         key: format!("t/{}/a/{asset}/{}.{}", tenant.0, size.as_str(), format.as_str()),
     };
     MediaResult::Ready {

@@ -19,7 +19,7 @@ import { bookableHotel, createProperty, runAsOwner, signUp } from './helpers';
 test.use({ trace: 'off' });
 
 const PHOTOS = 50;
-const GALLERY = 'section[aria-label="Photos of DLX"]';
+const GALLERY = 'section[aria-label="Photos and videos of DLX"]';
 /** Each rendition of the fixture photo: its size, format and pixels. */
 const RENDITIONS = [
 	{ size: 'thumb', format: 'avif', width: 320, height: 320 },

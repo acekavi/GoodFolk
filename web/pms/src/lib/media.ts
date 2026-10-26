@@ -13,6 +13,16 @@ export const RoomTypeGalleriesDocument = graphql(`
 				caption
 				width
 				height
+				kind
+				durationMs
+				sources {
+					format
+					size
+					width
+					height
+					url
+					mime
+				}
 				renditions {
 					size
 					format
@@ -26,9 +36,12 @@ export const RoomTypeGalleriesDocument = graphql(`
 `);
 
 export type MediaItem = RoomTypeGalleriesQuery['roomTypes'][number]['media'][number];
+/** A photo as the issue photos query reads it: a gallery item without the video fields. */
+export type Photo = Omit<MediaItem, 'kind' | 'durationMs' | 'sources'>;
 export type Rendition = MediaItem['renditions'][number];
 export type RenditionSize = Rendition['size'];
 export type ImageFormat = Rendition['format'];
+export type VideoSource = MediaItem['sources'][number];
 
 /**
  * The property's galleries, photos and documents all change under the server's `media:<property>`
@@ -103,4 +116,40 @@ export function dropIndex(boxes: readonly Box[], x: number, y: number): number {
 		}
 	});
 	return best;
+}
+
+/** A room type holds at most this many videos. */
+export const MAX_VIDEOS = 3;
+export const TOO_MANY_VIDEOS = `A room type can have at most ${MAX_VIDEOS} videos`;
+
+/** The videos that count toward {@link MAX_VIDEOS}: every one but a failed one, as the server counts. */
+export function countedVideos(media: readonly Pick<MediaItem, 'kind' | 'status'>[]): number {
+	return media.filter((item) => item.kind === 'VIDEO' && item.status !== 'FAILED').length;
+}
+
+/** The sizes a video's poster picks from: `MD`, else the largest below it, since a small clip has no `MD`. */
+const POSTER_SIZES: readonly RenditionSize[] = ['THUMB', 'SM', 'MD'];
+
+/** The URL of a video's WebP poster frame, if it has one. */
+export function posterOf(renditions: readonly Rendition[]): string | undefined {
+	return largestOf(renditions, 'WEBP', POSTER_SIZES)[0]?.url;
+}
+
+/** A video's length as `m:ss`, to the nearest second. */
+export function formatDuration(ms: number): string {
+	const total = Math.round(ms / 1000);
+	return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
+/**
+ * A video's `<source>` list: AV1 first, where the browser decodes it, then H.264, the largest first
+ * within a codec. The browser plays the first source it can.
+ */
+export function videoSources(node: {
+	sources: readonly VideoSource[];
+}): { src: string; type: string }[] {
+	const codec = (source: VideoSource) => (source.format === 'AV1' ? 0 : 1);
+	return [...node.sources]
+		.sort((a, b) => codec(a) - codec(b) || b.width - a.width)
+		.map((source) => ({ src: source.url, type: source.mime }));
 }

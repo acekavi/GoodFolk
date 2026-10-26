@@ -61,7 +61,7 @@ async fn a_request_still_in_progress_answers_retries_with_409(_: PgPoolOptions, 
 async fn an_abandoned_claim_is_taken_over_by_the_next_request(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts).await;
     let (cookie, user, tenant) = owner(&app).await;
-    claim(&app, user, tenant, "key-00000001", 120.0).await;
+    claim(&app, user, tenant, "key-00000001", 240.0).await;
 
     let retry = create(&app, &cookie, "/api/v1/properties", "key-00000001", galle()).await;
     let replay = create(&app, &cookie, "/api/v1/properties", "key-00000001", galle()).await;

@@ -12,6 +12,7 @@ image.workspace = true
 infer.workspace = true
 media-types.workspace = true
 moxcms.workspace = true
+pdfium-render.workspace = true
 ravif.workspace = true
 rayon.workspace = true
 thiserror.workspace = true

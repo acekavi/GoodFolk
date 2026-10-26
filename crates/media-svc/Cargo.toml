@@ -33,6 +33,8 @@ typst = "0.15"
 typst-layout = "0.15"
 typst-pdf = "0.15"
 uuid.workspace = true
+# Probing and transcoding room tour videos with ffmpeg, in the worker.
+video.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true

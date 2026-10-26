@@ -2,7 +2,8 @@
 //! the property's existing copy of the same file), then `ready` or `failed` when media-svc reports back.
 
 use crate::{
-    ASSET_COLUMNS, AssetRow, AssetStatus, DocumentKind, MAX_ISSUE_PHOTOS, MediaError, Purpose, Target, audit, notify,
+    ASSET_COLUMNS, AssetRow, AssetStatus, DocumentKind, MAX_ISSUE_PHOTOS, MAX_ROOM_TYPE_VIDEOS, MediaError, Purpose,
+    Target, audit, notify,
 };
 use db::{TenantId, Tx, UserId};
 use media_types::{MediaResult, ProcessJob};
@@ -58,6 +59,7 @@ pub enum Completed {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Pending {
     RoomType { id: Uuid },
+    RoomTypeVideo { id: Uuid },
     RoomIssue { id: Uuid },
     Guest { id: Uuid, document_kind: DocumentKind },
 }
@@ -66,6 +68,7 @@ impl From<Target> for Pending {
     fn from(target: Target) -> Self {
         match target {
             Target::RoomType(id) => Pending::RoomType { id },
+            Target::RoomTypeVideo(id) => Pending::RoomTypeVideo { id },
             Target::RoomIssue(id) => Pending::RoomIssue { id },
             Target::Guest { guest, kind } => Pending::Guest { id: guest, document_kind: kind },
         }
@@ -76,6 +79,7 @@ impl From<Pending> for Target {
     fn from(pending: Pending) -> Self {
         match pending {
             Pending::RoomType { id } => Target::RoomType(id),
+            Pending::RoomTypeVideo { id } => Target::RoomTypeVideo(id),
             Pending::RoomIssue { id } => Target::RoomIssue(id),
             Pending::Guest { id, document_kind } => Target::Guest { guest: id, kind: document_kind },
         }
@@ -83,8 +87,9 @@ impl From<Pending> for Target {
 }
 
 /// Starts an upload for `target`, which must belong to the property (`NotFound`; guests are tenant-wide). The file
-/// must have a name of 1 to 255 characters and be within the purpose's size limit (`Invalid`), and an issue may have at
-/// most [`MAX_ISSUE_PHOTOS`] photos, counting uploads in progress (`Conflict`). Inserts the asset `uploading`, holding
+/// must have a name of 1 to 255 characters and be within the purpose's size limit (`Invalid`), an issue may have at
+/// most [`MAX_ISSUE_PHOTOS`] photos and a room type at most [`MAX_ROOM_TYPE_VIDEOS`] videos, counting uploads in
+/// progress (`Conflict`). Inserts the asset `uploading`, holding
 /// `target` until the upload completes.
 #[allow(clippy::too_many_arguments)]
 pub async fn start_upload(
@@ -106,12 +111,21 @@ pub async fn start_upload(
         return Err(MediaError::Invalid("The file is empty".into()));
     }
     if bytes > purpose.max_bytes() {
-        return Err(MediaError::Invalid(format!("Too large: the limit is {} MB", purpose.max_bytes() / crate::MIB)));
+        let limit = purpose.max_bytes() / crate::MIB;
+        return Err(MediaError::Invalid(match purpose {
+            Purpose::GalleryVideo => format!("Videos can be at most {limit} MB"),
+            _ => format!("Too large: the limit is {limit} MB"),
+        }));
     }
     if let Target::RoomIssue(issue) = target
         && issue_photo_count(tx, issue).await? >= MAX_ISSUE_PHOTOS
     {
         return Err(MediaError::Conflict(format!("An issue can have at most {MAX_ISSUE_PHOTOS} photos")));
+    }
+    if let Target::RoomTypeVideo(room_type) = target
+        && room_type_video_count(tx, room_type).await? >= MAX_ROOM_TYPE_VIDEOS
+    {
+        return Err(MediaError::Conflict(format!("A room type can have at most {MAX_ROOM_TYPE_VIDEOS} videos")));
     }
     let asset_id = Uuid::now_v7();
     sqlx::query(
@@ -314,10 +328,10 @@ async fn mark_failed(tx: &mut Tx, asset: Uuid, reason: &str) -> Result<Option<(U
 }
 
 /// Checks that `target` belongs to the property (guests: to the tenant), and locks a room type or issue so that
-/// concurrent uploads count its photos and number its gallery one at a time.
+/// concurrent uploads count its photos or videos and number its gallery one at a time.
 async fn check_target(tx: &mut Tx, property: Uuid, target: Target) -> Result<(), MediaError> {
     let (query, what) = match target {
-        Target::RoomType(id) => (
+        Target::RoomType(id) | Target::RoomTypeVideo(id) => (
             sqlx::query_scalar("select 1 from room_type where id = $1 and property_id = $2 for no key update")
                 .bind(id)
                 .bind(property),
@@ -354,6 +368,20 @@ async fn issue_photo_count(tx: &mut Tx, issue: Uuid) -> Result<i64, sqlx::Error>
                    and pending_target @> jsonb_build_object('kind', 'room_issue', 'id', $1::text))",
     )
     .bind(issue)
+    .fetch_one(&mut **tx)
+    .await
+}
+
+/// The room type's videos that are linked and not failed, plus its video uploads in progress.
+async fn room_type_video_count(tx: &mut Tx, room_type: Uuid) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "select (select count(*) from room_type_media m join media_asset a on a.id = m.asset_id
+                 where m.room_type_id = $1 and a.purpose = 'gallery_video' and a.status <> 'failed')
+              + (select count(*) from media_asset
+                 where status = 'uploading' and purpose = 'gallery_video'
+                   and pending_target @> jsonb_build_object('kind', 'room_type_video', 'id', $1::text))",
+    )
+    .bind(room_type)
     .fetch_one(&mut **tx)
     .await
 }
@@ -455,7 +483,7 @@ async fn write_link(
     duplicate: bool,
 ) -> Result<(), sqlx::Error> {
     match target {
-        Target::RoomType(room_type) => {
+        Target::RoomType(room_type) | Target::RoomTypeVideo(room_type) => {
             sqlx::query(
                 "insert into room_type_media (tenant_id, room_type_id, asset_id, position)
                  select $1, $2, $3, coalesce(max(position) + 1, 0) from room_type_media where room_type_id = $2
@@ -466,7 +494,13 @@ async fn write_link(
             .bind(asset)
             .execute(&mut **tx)
             .await?;
-            let data = serde_json::json!({ "purpose": "gallery", "room_type_id": room_type, "duplicate": duplicate });
+            let (purpose, kind) = match target {
+                Target::RoomTypeVideo(_) => ("gallery_video", "video"),
+                _ => ("gallery", "image"),
+            };
+            let data = serde_json::json!({
+                "purpose": purpose, "kind": kind, "room_type_id": room_type, "duplicate": duplicate
+            });
             audit(tx, tenant, Some(user), "media.uploaded", "media_asset", asset, data).await
         }
         Target::RoomIssue(issue) => {
@@ -478,7 +512,9 @@ async fn write_link(
             .bind(asset)
             .execute(&mut **tx)
             .await?;
-            let data = serde_json::json!({ "purpose": "issue_photo", "issue_id": issue, "duplicate": duplicate });
+            let data = serde_json::json!({
+                "purpose": "issue_photo", "kind": "image", "issue_id": issue, "duplicate": duplicate
+            });
             audit(tx, tenant, Some(user), "media.uploaded", "media_asset", asset, data).await
         }
         Target::Guest { guest, kind } => {

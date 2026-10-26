@@ -15,7 +15,7 @@
 		removeIssuePhoto,
 		removePhotoMessage
 	} from '$lib/housekeeping';
-	import type { MediaItem } from '$lib/media';
+	import type { Photo } from '$lib/media';
 	import { Pending } from '$lib/pending.svelte';
 	import { percent, PROCESSING_FAILED, Uploads } from '$lib/uploads.svelte';
 	import MediaUploader from './MediaUploader.svelte';
@@ -24,7 +24,7 @@
 	interface Props {
 		propertyId: string;
 		issueId: string;
-		photos: MediaItem[];
+		photos: Photo[];
 		mayAttach: boolean;
 		/** Without a connection nothing can be uploaded. */
 		online?: boolean;
@@ -59,7 +59,7 @@
 	const control = $derived(photoControl(online, photos.length + uploads.active));
 	let error = $state('');
 	let removing = $state<string | null>(null);
-	let opened = $state<{ photo: MediaItem; index: number } | null>(null);
+	let opened = $state<{ photo: Photo; index: number } | null>(null);
 	let viewer = $state<HTMLDialogElement>();
 
 	function addFiles(files: File[]) {
@@ -85,7 +85,7 @@
 		}
 	}
 
-	function open(photo: MediaItem, index: number) {
+	function open(photo: Photo, index: number) {
 		opened = { photo, index };
 		viewer?.showModal();
 	}

@@ -77,7 +77,7 @@ function imagesLoaded(page: Page, selector: string) {
 	);
 }
 
-const GALLERY = 'section[aria-label="Photos of DLX"]';
+const GALLERY = 'section[aria-label="Photos and videos of DLX"]';
 
 /** The `src` of each photo in the DLX gallery, in order: each names its asset. */
 function gallerySources(page: Page) {
@@ -91,8 +91,8 @@ test('a gallery upload goes from processing to ready live, then a reorder surviv
 }) => {
 	const { propertyId } = await hotel(page, 'GAL');
 	await page.goto(`/p/${propertyId}/room-types`);
-	const gallery = page.getByRole('region', { name: 'Photos of DLX' });
-	await expect(gallery).toContainText('No photos yet.');
+	const gallery = page.getByRole('region', { name: 'Photos and videos of DLX' });
+	await expect(gallery).toContainText('No photos or videos yet.');
 
 	// Every state the gallery shows is recorded inside the page, so a short "Processing…" is not missed, and a
 	// mark on the window shows the page is never reloaded on the way to ready.
@@ -309,7 +309,7 @@ test('an oversized file and a file of the wrong type are refused with their reas
 		if (request.url().endsWith('/media/uploads')) started.push(request);
 	});
 	await page.goto(`/p/${propertyId}/room-types`);
-	const gallery = page.getByRole('region', { name: 'Photos of DLX' });
+	const gallery = page.getByRole('region', { name: 'Photos and videos of DLX' });
 	await gallery.locator('input[type="file"]').setInputFiles([
 		{ name: 'huge.jpg', mimeType: 'image/jpeg', buffer: Buffer.alloc(25 * MIB + 1) },
 		{ name: 'doc.pdf', mimeType: 'application/pdf', buffer: readFileSync(PDF) }

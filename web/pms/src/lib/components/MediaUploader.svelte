@@ -10,16 +10,18 @@
 		/** What the picker's button says, such as "Add photos". */
 		label: string;
 		disabled?: boolean;
+		/** The picker's types, where they are more than the purpose's own (a gallery takes videos too). */
+		accept?: string;
 		/** Opens a phone's camera, as `capture` does on a file input. */
 		capture?: 'environment' | 'user';
 		onfiles: (files: File[]) => void;
 	}
 
-	let { purpose, label, disabled = false, capture, onfiles }: Props = $props();
+	let { purpose, label, disabled = false, accept: acceptTypes, capture, onfiles }: Props = $props();
 
 	let input = $state<HTMLInputElement>();
 	let over = $state(false);
-	const accept = $derived(LIMITS[purpose].types.join(','));
+	const accept = $derived(acceptTypes ?? LIMITS[purpose].types.join(','));
 
 	function take(files: FileList | null | undefined) {
 		if (files && files.length > 0) onfiles([...files]);

@@ -1,16 +1,31 @@
 # syntax=docker/dockerfile:1
 # media-svc on glibc (the vendored C and C++ codecs are reliable there, unlike on musl) on a distroless base (no shell,
-# runs as non-root), with libjxl's static cjxl and djxl for the JPEG XL archive.
+# runs as non-root), with libjxl's static cjxl and djxl for the JPEG XL archive, an LGPL ffmpeg and ffprobe for video,
+# qpdf to linearize PDFs and PDFium to render their thumbnails.
 FROM rust:1.99-bookworm AS build
-# cmake and nasm build the vendored codecs; lzip unpacks the libjxl release; tini supplies a static init.
+# cmake and nasm build the vendored codecs; lzip, xz-utils and unzip unpack the libjxl, ffmpeg and qpdf releases; tini
+# supplies a static init.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends cmake nasm lzip tini \
+    && apt-get install -y --no-install-recommends cmake nasm lzip xz-utils unzip tini \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
 RUN sh deploy/dev/libjxl.sh install \
     && mkdir /jxl \
     && cp "$(sh deploy/dev/libjxl.sh path)/cjxl" "$(sh deploy/dev/libjxl.sh path)/djxl" /jxl/
+RUN sh deploy/dev/ffmpeg.sh install \
+    && mkdir /ffmpeg \
+    && cp "$(sh deploy/dev/ffmpeg.sh path)/ffmpeg" "$(sh deploy/dev/ffmpeg.sh path)/ffprobe" /ffmpeg/
+# qpdf finds its bundled libraries through RUNPATH $ORIGIN/../lib; zlib and gmp it takes from the system, which the
+# distroless base lacks, so they ride along in the same lib directory.
+RUN sh deploy/dev/qpdf.sh install \
+    && mkdir -p /qpdf/bin /qpdf/lib \
+    && cp "$(sh deploy/dev/qpdf.sh path)/qpdf" /qpdf/bin/ \
+    && cp -P "$(sh deploy/dev/qpdf.sh path)"/../lib/* /qpdf/lib/ \
+    && cp -L /usr/lib/x86_64-linux-gnu/libz.so.1 /usr/lib/x86_64-linux-gnu/libgmp.so.10 /qpdf/lib/
+RUN sh deploy/dev/pdfium.sh install \
+    && mkdir /pdfium \
+    && cp "$(sh deploy/dev/pdfium.sh path)/libpdfium.so" /pdfium/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release -p media-svc --bin media-svc && cp target/release/media-svc /media-svc
@@ -19,7 +34,11 @@ FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=build /usr/bin/tini-static /tini
 COPY --from=build /media-svc /media-svc
 COPY --from=build /jxl/ /opt/libjxl/bin/
-ENV APP_ENV=production PORT=8090 JXL_BIN_DIR=/opt/libjxl/bin
+COPY --from=build /ffmpeg/ /opt/ffmpeg/bin/
+COPY --from=build /qpdf/ /opt/qpdf/
+COPY --from=build /pdfium/ /opt/pdfium/lib/
+ENV APP_ENV=production PORT=8090 JXL_BIN_DIR=/opt/libjxl/bin FFMPEG_BIN_DIR=/opt/ffmpeg/bin \
+    QPDF_BIN_DIR=/opt/qpdf/bin PDFIUM_LIB_DIR=/opt/pdfium/lib
 EXPOSE 8090
 # media-svc would otherwise be PID 1, which inherits and must reap every orphan (a worker's tools whose worker was
 # killed); tini reaps them and forwards signals.

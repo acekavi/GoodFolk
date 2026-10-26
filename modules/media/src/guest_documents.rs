@@ -3,7 +3,7 @@
 
 use crate::{AssetStatus, DocumentKind, LinkSize, MediaError, Visibility, audit, notify};
 use db::{TenantId, Tx, UserId};
-use media_types::{Format, RenditionOut};
+use media_types::{Format, RenditionOut, Size};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -86,10 +86,10 @@ struct LinkRow {
 }
 
 /// The bucket and key to sign for the document's `size`: the WebP rendition for `thumb` and `md`, and for a PDF only,
-/// the PDF as uploaded for `original` (an image's archive is JPEG XL, which browsers cannot show). Writes a
-/// `guest_document.viewed` audit entry for each call. An unknown document, or one uploaded at another property, is
-/// `NotFound`, one not yet ready is
-/// `Conflict`, and a size the document has no file for (a PDF's preview, an image's original) is `Invalid`.
+/// the linearized PDF for `original`, else the PDF as uploaded (an image's archive is JPEG XL, which browsers cannot
+/// show). Writes a `guest_document.viewed` audit entry for each call. An unknown document, or one uploaded at another
+/// property, is `NotFound`, one not yet ready is `Conflict`, and a size the document has no file for (an image's
+/// original, or a PDF's preview when it has no thumbnail) is `Invalid`.
 pub async fn guest_document_link_key(
     tx: &mut Tx,
     tenant: TenantId,
@@ -116,7 +116,11 @@ pub async fn guest_document_link_key(
         LinkSize::Original if mime.as_deref() != Some(PDF) => {
             return Err(MediaError::Invalid("Images are viewed at the md size".into()));
         }
-        LinkSize::Original => archive_key,
+        LinkSize::Original => renditions
+            .into_iter()
+            .find(|r| r.size == Size::Original && r.format == Format::Pdf)
+            .map(|r| r.key)
+            .or(archive_key),
         LinkSize::Thumb | LinkSize::Md => {
             renditions.into_iter().find(|r| r.size.as_str() == size.as_str() && r.format == Format::Webp).map(|r| r.key)
         }

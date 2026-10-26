@@ -2807,7 +2807,7 @@
         "tags": [
           "crate::routes::media"
         ],
-        "summary": "Starts an upload: records the asset and has media-svc open a multipart upload, whose part URLs work for an hour.\nNeeds `MediaManage` for a gallery photo, `RoomIssuesReport` for an issue photo and `GuestDocumentsManage` for a\nguest document. An issue holds at most 5 photos, counting uploads in progress (409). When media-svc cannot be\nreached in 2 s the answer is 502 and nothing is recorded. A retried request with the same `Idempotency-Key` is\nanswered without starting another upload.",
+        "summary": "Starts an upload: records the asset and has media-svc open a multipart upload, whose part URLs work for an hour.\nNeeds `MediaManage` for a gallery photo, `RoomIssuesReport` for an issue photo and `GuestDocumentsManage` for a\nguest document, and `MediaManage` for a room type's video (`gallery_video`). An issue holds at most 5 photos and a\nroom type at most 3 videos, counting uploads in progress (409). A video can be up to 500 MB. When media-svc cannot be\nreached in 2 s the answer is 502 and nothing is recorded. A retried request with the same `Idempotency-Key` is\nanswered without starting another upload.",
         "operationId": "start_media_upload",
         "parameters": [
           {
@@ -4883,7 +4883,7 @@
         "tags": [
           "crate::routes::media"
         ],
-        "summary": "Puts the room type's photos in a new order; `asset_ids` must name each of them exactly once (422).",
+        "summary": "Puts the room type's photos and videos in a new order; `asset_ids` must name each of them exactly once (422).",
         "operationId": "reorder_room_type_media",
         "parameters": [
           {
@@ -8260,7 +8260,7 @@
       },
       "MediaAsset": {
         "type": "object",
-        "description": "An uploaded file. Its delivered images, once ready, are read through GraphQL; a guest document's only through\nits signed link.",
+        "description": "An uploaded file. Its delivered images and videos, once ready, are read through GraphQL; a guest document's only through\nits signed link.",
         "required": [
           "asset_id",
           "purpose",
@@ -8278,6 +8278,15 @@
               "null"
             ],
             "format": "int64"
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "A ready video's length, in milliseconds.",
+            "minimum": 0
           },
           "error": {
             "type": [
@@ -9529,7 +9538,8 @@
         "enum": [
           "gallery",
           "issue_photo",
-          "guest_document"
+          "guest_document",
+          "gallery_video"
         ]
       },
       "RatePlan": {
@@ -10584,7 +10594,7 @@
           "bytes": {
             "type": "integer",
             "format": "int64",
-            "description": "The file's size: at most 25 MiB for photos and 15 MiB for guest documents.",
+            "description": "The file's size: at most 25 MiB for photos, 15 MiB for guest documents and 500 MB for videos.",
             "minimum": 0
           },
           "filename": {
@@ -10612,7 +10622,7 @@
           "target_id": {
             "type": "string",
             "format": "uuid",
-            "description": "The room type (`gallery`), room issue (`issue_photo`) or guest (`guest_document`)."
+            "description": "The room type (`gallery`, `gallery_video`), room issue (`issue_photo`) or guest (`guest_document`)."
           }
         }
       },

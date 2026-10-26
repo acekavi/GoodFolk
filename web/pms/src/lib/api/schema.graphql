@@ -702,6 +702,9 @@ enum IdDocType {
 enum ImageFormat {
 	AVIF
 	WEBP
+	AV1
+	H264
+	PDF
 }
 
 """
@@ -1093,7 +1096,15 @@ type MealSupplementNode {
 }
 
 """
-A photo. Its renditions exist once it is ready.
+Whether a gallery item is a photo or a video.
+"""
+enum MediaKind {
+	IMAGE
+	VIDEO
+}
+
+"""
+A photo or a video. Its renditions and sources exist once it is ready.
 """
 type MediaNode {
 	assetId: UUID!
@@ -1108,7 +1119,19 @@ type MediaNode {
 	error: String
 	width: Int
 	height: Int
+	kind: MediaKind!
+	"""
+	A ready video's length in milliseconds.
+	"""
+	durationMs: Int
+	"""
+	The images: a photo's, or a video's poster.
+	"""
 	renditions: [RenditionNode!]!
+	"""
+	A video's encodings, AV1 first at each size; empty for a photo.
+	"""
+	sources: [VideoSourceNode!]!
 }
 
 """
@@ -1738,7 +1761,8 @@ type RenditionNode {
 }
 
 """
-A delivered image's size: `THUMB` is a 320 px square, the others are long edges of 640 to 2400 px.
+A delivered file's size: `THUMB` is a 320 px square, `SM` to `XL` are image long edges of 640 to 2400 px,
+`V1080` and `V720` are videos that fit 1920×1080 and 1280×720, and `ORIGINAL` is a guest PDF's linearized copy.
 """
 enum RenditionSize {
 	THUMB
@@ -1746,6 +1770,9 @@ enum RenditionSize {
 	MD
 	LG
 	XL
+	V1080
+	V720
+	ORIGINAL
 }
 
 """
@@ -2242,6 +2269,21 @@ type UnassignedStayNode {
 	Send as `If-Match: "<version>"` with the stay's commands.
 	"""
 	version: Int!
+}
+
+"""
+One delivered encoding of a video at one size.
+"""
+type VideoSourceNode {
+	format: ImageFormat!
+	size: RenditionSize!
+	width: Int!
+	height: Int!
+	url: String!
+	"""
+	The `type` for a `<source>`: the container with its codecs, such as `video/mp4; codecs="av01.0.08M.10, opus"`.
+	"""
+	mime: String!
 }
 
 enum ViolationKind {

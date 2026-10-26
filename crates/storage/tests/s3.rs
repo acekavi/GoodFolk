@@ -53,6 +53,26 @@ async fn multipart_upload_via_presigned_parts() {
 }
 
 #[tokio::test]
+async fn get_to_file_streams_and_caps() {
+    const MIB: usize = 1024 * 1024;
+    let storage = storage().await;
+    let key = fresh_key();
+    let body: Vec<u8> = (0..9 * MIB).map(|i| (i % 251) as u8).collect();
+    storage.put(Bucket::Private, &key, body.clone(), "application/octet-stream", None).await.unwrap();
+    let path = std::env::temp_dir().join(format!("{}.bin", Uuid::now_v7()));
+
+    let written = storage.get_to_file(Bucket::Private, &key, &path, 16 * MIB as u64).await.unwrap();
+    assert_eq!(written, body.len() as u64);
+    assert_eq!(std::fs::read(&path).unwrap(), body);
+    std::fs::remove_file(&path).unwrap();
+
+    let err = storage.get_to_file(Bucket::Private, &key, &path, MIB as u64).await.unwrap_err();
+    assert!(matches!(err, StorageError::TooLarge { .. }), "{err:?}");
+    assert!(!path.exists());
+    storage.delete(Bucket::Private, &key).await.unwrap();
+}
+
+#[tokio::test]
 async fn complete_refuses_gaps_in_part_numbers() {
     let storage = storage().await;
     let err = storage

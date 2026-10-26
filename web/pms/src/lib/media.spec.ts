@@ -2,14 +2,20 @@ import { QueryClient } from '@tanstack/svelte-query';
 import { describe, expect, it } from 'vitest';
 import { applyEvent } from './events';
 import {
+	countedVideos,
 	DISPLAY_SIZES,
 	dropIndex,
+	formatDuration,
 	LARGE_SIZES,
 	largestOf,
 	mediaKey,
+	posterOf,
 	renditionsOf,
 	srcset,
-	type Rendition
+	videoSources,
+	type MediaItem,
+	type Rendition,
+	type VideoSource
 } from './media';
 
 const rendition = (
@@ -108,5 +114,86 @@ describe('dropIndex', () => {
 
 	it('is -1 without tiles', () => {
 		expect(dropIndex([], 0, 0)).toBe(-1);
+	});
+});
+
+describe('formatDuration', () => {
+	it('writes minutes and seconds', () => {
+		expect(formatDuration(28_000)).toBe('0:28');
+		expect(formatDuration(60_000)).toBe('1:00');
+		expect(formatDuration(4_000)).toBe('0:04');
+		expect(formatDuration(3_725_000)).toBe('62:05');
+	});
+
+	it('rounds to the nearest second', () => {
+		expect(formatDuration(28_400)).toBe('0:28');
+		expect(formatDuration(28_600)).toBe('0:29');
+	});
+});
+
+describe('videoSources', () => {
+	const source = (
+		format: VideoSource['format'],
+		size: VideoSource['size'],
+		width: number
+	): VideoSource => ({
+		format,
+		size,
+		width,
+		height: Math.round((width * 9) / 16),
+		url: `https://cdn/v/${format}-${size}.mp4`,
+		mime:
+			format === 'AV1'
+				? 'video/mp4; codecs="av01.0.08M.10, opus"'
+				: 'video/mp4; codecs="avc1.640028, mp4a.40.2"'
+	});
+
+	it('lists AV1 before H.264, largest first within a codec, whatever order they arrive in', () => {
+		const node = {
+			sources: [
+				source('AV1', 'V1080', 1920),
+				source('H264', 'V1080', 1920),
+				source('AV1', 'V720', 1280),
+				source('H264', 'V720', 1280)
+			]
+		};
+		const expected = [
+			{ src: 'https://cdn/v/AV1-V1080.mp4', type: node.sources[0].mime },
+			{ src: 'https://cdn/v/AV1-V720.mp4', type: node.sources[2].mime },
+			{ src: 'https://cdn/v/H264-V1080.mp4', type: node.sources[1].mime },
+			{ src: 'https://cdn/v/H264-V720.mp4', type: node.sources[3].mime }
+		];
+		expect(videoSources(node)).toEqual(expected);
+		expect(videoSources({ sources: [...node.sources].reverse() })).toEqual(expected);
+	});
+
+	it('is empty for a photo', () => {
+		expect(videoSources({ sources: [] })).toEqual([]);
+	});
+});
+
+describe('posterOf', () => {
+	it('shows the MD poster', () => {
+		expect(posterOf(renditions)).toBe('https://cdn/a/md.webp');
+	});
+
+	it('falls back to the largest poster a small clip has', () => {
+		const small = renditions.filter((r) => r.size === 'THUMB' || r.size === 'SM');
+		expect(posterOf(small)).toBe('https://cdn/a/sm.webp');
+		expect(posterOf([rendition('THUMB', 'WEBP', 320, 320)])).toBe('https://cdn/a/thumb.webp');
+		expect(posterOf([])).toBeUndefined();
+	});
+});
+
+describe('countedVideos', () => {
+	it('counts the videos the server counts, not photos or failed videos', () => {
+		const item = (kind: 'IMAGE' | 'VIDEO', status: MediaItem['status']) => ({ kind, status });
+		const media = [
+			item('VIDEO', 'READY'),
+			item('VIDEO', 'PROCESSING'),
+			item('VIDEO', 'FAILED'),
+			item('IMAGE', 'READY')
+		];
+		expect(countedVideos(media)).toBe(2);
 	});
 });

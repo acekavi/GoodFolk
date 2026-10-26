@@ -311,12 +311,16 @@ async fn sweep(pool: &PgPool, storage: &Storage) -> Result<(), String> {
     Ok(())
 }
 
-/// The bucket an orphan's object is in: a gallery asset's renditions are public; its raw upload and archive, and
-/// every object of any other asset, are private.
+/// The bucket an orphan's object is in: a gallery photo's or video's renditions are public; its raw upload, archive
+/// and `ready` marker, and every object of any other asset, are private.
 fn orphan_bucket(purpose: Purpose, key: &str) -> Bucket {
     let name = key.rsplit('/').next().unwrap_or_default();
-    let private_object = name == "upload" || name.starts_with("archive.");
-    if purpose == Purpose::Gallery && !private_object { Bucket::Public } else { Bucket::Private }
+    let private_object = name == "upload" || name == "ready" || name.starts_with("archive.");
+    if matches!(purpose, Purpose::Gallery | Purpose::GalleryVideo) && !private_object {
+        Bucket::Public
+    } else {
+        Bucket::Private
+    }
 }
 
 /// Removes the swept assets' objects and abandoned uploads from storage, returning how many removals failed. A
@@ -388,8 +392,12 @@ mod tests {
         assert_eq!(orphan_bucket(Purpose::Gallery, &key("thumb.webp")), Bucket::Public);
         assert_eq!(orphan_bucket(Purpose::Gallery, &key("archive.jxl")), Bucket::Private);
         assert_eq!(orphan_bucket(Purpose::Gallery, &key("upload")), Bucket::Private);
+        assert_eq!(orphan_bucket(Purpose::GalleryVideo, &key("1080p.av1.mp4")), Bucket::Public);
+        assert_eq!(orphan_bucket(Purpose::GalleryVideo, &key("md.avif")), Bucket::Public, "the poster");
+        assert_eq!(orphan_bucket(Purpose::GalleryVideo, &key("upload")), Bucket::Private);
+        assert_eq!(orphan_bucket(Purpose::GalleryVideo, &key("ready")), Bucket::Private);
         for purpose in [Purpose::IssuePhoto, Purpose::GuestDocument] {
-            for name in ["md.avif", "archive.pdf", "upload"] {
+            for name in ["md.avif", "archive.pdf", "upload", "ready"] {
                 assert_eq!(orphan_bucket(purpose, &key(name)), Bucket::Private, "{purpose:?} {name}");
             }
         }

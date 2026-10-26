@@ -29,9 +29,12 @@ use uuid::Uuid;
 
 /// How long media-svc may take to start an upload.
 const CREATE_UPLOAD_DEADLINE: Duration = Duration::from_secs(2);
-/// How long media-svc may take to verify a completed upload (up to 25 MiB read and hashed), well inside the request
-/// timeout so the caller hears 502 rather than 504.
+/// How long media-svc may take to verify a completed photo or guest document (up to 25 MiB read and hashed), well
+/// inside the request timeout so the caller hears 502 rather than 504.
 const FINALIZE_DEADLINE: Duration = Duration::from_secs(10);
+/// How long media-svc may take to verify a completed video: up to 500 MB read, hashed and probed (the probe alone may
+/// take 15 s), well inside the complete-upload route's own request timeout.
+const VIDEO_FINALIZE_DEADLINE: Duration = Duration::from_secs(120);
 /// How long a guest document link works.
 const GUEST_DOCUMENT_LINK_TTL: Duration = Duration::from_secs(5 * 60);
 /// The most parts one upload can have.
@@ -52,9 +55,17 @@ pub(crate) fn media_error(err: MediaError) -> ApiError {
 /// The permission an upload of `purpose` needs, to start, complete or cancel.
 fn upload_permission(purpose: Purpose) -> Permission {
     match purpose {
-        Purpose::Gallery => Permission::MediaManage,
+        Purpose::Gallery | Purpose::GalleryVideo => Permission::MediaManage,
         Purpose::IssuePhoto => Permission::RoomIssuesReport,
         Purpose::GuestDocument => Permission::GuestDocumentsManage,
+    }
+}
+
+/// How long media-svc may take to verify a completed upload of `purpose`.
+fn finalize_deadline(purpose: Purpose) -> Duration {
+    match purpose {
+        Purpose::GalleryVideo => VIDEO_FINALIZE_DEADLINE,
+        Purpose::Gallery | Purpose::IssuePhoto | Purpose::GuestDocument => FINALIZE_DEADLINE,
     }
 }
 
@@ -63,6 +74,7 @@ fn grpc_purpose(purpose: Purpose) -> proto::media::Purpose {
         Purpose::Gallery => proto::media::Purpose::Gallery,
         Purpose::IssuePhoto => proto::media::Purpose::IssuePhoto,
         Purpose::GuestDocument => proto::media::Purpose::GuestDocument,
+        Purpose::GalleryVideo => proto::media::Purpose::GalleryVideo,
     }
 }
 
@@ -70,7 +82,7 @@ fn grpc_purpose(purpose: Purpose) -> proto::media::Purpose {
 pub struct StartUploadRequest {
     #[garde(skip)]
     pub purpose: Purpose,
-    /// The room type (`gallery`), room issue (`issue_photo`) or guest (`guest_document`).
+    /// The room type (`gallery`, `gallery_video`), room issue (`issue_photo`) or guest (`guest_document`).
     #[garde(skip)]
     pub target_id: Uuid,
     /// The kind of ID document; required for `guest_document`, and only for it.
@@ -79,7 +91,7 @@ pub struct StartUploadRequest {
     /// 1 to 255 characters. Only shown; the file's type is decided from its bytes.
     #[garde(length(chars, min = 1, max = 255))]
     pub filename: String,
-    /// The file's size: at most 25 MiB for photos and 15 MiB for guest documents.
+    /// The file's size: at most 25 MiB for photos, 15 MiB for guest documents and 500 MB for videos.
     #[garde(skip)]
     pub bytes: u64,
     /// The file's SHA-256, as 64 hexadecimal digits.
@@ -119,7 +131,7 @@ pub struct CompleteUploadRequest {
     pub parts: Vec<UploadedPart>,
 }
 
-/// An uploaded file. Its delivered images, once ready, are read through GraphQL; a guest document's only through
+/// An uploaded file. Its delivered images and videos, once ready, are read through GraphQL; a guest document's only through
 /// its signed link.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct MediaAsset {
@@ -134,11 +146,14 @@ pub struct MediaAsset {
     pub bytes: Option<i64>,
     pub width: Option<i32>,
     pub height: Option<i32>,
+    /// A ready video's length, in milliseconds.
+    pub duration_ms: Option<u32>,
 }
 
 impl From<AssetRow> for MediaAsset {
     fn from(asset: AssetRow) -> Self {
         Self {
+            duration_ms: asset.renditions.iter().find_map(|rendition| rendition.duration_ms),
             asset_id: asset.id,
             purpose: asset.purpose,
             status: asset.status,
@@ -216,7 +231,8 @@ where
 
 /// Starts an upload: records the asset and has media-svc open a multipart upload, whose part URLs work for an hour.
 /// Needs `MediaManage` for a gallery photo, `RoomIssuesReport` for an issue photo and `GuestDocumentsManage` for a
-/// guest document. An issue holds at most 5 photos, counting uploads in progress (409). When media-svc cannot be
+/// guest document, and `MediaManage` for a room type's video (`gallery_video`). An issue holds at most 5 photos and a
+/// room type at most 3 videos, counting uploads in progress (409). A video can be up to 500 MB. When media-svc cannot be
 /// reached in 2 s the answer is 502 and nothing is recorded. A retried request with the same `Idempotency-Key` is
 /// answered without starting another upload.
 #[utoipa::path(post, operation_id = "start_media_upload", path = "/api/v1/properties/{property}/media/uploads", request_body = StartUploadRequest,
@@ -234,6 +250,7 @@ pub async fn start_upload(
         .ok_or_else(|| ApiError::unprocessable("sha256 must be the file's SHA-256 as 64 hexadecimal digits"))?;
     let target = match (body.purpose, body.kind) {
         (Purpose::Gallery, None) => Target::RoomType(body.target_id),
+        (Purpose::GalleryVideo, None) => Target::RoomTypeVideo(body.target_id),
         (Purpose::IssuePhoto, None) => Target::RoomIssue(body.target_id),
         (Purpose::GuestDocument, Some(kind)) => Target::Guest { guest: body.target_id, kind },
         (Purpose::GuestDocument, None) => return Err(ApiError::unprocessable("a guest document needs its kind")),
@@ -338,9 +355,9 @@ pub async fn complete_upload(
         sha256: pending.sha256.to_vec(),
     };
     let mut client = state.media.clone();
+    let deadline = finalize_deadline(pending.purpose);
     let finalized =
-        call_media_svc(&state, request, FINALIZE_DEADLINE, |request| async move { client.finalize(request).await })
-            .await;
+        call_media_svc(&state, request, deadline, |request| async move { client.finalize(request).await }).await;
     let verified = match finalized.map(|reply| reply.result) {
         Ok(Some(Outcome::Verified(verified))) => verified,
         Ok(Some(Outcome::Refused(refused))) => {
@@ -431,7 +448,7 @@ pub async fn cancel_upload(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Puts the room type's photos in a new order; `asset_ids` must name each of them exactly once (422).
+/// Puts the room type's photos and videos in a new order; `asset_ids` must name each of them exactly once (422).
 #[utoipa::path(put, operation_id = "reorder_room_type_media", path = "/api/v1/properties/{property}/room-types/{room_type}/media/order", request_body = ReorderMediaRequest,
     params(("property" = Uuid, Path), ("room_type" = Uuid, Path)),
     responses((status = 204), (status = 403), (status = 404), (status = 422)))]
@@ -553,7 +570,18 @@ pub async fn delete_guest_document(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_sha256;
+    use super::*;
+    use crate::routes::{COMPLETE_UPLOAD_TIMEOUT, REQUEST_TIMEOUT};
+
+    #[test]
+    fn a_video_finalize_gets_the_long_deadline_inside_its_request_timeout() {
+        assert_eq!(finalize_deadline(Purpose::GalleryVideo), VIDEO_FINALIZE_DEADLINE);
+        for purpose in [Purpose::Gallery, Purpose::IssuePhoto, Purpose::GuestDocument] {
+            assert_eq!(finalize_deadline(purpose), FINALIZE_DEADLINE, "{purpose:?}");
+        }
+        assert!(FINALIZE_DEADLINE < REQUEST_TIMEOUT);
+        assert!(VIDEO_FINALIZE_DEADLINE < COMPLETE_UPLOAD_TIMEOUT);
+    }
 
     #[test]
     fn a_sha256_is_exactly_64_hexadecimal_digits() {

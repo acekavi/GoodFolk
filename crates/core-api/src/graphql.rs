@@ -233,12 +233,12 @@ pub struct InventoryDayNode {
 
 /// A GraphQL enum mirroring one of a module's enums, with conversions both ways.
 macro_rules! mirror_enum {
-    ($(#[$meta:meta])* $node:ident as $name:literal from $source:path { $($variant:ident),+ $(,)? }) => {
+    ($(#[$meta:meta])* $node:ident as $name:literal from $source:path { $($(#[$vmeta:meta])* $variant:ident),+ $(,)? }) => {
         $(#[$meta])*
         #[derive(Enum, Clone, Copy, PartialEq, Eq)]
         #[graphql(name = $name)]
         pub enum $node {
-            $($variant),+
+            $($(#[$vmeta])* $variant),+
         }
 
         impl From<$source> for $node {
@@ -292,11 +292,20 @@ mirror_enum!(
     MediaStatusNode as "MediaStatus" from media::AssetStatus { Uploading, Processing, Ready, Failed }
 );
 mirror_enum!(
-    /// A delivered image's size: `THUMB` is a 320 px square, the others are long edges of 640 to 2400 px.
-    RenditionSizeNode as "RenditionSize" from media_types::Size { Thumb, Sm, Md, Lg, Xl }
+    /// A delivered file's size: `THUMB` is a 320 px square, `SM` to `XL` are image long edges of 640 to 2400 px,
+    /// `V1080` and `V720` are videos that fit 1920×1080 and 1280×720, and `ORIGINAL` is a guest PDF's linearized copy.
+    RenditionSizeNode as "RenditionSize" from media_types::Size { Thumb, Sm, Md, Lg, Xl, V1080, V720, Original }
 );
-mirror_enum!(ImageFormatNode as "ImageFormat" from media_types::Format { Avif, Webp });
+mirror_enum!(ImageFormatNode as "ImageFormat" from media_types::Format { Avif, Webp, #[graphql(name = "AV1")] Av1, H264, Pdf });
 mirror_enum!(DocumentKindNode as "DocumentKind" from media::DocumentKind { Passport, Nic, DrivingLicence, Other });
+
+/// Whether a gallery item is a photo or a video.
+#[derive(Enum, Clone, Copy, PartialEq, Eq)]
+#[graphql(name = "MediaKind")]
+pub enum MediaKindNode {
+    Image,
+    Video,
+}
 
 /// One delivered image of a photo.
 #[derive(SimpleObject)]
@@ -308,7 +317,19 @@ pub struct RenditionNode {
     pub url: String,
 }
 
-/// A photo. Its renditions exist once it is ready.
+/// One delivered encoding of a video at one size.
+#[derive(SimpleObject)]
+pub struct VideoSourceNode {
+    pub format: ImageFormatNode,
+    pub size: RenditionSizeNode,
+    pub width: i32,
+    pub height: i32,
+    pub url: String,
+    /// The `type` for a `<source>`: the container with its codecs, such as `video/mp4; codecs="av01.0.08M.10, opus"`.
+    pub mime: String,
+}
+
+/// A photo or a video. Its renditions and sources exist once it is ready.
 #[derive(SimpleObject)]
 pub struct MediaNode {
     pub asset_id: Uuid,
@@ -319,7 +340,55 @@ pub struct MediaNode {
     pub error: Option<String>,
     pub width: Option<i32>,
     pub height: Option<i32>,
+    pub kind: MediaKindNode,
+    /// A ready video's length in milliseconds.
+    pub duration_ms: Option<i32>,
+    /// The images: a photo's, or a video's poster.
     pub renditions: Vec<RenditionNode>,
+    /// A video's encodings, AV1 first at each size; empty for a photo.
+    pub sources: Vec<VideoSourceNode>,
+}
+
+/// The `type` of a video source. The codec strings are what the encoders write (SVT-AV1: Main profile, level 4.0,
+/// 10-bit; OpenH264: High profile, level 4.0 at 1080p, which also covers 720p) beside the audio they are paired with
+/// (Opus; AAC-LC).
+fn video_mime(format: media_types::Format) -> &'static str {
+    match format {
+        media_types::Format::Av1 => r#"video/mp4; codecs="av01.0.08M.10, opus""#,
+        media_types::Format::H264 => r#"video/mp4; codecs="avc1.640028, mp4a.40.2""#,
+        // `media_parts` passes only video formats.
+        media_types::Format::Avif | media_types::Format::Webp | media_types::Format::Pdf => {
+            unreachable!("not a video format")
+        }
+    }
+}
+
+fn is_video(format: media_types::Format) -> bool {
+    matches!(format, media_types::Format::Av1 | media_types::Format::H264)
+}
+
+/// Splits renditions into a video's poster images and its sources, AV1 before H.264 at each size and the 1080p ones
+/// first; `url` turns a key into a URL. A photo has no sources.
+fn media_parts(
+    renditions: &[media_types::RenditionOut],
+    url: impl Fn(&str) -> String,
+) -> (Vec<RenditionNode>, Vec<VideoSourceNode>, Option<i32>) {
+    let images = renditions.iter().filter(|r| !is_video(r.format)).map(|r| rendition_node(r.clone(), url(&r.key)));
+    let mut videos: Vec<&media_types::RenditionOut> = renditions.iter().filter(|r| is_video(r.format)).collect();
+    videos.sort_by_key(|r| (std::cmp::Reverse(r.size.long_edge()), r.format != media_types::Format::Av1));
+    let duration = videos.iter().find_map(|r| r.duration_ms).map(|ms| i32::try_from(ms).unwrap_or(i32::MAX));
+    let sources = videos
+        .into_iter()
+        .map(|r| VideoSourceNode {
+            format: r.format.into(),
+            size: r.size.into(),
+            width: i32::try_from(r.width).unwrap_or(i32::MAX),
+            height: i32::try_from(r.height).unwrap_or(i32::MAX),
+            url: url(&r.key),
+            mime: video_mime(r.format).to_owned(),
+        })
+        .collect();
+    (images.collect(), sources, duration)
 }
 
 /// How long an issue photo's URLs work.
@@ -335,8 +404,13 @@ fn rendition_node(rendition: media_types::RenditionOut, url: String) -> Renditio
     }
 }
 
-/// A gallery photo, with public URLs: only gallery renditions are ever written to the public bucket.
+/// A gallery photo or video, with public URLs: only gallery renditions are ever written to the public bucket.
 fn gallery_node(storage: &Storage, item: media::GalleryItem) -> MediaNode {
+    let (renditions, sources, duration_ms) = media_parts(&item.renditions, |key| storage.public_url(key).into());
+    let kind = match item.purpose {
+        media::Purpose::GalleryVideo => MediaKindNode::Video,
+        _ => MediaKindNode::Image,
+    };
     MediaNode {
         asset_id: item.asset_id,
         status: item.status.into(),
@@ -344,14 +418,10 @@ fn gallery_node(storage: &Storage, item: media::GalleryItem) -> MediaNode {
         error: item.error,
         width: item.width,
         height: item.height,
-        renditions: item
-            .renditions
-            .into_iter()
-            .map(|r| {
-                let url = storage.public_url(&r.key).into();
-                rendition_node(r, url)
-            })
-            .collect(),
+        kind,
+        duration_ms,
+        renditions,
+        sources,
     }
 }
 
@@ -369,7 +439,10 @@ fn issue_photo_node(storage: &Storage, asset: media::AssetRow) -> MediaNode {
         error: asset.error,
         width: asset.width,
         height: asset.height,
+        kind: MediaKindNode::Image,
+        duration_ms: None,
         renditions,
+        sources: Vec::new(),
     }
 }
 

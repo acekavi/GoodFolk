@@ -1,8 +1,15 @@
 //! Process configuration read from the environment. Storage, the bus and service auth read their own variables.
 
+use std::path::PathBuf;
+
 use anyhow::Context;
 
 pub const DEFAULT_PORT: u16 = 8090;
+
+/// Video workers at once. One video job already spreads its encodes over every CPU.
+pub const VIDEO_WORKERS: usize = 1;
+/// Video Finalizes at once by default. Each holds a copy of its upload, up to 500 MB, under the temporary root.
+pub const DEFAULT_VIDEO_FINALIZES: usize = 2;
 
 /// One 12 MP job needs about 8 threads to be ready within the 5 s gate, so CPUs go to a few wide workers rather
 /// than many narrow ones.
@@ -15,6 +22,10 @@ pub struct Config {
     pub workers: usize,
     /// Threads each worker gets, for its rayon pool and for cjxl/djxl.
     pub worker_threads: usize,
+    /// Where video uploads are copied to be probed and transcoded, one directory per asset.
+    pub tmp_dir: PathBuf,
+    /// How many video Finalizes may hold a copy of their upload at once.
+    pub video_finalizes: usize,
     pub production: bool,
 }
 
@@ -23,6 +34,9 @@ impl Config {
     /// - `PORT` (default 8090);
     /// - `MEDIA_WORKERS`: workers at once (default `max(1, cpus / 8)`, so 2 on 16 CPUs);
     /// - `MEDIA_WORKER_THREADS`: threads per worker (default `max(1, cpus / MEDIA_WORKERS)`, so 8 on 16 CPUs);
+    /// - `MEDIA_TMP_DIR`: the temporary root for videos (default `goodfolk-media` in the system's temporary
+    ///   directory);
+    /// - `MEDIA_VIDEO_FINALIZES`: video Finalizes at once (default 2);
     /// - `APP_ENV`.
     pub fn from_env() -> anyhow::Result<Self> {
         Self::from_vars(|name| std::env::var(name).ok())
@@ -32,7 +46,18 @@ impl Config {
         let port = var("PORT").map(|v| v.parse().context("PORT must be a number")).unwrap_or(Ok(DEFAULT_PORT))?;
         let workers = positive(&var, "MEDIA_WORKERS")?.unwrap_or_else(default_workers);
         let worker_threads = positive(&var, "MEDIA_WORKER_THREADS")?.unwrap_or_else(|| default_threads(workers));
-        Ok(Self { port, workers, worker_threads, production: var("APP_ENV").is_some_and(|v| v == "production") })
+        let tmp_dir = var("MEDIA_TMP_DIR")
+            .filter(|dir| !dir.is_empty())
+            .map_or_else(|| std::env::temp_dir().join("goodfolk-media"), PathBuf::from);
+        let video_finalizes = positive(&var, "MEDIA_VIDEO_FINALIZES")?.unwrap_or(DEFAULT_VIDEO_FINALIZES);
+        Ok(Self {
+            port,
+            workers,
+            worker_threads,
+            tmp_dir,
+            video_finalizes,
+            production: var("APP_ENV").is_some_and(|v| v == "production"),
+        })
     }
 }
 
@@ -80,22 +105,27 @@ mod tests {
         assert_eq!(config.port, 8090);
         assert_eq!(config.workers, (cpus() / 8).max(1));
         assert_eq!(config.worker_threads, (cpus() / config.workers).max(1));
+        assert_eq!(config.tmp_dir, std::env::temp_dir().join("goodfolk-media"));
+        assert_eq!(config.video_finalizes, 2);
         assert!(!config.production);
 
         let config = Config::from_vars(|name| match name {
             "PORT" => Some("9001".into()),
             "MEDIA_WORKERS" => Some("3".into()),
             "MEDIA_WORKER_THREADS" => Some("5".into()),
+            "MEDIA_TMP_DIR" => Some("/var/tmp/media".into()),
+            "MEDIA_VIDEO_FINALIZES" => Some("4".into()),
             "APP_ENV" => Some("production".into()),
             _ => None,
         })
         .unwrap();
         assert_eq!((config.port, config.workers, config.worker_threads, config.production), (9001, 3, 5, true));
+        assert_eq!((config.tmp_dir, config.video_finalizes), (PathBuf::from("/var/tmp/media"), 4));
     }
 
     #[test]
     fn zero_or_junk_is_refused() {
-        for name in ["MEDIA_WORKERS", "MEDIA_WORKER_THREADS"] {
+        for name in ["MEDIA_WORKERS", "MEDIA_WORKER_THREADS", "MEDIA_VIDEO_FINALIZES"] {
             assert!(Config::from_vars(|n| (n == name).then(|| "0".into())).is_err());
             assert!(Config::from_vars(|n| (n == name).then(|| "many".into())).is_err());
         }

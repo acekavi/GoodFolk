@@ -3,7 +3,8 @@ mod common;
 use common::{Hotel, asset_of};
 use db::UserId;
 use media::{
-    MediaError, Target, gallery, issue_photos, reorder_gallery, set_caption, unlink_gallery, unlink_issue_photo,
+    MediaError, Purpose, Target, gallery, issue_photos, reorder_gallery, set_caption, unlink_gallery,
+    unlink_issue_photo,
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use uuid::Uuid;
@@ -73,7 +74,7 @@ async fn captions_and_unlinking(_: PgPoolOptions, opts: PgConnectOptions) {
     unlink_gallery(&mut tx, hotel.tenant, hotel.user, hotel.property, hotel.room_type, photo).await.unwrap();
     let err =
         unlink_gallery(&mut tx, hotel.tenant, hotel.user, hotel.property, hotel.room_type, photo).await.unwrap_err();
-    assert!(matches!(err, MediaError::NotFound("photo")), "{err:?}");
+    assert!(matches!(err, MediaError::NotFound("gallery item")), "{err:?}");
     tx.commit().await.unwrap();
     assert!(hotel.order().await.is_empty());
     assert_eq!(hotel.assets().await, 1, "the asset stays until the sweep finds it unused");
@@ -90,4 +91,25 @@ async fn captions_and_unlinking(_: PgPoolOptions, opts: PgConnectOptions) {
     tx.commit().await.unwrap();
     assert!(issue_photos(&mut hotel.tx().await, &[issue]).await.unwrap().is_empty());
     assert_eq!(hotel.audited("media.removed").await, 2);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn video_and_photos_share_the_gallery_order(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let photo = asset_of(&hotel.upload(Target::RoomType(hotel.room_type), 1).await);
+    let video = asset_of(&hotel.upload(Target::RoomTypeVideo(hotel.room_type), 2).await);
+    let second_photo = asset_of(&hotel.upload(Target::RoomType(hotel.room_type), 3).await);
+    assert_eq!(hotel.order().await, [photo, video, second_photo], "both kinds are appended in upload order");
+
+    hotel.reorder(hotel.room_type, &[video, second_photo, photo]).await.unwrap();
+    assert_eq!(hotel.order().await, [video, second_photo, photo]);
+    let kinds: Vec<_> =
+        gallery(&mut hotel.tx().await, hotel.room_type).await.unwrap().into_iter().map(|i| i.purpose).collect();
+    assert_eq!(kinds, [Purpose::GalleryVideo, Purpose::Gallery, Purpose::Gallery]);
+
+    let mut tx = hotel.tx().await;
+    set_caption(&mut tx, hotel.tenant, hotel.user, hotel.property, hotel.room_type, video, "Tour").await.unwrap();
+    unlink_gallery(&mut tx, hotel.tenant, hotel.user, hotel.property, hotel.room_type, video).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(hotel.order().await, [second_photo, photo]);
 }

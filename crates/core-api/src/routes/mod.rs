@@ -80,9 +80,11 @@ pub use taxes::{CreateTaxRuleRequest, UpdateTaxRuleRequest, UpdateTaxSettingsReq
 
 /// Longest a request may run before it is answered with 504.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// Longest completing an upload may run: media-svc reads, hashes and probes a video of up to 500 MB first.
+pub const COMPLETE_UPLOAD_TIMEOUT: Duration = Duration::from_secs(150);
 /// An unfinished idempotency claim this old belongs to a request that can no longer finish
-/// (the request timeout plus margin), so the next request with its key takes it over.
-pub const ABANDONED_CLAIM_AFTER: Duration = Duration::from_secs(60);
+/// (the longest request timeout plus margin), so the next request with its key takes it over.
+pub const ABANDONED_CLAIM_AFTER: Duration = Duration::from_secs(180);
 
 pub fn router(state: AppState) -> Router {
     const PROPERTY: &str = "/api/v1/properties/{property}";
@@ -111,7 +113,6 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/laundry-prices"), post(laundry::create_price))
         .route(&format!("{PROPERTY}/laundry-orders"), post(laundry::create_order))
         .route(&format!("{PROPERTY}/media/uploads"), post(media::start_upload))
-        .route(&format!("{PROPERTY}/media/uploads/{{upload}}/complete"), post(media::complete_upload))
         .route(&format!("{PROPERTY}/folios/{{folio}}/charges"), post(folio::post_charge))
         .route(&format!("{PROPERTY}/folios/{{folio}}/lines/{{line}}/reversal"), post(folio::reverse))
         .route(&format!("{PROPERTY}/folios/{{folio}}/lines/{{line}}/transfer"), post(folio::transfer))
@@ -126,6 +127,11 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/tax-rules/apply-preset"), post(taxes::apply_preset))
         .route("/api/v1/invitations", post(staff::invite))
         .route_layer(from_fn_with_state(state.clone(), idempotency::idempotent));
+    // A command with a longer timeout of its own, so kept outside the request timeout.
+    let long_commands = Router::new()
+        .route(&format!("{PROPERTY}/media/uploads/{{upload}}/complete"), post(media::complete_upload))
+        .route_layer(from_fn_with_state(state.clone(), idempotency::idempotent))
+        .layer(from_fn(|request, next| deadline(COMPLETE_UPLOAD_TIMEOUT, request, next)));
 
     let requests = Router::new()
         .route("/api/v1/auth/signup", post(auth::signup))
@@ -200,7 +206,8 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/night-audit/runs/{{run}}/retry"), post(night_audit::retry))
         .route("/graphql", post(graphql::handler))
         .merge(commands)
-        .layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)));
+        .layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)))
+        .merge(long_commands);
 
     // Long-lived, so kept outside the request timeout.
     let streams = Router::new().route("/api/v1/events", get(events::stream));
