@@ -54,7 +54,10 @@ impl FiscalQuarter {
     }
 }
 
-/// SLTDA's Form A for tourist hotels. Money is in base LKR minor units.
+/// SLTDA's Form A for tourist hotels. Money is in base LKR minor units, and every figure is whole rupees, so the form
+/// adds up as printed: each sales line and each deduction is its sum rounded once, Total Turnover is the sum of the
+/// rounded sales lines, the base is that total less the rounded deductions, and the rate and the levy (rounded once
+/// more) follow from that base.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TdlForm {
     /// The property's legal name, or its name when it has none.
@@ -134,6 +137,8 @@ pub async fn tdl(tx: &mut Tx, property: Uuid, quarter: FiscalQuarter) -> Result<
         }
     }
 
+    let [room, food, bar, other, service_charge, vat] =
+        [room, food, bar, other, service_charge, vat].map(|sum| ratio(sum, RUPEE) * RUPEE);
     let total_turnover = room + food + bar + other;
     let base = total_turnover - service_charge - vat;
     let rate_bp: i32 = if base <= SMALL_BASE { 50 } else { 100 };

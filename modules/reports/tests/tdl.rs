@@ -136,8 +136,53 @@ async fn passed_on_levies_are_not_sales(_: PgPoolOptions, opts: PgConnectOptions
 
     let form = tdl(&hotel, Q1).await;
 
-    assert_eq!((form.room, form.other, form.total_turnover), (1_305_009, 20_000, 1_325_009));
-    assert_eq!((form.service_charge, form.vat, form.base), (100_000, 205_009, 1_020_000));
+    assert_eq!((form.room, form.other, form.total_turnover), (1_305_000, 20_000, 1_325_000));
+    assert_eq!((form.service_charge, form.vat, form.base), (100_000, 205_000, 1_020_000));
+}
+
+/// Each printed figure is whole rupees, rounded once, and the form adds up as printed: Total Turnover is the sum of
+/// the rounded sales lines and the base that total less the rounded deductions.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn printed_figures_add_up(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    hotel.outlet("BAR", ReportGroup::Bar).await;
+    let folio = hotel.folio().await;
+    let sc = ("SC", "service_charge", "on_bill", 10_040);
+    let vat = ("VAT", "tax", "on_bill", 18_070);
+    // Room 1,001.40 + 100.40 + 180.70 = 1,282.50; Food 500.60 + 50.06 = 550.66; Bar 300.45 + 30.04 = 330.49.
+    hotel.line(folio, date(2026, 4, 2), "room", "room", 100_140, &[sc, vat], None).await;
+    hotel
+        .line(
+            folio,
+            date(2026, 4, 3),
+            "meal_plan",
+            "meal_plan",
+            50_060,
+            &[("SC", "service_charge", "on_bill", 5_006)],
+            None,
+        )
+        .await;
+    hotel
+        .line(folio, date(2026, 4, 4), "pos", "pos:BAR", 30_045, &[("SC", "service_charge", "on_bill", 3_004)], None)
+        .await;
+    hotel.set_business_date(date(2026, 7, 1)).await;
+
+    let form = tdl(&hotel, Q1).await;
+
+    assert_eq!((form.room, form.food, form.bar, form.other), (128_300, 55_100, 33_000, 0));
+    // SC 100.40 + 50.06 + 30.04 = 180.50; VAT 180.70.
+    assert_eq!((form.service_charge, form.vat), (18_100, 18_100));
+    for figure in
+        [form.room, form.food, form.bar, form.total_turnover, form.service_charge, form.vat, form.base, form.tdl]
+    {
+        assert_eq!(figure % 100, 0, "{figure} is not whole rupees");
+    }
+    assert_eq!(form.total_turnover, form.room + form.food + form.bar + form.other);
+    assert_eq!(form.total_turnover, 216_400);
+    assert_eq!(form.base, form.total_turnover - form.service_charge - form.vat);
+    assert_eq!(form.base, 180_200);
+    // 0.5% of Rs 1,802 is Rs 9.01, so Rs 9.
+    assert_eq!((form.rate_bp, form.tdl), (50, 900));
 }
 
 /// A quarter not yet closed is flagged, its figures covering only the closed days.
