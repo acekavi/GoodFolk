@@ -109,13 +109,13 @@ pub async fn tdl(tx: &mut Tx, property: Uuid, quarter: FiscalQuarter) -> Result<
     let groups = report_groups(tx, property, to).await?;
     for line in revenue_lines(tx, property, from, to).await? {
         let mut sales = line.net;
-        for &(ref code, _, _, amount) in &line.taxes {
-            match code.as_str() {
-                "SC" => service_charge += amount,
-                "VAT" => vat += amount,
+        for tax in &line.taxes {
+            match tax.code.as_str() {
+                "SC" => service_charge += tax.amount,
+                "VAT" => vat += tax.amount,
                 _ => continue,
             }
-            sales += amount;
+            sales += tax.amount;
         }
         let group = match (line.category.as_str(), line.outlet) {
             ("room", _) => {

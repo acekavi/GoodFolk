@@ -5,7 +5,7 @@ mod common;
 
 use common::{Hotel, date};
 use folio::ReportGroup;
-use reports::{OutletServiceCharge, ServiceCharge, VatPeriod, VatReport};
+use reports::{OutletServiceCharge, ServiceCharge, VatPeriod, VatReport, VatTimingDifference};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use time::Month;
 use uuid::Uuid;
@@ -33,10 +33,64 @@ async fn registered(opts: PgConnectOptions) -> Hotel {
     hotel
 }
 
-/// A tax invoice issued on `issued_on` to a guest named `first last`, with `tin` when given: one Rs 10,000 line with
-/// Rs 1,000 service charge and Rs 1,980 VAT at 18% on both, paid in cash. Its VAT is named unlike the property's VAT
-/// rule, so only its code makes it VAT. Its id.
+/// A Rs 10,000 line on `folio` dated `on`, with Rs 1,000 service charge on the bill and Rs 1,980 VAT at 18% on both,
+/// on the bill or `absorbed`. Its VAT is named unlike the property's VAT rule, so only its code makes it VAT.
+async fn vat_line(hotel: &Hotel, folio: Uuid, on: time::Date, vat_presentation: &str) {
+    let total: i64 = if vat_presentation == "on_bill" { 1_298_000 } else { 1_100_000 };
+    let line = Uuid::now_v7();
+    let mut tx = hotel.tx().await;
+    sqlx::query(
+        "insert into folio_line (id, tenant_id, folio_id, source, category, description, net, total, currency,
+                                 base_total, rate, rate_date, business_date)
+         values ($1, $2, $3, 'manual', 'misc', 'Line', 1000000, $4, 'LKR', $4, 1, $5, $5)",
+    )
+    .bind(line)
+    .bind(hotel.tenant.0)
+    .bind(folio)
+    .bind(total)
+    .bind(on)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    for (code, name, kind, rate_bp, base, amount, presentation) in [
+        ("SC", "Service charge", "service_charge", 1000, 1_000_000, 100_000, "on_bill"),
+        ("VAT", "VAT", "tax", 1800, 1_100_000, 198_000, vat_presentation),
+    ] {
+        sqlx::query(
+            "insert into folio_line_tax (tenant_id, line_id, code, name, kind, rate_bp, base, amount, presentation)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(hotel.tenant.0)
+        .bind(line)
+        .bind(code)
+        .bind(name)
+        .bind(kind)
+        .bind(rate_bp)
+        .bind(base)
+        .bind(amount)
+        .bind(presentation)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+}
+
+/// A tax invoice issued on `issued_on` to a guest named `first last`, with `tin` when given, for one [`vat_line`]
+/// supplied the same day, paid in cash. Its id.
 async fn invoice(hotel: &Hotel, issued_on: time::Date, first: &str, last: &str, tin: Option<&str>) -> Uuid {
+    invoice_for(hotel, issued_on, issued_on, first, last, tin).await
+}
+
+/// [`invoice`], for a supply of `supplied_on`.
+async fn invoice_for(
+    hotel: &Hotel,
+    supplied_on: time::Date,
+    issued_on: time::Date,
+    first: &str,
+    last: &str,
+    tin: Option<&str>,
+) -> Uuid {
     hotel.set_business_date(issued_on).await;
     let folio = hotel.folio().await;
     let mut tx = hotel.tx().await;
@@ -52,40 +106,8 @@ async fn invoice(hotel: &Hotel, issued_on: time::Date, first: &str, last: &str, 
     .execute(&mut *tx)
     .await
     .unwrap();
-    let line = Uuid::now_v7();
-    sqlx::query(
-        "insert into folio_line (id, tenant_id, folio_id, source, category, description, net, total, currency,
-                                 base_total, rate, rate_date, business_date)
-         values ($1, $2, $3, 'manual', 'misc', 'Line', 1000000, 1298000, 'LKR', 1298000, 1, $4, $4)",
-    )
-    .bind(line)
-    .bind(hotel.tenant.0)
-    .bind(folio)
-    .bind(issued_on)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    for (code, name, kind, rate_bp, base, amount) in [
-        ("SC", "Service charge", "service_charge", 1000, 1_000_000, 100_000),
-        ("VAT", "VAT", "tax", 1800, 1_100_000, 198_000),
-    ] {
-        sqlx::query(
-            "insert into folio_line_tax (tenant_id, line_id, code, name, kind, rate_bp, base, amount, presentation)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, 'on_bill')",
-        )
-        .bind(hotel.tenant.0)
-        .bind(line)
-        .bind(code)
-        .bind(name)
-        .bind(kind)
-        .bind(rate_bp)
-        .bind(base)
-        .bind(amount)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    }
     tx.commit().await.unwrap();
+    vat_line(hotel, folio, supplied_on, "on_bill").await;
     hotel.pay(folio, folio::Method::Cash, 1_298_000, "LKR").await;
     let mut tx = hotel.tx().await;
     let issued = folio::issue_invoice(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, folio).await.unwrap();
@@ -161,6 +183,12 @@ async fn schedule01_exact_columns_and_dates(_: PgPoolOptions, opts: PgConnectOpt
     assert_eq!((report.value_of_supply, report.output_vat), (66_000, 11_880));
     assert_eq!((report.credit_notes_value, report.credit_notes_vat), (0, 0));
     assert_eq!((report.net_value, report.net_vat), (66_000, 11_880));
+    // With no timing difference, the totals are the rows'.
+    assert!(report.timing_difference.is_empty());
+    let rows = |report: &VatReport| -> (i64, i64) {
+        report.schedule01.iter().fold((0, 0), |(value, vat), row| (value + row.value_of_supply, vat + row.vat_amount))
+    };
+    assert_eq!(rows(&report), (report.value_of_supply, report.output_vat));
     assert_eq!(
         reports::schedule01_csv(&report),
         format!(
@@ -173,8 +201,9 @@ async fn schedule01_exact_columns_and_dates(_: PgPoolOptions, opts: PgConnectOpt
     assert_eq!(reports::schedule04_csv(&report), SCHEDULE04_HEADER);
 }
 
-/// A credit note issued in October reduces Q4, never the Q3 of the invoice it credits, and goes to Schedule 04 with
-/// the original's number and date and its purchaser's TIN, or the dummy TIN.
+/// A credit note issued in October goes to Schedule 04 of Q4 with the original's number and date and its purchaser's
+/// TIN, or the dummy TIN; Q3 never changes. It is shown for information: the totals are the period's supplies, which a
+/// credit note alone does not reverse.
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn credit_note_reduces_its_own_period_and_is_schedule04(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = registered(opts).await;
@@ -194,7 +223,7 @@ async fn credit_note_reduces_its_own_period_and_is_schedule04(_: PgPoolOptions, 
     let q4 = vat(&hotel, VatPeriod::Quarter(2026, 4)).await.unwrap();
     assert_eq!((q4.value_of_supply, q4.output_vat), (11_000, 1_980));
     assert_eq!((q4.credit_notes_value, q4.credit_notes_vat), (22_000, 3_960));
-    assert_eq!((q4.net_value, q4.net_vat), (-11_000, -1_980));
+    assert_eq!((q4.net_value, q4.net_vat), (11_000, 1_980));
     assert_eq!(
         reports::schedule04_csv(&q4),
         format!(
@@ -235,6 +264,55 @@ async fn an_older_snapshot_is_read_by_tax_name(_: PgPoolOptions, opts: PgConnect
     let rows: Vec<(&str, i64, i64)> =
         report.schedule01.iter().map(|row| (row.invoice_no.as_str(), row.value_of_supply, row.vat_amount)).collect();
     assert_eq!(rows, [("GAL-2026-000001", 11_000, 1_980), ("GAL-2026-000099", 11_000, 1_980)]);
+}
+
+/// A folio never invoiced is a supply all the same, in the combined row; absorbed VAT is output VAT too.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn uninvoiced_and_absorbed_vat_are_in_the_combined_row(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = registered(opts).await;
+    let folio = hotel.folio().await;
+    vat_line(&hotel, folio, date(2026, 7, 10), "on_bill").await;
+    vat_line(&hotel, folio, date(2026, 8, 10), "absorbed").await;
+    invoice(&hotel, date(2026, 9, 1), "Ceylon", "Traders", Some("100200300")).await;
+    hotel.set_business_date(date(2026, 10, 1)).await;
+
+    let report = vat(&hotel, Q3).await.unwrap();
+    assert_eq!((report.value_of_supply, report.output_vat), (33_000, 5_940));
+    let rows: Vec<(&str, i64, i64)> =
+        report.schedule01.iter().map(|row| (row.invoice_no.as_str(), row.value_of_supply, row.vat_amount)).collect();
+    assert_eq!(rows, [("GAL-2026-000001", 11_000, 1_980), ("INCL01_2630", 22_000, 3_960)]);
+    assert!(report.timing_difference.is_empty());
+}
+
+/// A TIN invoice issued in October for a September supply: Q3 has the supply in its combined row, and Q4's TIN row
+/// exceeds Q4's own supplies, so its combined row stops at 0 and the excess is a timing difference.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_invoice_for_an_earlier_supply_is_a_timing_difference(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = registered(opts).await;
+    invoice_for(&hotel, date(2026, 9, 30), date(2026, 10, 2), "Ceylon", "Traders", Some("100200300")).await;
+    let walk_in = hotel.folio().await;
+    vat_line(&hotel, walk_in, date(2026, 10, 3), "on_bill").await;
+    let other = hotel.folio().await;
+    vat_line(&hotel, other, date(2026, 10, 4), "on_bill").await;
+    hotel.set_business_date(date(2027, 1, 1)).await;
+    let rows = |report: &VatReport| -> Vec<(String, i64, i64)> {
+        report.schedule01.iter().map(|row| (row.invoice_no.clone(), row.value_of_supply, row.vat_amount)).collect()
+    };
+
+    let q3 = vat(&hotel, Q3).await.unwrap();
+    assert_eq!(rows(&q3), [("INCL01_2630".to_owned(), 11_000, 1_980)]);
+    // Q4: Rs 22,000 of supplies less the Rs 11,000 TIN invoice.
+    let q4 = vat(&hotel, VatPeriod::Quarter(2026, 4)).await.unwrap();
+    assert_eq!(rows(&q4), [("GAL-2026-000001".to_owned(), 11_000, 1_980), ("INCL01_2640".to_owned(), 11_000, 1_980)]);
+    assert!(q4.timing_difference.is_empty());
+
+    // Q1 2027 has the TIN invoice of a December supply and no supply of its own.
+    invoice_for(&hotel, date(2026, 12, 31), date(2027, 1, 1), "Lanka", "Tours", Some("400500600")).await;
+    hotel.set_business_date(date(2027, 4, 1)).await;
+    let q1 = vat(&hotel, VatPeriod::Quarter(2027, 1)).await.unwrap();
+    assert_eq!((q1.value_of_supply, q1.output_vat), (0, 0));
+    assert_eq!(rows(&q1), [("GAL-2027-000002".to_owned(), 11_000, 1_980)]);
+    assert_eq!(q1.timing_difference, [VatTimingDifference { rate_bp: 1800, value: 11_000, vat: 1_980 }]);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

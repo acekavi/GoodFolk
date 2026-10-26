@@ -67,19 +67,16 @@ pub async fn service_charge(
     let (mut by_outlet, mut rooms, mut other) =
         (BTreeMap::<String, ServiceCharge>::new(), ServiceCharge::default(), ServiceCharge::default());
     for line in revenue_lines(tx, property, from, to).await? {
-        for &(ref code, _, ref presentation, amount) in &line.taxes {
-            if code != "SC" {
-                continue;
-            }
+        for tax in line.taxes.iter().filter(|tax| tax.code == "SC") {
             let sum = match (line.category.as_str(), line.category.strip_prefix("pos:")) {
                 ("room", _) => &mut rooms,
                 (_, Some(outlet)) => by_outlet.entry(outlet.to_owned()).or_default(),
                 _ => &mut other,
             };
-            if presentation == "absorbed" {
-                sum.absorbed += amount;
+            if tax.presentation == "absorbed" {
+                sum.absorbed += tax.amount;
             } else {
-                sum.collected += amount;
+                sum.collected += tax.amount;
             }
         }
     }

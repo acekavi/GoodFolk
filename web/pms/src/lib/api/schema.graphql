@@ -2604,8 +2604,8 @@ type UnassignedStayNode {
 }
 
 """
-A VAT return period, in whole rupees as the invoices print them. Credit notes are positive figures that the net
-ones subtract.
+A VAT return period, in whole rupees: the totals are the period's supplies, already net of its reversals; the
+credit notes are shown for information.
 """
 type VatReportNode {
 	"""
@@ -2626,6 +2626,10 @@ type VatReportNode {
 	netVat: Int!
 	schedule01: [VatSchedule01RowNode!]!
 	schedule04: [VatSchedule04RowNode!]!
+	"""
+	"Tax invoices issued this period for earlier supplies", by rate.
+	"""
+	timingDifference: [VatTimingDifferenceNode!]!
 	"""
 	Some day of the period is not closed yet: the figures cover the closed days only.
 	"""
@@ -2658,6 +2662,15 @@ type VatSchedule04RowNode {
 	noteNo: String!
 	value: Int!
 	vatAmount: Int!
+}
+
+"""
+Tax invoices issued in a VAT period for supplies of an earlier one, at one rate, in whole rupees.
+"""
+type VatTimingDifferenceNode {
+	rateBp: Int!
+	value: Int!
+	vat: Int!
 }
 
 """

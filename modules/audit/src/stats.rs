@@ -67,11 +67,13 @@ pub struct BreakdownRow {
 pub const LINES_SQL: &str = "select l.id, l.business_date, l.folio_id, l.category, l.currency::text as currency,
         l.base_total, l.rate, l.posting_key, l.reverses, l.transfer_id,
         coalesce(t.codes, '{}') as tax_codes, coalesce(t.kinds, '{}') as tax_kinds,
-        coalesce(t.presentations, '{}') as tax_presentations, coalesce(t.amounts, '{}') as tax_amounts
+        coalesce(t.presentations, '{}') as tax_presentations, coalesce(t.rates, '{}') as tax_rates,
+        coalesce(t.amounts, '{}') as tax_amounts
  from folio_line l
  join folio f on f.id = l.folio_id
  left join lateral (select array_agg(code order by code) as codes, array_agg(kind order by code) as kinds,
                            array_agg(presentation order by code) as presentations,
+                           array_agg(rate_bp order by code) as rates,
                            array_agg(amount order by code) as amounts
                     from folio_line_tax where line_id = l.id) t on true
  where l.business_date between $2 and $3 and f.property_id = $1 and l.source <> 'adjustment'";
@@ -100,6 +102,8 @@ pub struct RevenueTax {
     pub kind: String,
     /// `on_bill` or `absorbed`.
     pub presentation: String,
+    /// In basis points.
+    pub rate_bp: i32,
     pub amount: i64,
 }
 
@@ -151,7 +155,13 @@ pub async fn revenue_lines(tx: &mut Tx, property: Uuid, from: Date, to: Date) ->
                 if tax.presentation == "on_bill" {
                     net -= amount;
                 }
-                taxes.push(RevenueTax { code: tax.code, kind: tax.kind, presentation: tax.presentation, amount });
+                taxes.push(RevenueTax {
+                    code: tax.code,
+                    kind: tax.kind,
+                    presentation: tax.presentation,
+                    rate_bp: tax.rate_bp,
+                    amount,
+                });
             }
             // By the item's own category, as a posted bill's line is: a misc item is other revenue, at no outlet.
             revenue.push(RevenueLine {
@@ -199,13 +209,19 @@ fn folio_revenue(lines: Vec<Line>, base_exponent: u32) -> Result<Vec<RevenueLine
     for line in lines {
         let mut net = line.base_total;
         let mut taxes = Vec::with_capacity(line.tax_codes.len());
-        let tax_rows = line.tax_codes.into_iter().zip(line.tax_kinds).zip(line.tax_presentations).zip(line.tax_amounts);
-        for (((code, kind), presentation), amount) in tax_rows {
+        let tax_rows = line
+            .tax_codes
+            .into_iter()
+            .zip(line.tax_kinds)
+            .zip(line.tax_presentations)
+            .zip(line.tax_rates)
+            .zip(line.tax_amounts);
+        for ((((code, kind), presentation), rate_bp), amount) in tax_rows {
             let amount = fx::to_base(amount, fx::exponent(&line.currency), base_exponent, line.rate)?;
             if presentation == "on_bill" {
                 net -= amount;
             }
-            taxes.push(RevenueTax { code, kind, presentation, amount });
+            taxes.push(RevenueTax { code, kind, presentation, rate_bp, amount });
         }
         revenue.push(RevenueLine {
             business_date: line.business_date,
@@ -575,6 +591,7 @@ struct Line {
     tax_codes: Vec<String>,
     tax_kinds: Vec<String>,
     tax_presentations: Vec<String>,
+    tax_rates: Vec<i32>,
     tax_amounts: Vec<i64>,
 }
 

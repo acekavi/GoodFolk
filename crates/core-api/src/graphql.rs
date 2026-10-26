@@ -2532,8 +2532,16 @@ pub struct VatSchedule04RowNode {
     pub vat_amount: i64,
 }
 
-/// A VAT return period, in whole rupees as the invoices print them. Credit notes are positive figures that the net
-/// ones subtract.
+/// Tax invoices issued in a VAT period for supplies of an earlier one, at one rate, in whole rupees.
+#[derive(SimpleObject)]
+pub struct VatTimingDifferenceNode {
+    pub rate_bp: i32,
+    pub value: i64,
+    pub vat: i64,
+}
+
+/// A VAT return period, in whole rupees: the totals are the period's supplies, already net of its reversals; the
+/// credit notes are shown for information.
 #[derive(SimpleObject)]
 pub struct VatReportNode {
     /// IRD's period code, such as `2630`.
@@ -2548,6 +2556,8 @@ pub struct VatReportNode {
     pub net_vat: i64,
     pub schedule01: Vec<VatSchedule01RowNode>,
     pub schedule04: Vec<VatSchedule04RowNode>,
+    /// "Tax invoices issued this period for earlier supplies", by rate.
+    pub timing_difference: Vec<VatTimingDifferenceNode>,
     /// Some day of the period is not closed yet: the figures cover the closed days only.
     pub not_closed: bool,
 }
@@ -2589,6 +2599,11 @@ impl From<reports::VatReport> for VatReportNode {
                     value: row.value,
                     vat_amount: row.vat_amount,
                 })
+                .collect(),
+            timing_difference: r
+                .timing_difference
+                .into_iter()
+                .map(|t| VatTimingDifferenceNode { rate_bp: t.rate_bp, value: t.value, vat: t.vat })
                 .collect(),
             not_closed: r.not_closed,
         }

@@ -149,7 +149,7 @@ pub async fn sscl(tx: &mut Tx, property: Uuid, quarter: CalendarQuarter) -> Resu
     // Sums in minor units, and the exemptions in minor units × basis points, rounded once per printed figure.
     let (mut turnover, mut same_month, mut earlier) = ([0i64; 3], [0i64; 3], [0i64; 3]);
     for line in lines {
-        let sales = line.net + line.taxes.iter().filter(|tax| tax.0 != "VAT").map(|tax| tax.3).sum::<i64>();
+        let sales = line.net + line.taxes.iter().filter(|tax| tax.code != "VAT").map(|tax| tax.amount).sum::<i64>();
         if let Some(at) = month_of(line.business_date) {
             turnover[at] += sales;
         }

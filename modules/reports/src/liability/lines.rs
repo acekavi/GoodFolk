@@ -21,8 +21,8 @@ pub struct RevenueLine {
     pub outlet: Option<Uuid>,
     /// Net of the on-bill taxes.
     pub net: i64,
-    /// `(code, kind, presentation, amount)` by code, on-bill and absorbed.
-    pub taxes: Vec<(String, String, String, i64)>,
+    /// By code, on-bill and absorbed.
+    pub taxes: Vec<audit::RevenueTax>,
 }
 
 /// The revenue of `property`'s closed business dates from `from` to `to`, both included: those before the property's
@@ -92,7 +92,7 @@ async fn with_outlets(
             outlet: line.category.strip_prefix("pos:").and_then(|code| outlets.get(code).copied()),
             category: line.category,
             net: line.net,
-            taxes: line.taxes.into_iter().map(|tax| (tax.code, tax.kind, tax.presentation, tax.amount)).collect(),
+            taxes: line.taxes,
         })
         .collect())
 }
