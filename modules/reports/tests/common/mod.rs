@@ -377,10 +377,10 @@ impl Hotel {
         tx.commit().await.unwrap();
     }
 
-    /// A payment of `amount` in `currency` by `method` on `folio`, on the property's business date.
-    pub async fn pay(&self, folio: Uuid, method: folio::Method, amount: i64, currency: &str) {
+    /// A payment of `amount` in `currency` by `method` on `folio`, on the property's business date: its id.
+    pub async fn pay(&self, folio: Uuid, method: folio::Method, amount: i64, currency: &str) -> Uuid {
         let mut tx = self.tx().await;
-        folio::take_payment(
+        let paid = folio::take_payment(
             &mut tx,
             self.tenant,
             Some(self.user),
@@ -393,6 +393,16 @@ impl Hotel {
         )
         .await
         .unwrap();
+        tx.commit().await.unwrap();
+        paid.id
+    }
+
+    /// Refunds `amount` of `payment` from its own folio, on the property's business date.
+    pub async fn refund(&self, payment: Uuid, amount: i64) {
+        let mut tx = self.tx().await;
+        folio::refund(&mut tx, self.tenant, Some(self.user), self.property, payment, amount, "Refund", None)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
     }
 

@@ -132,16 +132,16 @@ pub async fn sscl(tx: &mut Tx, property: Uuid, quarter: CalendarQuarter) -> Resu
     let month_of = |date: Date| months.iter().position(|&(first, last)| first <= date && date <= last);
 
     let settled = if sltda_registered { segments(tx, property, from, to).await? } else { Vec::new() };
-    let mut by_folio: HashMap<Uuid, Vec<Segment>> = HashMap::new();
+    let mut by_subject: HashMap<Uuid, Vec<Segment>> = HashMap::new();
     for segment in &settled {
-        by_folio.entry(segment.folio_id).or_default().push(*segment);
+        by_subject.entry(segment.subject_id).or_default().push(*segment);
     }
     // The quarter's lines, then the earlier lines of only the folios whose settlements in the quarter reach back
     // before it (a bill settled at its outlet covers its own date only).
     let mut lines = revenue_lines(tx, property, from, to).await?;
     let reaching_back: Vec<&Segment> = settled.iter().filter(|segment| segment.covers_from < from).collect();
     if let Some(earliest) = reaching_back.iter().map(|segment| segment.covers_from).min() {
-        let folios: Vec<Uuid> = reaching_back.iter().map(|segment| segment.folio_id).collect();
+        let folios: Vec<Uuid> = reaching_back.iter().map(|segment| segment.subject_id).collect();
         let before = from.previous_day().expect("a quarter starting after the earliest settlement has a day before it");
         lines.extend(folio_revenue_lines(tx, property, &folios, earliest, before).await?);
     }
@@ -153,8 +153,8 @@ pub async fn sscl(tx: &mut Tx, property: Uuid, quarter: CalendarQuarter) -> Resu
         if let Some(at) = month_of(line.business_date) {
             turnover[at] += sales;
         }
-        let Some(folio) = line.folio_id.or(line.pos_bill_id) else { continue };
-        let Some(segment) = covering(by_folio.get(&folio), line.business_date) else { continue };
+        let Some(subject) = line.folio_id.or(line.pos_bill_id) else { continue };
+        let Some(segment) = covering(by_subject.get(&subject), line.business_date) else { continue };
         let at = month_of(segment.settled_on).expect("a settlement of the quarter is in one of its months");
         let exempt = sales.saturating_mul(i64::from(segment.exempt_share_bp));
         if line.business_date >= months[at].0 {
@@ -229,7 +229,7 @@ pub async fn sscl(tx: &mut Tx, property: Uuid, quarter: CalendarQuarter) -> Resu
     })
 }
 
-/// The segment of `segments` (one folio's, in date order) covering a line dated `date`.
+/// The segment of `segments` (one folio's or bill's, in date order) covering a line dated `date`.
 fn covering(segments: Option<&Vec<Segment>>, date: Date) -> Option<&Segment> {
     let segments = segments?;
     let at = segments.partition_point(|segment| segment.settled_on < date);

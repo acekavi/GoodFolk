@@ -23,12 +23,13 @@ fn exempt_base(alias: &str) -> String {
 /// A settlement: a folio's balance coming back to zero, covering its lines since its previous settlement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Segment {
-    /// The folio; for a POS bill settled at its outlet, the bill (each is settled on its own, by its own payment).
-    pub folio_id: Uuid,
+    /// What was settled: a folio, or a POS bill settled at its outlet (each is settled on its own, by its own
+    /// payment).
+    pub subject_id: Uuid,
     /// The business date after which the balance was zero.
     pub settled_on: Date,
-    /// The share of the segment's positive payments made in a currency other than LKR by card terminal or bank
-    /// transfer, 0 to 10,000.
+    /// The share of the segment's payments (refunds negative) made in a currency other than LKR by card terminal or
+    /// bank transfer, 0 to 10,000.
     pub exempt_share_bp: u32,
     /// The first business date of the segment's lines and payments: it covers its folio's lines from then to
     /// `settled_on`.
@@ -46,7 +47,7 @@ struct Entry {
     /// The base of the payments in foreign currency by card terminal or bank transfer, refunds negative, and each
     /// transfer in's share of its source's.
     exempt: i64,
-    /// The base of the positive payments.
+    /// The base of the payments, refunds negative, and of the transfers in (transfers out left out).
     paid: i64,
 }
 
@@ -57,7 +58,7 @@ struct Entry {
 /// from the previous point (or the folio's first business date) to that one. Payments are signed as stored: a refund
 /// is negative, and a transfer between folios negative on the folio it leaves. A transfer in (a deposit moved to its
 /// stay at check-in) carries its source folio's share: its base times the foreign-through-a-bank share of the source's
-/// own payments up to the transfer's business date. One level deep: a source that was itself funded by a transfer
+/// own payments (refunds included) up to the transfer's business date. One level deep: a source that was itself funded by a transfer
 /// counts its direct payments only. A charge to account (`account`) settles the folio but is neither foreign currency
 /// nor through a bank, so it lowers the exempt share. A POS bill settled at its outlet is a settlement of its own on
 /// its payment's date.
@@ -90,16 +91,16 @@ pub async fn segments(tx: &mut Tx, property: Uuid, from: Date, upto: Date) -> Re
                union all
                select p.folio_id, p.business_date, p.currency::text, -p.amount,
                       case when p.method = 'transfer' then coalesce(source.exempt, 0) else {exempt_p} end,
-                      greatest(p.base_amount, 0)
+                      case when p.method = 'transfer' then greatest(p.base_amount, 0) else p.base_amount end
                from payment p
-               left join lateral (
+               cross join lateral (
                  select round(p.base_amount * least(greatest(
-                          sum({exempt_q})::numeric / nullif(sum(greatest(q.base_amount, 0)), 0), 0), 1))::bigint
-                          as exempt
+                          sum({exempt_q})::numeric / nullif(sum(q.base_amount), 0), 0), 1))::bigint as exempt
                  from payment q
-                 where q.folio_id = coalesce(p.details->>'from_folio', p.details->>'to_folio')::uuid
+                 where p.method = 'transfer' and p.base_amount > 0
+                   and q.folio_id = coalesce(p.details->>'from_folio', p.details->>'to_folio')::uuid
                    and q.method <> 'transfer' and q.business_date <= p.business_date
-               ) source on p.method = 'transfer' and p.base_amount > 0
+               ) source
                where p.folio_id in (select folio_id from folios) and p.business_date <= $3) as entries
          group by folio_id, business_date, currency
          order by folio_id, business_date, currency",
@@ -127,7 +128,7 @@ pub async fn segments(tx: &mut Tx, property: Uuid, from: Date, upto: Date) -> Re
             if balances.values().all(|&balance| balance == 0) {
                 if settled_on >= from {
                     found.push(Segment {
-                        folio_id: day[0].folio_id,
+                        subject_id: day[0].folio_id,
                         settled_on,
                         exempt_share_bp: share_bp(exempt, paid),
                         covers_from: start,
@@ -139,7 +140,7 @@ pub async fn segments(tx: &mut Tx, property: Uuid, from: Date, upto: Date) -> Re
     }
 
     let bills: Vec<(Uuid, Date, i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select p.pos_bill_id, min(p.business_date), sum({exempt})::bigint, sum(greatest(p.base_amount, 0))::bigint
+        "select p.pos_bill_id, min(p.business_date), sum({exempt})::bigint, sum(p.base_amount)::bigint
          from payment p join pos_bill b on b.id = p.pos_bill_id
          where b.property_id = $1 and b.settled and p.folio_id is null and p.business_date between $2 and $3
          group by p.pos_bill_id
@@ -152,7 +153,7 @@ pub async fn segments(tx: &mut Tx, property: Uuid, from: Date, upto: Date) -> Re
     .fetch_all(&mut **tx)
     .await?;
     found.extend(bills.into_iter().map(|(bill, settled_on, exempt, paid)| Segment {
-        folio_id: bill,
+        subject_id: bill,
         settled_on,
         exempt_share_bp: share_bp(exempt, paid),
         covers_from: settled_on,
@@ -160,7 +161,9 @@ pub async fn segments(tx: &mut Tx, property: Uuid, from: Date, upto: Date) -> Re
     Ok(found)
 }
 
-/// `exempt` of `paid`, in basis points clamped to the whole: 0 when nothing was paid.
+/// `exempt` of `paid`, in basis points clamped to the whole: 0 when the payments net to nothing. Both may be below 0
+/// (a segment of only a refund), and the share is then the refund's.
 fn share_bp(exempt: i64, paid: i64) -> u32 {
+    let (exempt, paid) = if paid < 0 { (-exempt, -paid) } else { (exempt, paid) };
     u32::try_from(ratio(exempt.saturating_mul(WHOLE_BP), paid).clamp(0, WHOLE_BP)).unwrap_or_default()
 }
