@@ -204,6 +204,64 @@ The quarter's totals and the return's due date (the 20th of the month after the 
 **Builder's call:** this is a statement of what was collected, for the hotel's own staff distribution. It does not
 compute who gets what.
 
+## Settled for the builder
+
+All of these are **Builder's calls**, made after the builder check.
+
+- **Where the liability figures come from.**
+  - **Computed live** from folio lines, their tax lines, payments, invoices and credit notes whose business date is
+    closed. Phase 7a dates each line with its business date (migration 0032), so every day since then is reportable,
+    with no backfill.
+  - The everyday reports read the 7b snapshots. The liability reports don't, since the snapshots lack per-outlet tax
+    splits and payment currencies.
+  - Add indexes as the performance gates need them.
+- **"Never changes after the fact" and the SSCL exemption.**
+  - A month's SSCL figures use only what was settled by the end of that month, so they never change later.
+  - When a folio with turnover in earlier months settles, its exempt share appears in the month it settles, as a
+    separate line: "Exemption for folios settled this month (turnover of earlier months)".
+  - Stored PDFs and on-demand renders therefore always agree. The stored PDF is the record.
+- **Outlet report groups.**
+  - A change takes effect from the property's next unclosed business date. It is kept as a small history
+    (outlet, group, effective from) and audited.
+  - A closed quarter's TDL is never restated.
+- **The TDL test fixture.** SLTDA's worked example, with Other and VAT both 0:
+  - Total Turnover 3,477,310.00;
+  - less Service Charge 23,797.00;
+  - Total Turnover less deductions 3,453,513.00;
+  - TDL 34,535.13, shown as 34,535.
+
+  The Rs 3,000,000 threshold is tested against Total Turnover less deductions (the levy's base). SLTDA's 0.5% example
+  agrees: 2,347,030.00 gives 11,735.15.
+- **Credit notes** exist since Phase 7a, with their own serial and business date.
+  - Schedule 04 references the original invoice's number and date, and the purchaser's TIN, or the dummy TIN when it
+    had none.
+  - VAT rows are grouped by the rate on each tax line. An invoice with several rates contributes one row per rate.
+    Today every row is 18%.
+- **Exactly-once emails and the close.**
+  - `render_reports` runs **after** `advance_business_date` (a migration widens `audit_run_step.step`), so a rendering
+    or mail failure never blocks the business date.
+  - A failure raises an ops alert (`kind` `reports`), and jobs-svc retries on its next tick.
+  - A new table records each sent report under a unique (property, kind, period) key.
+  - A close that finishes several periods at once, after a late catch-up, sends every report whose period is now fully
+    closed and not yet sent.
+- **Per-user email settings** are per user and per property: a small table keyed (user, property, kind), with no row
+  meaning on.
+- **Roles:**
+  - `ReportsView`: owner, manager and accountant.
+  - `ReportsLiability`: owner and accountant.
+  - These are the existing role names (`owner`, `manager`, `accountant`).
+- **Same period last year.**
+  - **A month** compares with the same calendar month.
+  - **A week** compares with the week 52 weeks earlier, so the same weekdays line up.
+  - **A custom range** compares with the same dates, 29 February having no counterpart.
+- **PDFs.**
+  - media-svc's `/render` is invoice-specific today. It gains a generic report job: a template name plus JSON data,
+    rendered by the bundled Typst templates and stored privately.
+  - On-screen downloads render on demand from the same closed data.
+- **VAT value of supply** is the taxable value excluding VAT. Under the platform's cascade order (ARCHITECTURE §7.6) that
+  includes service charge and passed-on TDL and SSCL.
+  - The file name and the return use the property's existing `tin`.
+
 ## Permissions and settings
 
 - **`ReportsView`:** the everyday reports. Owners, managers and accountants.
