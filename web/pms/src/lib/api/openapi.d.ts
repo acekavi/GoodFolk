@@ -1214,6 +1214,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/properties/{property}/reports/vat/{period}/schedule01.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Schedule 01 (output tax invoices) of the VAT return `period`, an IRD period code such as `2630` (Q3 2026) or `2632`
+         *     (August 2026) of the kind the property files, from its closed days. Named
+         *     `<TIN>_VAT_SCHEDULE01_<period>_<YYYYMMDD>_ORIGINAL_V1.csv`, dated the property's today. A property that is not VAT
+         *     registered, has no TIN, or files the other kind of period is refused (422). Needs `ReportsLiability`.
+         */
+        get: operations["vat_schedule01"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reports/vat/{period}/schedule04.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Schedule 04 (credit notes issued) of the VAT return `period`, as [`vat_schedule01`] gives Schedule 01. Needs
+         *     `ReportsLiability`.
+         */
+        get: operations["vat_schedule04"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/reservation-rooms/{room}/assign": {
         parameters: {
             query?: never;
@@ -7411,6 +7453,88 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    vat_schedule01: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                /** @description IRD period code: `YYQ0` or `YYQM` */
+                period: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    vat_schedule04: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                /** @description IRD period code: `YYQ0` or `YYQM` */
+                period: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                };
             };
             403: {
                 headers: {

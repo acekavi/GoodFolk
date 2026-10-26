@@ -10,6 +10,7 @@ audit.workspace = true
 db.workspace = true
 domain.workspace = true
 folio.workspace = true
+media-types.workspace = true
 serde.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true

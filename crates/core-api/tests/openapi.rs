@@ -75,6 +75,8 @@ fn the_openapi_document_lists_every_rest_route() {
             "/api/v1/properties/{property}/rate-plans/{plan}/bulk-change",
             "/api/v1/properties/{property}/rate-plans/{plan}/prices",
             "/api/v1/properties/{property}/rate-plans/{plan}/restrictions",
+            "/api/v1/properties/{property}/reports/vat/{period}/schedule01.csv",
+            "/api/v1/properties/{property}/reports/vat/{period}/schedule04.csv",
             "/api/v1/properties/{property}/reservation-rooms/{room}/assign",
             "/api/v1/properties/{property}/reservation-rooms/{room}/cancel",
             "/api/v1/properties/{property}/reservation-rooms/{room}/check-in",

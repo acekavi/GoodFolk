@@ -250,6 +250,10 @@ pub struct InvoiceLine {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvoiceTax {
+    /// The tax rule's code, such as `VAT`; empty on an invoice issued before it was recorded, which only its `name`
+    /// identifies.
+    #[serde(default)]
+    pub code: String,
     pub name: String,
     pub rate_bp: i32,
     pub amount_lkr: i64,
@@ -379,7 +383,12 @@ mod tests {
                 total: -10_000,
                 total_lkr: -30_000,
             }],
-            taxes: vec![InvoiceTax { name: "Tourism development levy".into(), rate_bp: 100, amount_lkr: -297 }],
+            taxes: vec![InvoiceTax {
+                code: "TDL".into(),
+                name: "Tourism development levy".into(),
+                rate_bp: 100,
+                amount_lkr: -297,
+            }],
             net_lkr: -29_703,
             total_lkr: -30_000,
             total_words: "Minus Thirty Thousand Rupees Only".into(),
@@ -402,6 +411,8 @@ mod tests {
         assert_eq!(json["kind"], "credit_note");
         assert_eq!(json["issued_on"], "2026-10-17");
         assert_eq!(serde_json::from_value::<InvoiceData>(json).unwrap(), data);
+        let stored = r#"{"name":"Value added tax","rate_bp":1800,"amount_lkr":-2048}"#;
+        assert_eq!(serde_json::from_str::<InvoiceTax>(stored).unwrap().code, "");
         assert_eq!(InvoiceKind::try_from("invoice".to_owned()), Ok(InvoiceKind::Invoice));
         assert!(InvoiceKind::try_from("receipt".to_owned()).is_err());
     }

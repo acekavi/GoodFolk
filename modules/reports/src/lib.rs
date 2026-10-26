@@ -10,8 +10,13 @@ pub use everyday::{
     BreakdownTotal, DayRow, Dimension, Headline, ListKind, ListRow, RangeKind, Summary, daily_list, last_year_range,
     summary,
 };
+pub use liability::service_charge::{OutletServiceCharge, ServiceCharge, ServiceChargeReport, service_charge};
 pub use liability::sscl::{CalendarQuarter, SsclMonth, SsclReport, SsclTotals, sscl};
 pub use liability::tdl::{FiscalQuarter, TdlForm, tdl};
+pub use liability::vat::{
+    DUMMY_TIN, Schedule01Row, Schedule04Row, VatPeriod, VatReport, schedule_file_name, schedule01_csv, schedule04_csv,
+    vat,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReportsError {

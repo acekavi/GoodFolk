@@ -2369,6 +2369,285 @@ impl From<reports::ListRow> for DailyListRowNode {
     }
 }
 
+/// SLTDA's Form A of a quarter, in base-currency minor units, every figure whole rupees.
+#[derive(SimpleObject)]
+pub struct TdlReportNode {
+    /// The property's legal name, or its name when it has none.
+    pub name: String,
+    pub registration_no: Option<String>,
+    pub period_label: String,
+    pub room: i64,
+    pub food: i64,
+    pub bar: i64,
+    pub other: i64,
+    pub total_turnover: i64,
+    /// The deductions: the service charge and VAT within the four sales lines.
+    pub service_charge: i64,
+    pub vat: i64,
+    /// Total Turnover less the deductions.
+    pub base: i64,
+    /// 100 (1%), or 50 (0.5%) for a base not over Rs 3,000,000.
+    pub rate_bp: i32,
+    /// Never below 0.
+    pub tdl: i64,
+    /// The base is below 0: no TDL is due.
+    pub credit_exceeds_sales: bool,
+    /// Some day of the quarter is not closed yet: the figures cover the closed days only.
+    pub not_closed: bool,
+}
+
+impl From<reports::TdlForm> for TdlReportNode {
+    fn from(f: reports::TdlForm) -> Self {
+        Self {
+            name: f.name,
+            registration_no: f.registration_no,
+            period_label: f.period_label,
+            room: f.room,
+            food: f.food,
+            bar: f.bar,
+            other: f.other,
+            total_turnover: f.total_turnover,
+            service_charge: f.service_charge,
+            vat: f.vat,
+            base: f.base,
+            rate_bp: f.rate_bp,
+            tdl: f.tdl,
+            credit_exceeds_sales: f.credit_exceeds_sales,
+            not_closed: f.not_closed,
+        }
+    }
+}
+
+/// One month of an SSCL quarter, in base-currency minor units, every figure whole rupees.
+#[derive(SimpleObject)]
+pub struct SsclMonthNode {
+    /// 1 to 12.
+    pub month: u8,
+    /// Every revenue line dated in the month, with every tax but VAT.
+    pub turnover: i64,
+    /// The exempt share of the month's turnover settled in the month.
+    pub exempt_same_month: i64,
+    /// "Exemption for folios settled this month (turnover of earlier months)".
+    pub exempt_earlier_months: i64,
+    pub bad_debts: i64,
+    /// Below 0 when an earlier month's exemption outweighs the month's turnover.
+    pub liable: i64,
+    /// Never below 0.
+    pub levy: i64,
+    /// Payments in foreign currency in cash in the month: listed, never exempt.
+    pub foreign_cash: i64,
+    /// The 20th of the following month.
+    pub due: Date,
+    /// Some day of the month is not closed yet: its figures cover the closed days only.
+    pub not_closed: bool,
+}
+
+/// An SSCL quarter's totals: the sums of its months' printed figures.
+#[derive(SimpleObject)]
+pub struct SsclTotalsNode {
+    pub turnover: i64,
+    pub exempt_same_month: i64,
+    pub exempt_earlier_months: i64,
+    pub bad_debts: i64,
+    pub liable: i64,
+    pub levy: i64,
+    pub foreign_cash: i64,
+}
+
+/// The SSCL of a calendar quarter, month by month.
+#[derive(SimpleObject)]
+pub struct SsclReportNode {
+    pub months: Vec<SsclMonthNode>,
+    pub quarter_totals: SsclTotalsNode,
+    /// The 20th of the month after the quarter.
+    pub return_due: Date,
+    /// The property's SLTDA licence is filled in: without it nothing is exempt.
+    pub sltda_registered: bool,
+    /// Why nothing is exempt, for a property that is not SLTDA registered.
+    pub exemption_note: Option<String>,
+    /// How the exemption is measured.
+    pub method_note: String,
+}
+
+impl From<reports::SsclReport> for SsclReportNode {
+    fn from(r: reports::SsclReport) -> Self {
+        let t = r.quarter_totals;
+        Self {
+            months: r
+                .months
+                .into_iter()
+                .map(|m| SsclMonthNode {
+                    month: m.month.into(),
+                    turnover: m.turnover,
+                    exempt_same_month: m.exempt_same_month,
+                    exempt_earlier_months: m.exempt_earlier_months,
+                    bad_debts: m.bad_debts,
+                    liable: m.liable,
+                    levy: m.levy,
+                    foreign_cash: m.foreign_cash,
+                    due: m.due,
+                    not_closed: m.not_closed,
+                })
+                .collect(),
+            quarter_totals: SsclTotalsNode {
+                turnover: t.turnover,
+                exempt_same_month: t.exempt_same_month,
+                exempt_earlier_months: t.exempt_earlier_months,
+                bad_debts: t.bad_debts,
+                liable: t.liable,
+                levy: t.levy,
+                foreign_cash: t.foreign_cash,
+            },
+            return_due: r.return_due,
+            sltda_registered: r.sltda_registered,
+            exemption_note: r.exemption_note.map(Into::into),
+            method_note: r.method_note.into(),
+        }
+    }
+}
+
+/// A row of IRD's Schedule 01, in whole rupees.
+#[derive(SimpleObject)]
+pub struct VatSchedule01RowNode {
+    pub serial_no: u32,
+    pub invoice_date: Date,
+    pub invoice_no: String,
+    pub purchaser_tin: String,
+    pub purchaser_name: String,
+    pub description: String,
+    pub value_of_supply: i64,
+    pub vat_amount: i64,
+}
+
+/// A row of IRD's Schedule 04: a credit note with the invoice it credits, in whole rupees.
+#[derive(SimpleObject)]
+pub struct VatSchedule04RowNode {
+    pub serial_no: u32,
+    pub tin: String,
+    pub invoice_date: Date,
+    pub invoice_no: String,
+    pub note_date: Date,
+    pub note_no: String,
+    pub value: i64,
+    pub vat_amount: i64,
+}
+
+/// A VAT return period, in whole rupees as the invoices print them. Credit notes are positive figures that the net
+/// ones subtract.
+#[derive(SimpleObject)]
+pub struct VatReportNode {
+    /// IRD's period code, such as `2630`.
+    pub period_code: String,
+    pub value_of_supply: i64,
+    pub output_vat: i64,
+    pub credit_notes_value: i64,
+    pub credit_notes_vat: i64,
+    /// The return's cage A.
+    pub net_value: i64,
+    /// The return's cage 0.
+    pub net_vat: i64,
+    pub schedule01: Vec<VatSchedule01RowNode>,
+    pub schedule04: Vec<VatSchedule04RowNode>,
+    /// Some day of the period is not closed yet: the figures cover the closed days only.
+    pub not_closed: bool,
+}
+
+impl From<reports::VatReport> for VatReportNode {
+    fn from(r: reports::VatReport) -> Self {
+        Self {
+            period_code: r.period_code,
+            value_of_supply: r.value_of_supply,
+            output_vat: r.output_vat,
+            credit_notes_value: r.credit_notes_value,
+            credit_notes_vat: r.credit_notes_vat,
+            net_value: r.net_value,
+            net_vat: r.net_vat,
+            schedule01: r
+                .schedule01
+                .into_iter()
+                .map(|row| VatSchedule01RowNode {
+                    serial_no: row.serial_no,
+                    invoice_date: row.invoice_date,
+                    invoice_no: row.invoice_no,
+                    purchaser_tin: row.purchaser_tin,
+                    purchaser_name: row.purchaser_name,
+                    description: row.description,
+                    value_of_supply: row.value_of_supply,
+                    vat_amount: row.vat_amount,
+                })
+                .collect(),
+            schedule04: r
+                .schedule04
+                .into_iter()
+                .map(|row| VatSchedule04RowNode {
+                    serial_no: row.serial_no,
+                    tin: row.tin,
+                    invoice_date: row.invoice_date,
+                    invoice_no: row.invoice_no,
+                    note_date: row.note_date,
+                    note_no: row.note_no,
+                    value: row.value,
+                    vat_amount: row.vat_amount,
+                })
+                .collect(),
+            not_closed: r.not_closed,
+        }
+    }
+}
+
+/// Service charge in base-currency minor units, whole rupees.
+#[derive(SimpleObject)]
+pub struct ServiceChargeNode {
+    /// On the bill, paid by the guest.
+    pub collected: i64,
+    /// Inside the price, borne by the hotel.
+    pub absorbed: i64,
+}
+
+impl From<reports::ServiceCharge> for ServiceChargeNode {
+    fn from(s: reports::ServiceCharge) -> Self {
+        Self { collected: s.collected, absorbed: s.absorbed }
+    }
+}
+
+/// The service charge of one outlet.
+#[derive(SimpleObject)]
+pub struct OutletServiceChargeNode {
+    /// The outlet's code.
+    pub outlet: String,
+    pub collected: i64,
+    pub absorbed: i64,
+}
+
+/// A month's service charge, by outlet, on rooms and on everything else.
+#[derive(SimpleObject)]
+pub struct ServiceChargeReportNode {
+    /// By outlet code, the outlets with service charge in the month only.
+    pub by_outlet: Vec<OutletServiceChargeNode>,
+    pub rooms: ServiceChargeNode,
+    /// Meal plans, laundry, fees and the rest.
+    pub other: ServiceChargeNode,
+    pub total: ServiceChargeNode,
+    /// Some day of the month is not closed yet: its figures cover the closed days only.
+    pub not_closed: bool,
+}
+
+impl From<reports::ServiceChargeReport> for ServiceChargeReportNode {
+    fn from(r: reports::ServiceChargeReport) -> Self {
+        Self {
+            by_outlet: r
+                .by_outlet
+                .into_iter()
+                .map(|o| OutletServiceChargeNode { outlet: o.outlet, collected: o.collected, absorbed: o.absorbed })
+                .collect(),
+            rooms: r.rooms.into(),
+            other: r.other.into(),
+            total: r.total.into(),
+            not_closed: r.not_closed,
+        }
+    }
+}
+
 mirror_enum!(OpsAlertKindNode as "OpsAlertKind" from audit::AlertKind { Audit, Drift, Linen, Reports });
 
 /// A problem a person must look at: an automatic close that failed its third attempt (`AUDIT`), inventory
@@ -3906,6 +4185,71 @@ impl Query {
         let rows = reports::daily_list(&mut tx, property_id, date, kind.into()).await.map_err(reports_error)?;
         tx.commit().await.map_err(internal)?;
         Ok(rows.into_iter().map(DailyListRowNode::from).collect())
+    }
+
+    /// SLTDA's Form A of quarter `quarter` (1 to 4: April–June to January–March) of the financial year starting in
+    /// April `fy_start_year`, from its closed days. Needs `ReportsLiability`.
+    async fn tdl_report(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        fy_start_year: i32,
+        quarter: u8,
+    ) -> async_graphql::Result<TdlReportNode> {
+        let mut tx = scoped(ctx, Permission::ReportsLiability, property_id).await?;
+        let quarter = reports::FiscalQuarter { fy_start_year, q: quarter };
+        let form = reports::tdl(&mut tx, property_id, quarter).await.map_err(reports_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(form.into())
+    }
+
+    /// The SSCL of calendar quarter `quarter` (1 to 4) of `year`, month by month, with the foreign-currency exemption,
+    /// from its closed days. Needs `ReportsLiability`.
+    async fn sscl_report(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        year: i32,
+        quarter: u8,
+    ) -> async_graphql::Result<SsclReportNode> {
+        let mut tx = scoped(ctx, Permission::ReportsLiability, property_id).await?;
+        let report = reports::sscl(&mut tx, property_id, reports::CalendarQuarter { year, q: quarter })
+            .await
+            .map_err(reports_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(report.into())
+    }
+
+    /// The VAT of return period `period`, an IRD period code such as `2630` (Q3 2026) or `2632` (August 2026) of the
+    /// kind the property files, with its Schedule 01 and 04 rows, from its closed days. A property that is not VAT
+    /// registered or has no TIN is refused. Needs `ReportsLiability`.
+    async fn vat_report(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        period: String,
+    ) -> async_graphql::Result<VatReportNode> {
+        let mut tx = scoped(ctx, Permission::ReportsLiability, property_id).await?;
+        let period = reports::VatPeriod::from_code(&period).map_err(reports_error)?;
+        let report = reports::vat(&mut tx, property_id, period).await.map_err(reports_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(report.into())
+    }
+
+    /// The service charge of `month` (1 to 12) of `year`, collected and absorbed, by outlet, on rooms and on
+    /// everything else, from its closed days. Needs `ReportsLiability`.
+    async fn service_charge_report(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        year: i32,
+        month: u8,
+    ) -> async_graphql::Result<ServiceChargeReportNode> {
+        let mut tx = scoped(ctx, Permission::ReportsLiability, property_id).await?;
+        let month = time::Month::try_from(month).map_err(|_| async_graphql::Error::new("a month is 1 to 12"))?;
+        let report = reports::service_charge(&mut tx, property_id, year, month).await.map_err(reports_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(report.into())
     }
 
     /// The property's raised ops alerts that the caller may see, by kind; empty when all is well. The `AUDIT`,

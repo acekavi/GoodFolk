@@ -131,6 +131,8 @@ use utoipa::OpenApi;
         crate::routes::fx::set_rate,
         crate::routes::night_audit::close,
         crate::routes::night_audit::retry,
+        crate::routes::reports::vat_schedule01,
+        crate::routes::reports::vat_schedule04,
         crate::routes::staff::invite,
         crate::routes::staff::resend,
         crate::routes::staff::revoke,

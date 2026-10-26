@@ -1302,6 +1302,18 @@ type OutletNode {
 	reportGroup: String!
 }
 
+"""
+The service charge of one outlet.
+"""
+type OutletServiceChargeNode {
+	"""
+	The outlet's code.
+	"""
+	outlet: String!
+	collected: Int!
+	absorbed: Int!
+}
+
 type PageInfo {
 	"""
 	Pass as `after` for the next page; `null` on an empty page.
@@ -1709,6 +1721,27 @@ type Query {
 	`ReportsView` or `ReservationsView`.
 	"""
 	dailyList(propertyId: UUID!, date: Date!, kind: DailyListKind!): [DailyListRowNode!]!
+	"""
+	SLTDA's Form A of quarter `quarter` (1 to 4: April–June to January–March) of the financial year starting in
+	April `fy_start_year`, from its closed days. Needs `ReportsLiability`.
+	"""
+	tdlReport(propertyId: UUID!, fyStartYear: Int!, quarter: Int!): TdlReportNode!
+	"""
+	The SSCL of calendar quarter `quarter` (1 to 4) of `year`, month by month, with the foreign-currency exemption,
+	from its closed days. Needs `ReportsLiability`.
+	"""
+	ssclReport(propertyId: UUID!, year: Int!, quarter: Int!): SsclReportNode!
+	"""
+	The VAT of return period `period`, an IRD period code such as `2630` (Q3 2026) or `2632` (August 2026) of the
+	kind the property files, with its Schedule 01 and 04 rows, from its closed days. A property that is not VAT
+	registered or has no TIN is refused. Needs `ReportsLiability`.
+	"""
+	vatReport(propertyId: UUID!, period: String!): VatReportNode!
+	"""
+	The service charge of `month` (1 to 12) of `year`, collected and absorbed, by outlet, on rooms and on
+	everything else, from its closed days. Needs `ReportsLiability`.
+	"""
+	serviceChargeReport(propertyId: UUID!, year: Int!, month: Int!): ServiceChargeReportNode!
 	"""
 	The property's raised ops alerts that the caller may see, by kind; empty when all is well. The `AUDIT`,
 	`DRIFT` and `REPORTS` alerts need `PropertiesManage`, the `LINEN` alert `LinenManage`.
@@ -2221,6 +2254,40 @@ enum Segment {
 	IBE
 }
 
+"""
+Service charge in base-currency minor units, whole rupees.
+"""
+type ServiceChargeNode {
+	"""
+	On the bill, paid by the guest.
+	"""
+	collected: Int!
+	"""
+	Inside the price, borne by the hotel.
+	"""
+	absorbed: Int!
+}
+
+"""
+A month's service charge, by outlet, on rooms and on everything else.
+"""
+type ServiceChargeReportNode {
+	"""
+	By outlet code, the outlets with service charge in the month only.
+	"""
+	byOutlet: [OutletServiceChargeNode!]!
+	rooms: ServiceChargeNode!
+	"""
+	Meal plans, laundry, fees and the rest.
+	"""
+	other: ServiceChargeNode!
+	total: ServiceChargeNode!
+	"""
+	Some day of the month is not closed yet: its figures cover the closed days only.
+	"""
+	notClosed: Boolean!
+}
+
 enum SortDirection {
 	ASC
 	DESC
@@ -2232,6 +2299,86 @@ enum Source {
 	CHANNEL
 	PHONE
 	EMAIL
+}
+
+"""
+One month of an SSCL quarter, in base-currency minor units, every figure whole rupees.
+"""
+type SsclMonthNode {
+	"""
+	1 to 12.
+	"""
+	month: Int!
+	"""
+	Every revenue line dated in the month, with every tax but VAT.
+	"""
+	turnover: Int!
+	"""
+	The exempt share of the month's turnover settled in the month.
+	"""
+	exemptSameMonth: Int!
+	"""
+	"Exemption for folios settled this month (turnover of earlier months)".
+	"""
+	exemptEarlierMonths: Int!
+	badDebts: Int!
+	"""
+	Below 0 when an earlier month's exemption outweighs the month's turnover.
+	"""
+	liable: Int!
+	"""
+	Never below 0.
+	"""
+	levy: Int!
+	"""
+	Payments in foreign currency in cash in the month: listed, never exempt.
+	"""
+	foreignCash: Int!
+	"""
+	The 20th of the following month.
+	"""
+	due: Date!
+	"""
+	Some day of the month is not closed yet: its figures cover the closed days only.
+	"""
+	notClosed: Boolean!
+}
+
+"""
+The SSCL of a calendar quarter, month by month.
+"""
+type SsclReportNode {
+	months: [SsclMonthNode!]!
+	quarterTotals: SsclTotalsNode!
+	"""
+	The 20th of the month after the quarter.
+	"""
+	returnDue: Date!
+	"""
+	The property's SLTDA licence is filled in: without it nothing is exempt.
+	"""
+	sltdaRegistered: Boolean!
+	"""
+	Why nothing is exempt, for a property that is not SLTDA registered.
+	"""
+	exemptionNote: String
+	"""
+	How the exemption is measured.
+	"""
+	methodNote: String!
+}
+
+"""
+An SSCL quarter's totals: the sums of its months' printed figures.
+"""
+type SsclTotalsNode {
+	turnover: Int!
+	exemptSameMonth: Int!
+	exemptEarlierMonths: Int!
+	badDebts: Int!
+	liable: Int!
+	levy: Int!
+	foreignCash: Int!
 }
 
 """
@@ -2376,6 +2523,48 @@ type TaxSettingsNode {
 	version: Int!
 }
 
+"""
+SLTDA's Form A of a quarter, in base-currency minor units, every figure whole rupees.
+"""
+type TdlReportNode {
+	"""
+	The property's legal name, or its name when it has none.
+	"""
+	name: String!
+	registrationNo: String
+	periodLabel: String!
+	room: Int!
+	food: Int!
+	bar: Int!
+	other: Int!
+	totalTurnover: Int!
+	"""
+	The deductions: the service charge and VAT within the four sales lines.
+	"""
+	serviceCharge: Int!
+	vat: Int!
+	"""
+	Total Turnover less the deductions.
+	"""
+	base: Int!
+	"""
+	100 (1%), or 50 (0.5%) for a base not over Rs 3,000,000.
+	"""
+	rateBp: Int!
+	"""
+	Never below 0.
+	"""
+	tdl: Int!
+	"""
+	The base is below 0: no TDL is due.
+	"""
+	creditExceedsSales: Boolean!
+	"""
+	Some day of the quarter is not closed yet: the figures cover the closed days only.
+	"""
+	notClosed: Boolean!
+}
+
 type TotalNode {
 	currency: String!
 	amount: Int!
@@ -2412,6 +2601,63 @@ type UnassignedStayNode {
 	Send as `If-Match: "<version>"` with the stay's commands.
 	"""
 	version: Int!
+}
+
+"""
+A VAT return period, in whole rupees as the invoices print them. Credit notes are positive figures that the net
+ones subtract.
+"""
+type VatReportNode {
+	"""
+	IRD's period code, such as `2630`.
+	"""
+	periodCode: String!
+	valueOfSupply: Int!
+	outputVat: Int!
+	creditNotesValue: Int!
+	creditNotesVat: Int!
+	"""
+	The return's cage A.
+	"""
+	netValue: Int!
+	"""
+	The return's cage 0.
+	"""
+	netVat: Int!
+	schedule01: [VatSchedule01RowNode!]!
+	schedule04: [VatSchedule04RowNode!]!
+	"""
+	Some day of the period is not closed yet: the figures cover the closed days only.
+	"""
+	notClosed: Boolean!
+}
+
+"""
+A row of IRD's Schedule 01, in whole rupees.
+"""
+type VatSchedule01RowNode {
+	serialNo: Int!
+	invoiceDate: Date!
+	invoiceNo: String!
+	purchaserTin: String!
+	purchaserName: String!
+	description: String!
+	valueOfSupply: Int!
+	vatAmount: Int!
+}
+
+"""
+A row of IRD's Schedule 04: a credit note with the invoice it credits, in whole rupees.
+"""
+type VatSchedule04RowNode {
+	serialNo: Int!
+	tin: String!
+	invoiceDate: Date!
+	invoiceNo: String!
+	noteDate: Date!
+	noteNo: String!
+	value: Int!
+	vatAmount: Int!
 }
 
 """

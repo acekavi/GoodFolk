@@ -4765,6 +4765,7 @@ dependencies = [
  "domain",
  "folio",
  "fx",
+ "media-types",
  "property",
  "rooms",
  "rust_decimal",

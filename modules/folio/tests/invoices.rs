@@ -167,8 +167,13 @@ async fn an_invoice_freezes_the_folio_and_a_credit_note_reopens_it(_: PgPoolOpti
     assert_eq!(
         issued.taxes,
         vec![
-            InvoiceTax { name: "Tourism development levy".into(), rate_bp: 100, amount_lkr: 100 },
-            InvoiceTax { name: "Social security contribution levy".into(), rate_bp: 250, amount_lkr: 253 },
+            InvoiceTax { code: "TDL".into(), name: "Tourism development levy".into(), rate_bp: 100, amount_lkr: 100 },
+            InvoiceTax {
+                code: "SSCL".into(),
+                name: "Social security contribution levy".into(),
+                rate_bp: 250,
+                amount_lkr: 253
+            },
         ]
     );
     // The rounding difference lands on the net, so 10,000 + 100 + 253 is the printed 10,353.

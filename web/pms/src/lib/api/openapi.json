@@ -3572,6 +3572,92 @@
         }
       }
     },
+    "/api/v1/properties/{property}/reports/vat/{period}/schedule01.csv": {
+      "get": {
+        "tags": [
+          "crate::routes::reports"
+        ],
+        "summary": "Schedule 01 (output tax invoices) of the VAT return `period`, an IRD period code such as `2630` (Q3 2026) or `2632`\n(August 2026) of the kind the property files, from its closed days. Named\n`<TIN>_VAT_SCHEDULE01_<period>_<YYYYMMDD>_ORIGINAL_V1.csv`, dated the property's today. A property that is not VAT\nregistered, has no TIN, or files the other kind of period is refused (422). Needs `ReportsLiability`.",
+        "operationId": "vat_schedule01",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "period",
+            "in": "path",
+            "description": "IRD period code: `YYQ0` or `YYQM`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/reports/vat/{period}/schedule04.csv": {
+      "get": {
+        "tags": [
+          "crate::routes::reports"
+        ],
+        "summary": "Schedule 04 (credit notes issued) of the VAT return `period`, as [`vat_schedule01`] gives Schedule 01. Needs\n`ReportsLiability`.",
+        "operationId": "vat_schedule04",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "period",
+            "in": "path",
+            "description": "IRD period code: `YYQ0` or `YYQM`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/reservation-rooms/{room}/assign": {
       "post": {
         "tags": [

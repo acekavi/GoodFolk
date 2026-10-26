@@ -13,6 +13,7 @@ pub(crate) mod night_audit;
 pub(crate) mod pos;
 pub(crate) mod properties;
 pub(crate) mod rates;
+pub(crate) mod reports;
 pub(crate) mod reservations;
 pub(crate) mod room_types;
 pub(crate) mod rooms;
@@ -204,6 +205,8 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/fx-rates/{{date}}/{{currency}}"), put(fx::set_rate))
         .route(&format!("{PROPERTY}/night-audit/close"), post(night_audit::close))
         .route(&format!("{PROPERTY}/night-audit/runs/{{run}}/retry"), post(night_audit::retry))
+        .route(&format!("{PROPERTY}/reports/vat/{{period}}/schedule01.csv"), get(reports::vat_schedule01))
+        .route(&format!("{PROPERTY}/reports/vat/{{period}}/schedule04.csv"), get(reports::vat_schedule04))
         .route("/graphql", post(graphql::handler))
         .merge(commands)
         .layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)))
