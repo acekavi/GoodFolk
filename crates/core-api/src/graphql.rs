@@ -2197,6 +2197,178 @@ impl From<audit::DailyStats> for DailyStatsNode {
     }
 }
 
+mirror_enum!(
+    /// Which stays a daily list holds.
+    DailyListKindNode as "DailyListKind" from reports::ListKind { Arrivals, Departures, InHouse }
+);
+
+mirror_enum!(
+    /// What a report breaks its totals down by.
+    ReportDimensionNode as "ReportDimension" from reports::Dimension { Segment, Source, Residency, RoomType, Outlet }
+);
+
+/// Occupancy, ADR, RevPAR, room nights and total revenue of a set of closed days, each rounded once from sums.
+#[derive(SimpleObject)]
+pub struct ReportHeadlineNode {
+    /// Rooms sold over rooms available, in basis points: 10000 is full.
+    pub occupancy_bp: i32,
+    /// Base-currency minor units, net of tax.
+    pub adr: i64,
+    pub revpar: i64,
+    pub room_nights: i64,
+    pub total_revenue: i64,
+}
+
+impl From<reports::Headline> for ReportHeadlineNode {
+    fn from(h: reports::Headline) -> Self {
+        Self {
+            occupancy_bp: h.occupancy_bp,
+            adr: h.adr,
+            revpar: h.revpar,
+            room_nights: h.room_nights,
+            total_revenue: h.total_revenue,
+        }
+    }
+}
+
+/// One closed day of a report, in base-currency minor units, revenue net of tax.
+#[derive(SimpleObject)]
+pub struct ReportDayNode {
+    pub business_date: Date,
+    pub rooms_available: i32,
+    pub rooms_sold: i32,
+    pub occupancy_bp: i32,
+    pub adults: i32,
+    pub children: i32,
+    pub arrivals: i32,
+    pub departures: i32,
+    pub room_revenue: i64,
+    pub meal_plan_revenue: i64,
+    pub pos_revenue: i64,
+    pub fee_revenue: i64,
+    pub other_revenue: i64,
+    pub total_revenue: i64,
+    pub adr: i64,
+    pub revpar: i64,
+}
+
+impl From<reports::DayRow> for ReportDayNode {
+    fn from(d: reports::DayRow) -> Self {
+        Self {
+            business_date: d.business_date,
+            rooms_available: d.rooms_available,
+            rooms_sold: d.rooms_sold,
+            occupancy_bp: d.occupancy_bp,
+            adults: d.adults,
+            children: d.children,
+            arrivals: d.arrivals,
+            departures: d.departures,
+            room_revenue: d.room_revenue,
+            meal_plan_revenue: d.meal_plan_revenue,
+            pos_revenue: d.pos_revenue,
+            fee_revenue: d.fee_revenue,
+            other_revenue: d.other_revenue,
+            total_revenue: d.total_revenue,
+            adr: d.adr,
+            revpar: d.revpar,
+        }
+    }
+}
+
+/// One key of a dimension summed over a report's closed days.
+#[derive(SimpleObject)]
+pub struct ReportBreakdownKeyNode {
+    /// The dimension's value; `unattributed` for revenue no stay accounts for.
+    pub key: String,
+    pub room_nights: i64,
+    pub room_revenue: i64,
+    pub revenue: i64,
+}
+
+/// A dimension's keys summed over a report's closed days.
+#[derive(SimpleObject)]
+pub struct ReportBreakdownNode {
+    pub dimension: ReportDimensionNode,
+    /// By key.
+    pub keys: Vec<ReportBreakdownKeyNode>,
+}
+
+/// The everyday reports of a date range, from its closed days only.
+#[derive(SimpleObject)]
+pub struct ReportSummaryNode {
+    /// The first and last closed day of the range.
+    pub closed_from: Option<Date>,
+    pub closed_to: Option<Date>,
+    /// The days of the range not closed yet; they are never estimated.
+    pub not_closed: Vec<Date>,
+    pub headline: ReportHeadlineNode,
+    /// The same period last year; null unless every day of it is closed.
+    pub last_year: Option<ReportHeadlineNode>,
+    pub days: Vec<ReportDayNode>,
+    pub breakdowns: Vec<ReportBreakdownNode>,
+}
+
+impl From<reports::Summary> for ReportSummaryNode {
+    fn from(s: reports::Summary) -> Self {
+        Self {
+            closed_from: s.closed_from,
+            closed_to: s.closed_to,
+            not_closed: s.not_closed,
+            headline: s.headline.into(),
+            last_year: s.last_year.map(Into::into),
+            days: s.days.into_iter().map(Into::into).collect(),
+            breakdowns: s
+                .breakdowns
+                .into_iter()
+                .map(|(dimension, keys)| ReportBreakdownNode {
+                    dimension: dimension.into(),
+                    keys: keys
+                        .into_iter()
+                        .map(|k| ReportBreakdownKeyNode {
+                            key: k.key,
+                            room_nights: k.room_nights,
+                            room_revenue: k.room_revenue,
+                            revenue: k.revenue,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// A stay on a daily list.
+#[derive(SimpleObject)]
+pub struct DailyListRowNode {
+    pub reservation_room_id: Uuid,
+    pub reservation_id: Uuid,
+    pub confirmation: String,
+    pub guest: String,
+    pub room_number: Option<String>,
+    pub arrival: Date,
+    pub departure: Date,
+    pub status: RoomStatusNode,
+    pub adults: i32,
+    pub children: i32,
+}
+
+impl From<reports::ListRow> for DailyListRowNode {
+    fn from(r: reports::ListRow) -> Self {
+        Self {
+            reservation_room_id: r.reservation_room,
+            reservation_id: r.reservation_id,
+            confirmation: r.confirmation,
+            guest: r.guest,
+            room_number: r.room_number,
+            arrival: r.arrival,
+            departure: r.departure,
+            status: r.status.into(),
+            adults: r.adults,
+            children: r.children,
+        }
+    }
+}
+
 mirror_enum!(OpsAlertKindNode as "OpsAlertKind" from audit::AlertKind { Audit, Drift, Linen, Reports });
 
 /// A problem a person must look at: an automatic close that failed its third attempt (`AUDIT`), inventory
@@ -2644,6 +2816,14 @@ fn audit_error(err: audit::AuditError) -> async_graphql::Error {
             tracing::error!("the night-audit close was interrupted");
             async_graphql::Error::new("Internal error")
         }
+        other => async_graphql::Error::new(other.to_string()),
+    }
+}
+
+/// A reports rule the query broke, as a GraphQL error; database errors stay hidden.
+fn reports_error(err: reports::ReportsError) -> async_graphql::Error {
+    match err {
+        reports::ReportsError::Database(db_err) => internal(db_err),
         other => async_graphql::Error::new(other.to_string()),
     }
 }
@@ -3695,6 +3875,37 @@ impl Query {
         let days = audit::daily_stats(&mut tx, property_id, from, to).await.map_err(audit_error)?;
         tx.commit().await.map_err(internal)?;
         Ok(days.into_iter().map(DailyStatsNode::from).collect())
+    }
+
+    /// The everyday reports of the property's closed business dates from `from` to `to`, both included (at most 366
+    /// days): the headline figures with the same period last year, each day, and the breakdowns. The days of the range
+    /// not closed yet are listed, never estimated. Needs `ReportsView`.
+    async fn report_summary(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        from: Date,
+        to: Date,
+    ) -> async_graphql::Result<ReportSummaryNode> {
+        let mut tx = scoped(ctx, Permission::ReportsView, property_id).await?;
+        let summary = reports::summary(&mut tx, property_id, from, to).await.map_err(reports_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(summary.into())
+    }
+
+    /// The stays arriving, leaving or in house on `date` (a closed day or today), by room number. Needs
+    /// `ReportsView` or `ReservationsView`.
+    async fn daily_list(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        date: Date,
+        kind: DailyListKindNode,
+    ) -> async_graphql::Result<Vec<DailyListRowNode>> {
+        let mut tx = scoped_any(ctx, &[Permission::ReportsView, Permission::ReservationsView], property_id).await?;
+        let rows = reports::daily_list(&mut tx, property_id, date, kind.into()).await.map_err(reports_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(rows.into_iter().map(DailyListRowNode::from).collect())
     }
 
     /// The property's raised ops alerts that the caller may see, by kind; empty when all is well. The `AUDIT`,

@@ -344,6 +344,31 @@ type CurrencyAmountNode {
 }
 
 """
+Which stays a daily list holds.
+"""
+enum DailyListKind {
+	ARRIVALS
+	DEPARTURES
+	IN_HOUSE
+}
+
+"""
+A stay on a daily list.
+"""
+type DailyListRowNode {
+	reservationRoomId: UUID!
+	reservationId: UUID!
+	confirmation: String!
+	guest: String!
+	roomNumber: String
+	arrival: Date!
+	departure: Date!
+	status: RoomStatus!
+	adults: Int!
+	children: Int!
+}
+
+"""
 The statistics of a closed business date, in base-currency minor units, revenue net of tax.
 """
 type DailyStatsNode {
@@ -1674,6 +1699,17 @@ type Query {
 	"""
 	dailyStats(propertyId: UUID!, from: Date!, to: Date!): [DailyStatsNode!]!
 	"""
+	The everyday reports of the property's closed business dates from `from` to `to`, both included (at most 366
+	days): the headline figures with the same period last year, each day, and the breakdowns. The days of the range
+	not closed yet are listed, never estimated. Needs `ReportsView`.
+	"""
+	reportSummary(propertyId: UUID!, from: Date!, to: Date!): ReportSummaryNode!
+	"""
+	The stays arriving, leaving or in house on `date` (a closed day or today), by room number. Needs
+	`ReportsView` or `ReservationsView`.
+	"""
+	dailyList(propertyId: UUID!, date: Date!, kind: DailyListKind!): [DailyListRowNode!]!
+	"""
 	The property's raised ops alerts that the caller may see, by kind; empty when all is well. The `AUDIT`,
 	`DRIFT` and `REPORTS` alerts need `PropertiesManage`, the `LINEN` alert `LinenManage`.
 	"""
@@ -1779,6 +1815,102 @@ enum RenditionSize {
 	V1080
 	V720
 	ORIGINAL
+}
+
+"""
+One key of a dimension summed over a report's closed days.
+"""
+type ReportBreakdownKeyNode {
+	"""
+	The dimension's value; `unattributed` for revenue no stay accounts for.
+	"""
+	key: String!
+	roomNights: Int!
+	roomRevenue: Int!
+	revenue: Int!
+}
+
+"""
+A dimension's keys summed over a report's closed days.
+"""
+type ReportBreakdownNode {
+	dimension: ReportDimension!
+	"""
+	By key.
+	"""
+	keys: [ReportBreakdownKeyNode!]!
+}
+
+"""
+One closed day of a report, in base-currency minor units, revenue net of tax.
+"""
+type ReportDayNode {
+	businessDate: Date!
+	roomsAvailable: Int!
+	roomsSold: Int!
+	occupancyBp: Int!
+	adults: Int!
+	children: Int!
+	arrivals: Int!
+	departures: Int!
+	roomRevenue: Int!
+	mealPlanRevenue: Int!
+	posRevenue: Int!
+	feeRevenue: Int!
+	otherRevenue: Int!
+	totalRevenue: Int!
+	adr: Int!
+	revpar: Int!
+}
+
+"""
+What a report breaks its totals down by.
+"""
+enum ReportDimension {
+	SEGMENT
+	SOURCE
+	RESIDENCY
+	ROOM_TYPE
+	OUTLET
+}
+
+"""
+Occupancy, ADR, RevPAR, room nights and total revenue of a set of closed days, each rounded once from sums.
+"""
+type ReportHeadlineNode {
+	"""
+	Rooms sold over rooms available, in basis points: 10000 is full.
+	"""
+	occupancyBp: Int!
+	"""
+	Base-currency minor units, net of tax.
+	"""
+	adr: Int!
+	revpar: Int!
+	roomNights: Int!
+	totalRevenue: Int!
+}
+
+"""
+The everyday reports of a date range, from its closed days only.
+"""
+type ReportSummaryNode {
+	"""
+	The first and last closed day of the range.
+	"""
+	closedFrom: Date
+	closedTo: Date
+	"""
+	The days of the range not closed yet; they are never estimated.
+	"""
+	notClosed: [Date!]!
+	headline: ReportHeadlineNode!
+	"""
+	The same period last year; null unless every day of it is closed.
+	"""
+	lastYear: ReportHeadlineNode
+	days: [ReportDayNode!]!
+	breakdowns: [ReportBreakdownNode!]!
 }
 
 """
