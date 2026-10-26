@@ -2203,6 +2203,18 @@ mirror_enum!(
 );
 
 mirror_enum!(
+    /// A report emailed to the property's owners and managers.
+    ReportEmailKindNode as "ReportEmailKind" from reports::EmailedReport { Weekly, Monthly }
+);
+
+/// Whether the signed-in user gets one of a property's report emails.
+#[derive(SimpleObject)]
+pub struct ReportEmailNode {
+    pub kind: ReportEmailKindNode,
+    pub enabled: bool,
+}
+
+mirror_enum!(
     /// What a report breaks its totals down by.
     ReportDimensionNode as "ReportDimension" from reports::Dimension { Segment, Source, Residency, RoomType, Outlet }
 );
@@ -4200,6 +4212,16 @@ impl Query {
         let rows = reports::daily_list(&mut tx, property_id, date, kind.into()).await.map_err(reports_error)?;
         tx.commit().await.map_err(internal)?;
         Ok(rows.into_iter().map(DailyListRowNode::from).collect())
+    }
+
+    /// The signed-in user's weekly and monthly report emails of the property, each on unless they turned it off (with
+    /// `PUT …/report-emails/{kind}`). The emails go to owners and managers. Needs `ReportsView`.
+    async fn report_emails(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<ReportEmailNode>> {
+        let mut tx = scoped(ctx, Permission::ReportsView, property_id).await?;
+        let user = ctx.data::<TenantContext>()?.user;
+        let emails = reports::report_emails(&mut tx, user, property_id).await.map_err(reports_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(emails.into_iter().map(|(kind, enabled)| ReportEmailNode { kind: kind.into(), enabled }).collect())
     }
 
     /// SLTDA's Form A of quarter `quarter` (1 to 4: April–June to January–March) of the financial year starting in

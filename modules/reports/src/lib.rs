@@ -1,12 +1,14 @@
 //! The hotel's reports: the everyday reports read from the night audit's stored statistics, the daily lists, and the
 //! liability reports computed live from closed business dates.
 //!
-//! Every function takes a transaction scoped to the caller's tenant. The reports only read; [`queue_render`] and the
-//! render results' receivers write the stored reports.
+//! Every function takes a transaction scoped to the caller's tenant. The reports only read; [`queue_render`],
+//! [`render_due`] (the night audit's `render_reports` step) and the render results' receivers write the stored
+//! reports, and [`set_report_pdf`] enqueues the weekly and monthly emails.
 
 mod document;
 mod everyday;
 pub mod liability;
+mod periods;
 mod store;
 
 pub use document::{RenderRequest, ReportDocument, document};
@@ -21,9 +23,10 @@ pub use liability::vat::{
     DUMMY_TIN, Schedule01Row, Schedule04Row, VAT_DOCUMENTS_SQL, VatPeriod, VatReport, VatTimingDifference,
     schedule_file_name, schedule01_csv, schedule04_csv, vat,
 };
+pub use periods::{due_periods, render_due};
 pub use store::{
-    REPORT_RENDER_TOPIC, ReportKind, ReportStatus, StoredReport, queue_render, report_failed, report_viewed,
-    set_report_pdf, stored_report,
+    EmailedReport, REPORT_RENDER_TOPIC, ReportKind, ReportStatus, StoredReport, queue_render, report_emails,
+    report_failed, report_viewed, set_report_email, set_report_pdf, stored_report,
 };
 
 /// One rupee in LKR minor units.

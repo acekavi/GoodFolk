@@ -99,7 +99,10 @@ impl Tenant {
             .await
             .into_iter()
             .rev()
-            .find_map(|MailJob::Invitation { invitation_id, token, .. }| (invitation_id == invitation).then_some(token))
+            .find_map(|job| match job {
+                MailJob::Invitation { invitation_id, token, .. } => (invitation_id == invitation).then_some(token),
+                MailJob::Report { .. } => None,
+            })
             .expect("a mail job for the invitation")
     }
 
@@ -385,7 +388,7 @@ async fn the_outbox_row_is_written_in_the_invitations_transaction(_: PgPoolOptio
     let invitation = t.invite("kamala@example.com", &[grant(Role::Pos, None)]).await;
     let jobs = t.mail_jobs().await;
     assert_eq!(jobs.len(), 1);
-    let MailJob::Invitation { invitation_id, tenant_id, .. } = &jobs[0];
+    let MailJob::Invitation { invitation_id, tenant_id, .. } = &jobs[0] else { panic!("not an invitation's job") };
     assert_eq!((*invitation_id, *tenant_id), (invitation.id, t.tenant.0));
 }
 
@@ -398,7 +401,15 @@ async fn no_audit_row_or_stored_column_contains_a_token(_: PgPoolOptions, opts: 
     t.accept_new(&accepted).await.unwrap();
     let second = t.invite("sunil@example.com", &[grant(Role::Pos, None)]).await;
     t.revoke(second.id).await;
-    let tokens: Vec<String> = t.mail_jobs().await.into_iter().map(|MailJob::Invitation { token, .. }| token).collect();
+    let tokens: Vec<String> = t
+        .mail_jobs()
+        .await
+        .into_iter()
+        .filter_map(|job| match job {
+            MailJob::Invitation { token, .. } => Some(token),
+            MailJob::Report { .. } => None,
+        })
+        .collect();
 
     let audit: Vec<(String, String)> = sqlx::query_as("select action, data::text from audit_log order by at, id")
         .fetch_all(&t.superuser)

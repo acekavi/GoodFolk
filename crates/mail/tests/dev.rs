@@ -1,6 +1,6 @@
 //! The dev mailer's outbox, and choosing a mailer from the environment.
 
-use mail::{DevMailer, MailJob, Mailer, Message};
+use mail::{Attachment, DevMailer, MailJob, Mailer, Message};
 use uuid::Uuid;
 
 fn message() -> Message {
@@ -9,6 +9,7 @@ fn message() -> Message {
         subject: "Nimal invited you to Lagoon on GoodFolk".into(),
         text: "Hello".into(),
         html: "<p>Hello</p>".into(),
+        attachments: vec![],
     }
 }
 
@@ -32,6 +33,34 @@ async fn the_dev_mailer_writes_each_message_as_a_json_file() {
             "html": "<p>Hello</p>",
         })
     );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn dev_mailer_writes_attachment() {
+    let dir = std::env::temp_dir().join(format!("goodfolk-mail-test-{}", Uuid::now_v7()));
+    let mailer = DevMailer { dir: dir.clone() };
+    let pdf = b"%PDF-1.7 the report".to_vec();
+    let attachment = Attachment {
+        filename: "weekly-report-2026-10-19.pdf".into(),
+        content_type: "application/pdf".into(),
+        bytes: pdf.clone(),
+    };
+
+    mailer.send(&Message { attachments: vec![attachment], ..message() }).await.unwrap();
+
+    let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().path()).collect();
+    files.sort();
+    assert_eq!(files.len(), 2, "the message and its attachment, and no partial file: {files:?}");
+    let json = files.iter().find(|file| file.extension().unwrap() == "json").unwrap();
+    let written: serde_json::Value = serde_json::from_slice(&std::fs::read(json).unwrap()).unwrap();
+    assert_eq!(
+        written["attachments"],
+        serde_json::json!([{ "filename": "weekly-report-2026-10-19.pdf", "content_type": "application/pdf" }])
+    );
+    let id = json.file_stem().unwrap().to_str().unwrap();
+    let beside = dir.join(format!("{id}-weekly-report-2026-10-19.pdf"));
+    assert_eq!(std::fs::read(beside).unwrap(), pdf);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -74,6 +103,19 @@ fn a_mail_job_keeps_its_token_out_of_debug() {
     let job = MailJob::Invitation { invitation_id: Uuid::nil(), tenant_id: Uuid::nil(), token: "s3cr3t-token".into() };
 
     assert!(!format!("{job:?}").contains("s3cr3t-token"));
+    let json = serde_json::to_string(&job).unwrap();
+    assert_eq!(serde_json::from_str::<MailJob>(&json).unwrap(), job);
+}
+
+#[test]
+fn report_mail_job_debug_has_no_secrets() {
+    let (tenant_id, report_id, user_id) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    let job = MailJob::Report { tenant_id, report_id, user_id };
+
+    assert_eq!(
+        format!("{job:?}"),
+        format!("Report {{ tenant_id: {tenant_id}, report_id: {report_id}, user_id: {user_id} }}")
+    );
     let json = serde_json::to_string(&job).unwrap();
     assert_eq!(serde_json::from_str::<MailJob>(&json).unwrap(), job);
 }

@@ -209,6 +209,7 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/reports/vat/{{period}}/schedule01.csv"), get(reports::vat_schedule01))
         .route(&format!("{PROPERTY}/reports/vat/{{period}}/schedule04.csv"), get(reports::vat_schedule04))
         .route(&format!("{PROPERTY}/reports/{{report}}"), get(reports::report))
+        .route(&format!("{PROPERTY}/report-emails/{{kind}}"), put(reports::set_report_email))
         .route("/graphql", post(graphql::handler))
         .merge(commands)
         .layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)))

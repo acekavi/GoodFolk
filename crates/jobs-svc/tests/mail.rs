@@ -1,5 +1,5 @@
 //! `POST /mail`: an invitation's email, sent to the dev outbox while the invitation is pending, and never a token in
-//! the logs.
+//! the logs; and a weekly or monthly report's email, with its PDF from storage attached.
 
 mod common;
 
@@ -10,12 +10,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use common::hotel::Hotel;
-use common::{SECRET, http, serve, svc};
+use common::{SECRET, http, serve, storage, svc};
 use events::{PushEnvelope, PushMessage};
 use jobs_svc::JobsSvc;
 use mail::{DevMailer, MailJob, Message};
 use sha2::{Digest, Sha256};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use storage::Bucket;
+use time::macros::date;
 use tracing_subscriber::fmt::MakeWriter;
 use uuid::Uuid;
 
@@ -121,9 +123,15 @@ async fn post_mail(addr: std::net::SocketAddr, body: Vec<u8>, auth: Option<&str>
     request.send().await.unwrap().status()
 }
 
+/// The messages in the dev outbox, oldest first; their attachments are the files beside them.
 fn sent(outbox: &Path) -> Vec<Message> {
     let Ok(entries) = std::fs::read_dir(outbox) else { return vec![] };
-    entries.map(|entry| serde_json::from_slice(&std::fs::read(entry.unwrap().path()).unwrap()).unwrap()).collect()
+    let mut files: Vec<PathBuf> = entries
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .collect();
+    files.sort();
+    files.iter().map(|file| serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap()).collect()
 }
 
 #[tokio::test]
@@ -241,4 +249,118 @@ async fn a_body_that_is_not_a_job_is_400(_: PgPoolOptions, opts: PgConnectOption
     .unwrap();
     envelope["message"]["data"] = STANDARD.encode(br#"{"Other":{}}"#).into();
     assert_eq!(post_mail(addr, serde_json::to_vec(&envelope).unwrap(), Some(SECRET)).await, 400);
+}
+
+/// A rendered `kind` report of `hotel` for `from` to `to`, its PDF `pdf` in storage when given; `hotel`'s user is a
+/// member of its tenant.
+async fn ready_report(hotel: &Hotel, kind: &str, from: time::Date, to: time::Date, pdf: Option<&[u8]>) -> Uuid {
+    let id = Uuid::now_v7();
+    let key = storage::report_pdf_key(hotel.tenant.0, id);
+    let headline = serde_json::json!([
+        { "label": "Occupancy", "value": "72.5%", "last_year": null },
+        { "label": "ADR", "value": "Rs 12,000", "last_year": null },
+        { "label": "RevPAR", "value": "Rs 8,700", "last_year": null },
+        { "label": "Room nights", "value": "36", "last_year": null },
+        { "label": "Total revenue", "value": "Rs 1,234,567", "last_year": null },
+    ]);
+    let data = serde_json::json!({ "template": "summary", "data": { "title": "Weekly report", "headline": headline } });
+    let mut tx = hotel.tx().await;
+    sqlx::query("insert into membership (tenant_id, user_id) values ($1, $2) on conflict do nothing")
+        .bind(hotel.tenant.0)
+        .bind(hotel.user.0)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into report (id, tenant_id, property_id, kind, period_start, period_end, data, status, pdf_key,
+                             rendered_at)
+         values ($1, $2, $3, $4, $5, $6, $7, 'ready', $8, now())",
+    )
+    .bind(id)
+    .bind(hotel.tenant.0)
+    .bind(hotel.property)
+    .bind(kind)
+    .bind(from)
+    .bind(to)
+    .bind(data)
+    .bind(&key)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    if let Some(pdf) = pdf {
+        storage().await.put(Bucket::Private, &key, pdf.to_vec(), "application/pdf", None).await.unwrap();
+    }
+    id
+}
+
+fn report_job(hotel: &Hotel, report_id: Uuid) -> MailJob {
+    MailJob::Report { tenant_id: hotel.tenant.0, report_id, user_id: hotel.user.0 }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_report_email_carries_the_headline_and_attaches_the_pdf(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts.clone()).await;
+    let (svc, outbox) = mailing(&hotel, opts);
+    let addr = serve(JobsSvc { storage: Some(storage().await), ..svc }).await;
+    let pdf = format!("%PDF-1.7 weekly {}", Uuid::now_v7()).into_bytes();
+    let weekly = ready_report(&hotel, "weekly", date!(2026 - 10 - 19), date!(2026 - 10 - 25), Some(&pdf)).await;
+    let monthly = ready_report(&hotel, "monthly", date!(2026 - 10 - 01), date!(2026 - 10 - 31), Some(b"%PDF-")).await;
+
+    assert_eq!(post_mail(addr, push(&report_job(&hotel, weekly)), Some(SECRET)).await, 204);
+    assert_eq!(post_mail(addr, push(&report_job(&hotel, monthly)), Some(SECRET)).await, 204);
+
+    let messages = sent(&outbox);
+    assert_eq!(messages.len(), 2);
+    let (message, month) = (&messages[0], &messages[1]);
+    assert_eq!(message.to, format!("{}@example.com", hotel.user.0));
+    assert_eq!(message.subject, "Hotel GAL weekly report, 19–25 Oct 2026");
+    for line in ["Occupancy: 72.5%", "ADR: Rs 12,000", "RevPAR: Rs 8,700", "Total revenue: Rs 1,234,567"] {
+        assert!(message.text.contains(line), "{line} in {}", message.text);
+        assert!(message.html.contains(line), "{line} in {}", message.html);
+    }
+    assert!(!message.text.contains("Room nights"), "{}", message.text);
+    assert_eq!(message.attachments.len(), 1);
+    assert_eq!(
+        (message.attachments[0].filename.as_str(), message.attachments[0].content_type.as_str()),
+        ("weekly-report-2026-10-19.pdf", "application/pdf")
+    );
+    let beside = std::fs::read_dir(&outbox)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.to_string_lossy().ends_with("-weekly-report-2026-10-19.pdf"))
+        .unwrap();
+    assert_eq!(std::fs::read(beside).unwrap(), pdf);
+    assert_eq!(month.subject, "Hotel GAL monthly report, October 2026");
+    assert_eq!(month.attachments[0].filename, "monthly-report-2026-10-01.pdf");
+    std::fs::remove_dir_all(outbox).unwrap();
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_report_whose_pdf_cannot_be_read_is_retried(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts.clone()).await;
+    let (svc, outbox) = mailing(&hotel, opts);
+    let without_storage = serve(svc.clone()).await;
+    let addr = serve(JobsSvc { storage: Some(storage().await), ..svc }).await;
+    let report = ready_report(&hotel, "weekly", date!(2026 - 10 - 19), date!(2026 - 10 - 25), None).await;
+
+    assert_eq!(post_mail(addr, push(&report_job(&hotel, report)), Some(SECRET)).await, 503);
+    assert_eq!(post_mail(without_storage, push(&report_job(&hotel, report)), Some(SECRET)).await, 503);
+    assert!(sent(&outbox).is_empty());
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_report_job_for_no_such_report_or_member_sends_nothing(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts.clone()).await;
+    let (svc, outbox) = mailing(&hotel, opts);
+    let addr = serve(JobsSvc { storage: Some(storage().await), ..svc }).await;
+    let report = ready_report(&hotel, "weekly", date!(2026 - 10 - 19), date!(2026 - 10 - 25), Some(b"%PDF-")).await;
+
+    let unknown = report_job(&hotel, Uuid::now_v7());
+    let stranger = MailJob::Report { tenant_id: hotel.tenant.0, report_id: report, user_id: Uuid::now_v7() };
+    let other_tenant = MailJob::Report { tenant_id: Uuid::now_v7(), report_id: report, user_id: hotel.user.0 };
+    for job in [unknown, stranger, other_tenant] {
+        assert_eq!(post_mail(addr, push(&job), Some(SECRET)).await, 204, "{job:?}");
+    }
+    assert!(sent(&outbox).is_empty());
 }

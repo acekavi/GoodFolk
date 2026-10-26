@@ -9,6 +9,7 @@
 	import { money } from '$lib/folio';
 	import { addDays } from '$lib/inventory';
 	import {
+		AUDIT_STEPS,
 		auditRunsKey,
 		dailyStatsKey,
 		dayRevenue,
@@ -101,7 +102,7 @@
 							</td>
 							<td>
 								<details>
-									<summary>{run.steps.length} of 5 steps</summary>
+									<summary>{run.steps.length} of {AUDIT_STEPS.length} steps</summary>
 									<p class="hint">Started {when(run.startedAt)}</p>
 									<ol>
 										{#each run.steps as step (step.step)}

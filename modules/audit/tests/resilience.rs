@@ -122,8 +122,7 @@ async fn hotel(opts: PgConnectOptions) -> (Hotel, Vec<String>) {
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_close_interrupted_at_any_point_resumes_to_the_same_end(_: PgPoolOptions, opts: PgConnectOptions) {
-    // `render_reports` is not part of the close yet.
-    for step in Step::ALL.into_iter().filter(|step| *step != Step::RenderReports) {
+    for step in Step::ALL {
         for before in [true, false] {
             let case = format!("{} {}", if before { "before" } else { "after" }, step.as_str());
             let (hotel, keys) = hotel(opts.clone()).await;
@@ -135,8 +134,8 @@ async fn a_close_interrupted_at_any_point_resumes_to_the_same_end(_: PgPoolOptio
             assert!(matches!(interrupted, AuditError::Interrupted), "{case}: {interrupted:?}");
             let stopped = hotel.run(run.id).await;
             let position = Step::ALL.iter().position(|s| *s == step).unwrap();
-            // The roll's two steps commit together, with the run's completion.
-            let rolled = !before && position >= 3;
+            // The roll's two steps commit together, with the run's completion; `render_reports` comes after it.
+            let rolled = (!before && position >= 3) || step == Step::RenderReports;
             if rolled {
                 assert_eq!(stopped.status, RunStatus::Completed, "{case}");
             } else {
@@ -155,7 +154,7 @@ async fn a_close_interrupted_at_any_point_resumes_to_the_same_end(_: PgPoolOptio
             let state = hotel.state().await;
             assert_eq!(
                 state,
-                State { business_date: hotel.day(1), keys: keys.clone(), lines: 4, stats: 1, steps: 5, completions: 1 },
+                State { business_date: hotel.day(1), keys: keys.clone(), lines: 4, stats: 1, steps: 6, completions: 1 },
                 "{case}"
             );
             assert_eq!(completed.business_date, d);

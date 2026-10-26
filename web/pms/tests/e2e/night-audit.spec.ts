@@ -151,7 +151,7 @@ test('an arrival is marked a no-show, a departure extended, and the day closes i
 	await page.getByRole('button', { name: 'Close the day' }).click();
 	const tracker = page.getByRole('region', { name: `Closing ${date}` });
 	await expect(tracker).toContainText(`Business date is now ${addDays(date, 1)}`);
-	await expect(tracker.getByText('Done')).toHaveCount(5);
+	await expect(tracker.getByText('Done')).toHaveCount(6);
 	await expect(page.getByText(`Business date ${addDays(date, 1)}`)).toBeVisible();
 
 	await page.goto(`/p/${owner.propertyId}`);
@@ -161,7 +161,7 @@ test('an arrival is marked a no-show, a departure extended, and the day closes i
 	const run = page.getByRole('row').filter({ hasText: date });
 	await expect(run.first()).toContainText('Manual');
 	await expect(run.first()).toContainText('Completed');
-	await expect(run.first()).toContainText('5 of 5 steps');
+	await expect(run.first()).toContainText('6 of 6 steps');
 });
 
 test('the close stays disabled until the arrival is resolved', async ({ page }) => {

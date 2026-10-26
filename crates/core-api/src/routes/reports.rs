@@ -1,6 +1,6 @@
-//! IRD's VAT schedule files, as CSV downloads, and every report as a PDF rendered on demand. The reports themselves
-//! are read through GraphQL (`reportSummary`, `dailyList`, `tdlReport`, `ssclReport`, `vatReport`,
-//! `serviceChargeReport`).
+//! IRD's VAT schedule files, as CSV downloads, every report as a PDF rendered on demand, and the signed-in user's
+//! report emails turned on or off. The reports themselves are read through GraphQL (`reportSummary`, `dailyList`,
+//! `tdlReport`, `ssclReport`, `vatReport`, `serviceChargeReport`), and so are the report emails (`reportEmails`).
 
 use crate::auth::TenantContext;
 use crate::error::ApiError;
@@ -14,8 +14,8 @@ use db::Scope;
 use identity::Permission;
 use media_types::ReportTemplate;
 use reports::{
-    CalendarQuarter, FiscalQuarter, ListKind, RenderRequest, ReportKind, ReportStatus, ReportsError, VatPeriod,
-    VatReport,
+    CalendarQuarter, EmailedReport, FiscalQuarter, ListKind, RenderRequest, ReportKind, ReportStatus, ReportsError,
+    VatPeriod, VatReport,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -267,4 +267,63 @@ pub async fn report(
         ReportStatus::Failed => ReportStatusNode::Failed,
     };
     Ok(Json(ReportRead { status, url }))
+}
+
+/// A report emailed to the property's owners and managers.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportEmailKind {
+    Weekly,
+    Monthly,
+}
+
+impl From<ReportEmailKind> for EmailedReport {
+    fn from(kind: ReportEmailKind) -> Self {
+        match kind {
+            ReportEmailKind::Weekly => EmailedReport::Weekly,
+            ReportEmailKind::Monthly => EmailedReport::Monthly,
+        }
+    }
+}
+
+impl From<EmailedReport> for ReportEmailKind {
+    fn from(report: EmailedReport) -> Self {
+        match report {
+            EmailedReport::Weekly => ReportEmailKind::Weekly,
+            EmailedReport::Monthly => ReportEmailKind::Monthly,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SetReportEmailRequest {
+    pub enabled: bool,
+}
+
+/// Whether the signed-in user gets one of the property's report emails.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ReportEmail {
+    pub kind: ReportEmailKind,
+    pub enabled: bool,
+}
+
+/// Turns the signed-in user's own weekly or monthly report email of the property on or off, and returns both. The
+/// emails go to owners and managers. Needs `ReportsView`.
+#[utoipa::path(put, operation_id = "set_report_email", path = "/api/v1/properties/{property}/report-emails/{kind}", request_body = SetReportEmailRequest,
+    params(("property" = Uuid, Path), ("kind" = ReportEmailKind, Path)),
+    responses((status = 200, body = Vec<ReportEmail>), (status = 403), (status = 404)))]
+pub async fn set_report_email(
+    State(state): State<AppState>,
+    ctx: TenantContext,
+    ApiPath((property, kind)): ApiPath<(Uuid, ReportEmailKind)>,
+    ApiJson(body): ApiJson<SetReportEmailRequest>,
+) -> Result<Json<Vec<ReportEmail>>, ApiError> {
+    ctx.require(Permission::ReportsView, Some(property))?;
+    let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
+    reports::set_report_email(&mut tx, ctx.tenant, ctx.user, property, kind.into(), body.enabled)
+        .await
+        .map_err(reports_error)?;
+    let emails = reports::report_emails(&mut tx, ctx.user, property).await.map_err(reports_error)?;
+    tx.commit().await?;
+    Ok(Json(emails.into_iter().map(|(kind, enabled)| ReportEmail { kind: kind.into(), enabled }).collect()))
 }

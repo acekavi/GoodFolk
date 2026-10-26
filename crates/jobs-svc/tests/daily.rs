@@ -6,12 +6,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use common::hotel::Hotel;
-use common::svc;
+use common::{storage, svc};
 use jobs_svc::JobsSvc;
 use jobs_svc::tick::tick_with;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
-use storage::{Bucket, Storage, StorageConfig};
+use storage::Bucket;
 use time::{Date, Duration, PrimitiveDateTime};
 use uuid::Uuid;
 
@@ -67,12 +67,6 @@ impl fx::RateSource for FakeSource {
             .map(|c| (c.clone(), on, rust_decimal::Decimal::from(300)))
             .collect())
     }
-}
-
-async fn storage() -> Arc<Storage> {
-    let storage = Storage::new(StorageConfig::dev().unwrap()).unwrap();
-    storage.ensure_dev_buckets().await.expect("start RustFS: deploy/dev/rustfs.sh start");
-    Arc::new(storage)
 }
 
 #[sqlx::test(migrations = "../../migrations")]

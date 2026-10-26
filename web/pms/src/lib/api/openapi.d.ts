@@ -1214,6 +1214,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/properties/{property}/report-emails/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Turns the signed-in user's own weekly or monthly report email of the property on or off, and returns both. The
+         *     emails go to owners and managers. Needs `ReportsView`.
+         */
+        put: operations["set_report_email"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/reports/render": {
         parameters: {
             query?: never;
@@ -3599,6 +3619,16 @@ export interface components {
             /** @description Every id of the collection, in the new display order. */
             ids: string[];
         };
+        /** @description Whether the signed-in user gets one of the property's report emails. */
+        ReportEmail: {
+            enabled: boolean;
+            kind: components["schemas"]["ReportEmailKind"];
+        };
+        /**
+         * @description A report emailed to the property's owners and managers.
+         * @enum {string}
+         */
+        ReportEmailKind: "weekly" | "monthly";
         /**
          * @description The line of SLTDA's TDL form an outlet's sales fall under.
          * @enum {string}
@@ -3831,6 +3861,9 @@ export interface components {
              *     exponent or `_`): positive, with at most 6 decimals and 12 digits before them.
              */
             rate: string;
+        };
+        SetReportEmailRequest: {
+            enabled: boolean;
         };
         /**
          * @description What a received batch still has out: `{"how": "return", "items": [...]}` for items found and returned (to
@@ -7583,6 +7616,44 @@ export interface operations {
                 content?: never;
             };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_report_email: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                kind: components["schemas"]["ReportEmailKind"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetReportEmailRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportEmail"][];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

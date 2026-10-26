@@ -3572,6 +3572,60 @@
         }
       }
     },
+    "/api/v1/properties/{property}/report-emails/{kind}": {
+      "put": {
+        "tags": [
+          "crate::routes::reports"
+        ],
+        "summary": "Turns the signed-in user's own weekly or monthly report email of the property on or off, and returns both. The\nemails go to owners and managers. Needs `ReportsView`.",
+        "operationId": "set_report_email",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ReportEmailKind"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetReportEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReportEmail"
+                  }
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/reports/render": {
       "post": {
         "tags": [
@@ -10258,6 +10312,30 @@
           }
         }
       },
+      "ReportEmail": {
+        "type": "object",
+        "description": "Whether the signed-in user gets one of the property's report emails.",
+        "required": [
+          "kind",
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ReportEmailKind"
+          }
+        }
+      },
+      "ReportEmailKind": {
+        "type": "string",
+        "description": "A report emailed to the property's owners and managers.",
+        "enum": [
+          "weekly",
+          "monthly"
+        ]
+      },
       "ReportGroup": {
         "type": "string",
         "description": "The line of SLTDA's TDL form an outlet's sales fall under.",
@@ -10865,6 +10943,17 @@
           "rate": {
             "type": "string",
             "description": "Base currency per one unit of the currency, as a decimal string such as `\"301.25\"` (at most 20 characters, no\nexponent or `_`): positive, with at most 6 decimals and 12 digits before them."
+          }
+        }
+      },
+      "SetReportEmailRequest": {
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
           }
         }
       },

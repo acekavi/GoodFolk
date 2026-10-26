@@ -152,7 +152,7 @@ Migrations `0031_night_audit.sql` and `0032_folio_line_business_date.sql`. Every
 |---|---|---|
 | `job_state` | `(job, key)`, `job` (`fx_import` \| `media_sweep` \| `window` \| `cleanup` \| `drift`), `key` (a property, or `''` for a global job), `done_for date null`, `last_ok_at null`, `last_error null` | jobs-svc's memory between ticks: when each daily job last succeeded. No tenant data, so no RLS; the app role selects, inserts and updates |
 
-jobs-svc reads across tenants through definer functions only (`app.jobs_properties()`, `app.jobs_open_runs()`, `app.purge_expired()`), which rely on the owner's read-only `jobs_read` policy on `audit_run`, the delete-only `purge_idempotency` policy on `idempotency_key` and 0022's `fx_import_read` on `property` ([api-conventions.md](api-conventions.md), "Cross-tenant reads").
+jobs-svc reads across tenants through definer functions only (`app.jobs_properties()`, `app.jobs_open_runs()`, `app.jobs_unrendered_runs()`, `app.purge_expired()`), which rely on the owner's read-only `jobs_read` policies on `audit_run` and `audit_run_step` (0043), the delete-only `purge_idempotency` policy on `idempotency_key` and 0022's `fx_import_read` on `property` ([api-conventions.md](api-conventions.md), "Cross-tenant reads").
 
 ## Phase 7c: Payment gateways (planned)
 

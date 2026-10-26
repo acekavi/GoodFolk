@@ -1722,6 +1722,11 @@ type Query {
 	"""
 	dailyList(propertyId: UUID!, date: Date!, kind: DailyListKind!): [DailyListRowNode!]!
 	"""
+	The signed-in user's weekly and monthly report emails of the property, each on unless they turned it off (with
+	`PUT …/report-emails/{kind}`). The emails go to owners and managers. Needs `ReportsView`.
+	"""
+	reportEmails(propertyId: UUID!): [ReportEmailNode!]!
+	"""
 	SLTDA's Form A of quarter `quarter` (1 to 4: April–June to January–March) of the financial year starting in
 	April `fy_start_year`, from its closed days. Needs `ReportsLiability`.
 	"""
@@ -1905,6 +1910,22 @@ enum ReportDimension {
 	RESIDENCY
 	ROOM_TYPE
 	OUTLET
+}
+
+"""
+A report emailed to the property's owners and managers.
+"""
+enum ReportEmailKind {
+	WEEKLY
+	MONTHLY
+}
+
+"""
+Whether the signed-in user gets one of a property's report emails.
+"""
+type ReportEmailNode {
+	kind: ReportEmailKind!
+	enabled: Boolean!
 }
 
 """

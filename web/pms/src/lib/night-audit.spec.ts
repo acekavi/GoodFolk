@@ -77,9 +77,17 @@ describe('stepStates', () => {
 	const states = (value: RunState) => stepStates(value).map((entry) => entry.state);
 
 	it('marks the steps done, the next one running and the rest pending while the run runs', () => {
-		expect(states(run('RUNNING', 2))).toEqual(['done', 'done', 'running', 'pending', 'pending']);
+		expect(states(run('RUNNING', 2))).toEqual([
+			'done',
+			'done',
+			'running',
+			'pending',
+			'pending',
+			'pending'
+		]);
 		expect(states(run('RUNNING', 0))).toEqual([
 			'running',
+			'pending',
 			'pending',
 			'pending',
 			'pending',
@@ -93,12 +101,20 @@ describe('stepStates', () => {
 			'failed',
 			'pending',
 			'pending',
+			'pending',
 			'pending'
 		]);
 	});
 
 	it('marks the first step not done as failed when the report names none', () => {
-		expect(states(run('FAILED', 3, {}))).toEqual(['done', 'done', 'done', 'failed', 'pending']);
+		expect(states(run('FAILED', 3, {}))).toEqual([
+			'done',
+			'done',
+			'done',
+			'failed',
+			'pending',
+			'pending'
+		]);
 	});
 
 	it('marks every step done once the run completed', () => {
@@ -106,11 +122,13 @@ describe('stepStates', () => {
 			...run('COMPLETED', 4),
 			steps: [
 				...run('COMPLETED', 4).steps,
-				{ step: 'ADVANCE_BUSINESS_DATE', completedAt: '2026-10-20T18:00:01Z', detail: {} }
+				{ step: 'ADVANCE_BUSINESS_DATE', completedAt: '2026-10-20T18:00:01Z', detail: {} },
+				{ step: 'RENDER_REPORTS', completedAt: '2026-10-20T18:00:02Z', detail: { queued: 1 } }
 			]
 		};
-		expect(states(completed)).toEqual(['done', 'done', 'done', 'done', 'done']);
+		expect(states(completed)).toEqual(['done', 'done', 'done', 'done', 'done', 'done']);
 		expect(stepStates(completed).map((entry) => entry.label)[4]).toBe('Advance the business date');
+		expect(stepStates(completed).map((entry) => entry.label)[5]).toBe('Queue reports');
 	});
 });
 

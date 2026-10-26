@@ -3,10 +3,13 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, bail};
 use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings};
 use aws_sigv4::sign::v4;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use reqwest::header::{CONTENT_TYPE, HeaderName, HeaderValue};
 use serde_json::json;
+use uuid::Uuid;
 
-use crate::{MailError, Mailer, Message};
+use crate::{MailError, Mailer, Message, mime};
 
 /// The service name SES v2 is signed for.
 const SERVICE: &str = "ses";
@@ -27,7 +30,8 @@ impl std::fmt::Debug for Credentials {
     }
 }
 
-/// Production: SES v2 `SendEmail` (`POST /v2/email/outbound-emails`) with `Content.Simple`, signed with SigV4.
+/// Production: SES v2 `SendEmail` (`POST /v2/email/outbound-emails`), signed with SigV4: `Content.Simple` for a
+/// message without attachments, `Content.Raw` (the message as MIME, see [`mime::raw`]) for one with them.
 #[derive(Debug)]
 pub struct SesMailer {
     region: String,
@@ -66,13 +70,19 @@ impl SesMailer {
 impl Mailer for SesMailer {
     async fn send(&self, message: &Message) -> Result<(), MailError> {
         let content = |data: &str| json!({ "Data": data, "Charset": "UTF-8" });
+        let content = if message.attachments.is_empty() {
+            json!({ "Simple": {
+                "Subject": content(&message.subject),
+                "Body": { "Text": content(&message.text), "Html": content(&message.html) },
+            } })
+        } else {
+            let raw = mime::raw(&self.from, message, &Uuid::now_v7().simple().to_string())?;
+            json!({ "Raw": { "Data": STANDARD.encode(raw) } })
+        };
         let body = json!({
             "FromEmailAddress": self.from,
             "Destination": { "ToAddresses": [message.to] },
-            "Content": { "Simple": {
-                "Subject": content(&message.subject),
-                "Body": { "Text": content(&message.text), "Html": content(&message.html) },
-            } },
+            "Content": content,
         });
         let bytes = serde_json::to_vec(&body).map_err(|error| MailError::Permanent(error.to_string()))?;
         let mut request = self

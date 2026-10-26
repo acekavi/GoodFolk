@@ -1,15 +1,17 @@
 //! The everyday reports and daily lists over GraphQL: `reportSummary` needs `ReportsView`, and `dailyList` also
 //! accepts `ReservationsView`. The liability reports (`tdlReport`, `ssclReport`, `vatReport`, `serviceChargeReport`)
 //! and the VAT schedule downloads need `ReportsLiability`. Every report renders as a PDF, on demand or queued by the
-//! close, through the in-process media-svc.
+//! close, through the in-process media-svc. A rendered weekly or monthly report is mailed once to each owner and
+//! manager who has not turned it off (`reportEmails`, `PUT …/report-emails/{kind}`).
 
 mod common;
 
 use axum::http::{Method, StatusCode, header};
-use common::media::{Hotel as MediaHotel, http, post, stack};
+use common::media::{Hotel as MediaHotel, SECRET, envelope, http, internal_app, post, push, stack};
 use common::{TestApp, uuid};
 use db::{Scope, TenantId};
-use media_types::ReportTemplate;
+use mail::MailJob;
+use media_types::{MediaResult, ReportTemplate};
 use reports::ReportKind;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -569,4 +571,173 @@ async fn liability_render_needs_reports_liability(_: PgPoolOptions, opts: PgConn
     let missing =
         app.send(Method::GET, &format!("/api/v1/properties/{property}/reports/{other}"), Some(&owner), None).await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
+}
+
+/// Queues `hotel`'s `kind` report of the week of 19 October 2026 (or October 2026) and delivers its rendered PDF to
+/// `/internal/events`, as media-svc does; returns the report.
+async fn rendered(app: &TestApp, hotel: &MediaHotel, kind: ReportKind) -> Uuid {
+    let tenant = TenantId(hotel.tenant);
+    let (from, to) = match kind {
+        ReportKind::Monthly => (date!(2026 - 10 - 01), date!(2026 - 10 - 31)),
+        _ => (date!(2026 - 10 - 19), date!(2026 - 10 - 25)),
+    };
+    let mut tx = db::begin(&app.pool, Scope::tenant(tenant)).await.unwrap();
+    let report = reports::queue_render(&mut tx, tenant, hotel.id, kind, from, to, ReportTemplate::Summary, json!({}))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    deliver(app, hotel, report).await;
+    report
+}
+
+/// Delivers `report`'s rendered PDF to `/internal/events` as a new message.
+async fn deliver(app: &TestApp, hotel: &MediaHotel, report: Uuid) {
+    let key = storage::report_pdf_key(hotel.tenant, report);
+    let result = MediaResult::ReportRendered { tenant_id: hotel.tenant, report_id: report, key };
+    let body = envelope(Uuid::now_v7(), &serde_json::to_value(result).unwrap()).to_string();
+    assert_eq!(push(app, &body, Some(&format!("Bearer {SECRET}"))).await, StatusCode::NO_CONTENT);
+}
+
+/// The users `report` was mailed to: its `report_mail` rows and its `mail-send` jobs, each sorted.
+async fn mailed(superuser: &PgPool, report: Uuid) -> (Vec<Uuid>, Vec<Uuid>) {
+    let mut recorded: Vec<Uuid> = sqlx::query_scalar("select user_id from report_mail where report_id = $1")
+        .bind(report)
+        .fetch_all(superuser)
+        .await
+        .unwrap();
+    recorded.sort();
+    let payloads: Vec<Value> =
+        sqlx::query_scalar("select payload from outbox where topic = 'mail-send'").fetch_all(superuser).await.unwrap();
+    let mut jobs: Vec<Uuid> = payloads
+        .into_iter()
+        .filter_map(|payload| match serde_json::from_value(payload).unwrap() {
+            MailJob::Report { report_id, user_id, .. } if report_id == report => Some(user_id),
+            _ => None,
+        })
+        .collect();
+    jobs.sort();
+    (recorded, jobs)
+}
+
+async fn user_id(app: &TestApp, cookie: &str) -> Uuid {
+    uuid(&app.send(Method::GET, "/api/v1/me", Some(cookie), None).await.body["user_id"])
+}
+
+/// Narrows `cookie`'s user's grants in `hotel`'s tenant to `property`.
+async fn scope_to(app: &TestApp, superuser: &PgPool, hotel: &MediaHotel, cookie: &str, property: Uuid) {
+    sqlx::query("update role_grant set property_id = $3 where user_id = $1 and tenant_id = $2")
+        .bind(user_id(app, cookie).await)
+        .bind(hotel.tenant)
+        .bind(property)
+        .execute(superuser)
+        .await
+        .unwrap();
+}
+
+/// A rendered weekly report is mailed to every owner and manager of the property (granted everywhere or there), and
+/// to no one else; a monthly one too, and an on-demand or liability report to no one.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn ready_weekly_mails_owners_and_managers_once(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = internal_app(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let hotel = MediaHotel::new(&app, "owner@example.com", "GAL").await;
+    let other = post(
+        &app,
+        &hotel.owner,
+        "/api/v1/properties",
+        json!({"code": "KAN", "name": "Kandy", "timezone": "Asia/Colombo", "base_currency": "LKR"}),
+    )
+    .await;
+    let other = uuid(&other.body["id"]);
+    let everywhere = app.staff(&superuser, &hotel.owner, "manager@example.com", "manager").await;
+    let here = app.staff(&superuser, &hotel.owner, "here@example.com", "manager").await;
+    scope_to(&app, &superuser, &hotel, &here, hotel.id).await;
+    let elsewhere = app.staff(&superuser, &hotel.owner, "kandy@example.com", "manager").await;
+    scope_to(&app, &superuser, &hotel, &elsewhere, other).await;
+    app.staff(&superuser, &hotel.owner, "accountant@example.com", "accountant").await;
+    app.staff(&superuser, &hotel.owner, "desk@example.com", "front_desk").await;
+    let mut expected =
+        vec![user_id(&app, &hotel.owner).await, user_id(&app, &everywhere).await, user_id(&app, &here).await];
+    expected.sort();
+
+    let weekly = rendered(&app, &hotel, ReportKind::Weekly).await;
+    let monthly = rendered(&app, &hotel, ReportKind::Monthly).await;
+    let tdl = rendered(&app, &hotel, ReportKind::Tdl).await;
+
+    assert_eq!(mailed(&superuser, weekly).await, (expected.clone(), expected.clone()));
+    assert_eq!(mailed(&superuser, monthly).await, (expected.clone(), expected));
+    assert_eq!(mailed(&superuser, tdl).await, (vec![], vec![]));
+    let job: Value = sqlx::query_scalar("select payload from outbox where topic = 'mail-send' limit 1")
+        .fetch_one(&superuser)
+        .await
+        .unwrap();
+    assert_eq!(job["Report"]["tenant_id"], json!(hotel.tenant));
+}
+
+async fn set_email(app: &TestApp, path: &str, cookie: &str, enabled: bool) -> common::TestResponse {
+    app.send_with(Method::PUT, path, Some(cookie), Some(json!({"enabled": enabled})), &[("x-goodfolk-csrf", "1")]).await
+}
+
+async fn settings(app: &TestApp, cookie: &str, property: Uuid) -> Value {
+    let query = "query ($p: UUID!) { reportEmails(propertyId: $p) { kind enabled } }";
+    graphql(app, cookie, query, json!({"p": property})).await
+}
+
+/// Each person's report emails are theirs to turn off, per property and kind, with `ReportsView`; one turned off
+/// is not mailed.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn opted_out_user_not_mailed(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = internal_app(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let hotel = MediaHotel::new(&app, "owner@example.com", "GAL").await;
+    let manager = app.staff(&superuser, &hotel.owner, "manager@example.com", "manager").await;
+    let desk = app.staff(&superuser, &hotel.owner, "desk@example.com", "front_desk").await;
+    let path = format!("{}/report-emails/weekly", hotel.path);
+
+    assert_eq!(set_email(&app, &path, &desk, false).await.status, StatusCode::FORBIDDEN);
+    assert!(denied(&settings(&app, &desk, hotel.id).await));
+    let off = set_email(&app, &path, &manager, false).await;
+    assert_eq!(off.status, StatusCode::OK, "{:?}", off.body);
+    assert_eq!(off.body, json!([{"kind": "weekly", "enabled": false}, {"kind": "monthly", "enabled": true}]));
+    let read = settings(&app, &manager, hotel.id).await;
+    assert_eq!(
+        read["data"]["reportEmails"],
+        json!([{"kind": "WEEKLY", "enabled": false}, {"kind": "MONTHLY", "enabled": true}])
+    );
+    let owners = settings(&app, &hotel.owner, hotel.id).await;
+    assert_eq!(
+        owners["data"]["reportEmails"],
+        json!([{"kind": "WEEKLY", "enabled": true}, {"kind": "MONTHLY", "enabled": true}])
+    );
+    let unknown = format!("/api/v1/properties/{}/report-emails/weekly", Uuid::now_v7());
+    let unknown = set_email(&app, &unknown, &hotel.owner, false).await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+
+    let owner = user_id(&app, &hotel.owner).await;
+    let mut both = vec![owner, user_id(&app, &manager).await];
+    both.sort();
+    let weekly = rendered(&app, &hotel, ReportKind::Weekly).await;
+    let monthly = rendered(&app, &hotel, ReportKind::Monthly).await;
+
+    assert_eq!(mailed(&superuser, weekly).await, (vec![owner], vec![owner]));
+    assert_eq!(mailed(&superuser, monthly).await, (both.clone(), both));
+}
+
+/// A render result delivered again, even after the report was rendered again, mails no one twice.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn redelivered_render_result_does_not_double_mail(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = internal_app(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let hotel = MediaHotel::new(&app, "owner@example.com", "GAL").await;
+    let owner = user_id(&app, &hotel.owner).await;
+    let weekly = rendered(&app, &hotel, ReportKind::Weekly).await;
+
+    deliver(&app, &hotel, weekly).await;
+    sqlx::query("update report set status = 'rendering' where id = $1").bind(weekly).execute(&superuser).await.unwrap();
+    deliver(&app, &hotel, weekly).await;
+
+    assert_eq!(mailed(&superuser, weekly).await, (vec![owner], vec![owner]));
+    let status: String =
+        sqlx::query_scalar("select status from report where id = $1").bind(weekly).fetch_one(&superuser).await.unwrap();
+    assert_eq!(status, "ready");
 }

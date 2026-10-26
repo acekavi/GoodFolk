@@ -3,13 +3,14 @@
 
 mod common;
 
-use audit::{AlertKind, AuditError, AuditRun, CloseHooks, Mode, NoHooks, RunStatus, Step};
+use audit::{AlertKind, AuditError, AuditRun, CloseHooks, HookFuture, Mode, NoHooks, RunStatus, Step};
 use common::{Hotel, Stay};
-use db::{CHANNEL, Event};
+use db::{CHANNEL, Event, TenantId, Tx};
 use rust_decimal::Decimal;
 use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions};
 use sqlx::{Connection, PgConnection};
-use std::sync::{Arc, Barrier};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Barrier, Mutex};
 use std::time::Duration;
 use time::Date;
 use uuid::Uuid;
@@ -118,8 +119,8 @@ async fn a_manual_close_runs_every_step_and_rolls_the_date(_: PgPoolOptions, opt
 
     assert_eq!(run.status, RunStatus::Completed);
     assert!(run.finished_at.is_some() && run.error.is_none());
-    // `render_reports` is not part of the close yet.
-    assert_eq!(steps(&run), Step::ALL[..5]);
+    assert_eq!(steps(&run), Step::ALL);
+    assert_eq!(detail(&run, Step::RenderReports), serde_json::json!({ "queued": 0 }));
     assert_eq!(detail(&run, Step::Resolve), serde_json::json!({ "no_shows": 0, "cancelled": 0, "extended": 0 }));
     assert_eq!(detail(&run, Step::PostCharges), serde_json::json!({ "stays": 1, "lines": 1, "skipped_existing": 0 }));
     assert_eq!(detail(&run, Step::LockFx)["locked"][0]["currency"], "USD");
@@ -141,7 +142,8 @@ async fn a_manual_close_runs_every_step_and_rolls_the_date(_: PgPoolOptions, opt
     let events = drain(&mut listener).await;
     let audit_key = audit::audit_key(p);
     assert_eq!(events[0], std::slice::from_ref(&audit_key), "the start");
-    let roll = events.last().unwrap();
+    let roll = events.iter().find(|keys| keys.contains(&property::PROPERTIES_KEY.to_string())).unwrap();
+    assert_eq!(events.last().unwrap(), std::slice::from_ref(&audit_key), "render_reports");
     for key in [audit_key, property::PROPERTIES_KEY.to_string(), reservations::reservations_key(p)] {
         assert!(roll.contains(&key), "{key} in {roll:?}");
     }
@@ -585,4 +587,98 @@ async fn a_database_error_reaches_staff_without_its_text(_: PgPoolOptions, opts:
     assert_eq!(audited, [expected; 3]);
     let alert = &audit::alerts::list(&mut hotel.tx().await, hotel.property).await.unwrap()[0];
     assert!(alert.message.ends_with(expected) && !alert.message.contains("relation"), "{}", alert.message);
+}
+
+/// `render_reports`'s hook: writes an audit entry in the step's transaction, then fails while `fail` is set, else
+/// queues two reports. Records each date it is called for.
+#[derive(Default)]
+struct Renders {
+    fail: AtomicBool,
+    calls: Mutex<Vec<Date>>,
+}
+
+impl CloseHooks for Renders {
+    fn render_reports<'a>(
+        &'a self,
+        tx: &'a mut Tx,
+        tenant: TenantId,
+        _: Uuid,
+        closed_through: Date,
+    ) -> HookFuture<'a, Result<usize, AuditError>> {
+        Box::pin(async move {
+            self.calls.lock().unwrap().push(closed_through);
+            sqlx::query(
+                "insert into audit_log (id, tenant_id, action, entity) values (gen_random_uuid(), $1, 'test.render', 'report')",
+            )
+            .bind(tenant.0)
+            .execute(&mut **tx)
+            .await?;
+            if self.fail.load(Ordering::SeqCst) {
+                return Err(AuditError::Invalid("the summary could not be computed".into()));
+            }
+            Ok(2)
+        })
+    }
+}
+
+impl Hotel {
+    async fn count(&self, sql: &'static str) -> i64 {
+        sqlx::query_scalar(sql).fetch_one(&mut *self.tx().await).await.unwrap()
+    }
+}
+
+/// `render_reports` runs once the business date has advanced, in its own transaction: when its hook fails, the close
+/// stays completed with D closed, the `reports` alert is raised, and the next execute (the tick's) runs only that step.
+#[sqlx::test(migrations = "../../migrations")]
+async fn render_reports_runs_after_advance(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts.clone()).await;
+    let d = hotel.business_date;
+    let hooks = Renders { fail: AtomicBool::new(true), ..Renders::default() };
+    let run = hotel.start(Mode::Auto).await.unwrap();
+
+    let unrendered = audit::execute(&hotel.pool, &opts, hotel.tenant, run.id, &hooks).await.unwrap().unwrap();
+
+    assert_eq!((unrendered.status, unrendered.error.as_deref()), (RunStatus::Completed, None));
+    assert_eq!(steps(&unrendered), Step::ALL[..5]);
+    assert_eq!(hotel.current_date().await, hotel.day(1));
+    assert_eq!(*hooks.calls.lock().unwrap(), [d]);
+    assert_eq!(hotel.count("select count(*) from audit_log where action = 'test.render'").await, 0, "rolled back");
+    let alerts = audit::alerts::list(&mut hotel.tx().await, hotel.property).await.unwrap();
+    assert_eq!(alerts.iter().map(|alert| alert.kind).collect::<Vec<_>>(), [AlertKind::Reports]);
+    assert_eq!(
+        alerts[0].message,
+        format!(
+            "The reports of {d} could not be queued: the summary could not be computed. The next tick tries again."
+        )
+    );
+
+    hooks.fail.store(false, Ordering::SeqCst);
+    let rendered = audit::execute(&hotel.pool, &opts, hotel.tenant, run.id, &hooks).await.unwrap().unwrap();
+
+    assert_eq!(rendered.status, RunStatus::Completed);
+    assert_eq!(steps(&rendered), Step::ALL);
+    assert_eq!(detail(&rendered, Step::RenderReports), serde_json::json!({ "queued": 2 }));
+    assert_eq!(*hooks.calls.lock().unwrap(), [d, d]);
+    assert_eq!(hotel.count("select count(*) from audit_log where action = 'test.render'").await, 1);
+    assert_eq!(hotel.current_date().await, hotel.day(1), "D is not closed again");
+    assert_eq!(hotel.count("select count(*) from daily_stats").await, 1);
+    assert_eq!(hotel.audited(run.id).await, ["night_audit.started", "night_audit.completed"]);
+}
+
+/// A completed close executed again, or retried, queues nothing again.
+#[sqlx::test(migrations = "../../migrations")]
+async fn rerun_close_does_not_requeue(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts.clone()).await;
+    let hooks = Renders::default();
+    let run = hotel.start(Mode::Manual).await.unwrap();
+    let completed = audit::execute(&hotel.pool, &opts, hotel.tenant, run.id, &hooks).await.unwrap().unwrap();
+    assert_eq!(steps(&completed), Step::ALL);
+
+    let again = audit::execute(&hotel.pool, &opts, hotel.tenant, run.id, &hooks).await.unwrap().unwrap();
+    let retried = audit::retry_run(&hotel.pool, hotel.tenant, Some(hotel.user), run.id).await.unwrap_err();
+
+    assert_eq!(again, completed);
+    assert!(matches!(retried, AuditError::Conflict(_)), "{retried:?}");
+    assert_eq!(hooks.calls.lock().unwrap().len(), 1);
+    assert_eq!(hotel.count("select count(*) from audit_log where action = 'test.render'").await, 1);
 }

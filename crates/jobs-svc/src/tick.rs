@@ -1,5 +1,6 @@
-//! The tick: every due job, run once. Crashed and failed closes first, then the auto closes of the properties whose
-//! audit moment has passed, then the daily jobs (see [`crate::daily`]).
+//! The tick: every due job, run once. Crashed and failed closes first, then the reports of closes whose
+//! `render_reports` step failed, then the auto closes of the properties whose audit moment has passed, then the daily
+//! jobs (see [`crate::daily`]).
 //!
 //! Each job's [`JobOutcome`] is recorded, and one job's failure never stops the others. A close runs under its
 //! property's advisory lock (see [`audit::execute`]), so overlapping ticks, a close started by hand and other
@@ -8,9 +9,10 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use audit::{AuditError, Mode, NoHooks, RunStatus};
-use db::{Scope, TenantId};
+use audit::{AuditError, CloseHooks, HookFuture, Mode, RunStatus, Step};
+use db::{Scope, TenantId, Tx};
 use proto::jobs::{JobOutcome, TickResponse};
+use reports::ReportsError;
 use time::{Date, PrimitiveDateTime, Time};
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
@@ -59,25 +61,53 @@ pub async fn tick(svc: &JobsSvc) -> TickResponse {
 
 /// Runs every due job once, in order, with `now_for(zone)` as the local time in `zone`:
 /// 1. the open runs: a `running` one is resumed, and a failed auto one with attempts left is retried;
-/// 2. the auto closes of the properties whose audit moment has passed and whose business date has no run;
-/// 3. the daily jobs that are due.
+/// 2. the `render_reports` step of each property's latest completed run without it (it failed);
+/// 3. the auto closes of the properties whose audit moment has passed and whose business date has no run;
+/// 4. the daily jobs that are due.
 pub async fn tick_with(svc: &JobsSvc, now_for: impl Fn(&str) -> PrimitiveDateTime) -> TickResponse {
     let mut jobs = Vec::new();
     open_runs(svc, &mut jobs).await;
+    unrendered_runs(svc, &mut jobs).await;
     auto_closes(svc, &now_for, &mut jobs).await;
     daily::run(svc, &now_for, &mut jobs).await;
     TickResponse { jobs }
 }
 
+/// The close's hooks: `render_reports` queues the reports of every period closed through the day closed
+/// ([`reports::render_due`]).
+pub struct ReportHooks;
+
+impl CloseHooks for ReportHooks {
+    fn render_reports<'a>(
+        &'a self,
+        tx: &'a mut Tx,
+        tenant: TenantId,
+        property: Uuid,
+        closed_through: Date,
+    ) -> HookFuture<'a, Result<usize, AuditError>> {
+        Box::pin(async move {
+            reports::render_due(tx, tenant, property, closed_through).await.map_err(|error| match error {
+                ReportsError::NotFound(what) => AuditError::NotFound(what),
+                ReportsError::Invalid(message) => AuditError::Invalid(message),
+                ReportsError::Database(error) => AuditError::Database(error),
+            })
+        })
+    }
+}
+
 /// Runs the remaining steps of `run`, as [`audit::execute`] does, and says how it went: `ran` when the run is done
-/// (completed, or the close already was), `skipped` when another session is running it, else `failed: ...`.
+/// (completed with its reports queued, or the close already was), `skipped` when another session is running it, else
+/// `failed: ...`.
 pub async fn run_close(svc: &JobsSvc, tenant: TenantId, run: Uuid) -> String {
-    let executed = tokio::time::timeout(CLOSE_TIMEOUT, audit::execute(&svc.pool, &svc.lock, tenant, run, &NoHooks));
+    let executed = tokio::time::timeout(CLOSE_TIMEOUT, audit::execute(&svc.pool, &svc.lock, tenant, run, &ReportHooks));
     match executed.await {
         Err(_) => failed("the close timed out; the next tick resumes it"),
         Ok(Err(error)) => failed(error),
         Ok(Ok(None)) => SKIPPED.to_owned(),
         Ok(Ok(Some(done))) if done.status == RunStatus::Failed => failed(done.error.unwrap_or_default()),
+        Ok(Ok(Some(done))) if !done.steps.iter().any(|step| step.step == Step::RenderReports) => {
+            failed("the reports could not be queued; the next tick tries again")
+        }
         Ok(Ok(Some(_))) => RAN.to_owned(),
     }
 }
@@ -118,6 +148,30 @@ async fn open_runs(svc: &JobsSvc, jobs: &mut Vec<JobOutcome>) {
             // A failed manual run, or an auto run out of attempts, waits for a person.
             _ => {}
         }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct UnrenderedRun {
+    tenant_id: Uuid,
+    run_id: Uuid,
+    property_id: Uuid,
+}
+
+/// Runs `render_reports` again for each property whose latest completed run has not done it: the run's business date
+/// is closed, so only that step is left.
+async fn unrendered_runs(svc: &JobsSvc, jobs: &mut Vec<JobOutcome>) {
+    let runs: Vec<UnrenderedRun> =
+        match sqlx::query_as("select tenant_id, run_id, property_id from app.jobs_unrendered_runs()")
+            .fetch_all(&svc.pool)
+            .await
+        {
+            Ok(runs) => runs,
+            Err(error) => return jobs.push(record("render_reports", String::new(), failed(error))),
+        };
+    for run in runs {
+        let outcome = run_close(svc, TenantId(run.tenant_id), run.run_id).await;
+        jobs.push(record("render_reports", run.property_id.to_string(), outcome));
     }
 }
 

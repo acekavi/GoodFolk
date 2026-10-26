@@ -11,6 +11,7 @@ db.workspace = true
 domain.workspace = true
 events.workspace = true
 folio.workspace = true
+mail.workspace = true
 media-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true

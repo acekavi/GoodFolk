@@ -298,7 +298,8 @@ export const AUDIT_STEPS: readonly AuditStep[] = [
 	'POST_CHARGES',
 	'LOCK_FX',
 	'SNAPSHOT_STATS',
-	'ADVANCE_BUSINESS_DATE'
+	'ADVANCE_BUSINESS_DATE',
+	'RENDER_REPORTS'
 ];
 
 const STEP_LABELS: Record<AuditStep, string> = {
@@ -307,7 +308,7 @@ const STEP_LABELS: Record<AuditStep, string> = {
 	LOCK_FX: 'Lock exchange rates',
 	SNAPSHOT_STATS: 'Snapshot statistics',
 	ADVANCE_BUSINESS_DATE: 'Advance the business date',
-	RENDER_REPORTS: 'Render reports'
+	RENDER_REPORTS: 'Queue reports'
 };
 
 export function stepLabel(step: AuditStep): string {

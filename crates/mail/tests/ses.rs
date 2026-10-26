@@ -5,7 +5,9 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use mail::{Credentials, MailError, Mailer, Message, SesMailer};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use mail::{Attachment, Credentials, MailError, Mailer, Message, SesMailer};
 
 fn credentials() -> Credentials {
     Credentials {
@@ -62,7 +64,13 @@ async fn server(status: StatusCode, error_type: Option<&'static str>) -> (String
 }
 
 fn message() -> Message {
-    Message { to: "kamala@example.com".into(), subject: "Hi".into(), text: "Text".into(), html: "<p>Html</p>".into() }
+    Message {
+        to: "kamala@example.com".into(),
+        subject: "Hi".into(),
+        text: "Text".into(),
+        html: "<p>Html</p>".into(),
+        attachments: vec![],
+    }
 }
 
 fn mailer(endpoint: &str) -> SesMailer {
@@ -101,6 +109,76 @@ async fn send_email_posts_simple_content_signed_for_ses() {
             } },
         })
     );
+}
+
+/// The base64 body of the MIME part whose headers contain `header`, decoded.
+fn part_body(mime: &str, header: &str) -> Vec<u8> {
+    let start = mime.find(header).unwrap_or_else(|| panic!("no {header} in {mime}"));
+    let body = &mime[start..];
+    let body = &body[body.find("\r\n\r\n").unwrap() + 4..];
+    let body = &body[..body.find("\r\n--").unwrap()];
+    assert!(body.split("\r\n").all(|line| line.len() <= 76), "base64 lines are at most 76 characters");
+    STANDARD.decode(body.replace("\r\n", "")).unwrap()
+}
+
+#[tokio::test]
+async fn ses_raw_mime_with_attachment() {
+    let (endpoint, seen) = server(StatusCode::OK, None).await;
+    let pdf: Vec<u8> = (0..=255u8).cycle().take(5_000).collect();
+    let message = Message {
+        subject: "Galle weekly report, 19–25 Oct 2026".into(),
+        text: "Occupancy: 72.5%".into(),
+        html: "<p>Occupancy: 72.5%</p>".into(),
+        attachments: vec![Attachment {
+            filename: "weekly-report-2026-10-19.pdf".into(),
+            content_type: "application/pdf".into(),
+            bytes: pdf.clone(),
+        }],
+        ..message()
+    };
+
+    mailer(&endpoint).send(&message).await.unwrap();
+
+    let calls = seen.0.lock().unwrap().clone();
+    let (path, _, body) = &calls[0];
+    assert_eq!(path, "/v2/email/outbound-emails");
+    assert_eq!(body["FromEmailAddress"], "hello@example.com");
+    assert_eq!(body["Destination"], serde_json::json!({ "ToAddresses": ["kamala@example.com"] }));
+    assert!(body["Content"].get("Simple").is_none(), "{body}");
+    let raw = STANDARD.decode(body["Content"]["Raw"]["Data"].as_str().unwrap()).unwrap();
+    let mime = String::from_utf8(raw).unwrap();
+    assert!(!mime.replace("\r\n", "").contains('\n'), "every line ends in CRLF: {mime}");
+    let (head, _) = mime.split_once("\r\n\r\n").unwrap();
+    let headers: Vec<&str> = head.split("\r\n").collect();
+    assert!(headers.contains(&"From: hello@example.com"), "{head}");
+    assert!(headers.contains(&"To: kamala@example.com"), "{head}");
+    assert!(headers.contains(&"MIME-Version: 1.0"), "{head}");
+    let subject = format!("Subject: =?UTF-8?B?{}?=", STANDARD.encode("Galle weekly report, 19–25 Oct 2026"));
+    assert!(headers.contains(&subject.as_str()), "{head}");
+    let mixed = headers.iter().find_map(|h| h.strip_prefix("Content-Type: multipart/mixed; boundary=")).unwrap();
+    let mixed = mixed.trim_matches('"');
+    let after = &mime[mime.find(&format!("--{mixed}\r\n")).unwrap()..];
+    assert!(after.starts_with(&format!("--{mixed}\r\nContent-Type: multipart/alternative; boundary=")), "{after}");
+    assert!(mime.ends_with(&format!("--{mixed}--\r\n")), "{mime}");
+    assert_eq!(mime.matches(&format!("--{mixed}\r\n")).count(), 2, "the alternative part and the attachment");
+
+    assert_eq!(part_body(&mime, "Content-Type: text/plain; charset=UTF-8"), b"Occupancy: 72.5%");
+    assert_eq!(part_body(&mime, "Content-Type: text/html; charset=UTF-8"), b"<p>Occupancy: 72.5%</p>");
+    let attachment = "Content-Type: application/pdf; name=\"weekly-report-2026-10-19.pdf\"\r\n\
+                      Content-Disposition: attachment; filename=\"weekly-report-2026-10-19.pdf\"\r\n\
+                      Content-Transfer-Encoding: base64";
+    assert_eq!(part_body(&mime, attachment), pdf);
+}
+
+#[tokio::test]
+async fn a_header_breaking_recipient_is_refused() {
+    let (endpoint, seen) = server(StatusCode::OK, None).await;
+    let attachment = Attachment { filename: "a.pdf".into(), content_type: "application/pdf".into(), bytes: vec![1] };
+    let message =
+        Message { to: "kamala@example.com\r\nBcc: all@example.com".into(), attachments: vec![attachment], ..message() };
+
+    assert!(matches!(mailer(&endpoint).send(&message).await, Err(MailError::Permanent(_))));
+    assert!(seen.0.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
