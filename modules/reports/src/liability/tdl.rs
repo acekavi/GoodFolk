@@ -76,8 +76,10 @@ pub struct TdlForm {
     pub base: i64,
     /// 100 (1%), or 50 (0.5%) for a base not over Rs 3,000,000.
     pub rate_bp: i32,
-    /// The levy on the base, rounded to whole rupees.
+    /// The levy on the base, rounded to whole rupees; 0 when credits exceed sales.
     pub tdl: i64,
+    /// The base is below 0 (the quarter's reversals outweigh its sales): no TDL is due.
+    pub credit_exceeds_sales: bool,
     /// Some day of the quarter is not closed yet: the figures cover the closed days only.
     pub not_closed: bool,
 }
@@ -90,7 +92,8 @@ pub struct TdlForm {
 /// - **Bar:** the outlets in the bar group;
 /// - **Other:** `fee`, `laundry`, `misc`, the outlets in the other group, and a `pos:<OUTLET>` naming no outlet.
 ///
-/// The rate follows the quarter's own base, not the property's billing setting. `Invalid` for a quarter outside 1 to
+/// The rate follows the quarter's own base, not the property's billing setting. The levy never goes below 0: a negative
+/// base stays on the form, flagged, with no TDL due. `Invalid` for a quarter outside 1 to
 /// 4; `NotFound` for a property not in the tenant.
 pub async fn tdl(tx: &mut Tx, property: Uuid, quarter: FiscalQuarter) -> Result<TdlForm, ReportsError> {
     let (from, to) = quarter.range()?;
@@ -103,7 +106,7 @@ pub async fn tdl(tx: &mut Tx, property: Uuid, quarter: FiscalQuarter) -> Result<
     .ok_or(ReportsError::NotFound("property"))?;
 
     let (mut room, mut food, mut bar, mut other, mut service_charge, mut vat) = (0, 0, 0, 0, 0, 0);
-    let mut groups: HashMap<(Uuid, Date), ReportGroup> = HashMap::new();
+    let groups = report_groups(tx, property, to).await?;
     for line in revenue_lines(tx, property, from, to).await? {
         let mut sales = line.net;
         for &(ref code, _, _, amount) in &line.taxes {
@@ -120,14 +123,7 @@ pub async fn tdl(tx: &mut Tx, property: Uuid, quarter: FiscalQuarter) -> Result<
                 continue;
             }
             ("meal_plan", _) => ReportGroup::Food,
-            (_, Some(outlet)) => match groups.get(&(outlet, line.business_date)) {
-                Some(&group) => group,
-                None => {
-                    let group = folio::outlet_report_group(tx, outlet, line.business_date).await?;
-                    groups.insert((outlet, line.business_date), group);
-                    group
-                }
-            },
+            (_, Some(outlet)) => group_on(&groups, outlet, line.business_date)?,
             _ => ReportGroup::Other,
         };
         match group {
@@ -142,7 +138,9 @@ pub async fn tdl(tx: &mut Tx, property: Uuid, quarter: FiscalQuarter) -> Result<
     let total_turnover = room + food + bar + other;
     let base = total_turnover - service_charge - vat;
     let rate_bp: i32 = if base <= SMALL_BASE { 50 } else { 100 };
-    let tdl = ratio(base.saturating_mul(i64::from(rate_bp)), 10_000 * RUPEE) * RUPEE;
+    let credit_exceeds_sales = base < 0;
+    let tdl =
+        if credit_exceeds_sales { 0 } else { ratio(base.saturating_mul(i64::from(rate_bp)), 10_000 * RUPEE) * RUPEE };
     Ok(TdlForm {
         name,
         registration_no,
@@ -157,6 +155,44 @@ pub async fn tdl(tx: &mut Tx, property: Uuid, quarter: FiscalQuarter) -> Result<
         base,
         rate_bp,
         tdl,
+        credit_exceeds_sales,
         not_closed: to >= business_date,
     })
+}
+
+/// Each outlet of `property`'s report-group changes in force by `to`, as `(effective from, group)` by date: read at
+/// once, so a quarter's lines are grouped without a query each.
+async fn report_groups(
+    tx: &mut Tx,
+    property: Uuid,
+    to: Date,
+) -> Result<HashMap<Uuid, Vec<(Date, ReportGroup)>>, ReportsError> {
+    let rows: Vec<(Uuid, Date, String)> = sqlx::query_as(
+        "select g.outlet_id, g.effective_from, g.report_group
+         from outlet_report_group g
+         join outlet o on o.id = g.outlet_id
+         where o.property_id = $1 and g.effective_from <= $2
+         order by g.outlet_id, g.effective_from",
+    )
+    .bind(property)
+    .bind(to)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut groups: HashMap<Uuid, Vec<(Date, ReportGroup)>> = HashMap::new();
+    for (outlet, effective_from, group) in rows {
+        let group = ReportGroup::try_from(group).map_err(|err| sqlx::Error::Decode(err.into()))?;
+        groups.entry(outlet).or_default().push((effective_from, group));
+    }
+    Ok(groups)
+}
+
+/// The group `outlet` was in on `date`: the latest change on or before it, as [`folio::outlet_report_group`] reads it.
+fn group_on(
+    groups: &HashMap<Uuid, Vec<(Date, ReportGroup)>>,
+    outlet: Uuid,
+    date: Date,
+) -> Result<ReportGroup, ReportsError> {
+    let changes = groups.get(&outlet).map(Vec::as_slice).unwrap_or_default();
+    let in_force = changes.partition_point(|&(effective_from, _)| effective_from <= date);
+    in_force.checked_sub(1).map(|at| changes[at].1).ok_or(ReportsError::NotFound("outlet"))
 }

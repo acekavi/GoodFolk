@@ -50,6 +50,7 @@ async fn sltda_worked_example(_: PgPoolOptions, opts: PgConnectOptions) {
             rate_bp: 100,
             // 34,535.13 rounded to whole rupees.
             tdl: 3_453_500,
+            credit_exceeds_sales: false,
             not_closed: false,
         }
     );
@@ -100,6 +101,22 @@ async fn outlet_group_change_does_not_restate_a_closed_quarter(_: PgPoolOptions,
     assert_eq!(q2.period_label, "July – September (2026)");
 }
 
+/// The 0.5% rate holds up to a base of exactly Rs 3,000,000; one rupee more is 1%.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn half_percent_up_to_exactly_three_million(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let folio = hotel.folio().await;
+    hotel.line(folio, date(2026, 4, 1), "room", "room", 300_000_000, &[], None).await;
+    hotel.line(folio, date(2026, 7, 1), "room", "room", 300_000_100, &[], None).await;
+    hotel.set_business_date(date(2026, 10, 1)).await;
+
+    let at = tdl(&hotel, Q1).await;
+    assert_eq!((at.base, at.rate_bp, at.tdl), (300_000_000, 50, 1_500_000));
+    let over = tdl(&hotel, FiscalQuarter { fy_start_year: 2026, q: 2 }).await;
+    // 1% of Rs 3,000,001 is Rs 30,000.01, so Rs 30,000.
+    assert_eq!((over.base, over.rate_bp, over.tdl), (300_000_100, 100, 3_000_000));
+}
+
 /// A reversal posted in July reduces Q2, never the Q1 its original was reported in; an adjustment is not revenue.
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn credit_reversal_counts_in_its_own_quarter(_: PgPoolOptions, opts: PgConnectOptions) {
@@ -114,8 +131,11 @@ async fn credit_reversal_counts_in_its_own_quarter(_: PgPoolOptions, opts: PgCon
 
     let q1 = tdl(&hotel, Q1).await;
     assert_eq!((q1.room, q1.service_charge, q1.base), (1_100_000, 100_000, 1_000_000));
+    assert_eq!((q1.tdl, q1.credit_exceeds_sales), (5_000, false));
     let q2 = tdl(&hotel, FiscalQuarter { fy_start_year: 2026, q: 2 }).await;
     assert_eq!((q2.room, q2.other, q2.service_charge, q2.base), (-1_100_000, 0, -100_000, -1_000_000));
+    // The levy never goes below 0: the negative base stays on the form, flagged.
+    assert_eq!((q2.tdl, q2.credit_exceeds_sales), (0, true));
 }
 
 /// TDL and SSCL passed on to the guest are levies collected, not sales; SC and VAT count whether passed on or
