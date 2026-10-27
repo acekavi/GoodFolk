@@ -143,7 +143,9 @@ describe('can', () => {
 			linenMove: ['owner', 'manager', 'hk_supervisor', 'housekeeping'],
 			linenManage: ['owner', 'manager', 'hk_supervisor'],
 			laundryOrders: ['owner', 'manager', 'front_desk', 'hk_supervisor', 'housekeeping'],
-			laundryPricesManage: ['owner', 'manager']
+			laundryPricesManage: ['owner', 'manager'],
+			reportsView: ['owner', 'manager', 'accountant'],
+			reportsLiability: ['owner', 'accountant']
 		} as const;
 		for (const [action, allowed] of Object.entries(expected)) {
 			for (const role of roles) {

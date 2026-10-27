@@ -15,6 +15,9 @@
 	const seesNightAudit = $derived(!!me.data && can(me.data, 'nightAudit', property));
 	const seesLinen = $derived(!!me.data && can(me.data, 'linenView', property));
 	const seesLaundry = $derived(!!me.data && can(me.data, 'laundryOrders', property));
+	const seesReports = $derived(!!me.data && can(me.data, 'reportsView', property));
+	const seesTaxReports = $derived(!!me.data && can(me.data, 'reportsLiability', property));
+	const seesDailyLists = $derived(!!me.data && can(me.data, 'viewReservations', property));
 	const links = $derived([
 		{ href: resolve('/(app)/p/[property]', { property }), label: 'Overview' },
 		{ href: resolve('/(app)/p/[property]/tape', { property }), label: 'Tape chart' },
@@ -33,6 +36,15 @@
 			: []),
 		...(seesNightAudit
 			? [{ href: resolve('/(app)/p/[property]/night-audit', { property }), label: 'Night audit' }]
+			: []),
+		...(seesReports
+			? [{ href: resolve('/(app)/p/[property]/reports', { property }), label: 'Reports' }]
+			: []),
+		...(seesDailyLists
+			? [{ href: resolve('/(app)/p/[property]/reports/lists', { property }), label: 'Daily lists' }]
+			: []),
+		...(seesTaxReports
+			? [{ href: resolve('/(app)/p/[property]/reports/tax', { property }), label: 'Tax reports' }]
 			: []),
 		{ href: resolve('/(app)/p/[property]/accounts', { property }), label: 'Accounts' },
 		{ href: resolve('/(app)/p/[property]/room-types', { property }), label: 'Room types' },

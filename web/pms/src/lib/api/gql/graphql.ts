@@ -36,6 +36,12 @@ export type ChangeMode =
   | 'AMOUNT'
   | 'PERCENT';
 
+/** Which stays a daily list holds. */
+export type DailyListKind =
+  | 'ARRIVALS'
+  | 'DEPARTURES'
+  | 'IN_HOUSE';
+
 /** When a deposit is due. */
 export type DepositDueType =
   /** On the business date of the booking. */
@@ -211,6 +217,19 @@ export type RenditionSize =
   | 'V720'
   | 'V1080'
   | 'XL';
+
+/** What a report breaks its totals down by. */
+export type ReportDimension =
+  | 'OUTLET'
+  | 'RESIDENCY'
+  | 'ROOM_TYPE'
+  | 'SEGMENT'
+  | 'SOURCE';
+
+/** A report emailed to the property's owners and managers. */
+export type ReportEmailKind =
+  | 'MONTHLY'
+  | 'WEEKLY';
 
 /**
  * Which reservation rooms to list. Left out, a field does not filter; an empty `statuses` or `sources`
@@ -529,6 +548,66 @@ export type QuoteQueryVariables = Exact<{
 
 
 export type QuoteQuery = { quote: { total: number, currency: string, restrictionsOk: boolean, nights: Array<{ date: string, room: number, meal: number }>, violations: Array<{ kind: ViolationKind, date: string | null, message: string }> } };
+
+export type ReportSummaryQueryVariables = Exact<{
+  propertyId: string;
+  from: string;
+  to: string;
+}>;
+
+
+export type ReportSummaryQuery = { reportSummary: { closedFrom: string | null, closedTo: string | null, notClosed: Array<string>, headline: { occupancyBp: number, adr: number, revpar: number, roomNights: number, totalRevenue: number }, lastYear: { occupancyBp: number, adr: number, revpar: number, roomNights: number, totalRevenue: number } | null, days: Array<{ businessDate: string, roomsAvailable: number, roomsSold: number, occupancyBp: number, adults: number, children: number, arrivals: number, departures: number, roomRevenue: number, mealPlanRevenue: number, posRevenue: number, feeRevenue: number, otherRevenue: number, totalRevenue: number, adr: number, revpar: number }>, breakdowns: Array<{ dimension: ReportDimension, keys: Array<{ key: string, roomNights: number, roomRevenue: number, revenue: number }> }> } };
+
+export type DailyListQueryVariables = Exact<{
+  propertyId: string;
+  date: string;
+  kind: DailyListKind;
+}>;
+
+
+export type DailyListQuery = { dailyList: Array<{ reservationRoomId: string, reservationId: string, confirmation: string, guest: string, roomNumber: string | null, arrival: string, departure: string, status: RoomStatus, adults: number, children: number }> };
+
+export type TdlReportQueryVariables = Exact<{
+  propertyId: string;
+  fyStartYear: number;
+  quarter: number;
+}>;
+
+
+export type TdlReportQuery = { tdlReport: { name: string, registrationNo: string | null, periodLabel: string, room: number, food: number, bar: number, other: number, totalTurnover: number, serviceCharge: number, vat: number, base: number, rateBp: number, tdl: number, creditExceedsSales: boolean, notClosed: boolean } };
+
+export type SsclReportQueryVariables = Exact<{
+  propertyId: string;
+  year: number;
+  quarter: number;
+}>;
+
+
+export type SsclReportQuery = { ssclReport: { returnDue: string, sltdaRegistered: boolean, exemptionNote: string | null, methodNote: string, months: Array<{ month: number, turnover: number, exemptSameMonth: number, exemptEarlierMonths: number, badDebts: number, liable: number, levy: number, foreignCash: number, due: string, notClosed: boolean }>, quarterTotals: { turnover: number, exemptSameMonth: number, exemptEarlierMonths: number, badDebts: number, liable: number, levy: number, foreignCash: number } } };
+
+export type VatReportQueryVariables = Exact<{
+  propertyId: string;
+  period: string;
+}>;
+
+
+export type VatReportQuery = { vatReport: { periodCode: string, valueOfSupply: number, outputVat: number, creditNotesValue: number, creditNotesVat: number, netValue: number, netVat: number, notClosed: boolean, schedule01: Array<{ serialNo: number, invoiceDate: string, invoiceNo: string, purchaserTin: string, purchaserName: string, description: string, valueOfSupply: number, vatAmount: number }>, schedule04: Array<{ serialNo: number, tin: string, invoiceDate: string, invoiceNo: string, noteDate: string, noteNo: string, value: number, vatAmount: number }>, timingDifference: Array<{ rateBp: number, value: number, vat: number }> } };
+
+export type ServiceChargeReportQueryVariables = Exact<{
+  propertyId: string;
+  year: number;
+  month: number;
+}>;
+
+
+export type ServiceChargeReportQuery = { serviceChargeReport: { notClosed: boolean, byOutlet: Array<{ outlet: string, collected: number, absorbed: number }>, rooms: { collected: number, absorbed: number }, other: { collected: number, absorbed: number }, total: { collected: number, absorbed: number } } };
+
+export type ReportEmailsQueryVariables = Exact<{
+  propertyId: string;
+}>;
+
+
+export type ReportEmailsQuery = { reportEmails: Array<{ kind: ReportEmailKind, enabled: boolean }> };
 
 export type AvailabilityQueryVariables = Exact<{
   propertyId: string;
@@ -1356,6 +1435,195 @@ export const QuoteDocument = new TypedDocumentString(`
   }
 }
     `, {"hash":"sha256:4382aebfc395da7beaab46f722853f59e396b51fb4bf3f70a29880c54ff33fc0"}) as unknown as TypedDocumentString<QuoteQuery, QuoteQueryVariables>;
+export const ReportSummaryDocument = new TypedDocumentString(`
+    query ReportSummary($propertyId: UUID!, $from: Date!, $to: Date!) {
+  reportSummary(propertyId: $propertyId, from: $from, to: $to) {
+    closedFrom
+    closedTo
+    notClosed
+    headline {
+      occupancyBp
+      adr
+      revpar
+      roomNights
+      totalRevenue
+    }
+    lastYear {
+      occupancyBp
+      adr
+      revpar
+      roomNights
+      totalRevenue
+    }
+    days {
+      businessDate
+      roomsAvailable
+      roomsSold
+      occupancyBp
+      adults
+      children
+      arrivals
+      departures
+      roomRevenue
+      mealPlanRevenue
+      posRevenue
+      feeRevenue
+      otherRevenue
+      totalRevenue
+      adr
+      revpar
+    }
+    breakdowns {
+      dimension
+      keys {
+        key
+        roomNights
+        roomRevenue
+        revenue
+      }
+    }
+  }
+}
+    `, {"hash":"sha256:bf27a830787670ba4081d3b180dedebe54b8a058b7dae2a06ef616b5e61ba27d"}) as unknown as TypedDocumentString<ReportSummaryQuery, ReportSummaryQueryVariables>;
+export const DailyListDocument = new TypedDocumentString(`
+    query DailyList($propertyId: UUID!, $date: Date!, $kind: DailyListKind!) {
+  dailyList(propertyId: $propertyId, date: $date, kind: $kind) {
+    reservationRoomId
+    reservationId
+    confirmation
+    guest
+    roomNumber
+    arrival
+    departure
+    status
+    adults
+    children
+  }
+}
+    `, {"hash":"sha256:1e136c235d7be408886071a494a1cbcc45755144718b66e902eb2fd58b164e2e"}) as unknown as TypedDocumentString<DailyListQuery, DailyListQueryVariables>;
+export const TdlReportDocument = new TypedDocumentString(`
+    query TdlReport($propertyId: UUID!, $fyStartYear: Int!, $quarter: Int!) {
+  tdlReport(propertyId: $propertyId, fyStartYear: $fyStartYear, quarter: $quarter) {
+    name
+    registrationNo
+    periodLabel
+    room
+    food
+    bar
+    other
+    totalTurnover
+    serviceCharge
+    vat
+    base
+    rateBp
+    tdl
+    creditExceedsSales
+    notClosed
+  }
+}
+    `, {"hash":"sha256:c01d213bf09ffaef84f1c29c81b712641d54495cfe0fbb55289d96328cee667c"}) as unknown as TypedDocumentString<TdlReportQuery, TdlReportQueryVariables>;
+export const SsclReportDocument = new TypedDocumentString(`
+    query SsclReport($propertyId: UUID!, $year: Int!, $quarter: Int!) {
+  ssclReport(propertyId: $propertyId, year: $year, quarter: $quarter) {
+    months {
+      month
+      turnover
+      exemptSameMonth
+      exemptEarlierMonths
+      badDebts
+      liable
+      levy
+      foreignCash
+      due
+      notClosed
+    }
+    quarterTotals {
+      turnover
+      exemptSameMonth
+      exemptEarlierMonths
+      badDebts
+      liable
+      levy
+      foreignCash
+    }
+    returnDue
+    sltdaRegistered
+    exemptionNote
+    methodNote
+  }
+}
+    `, {"hash":"sha256:69b00e55049099d661a863b8f9073d5558a40a34ab144042981a9a553f696871"}) as unknown as TypedDocumentString<SsclReportQuery, SsclReportQueryVariables>;
+export const VatReportDocument = new TypedDocumentString(`
+    query VatReport($propertyId: UUID!, $period: String!) {
+  vatReport(propertyId: $propertyId, period: $period) {
+    periodCode
+    valueOfSupply
+    outputVat
+    creditNotesValue
+    creditNotesVat
+    netValue
+    netVat
+    schedule01 {
+      serialNo
+      invoiceDate
+      invoiceNo
+      purchaserTin
+      purchaserName
+      description
+      valueOfSupply
+      vatAmount
+    }
+    schedule04 {
+      serialNo
+      tin
+      invoiceDate
+      invoiceNo
+      noteDate
+      noteNo
+      value
+      vatAmount
+    }
+    timingDifference {
+      rateBp
+      value
+      vat
+    }
+    notClosed
+  }
+}
+    `, {"hash":"sha256:8f8bb54679443e250807d25014e83036ab1454327abbb879ee137e3858257e0b"}) as unknown as TypedDocumentString<VatReportQuery, VatReportQueryVariables>;
+export const ServiceChargeReportDocument = new TypedDocumentString(`
+    query ServiceChargeReport($propertyId: UUID!, $year: Int!, $month: Int!) {
+  serviceChargeReport(propertyId: $propertyId, year: $year, month: $month) {
+    byOutlet {
+      outlet
+      collected
+      absorbed
+    }
+    rooms {
+      collected
+      absorbed
+    }
+    other {
+      collected
+      absorbed
+    }
+    total {
+      collected
+      absorbed
+    }
+    notClosed
+  }
+}
+    `, {"hash":"sha256:c57ca4acccc15c6e1adb765a0d2f4933c3f31ecbd32b2c70abf110f455aff37c"}) as unknown as TypedDocumentString<ServiceChargeReportQuery, ServiceChargeReportQueryVariables>;
+export const ReportEmailsDocument = new TypedDocumentString(`
+    query ReportEmails($propertyId: UUID!) {
+  reportEmails(propertyId: $propertyId) {
+    kind
+    enabled
+  }
+}
+    `, {"hash":"sha256:429d44ca1ef7e0ad567a2b57075c37662a6f8f2a84c26792962a97f055c28a0c"}) as unknown as TypedDocumentString<ReportEmailsQuery, ReportEmailsQueryVariables>;
 export const AvailabilityDocument = new TypedDocumentString(`
     query Availability($propertyId: UUID!, $checkIn: Date!, $checkOut: Date!, $adults: Int!, $children: Int!, $residency: Residency!) {
   availability(
