@@ -166,6 +166,9 @@ Run by hand, because shared CI machines make timings noisy, and one at a time (`
 # an invoice's PDF is ready (pdf_key set) in under 2 s from the issue response; this one runs the release media-svc too
 # the night audit's close for 200 rooms (160 in house, with POS bills and payments): median of three days under 10 s
 # nightAudit for the same 200 rooms: p95 under 100 ms
+# reportSummary for 31 days of the same 200 rooms: p95 under 100 ms
+# tdlReport and ssclReport for a quarter of its folios, SSCL reading a folio open since the quarter before: p95 under 300 ms each
+# the close that ends a month and a quarter queues its reports (render_reports) in under 5 s
 DATABASE_URL=$DATABASE_OWNER_URL cargo test --release -p core-api --test perf -- --ignored --nocapture --test-threads=1
 
 # a 30 s 1080p clip is ready (every rendition and the poster) in under 90 s, and a 60 s 4K HDR clip in under 5 min;
@@ -625,6 +628,70 @@ This script sets up a hotel and walks the owner through the settings pages, a ra
     Newest first: `membership.revoked`, `membership.grants_changed` (previous and new grants), `invitation.accepted`, `invitation.revoked`, `invitation.resent`, `invitation.created`, and `property.updated` (with the new name). No row holds a token.
 
 Not exercised here: an invitation's expiry (a token is refused after 7 days and a lazily expired one reads `expired`), the concurrent-demotion race on the last owner (a per-tenant advisory lock; `modules/identity/tests`), SES itself (the signing is tested against AWS's published SigV4 vector; sending needs a verified identity), and the isolation of `invitation` (`crates/db/tests/isolation.rs`). The browser flows are in `web/pms/tests/e2e/staff.spec.ts`.
+
+### Trying reports by hand
+
+This script sets up its own small hotel, closes a week of it, and reads what the close produced: the weekly email with its PDF, the Reports pages, and the TDL, SSCL, VAT and service charge reports. It needs the media services (media-svc renders the PDFs and stores them in RustFS) and jobs-svc (it runs the close and sends the mail). Use the owner throughout. D is today, the business date the property starts on.
+
+1. Start the services and apply the migrations (through `0044`), as the schema owner, each in its own shell with the exports from Development, including `PUSH_ENDPOINT_REPORT_RENDER` and `PUSH_ENDPOINT_MAIL_SEND`. Start jobs-svc from the repository root with its tick off, so that nothing closes until you ask (see [jobs-svc](#jobs-svc)); the dev outbox is then `target/mail-outbox` (see [Email](#email)):
+
+   ```sh
+   docker compose up -d postgres              # or your own Postgres on :5432
+   deploy/dev/rustfs.sh start
+   cargo run -p core-api -- migrate
+   cargo run -p core-api              # http://localhost:8080
+   cargo run -p media-svc             # http://localhost:8090
+   JOBS_TICK=off cargo run -p jobs-svc   # http://localhost:8091
+   cd web/pms && bun run dev          # http://localhost:5173
+   ```
+
+2. The hotel. Add a property coded `RPT` named `Reef Hotel`. On **Room types** add `DLX` (2 adults, 1 child, max 3) and on **Rooms** the rooms `101` to `103`. On **Rate plans** add `BAR` (standard, **LKR**, segment IBE, meal plan RO only), and on **Rates** bulk-change it to `30000` a night for the next three weeks. Everything is in rupees, so no exchange rate is needed.
+3. The tax settings. Open **Settings**, the property, **Taxes and invoices**. Tick **VAT-registered**, set **TIN** to `300767028`, **SLTDA licence** to `SLTDA/2026/0042`, **TDL registration number** to `TDL/2026/0042` and leave **VAT return period** at `Quarterly`, then **Save settings** (`Saved.`). Then **Outlets**: under **Add an outlet** give Code `BAR`, Name `Bar`, **Service charge applies** ticked, **Report group** `Bar`, **Add outlet**. The table's **Report group** column reads `Bar`; this decides which line of SLTDA's Form A the outlet's sales fall under (the default is `Food`), and a change applies from the business date on, so a closed quarter is never restated.
+4. The first day. On **Reservations** make three reservations for today, `BAR · Room only`, 2 adults, a new guest each: `RPT-000001` and `RPT-000002` for 8 nights and `RPT-000003` for 1 night. **Check in** each, then click **Post tonight's charges**. Post a Rs. 10,000.00 bar bill to `RPT-000001` with `curl` (as in step 8 of [Trying folios by hand](#trying-folios-by-hand); the amounts are minor units):
+
+   ```sh
+   API=http://localhost:8080
+   curl -s -c /tmp/gf-jar -H 'x-goodfolk-csrf: 1' -H 'content-type: application/json' \
+     -d '{"email":"owner@example.com","password":"<the owner password>"}' $API/api/v1/auth/login
+   export DATABASE_OWNER_URL=postgres://goodfolk_owner:goodfolk_owner_dev@localhost:5432/goodfolk
+   eval "$(bun -e 'const sql = new Bun.SQL(process.env.DATABASE_OWNER_URL); const [r] = await sql`select rr.property_id, rr.id from reservation_room rr join reservation r on r.id = rr.reservation_id where r.confirmation_no = ${"RPT-000001"}`; console.log(`PROPERTY=${r.property_id} STAY=${r.id}`); await sql.close()')"
+   curl -s -b /tmp/gf-jar -H 'x-goodfolk-csrf: 1' -H 'content-type: application/json' -H 'Idempotency-Key: rpt-bar-0001' \
+     -d '{"outlet":"BAR","bill_no":"B-1","currency":"LKR","items":[{"description":"Club sandwich","quantity":1,"unit_net":1000000}],"target":{"reservation_room":"'$STAY'"}}' \
+     $API/api/v1/properties/$PROPERTY/pos-bills
+   ```
+
+   Open `RPT-000003`, **Folios**, **Room 103**: **Take payment** the whole balance in `LKR` cash until Balances reads `settled`, then **Issue invoice**. It is a tax invoice, since the property is VAT-registered.
+5. Close the week. On **Night audit** click **Close the day**. The tracker shows six steps; the last, `Queue reports`, is the new one. The business date is now D + 1, when `RPT-000003` is due out: **Check out** it on the review, then **Close the day**. Keep closing, one day at a time, until the day you have just closed is a **Sunday** (one close if D is a Sunday, at most seven). Weeks run Monday to Sunday, and a week's report is made once its Sunday is closed. The first week is a part week: it starts on D, and the days of it before D are not closed.
+6. The email. Within a few seconds of the Sunday's close, media-svc has rendered the week's PDF and jobs-svc has mailed it to the property's owners and managers, which today is you:
+
+   ```sh
+   ls target/mail-outbox
+   jq -r '.to, .subject, .text, (.attachments[] | .filename)' "$(ls -t target/mail-outbox/*.json | head -1)"
+   ```
+
+   The subject is `Reef Hotel weekly report, <the week, such as 19–25 Oct 2026>`. The body names the property and the week and gives four figures, `Occupancy`, `ADR`, `RevPAR` and `Total revenue`; the PDF is attached as `weekly-report-<the Monday>.pdf`, and the dev mailer writes it beside the message as `<uuid>-weekly-report-<the Monday>.pdf`. Open it. A weekly report is made once for each property and week, so closing again, or a close that is retried, sends nothing more. A monthly report goes out the same way once a month's last day is closed, as `monthly-report-<the 1st>.pdf`. The close also stores the reports of any quarter or month it ends (TDL, SSCL, VAT and service charge), which are not emailed; this week ends none of them. What it stored:
+
+   ```sh
+   bun -e 'const sql = new Bun.SQL(process.env.DATABASE_OWNER_URL); console.table(await sql`select kind, period_start, period_end, status, mail from report where kind <> ${"on_demand"} order by created_at`); await sql.close()'
+   ```
+
+   One `weekly` row, `ready`, with `mail` true.
+7. The Reports page. Open **Reports** in the property's nav (owners, managers and accountants). The heading is `Reports`, the **Range** buttons are `This week`, `Last week`, `This month`, `Last month` and `Custom`, and `Last week` is chosen: the week you just closed. Because its first days were before D, a notice reads `Not closed yet: figures cover <D>–<the Sunday>`. Under **Headline figures** the cards are `Occupancy`, `ADR`, `RevPAR`, `Room nights sold` and `Total revenue` (in whole rupees, net of tax, with `Last year:` under each only when a full year of closed days exists for it, which it does not here). The **Days** table has a row for each day of the week, `Not closed yet` for those before D; and then the breakdowns `By segment`, `By source`, `By residency`, `By room type` and `By outlet`. **Download PDF** (`Preparing the PDF…`) opens the same figures as a PDF in a new tab. Choose `Custom` with **From** and **To** after the Sunday: `Not closed yet: no day of this range is closed`, and every day reads `Not closed yet`; a range over 366 days is refused (`A range is at most 366 days.`). Past days never change, and open days are never estimated.
+8. Daily lists. **Daily lists** (also in the front desk's nav) shows the stays of one day, by room number. Choose **Date** D and the `Arrivals` tab: `Arrivals on <D> (3)` with Room, Guest, Booking, Stay, Guests and Status. `In-house` and `Departures` (`RPT-000003` on D + 1) work the same, and **Print** and **Download PDF** give the list on paper.
+9. Tax reports. Open **Tax reports** (owners and accountants only; a manager's nav has no such link, and the server refuses the pages and downloads). Its tabs are `TDL`, `SSCL`, `VAT` and `Service charge`, each with a list of **Periods**; click one to read it.
+   - **TDL.** Choose the quarter D falls in, such as `July – September (2026)`. It reads `Not closed yet: figures cover the closed days only` (a quarter is final only when its last day is closed), then `Reef Hotel · TDL registration TDL/2026/0042 · July – September (2026)` and **Form A**, in SLTDA's order: `Room Sales`, `Food Sales`, `Bar Sales` (`Rs 13,048`: the bill's `10,000.00` with its `1,000.00` service charge and `2,047.95` VAT), `Other Sales`, `Total Turnover`, `Deduction: Service Charge` (`Rs 1,000`), `Deduction: VAT`, `Total Turnover less deductions` (the room nights' net, `Rs 30,000` each, plus the bar's `Rs 10,000`, give or take a rupee of rounding) and `TDL at 0.5%`: the rate follows the quarter's own base (`1%` over Rs 3,000,000), not the billing setting. TDL and SSCL passed on to guests are not sales and appear nowhere. **Download PDF** gives the form with the footer (due before the end of the following quarter, pay through GovPay, a place to sign). On **Outlets** change `BAR`'s **Report group** to `Food`: the next business date's sales fall under `Food Sales`, and the days already closed stay under `Bar Sales`.
+   - **SSCL.** Choose the same quarter by calendar (`July – September (2026)`). The table has a row for each month with `Turnover`, `Exempt, folios settled this month`, `Exempt, turnover of earlier months`, `Bad debts` (always Rs 0 until the system writes off debts), `Liable turnover`, `SSCL` (2.5%), `Foreign cash` and `Payment due` (the 20th of the following month, and for the third month the 20th after the quarter), and a `Quarter` footer with `Return due <the 20th of the month after the quarter>`. Nothing is exempt here, since every payment was in rupees; the note under it states how an exemption is measured. Clear **SLTDA licence** on **Taxes and invoices** and reload: the note reads `Not SLTDA registered: no exemption`. Put the licence back.
+   - **VAT.** Open the `VAT` tab; periods carry IRD's code, such as `July – September (2026) · 2630` (`YYQ0`; a monthly filer's are `YYQM`, such as `2632`). **VAT return** gives `Value of supply`, `Output VAT`, `Credit notes issued`, `Net value (cage A)` and `Net VAT (cage 0)`, in whole rupees. **Schedule 01** has the eight columns IRD's e-filing takes. No purchaser here has a TIN, so there is one combined row: purchaser's TIN `100902885`, description `Inclusive Invoices at 18%`, invoice number `INCL01_2630`, dated the quarter's last day. Click **Download Schedule 01 (CSV)**: the file is `300767028_VAT_SCHEDULE01_2630_<the business date as YYYYMMDD>_ORIGINAL_V1.csv`, a header row `Serial No,Invoice Date,Tax Invoice No,Purchaser's TIN,Name of the Purchaser,Description,Value of supply,VAT Amount` and the row, dates as `MM/DD/YYYY`, ready to upload to IRD. **Download Schedule 04 (CSV)** is the same for credit notes (none yet). On a property that is not VAT-registered the tab says `This property is not VAT registered`.
+   - **Service charge.** Choose the month. `Rooms` `Rs 0` (the preset charges service charge only at outlets), `Outlet BAR` `Rs 1,000` under `Collected (on the bill)`, and `Total`. It is a statement of what was collected, for the hotel's own staff distribution; it does not work out who gets what.
+10. Turn an email off. At the foot of **Reports**, `Report emails for Reef Hotel` has the checkboxes **Weekly** and **Monthly**, both ticked. Untick **Weekly**: it is saved at once and still unticked after a reload, and a failed save puts the tick back with the server's message. From the next weekly report you receive none for this property; the others still do, and the report is still made and stored. The setting is yours alone and per property:
+
+    ```sh
+    bun -e 'const sql = new Bun.SQL(process.env.DATABASE_OWNER_URL); console.table(await sql`select user_id, property_id, kind, enabled from report_mail_pref`); await sql.close()'
+    ```
+
+    One row, `weekly`, `enabled` false (no row means on). Tick it again to turn it back on.
+
+Not exercised here: a render that fails (the report is stored as `failed`, the owners and managers see the banner `Reports: …` and the next tick or close queues it again), a catch-up close after a long gap (it renders every older period and emails only the one that just ended), the SSCL exemption for foreign-currency card and bank-transfer payments with its earlier-month line (`modules/reports/tests/sscl.rs`), credit notes in Schedule 04 and purchaser TINs in Schedule 01 (`modules/reports/tests/vat.rs`), the 0.5% and 1% TDL boundary with SLTDA's worked example (`modules/reports/tests/tdl.rs`), and exactly-once mail (`crates/core-api/tests/reports.rs`, `crates/jobs-svc/tests`). The browser flows are in `web/pms/tests/e2e/reports.spec.ts`.
 
 ### Configuration
 

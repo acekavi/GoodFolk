@@ -314,11 +314,34 @@ The owner split the original 7b in two (2026-10-20): the night audit, `jobs-svc`
   - **`start_run` takes no expected date.** A manual close of D created and finished inside one tick's round trip would let that tick start D + 1's automatic close early; the tick re-checks the date just before, so this needs a close faster than one query.
   - **A POS bill settled at the outlet still cannot be refunded or voided** (from 7a): the review lists these bills, but their refunds are not built.
 
-## Phase 7d — Reports and liability reports ([spec outline](specs/phase-7d-reports.md))
+## Phase 7d — Reports and liability reports ([spec](specs/phase-7d-reports.md), [plan](superpowers/plans/2026-10-26-phase-7d-reports.md))
 
-- Core reports, on screen and as PDF, read from 7b's `daily_stats` and `daily_stats_breakdown`: occupancy, ADR and RevPAR over a range; revenue by segment, source, residency, room type and outlet; arrivals, departures and in-house lists.
-- Liability reports: TDL quarterly (SLTDA), SSCL monthly and quarterly, VAT per period, service charge collected.
-- The close gains a `render_reports` step that queues the day's PDFs from its committed snapshot, rendered by media-svc and stored privately.
+Migrations `0041`–`0044`. New module `modules/reports`; routes in `crates/core-api/src/routes/reports.rs`; media-svc gains `/render-report` (topic `report-render`).
+
+- **Everyday reports: done.** `reportSummary(propertyId, from, to)` (at most 366 days) reads 7b's snapshots: occupancy, ADR, RevPAR, room nights and revenue with the same period last year when a full year of closed days exists, each day, and the breakdowns by room type, segment, source, residency and outlet. Days not closed yet are listed, never estimated. `dailyList` gives arrivals, departures and in-house for a day. `ReportsView`: owner, manager, accountant; the daily lists also through `ReservationsView`.
+- **Liability reports: done**, from closed business dates, `ReportsLiability` (owner, accountant). **TDL** in SLTDA's Form A by quarter of the April–March year (1%, or 0.5% when the base is not over Rs 3,000,000; the fixture reproduces SLTDA's worked example, 34,535). **SSCL** by calendar quarter, month by month, with the foreign-currency exemption (item 10) for SLTDA-licensed properties. **VAT** per return period with IRD's Schedule 01 and 04 CSVs. **Service charge** collected per month.
+- **PDFs and emails: done.** Typst templates in media-svc, stored privately; every report downloads on demand. The close's `render_reports` step (after `advance_business_date`, so a failure never holds the date) stores each period that just ended and emails the weekly and monthly report to owners and managers, once per property, kind and period, unless that person turned it off. A failure raises the `reports` ops alert and the next tick re-queues it.
+- **UI: done.** **Reports** (range, headline figures, days, breakdowns, **Download PDF**, and the signed-in user's **Weekly** and **Monthly** email switches), **Daily lists**, and **Tax reports** (TDL, SSCL, VAT with both CSVs, Service charge). Settings gain the TDL registration number, the VAT return period and an outlet **Report group**.
+- **Deviations and rulings**, each made during the phase:
+  - **Daily PDFs dropped** (spec): only the weekly, monthly and liability reports are rendered.
+  - **SSCL settlement:** a folio is settled when its balance is zero in every currency; the exempt share is measured then. A transfer carries its source folio's share one level deep (a deposit moved to its stay), a charge to account lowers it, and a refund nets the share. Earlier-month lines are read only for folios settling in the quarter.
+  - **Form A** rounds each line and deduction to whole rupees once, and the totals follow, so the printed form adds up; the TDL floors at 0 with a flag when credits exceed sales.
+  - **VAT totals** come from every supply on closed dates (absorbed VAT included), net of credit notes; Schedule 01's TIN rows come from tax invoices and the combined row is the rest, clamped at 0, with a **timing difference** shown for invoices issued in a later period.
+  - **A catch-up close renders but mails only the period just ended**, so a late or first close never floods the inbox.
+  - **`setReportEmail` is a REST `PUT`**, and the email switches are on the Reports page, as there is no per-user settings page.
+  - **An outlet's report group change applies from the next unclosed business date**, kept as a history.
+  - **Migrations beyond the spec:** `0042` (a generated `invoice.issued_on` and its index, for the VAT period scan), `0043` (`app.jobs_unrendered_runs`, for the tick), `0044` (`report.mail`).
+  - **The shared line reader reads taxes in a second query** (a hash join) instead of a lateral lookup per line, which was three times slower for a quarter's lines; the night audit's daily figures are unchanged.
+- **Performance gates: done**, release builds (200 rooms, 160 guest folios, a quarter of two lines a day each, one folio open since the quarter before and settled in it):
+
+  | Gate | Spec | Measured |
+  |---|---|---|
+  | `reportSummary`, 31 days | p95 < 100 ms | p95 5.5 ms (p50 4.7) |
+  | `tdlReport`, a quarter | p95 < 300 ms | p95 213.6 ms (p50 209; 387 before the tax read was changed) |
+  | `ssclReport`, a quarter | p95 < 300 ms | **p95 311 ms (p50 306): over the gate** (491 before the tax read was changed) |
+  | `render_reports` in a close ending a month and a quarter | < 5 s | 0.71 s for the step (0.81 s for the whole close) |
+
+- **Still open:** `ssclReport` for a quarter of 30,000 lines misses its 300 ms gate by about 10 ms: it reads the quarter's lines (about 150 ms, 60,000 tax rows) and the settlements (about 95 ms). The next step is a `business_date` column on `folio_line_tax`, or one read shared by the lines and the settlements. The final layout of the IRD tax invoice (ARCHITECTURE §14); input VAT and RAMIS's web API (out of scope); bad debts are always Rs 0 until the system writes off debts.
 
 ## Linen and guest laundry (moved from Phase 5) ([spec](specs/laundry.md), [plan](superpowers/plans/2026-10-24-laundry.md))
 
