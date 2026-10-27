@@ -151,6 +151,10 @@ async fn ses_raw_mime_with_attachment() {
     let (head, _) = mime.split_once("\r\n\r\n").unwrap();
     let headers: Vec<&str> = head.split("\r\n").collect();
     assert!(headers.contains(&"From: hello@example.com"), "{head}");
+    let date = headers.iter().find_map(|h| h.strip_prefix("Date: ")).unwrap();
+    assert!(time::OffsetDateTime::parse(date, &time::format_description::well_known::Rfc2822).is_ok(), "{date}");
+    let id = headers.iter().find_map(|h| h.strip_prefix("Message-ID: ")).unwrap();
+    assert!(id.starts_with('<') && id.ends_with("@example.com>") && id.len() > 20, "{id}");
     assert!(headers.contains(&"To: kamala@example.com"), "{head}");
     assert!(headers.contains(&"MIME-Version: 1.0"), "{head}");
     let subject = format!("Subject: =?UTF-8?B?{}?=", STANDARD.encode("Galle weekly report, 19–25 Oct 2026"));
@@ -168,6 +172,23 @@ async fn ses_raw_mime_with_attachment() {
                       Content-Disposition: attachment; filename=\"weekly-report-2026-10-19.pdf\"\r\n\
                       Content-Transfer-Encoding: base64";
     assert_eq!(part_body(&mime, attachment), pdf);
+}
+
+/// A sender's display name that is not ASCII is encoded words; its address stays as it is.
+#[tokio::test]
+async fn a_non_ascii_sender_name_is_encoded() {
+    let (endpoint, seen) = server(StatusCode::OK, None).await;
+    let from = "Lagoon Hôtels <hello@example.com>";
+    let mailer = SesMailer::new("ap-south-1", from, credentials()).unwrap().with_endpoint(&endpoint);
+    let attachment = Attachment { filename: "a.pdf".into(), content_type: "application/pdf".into(), bytes: vec![1] };
+
+    mailer.send(&Message { attachments: vec![attachment], ..message() }).await.unwrap();
+
+    let calls = seen.0.lock().unwrap().clone();
+    let raw = STANDARD.decode(calls[0].2["Content"]["Raw"]["Data"].as_str().unwrap()).unwrap();
+    let mime = String::from_utf8(raw).unwrap();
+    let encoded = format!("From: =?UTF-8?B?{}?= <hello@example.com>\r\n", STANDARD.encode("Lagoon Hôtels"));
+    assert!(mime.contains(&encoded), "{mime}");
 }
 
 #[tokio::test]

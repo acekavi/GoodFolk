@@ -76,7 +76,8 @@ impl Mailer for SesMailer {
                 "Body": { "Text": content(&message.text), "Html": content(&message.html) },
             } })
         } else {
-            let raw = mime::raw(&self.from, message, &Uuid::now_v7().simple().to_string())?;
+            let id = Uuid::now_v7().simple().to_string();
+            let raw = mime::raw(&self.from, message, &id, time::OffsetDateTime::now_utc())?;
             json!({ "Raw": { "Data": STANDARD.encode(raw) } })
         };
         let body = json!({

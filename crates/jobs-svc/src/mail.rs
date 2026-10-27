@@ -262,7 +262,9 @@ fn render_report(row: &ReportRow, pdf: Vec<u8>) -> Message {
     } else {
         ("weekly", date_range(row.period_start, row.period_end))
     };
-    let subject = format!("{} {kind} report, {period}", row.property_name);
+    // A control character in the name would break the subject header; it reads as a space.
+    let property: String = row.property_name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let subject = format!("{property} {kind} report, {period}");
     let figures: Vec<(&str, &str)> = EMAILED_FIGURES
         .iter()
         .filter_map(|label| {
@@ -321,8 +323,26 @@ fn date_range(from: Date, to: Date) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{date_range, month_name};
+    use super::{ReportRow, date_range, month_name, render_report};
     use time::macros::date;
+
+    #[test]
+    fn a_control_character_in_the_property_name_reads_as_a_space() {
+        let row = ReportRow {
+            kind: "weekly".into(),
+            period_start: date!(2026 - 10 - 19),
+            period_end: date!(2026 - 10 - 25),
+            pdf_key: None,
+            headline: None,
+            property_name: "Hotel\r\nGAL\t".into(),
+            email: "kamala@example.com".into(),
+            display_name: "Kamala".into(),
+        };
+
+        let message = render_report(&row, b"%PDF-".to_vec());
+
+        assert_eq!(message.subject, "Hotel  GAL  weekly report, 19–25 Oct 2026");
+    }
 
     #[test]
     fn periods_print_as_the_subject_names_them() {

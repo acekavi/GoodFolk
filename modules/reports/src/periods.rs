@@ -12,7 +12,7 @@ use crate::document::{RenderRequest, document};
 use crate::liability::sscl::CalendarQuarter;
 use crate::liability::tdl::FiscalQuarter;
 use crate::liability::vat::VatPeriod;
-use crate::store::{ReportKind, clear_reports_alert, queue_render};
+use crate::store::{ReportKind, clear_reports_alert, period_failed, queue_render};
 use db::{TenantId, Tx};
 use time::{Date, Duration, Month};
 use uuid::Uuid;
@@ -71,8 +71,12 @@ pub async fn due_periods(
 }
 
 /// Queues the render of each of `property`'s [`due_periods`] closed through `closed_through`, with its data computed
-/// now (a failed one is queued again) and marked to be mailed when it is ready if [`mailed`] says so, and clears the
-/// `reports` alert unless a report still failed. Returns how many were queued. The night audit's `render_reports` step runs it.
+/// now (a failed one is queued again) and marked to be mailed when it is ready if [`mailed`] says so. Returns how many
+/// were queued. The night audit's `render_reports` step runs it.
+///
+/// Each period is built in a savepoint of its own, so one that cannot be built never holds back the others: it is
+/// rolled back and stored as a failed report naming why ([`period_failed`]), which raises the `reports` alert and is
+/// queued again by a later close. The alert clears only when no report of the property has failed.
 pub async fn render_due(
     tx: &mut Tx,
     tenant: TenantId,
@@ -80,31 +84,54 @@ pub async fn render_due(
     closed_through: Date,
 ) -> Result<usize, ReportsError> {
     let due = due_periods(tx, property, closed_through).await?;
+    let mut queued = 0;
     for &(kind, from, to) in &due {
-        let report = document(tx, property, request(kind, from, to)).await?;
-        let id = queue_render(
-            tx,
-            tenant,
-            property,
-            kind,
-            report.period_start,
-            report.period_end,
-            report.template,
-            report.data,
-        )
-        .await?;
-        sqlx::query("update report set mail = $2 where id = $1")
-            .bind(id)
-            .bind(mailed(kind, to, closed_through))
-            .execute(&mut **tx)
-            .await?;
+        let request = request(kind, from, to);
+        sqlx::query("savepoint render_period").execute(&mut **tx).await?;
+        match queue_period(tx, tenant, property, kind, request, mailed(kind, to, closed_through)).await {
+            Ok(()) => {
+                sqlx::query("release savepoint render_period").execute(&mut **tx).await?;
+                queued += 1;
+            }
+            Err(error) => {
+                sqlx::query("rollback to savepoint render_period").execute(&mut **tx).await?;
+                let reason = match error {
+                    ReportsError::Database(error) => {
+                        tracing::error!(%property, kind = kind.as_str(), %from, %to, %error, "building a report failed");
+                        "a database error stopped it; see the logs".to_owned()
+                    }
+                    other => {
+                        tracing::warn!(%property, kind = kind.as_str(), %from, %to, error = %other, "building a report failed");
+                        other.to_string()
+                    }
+                };
+                period_failed(tx, tenant, property, kind, from, to, request.template(), &reason).await?;
+            }
+        }
     }
     clear_reports_alert(tx, property).await?;
-    Ok(due.len())
+    Ok(queued)
+}
+
+/// Builds the report of `request` from the closed days and queues its render, to be mailed when ready if `mail`.
+async fn queue_period(
+    tx: &mut Tx,
+    tenant: TenantId,
+    property: Uuid,
+    kind: ReportKind,
+    request: RenderRequest,
+    mail: bool,
+) -> Result<(), ReportsError> {
+    let report = document(tx, property, request).await?;
+    let id =
+        queue_render(tx, tenant, property, kind, report.period_start, report.period_end, report.template, report.data)
+            .await?;
+    sqlx::query("update report set mail = $2 where id = $1").bind(id).bind(mail).execute(&mut **tx).await?;
+    Ok(())
 }
 
 /// Whether the close emails the report of `kind` ending `period_end` once it is ready: only a weekly or monthly one
-/// whose period ended within the 7 days through `closed_through`, the period that just finished. A catch-up over
+/// whose period ended on `closed_through` or in the 6 days before it, the period that just finished. A catch-up over
 /// older periods renders and stores them, and mails none, so a late or first close never floods the inbox.
 fn mailed(kind: ReportKind, period_end: Date, closed_through: Date) -> bool {
     matches!(kind, ReportKind::Weekly | ReportKind::Monthly) && period_end >= closed_through - Duration::days(6)

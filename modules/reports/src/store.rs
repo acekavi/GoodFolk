@@ -245,17 +245,57 @@ pub async fn report_failed(tx: &mut Tx, tenant: TenantId, report: Uuid, reason: 
     .await?;
     let Some((property, template, from, to)) = failed else { return Ok(()) };
     let template: ReportTemplate = serde_json::from_value(template).map_err(|err| sqlx::Error::Decode(err.into()))?;
-    let name = match template {
+    let message = format!("The {} report PDF for {from} to {to} could not be made", template_name(template));
+    audit::alerts::raise(tx, tenant, property, AlertKind::Reports, &message).await?;
+    Ok(())
+}
+
+/// Records that the close could not build `property`'s `kind` report of `from` to `to` (laid out by `template`), for
+/// `reason` (cut to 2000 characters): the report is stored `failed`, with no data, so a later close queues it again,
+/// and the property's `reports` alert names it.
+#[allow(clippy::too_many_arguments, reason = "the report's key, its template and why it failed")]
+pub(crate) async fn period_failed(
+    tx: &mut Tx,
+    tenant: TenantId,
+    property: Uuid,
+    kind: ReportKind,
+    from: Date,
+    to: Date,
+    template: ReportTemplate,
+    reason: &str,
+) -> Result<(), ReportsError> {
+    let reason: String = reason.chars().take(MAX_ERROR_CHARS).collect();
+    sqlx::query(
+        "insert into report (id, tenant_id, property_id, kind, period_start, period_end, data, status, error)
+         values ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)
+         on conflict (property_id, kind, period_start) where kind <> 'on_demand'
+         do update set status = 'failed', error = excluded.error",
+    )
+    .bind(Uuid::now_v7())
+    .bind(tenant.0)
+    .bind(property)
+    .bind(kind.as_str())
+    .bind(from)
+    .bind(to)
+    .bind(json!({ "template": template, "data": null }))
+    .bind(&reason)
+    .execute(&mut **tx)
+    .await?;
+    let message = format!("The {} report for {from} to {to} could not be built: {reason}", template_name(template));
+    audit::alerts::raise(tx, tenant, property, AlertKind::Reports, &message).await?;
+    Ok(())
+}
+
+/// How an alert names a report laid out by `template`.
+fn template_name(template: ReportTemplate) -> &'static str {
+    match template {
         ReportTemplate::Summary => "summary",
         ReportTemplate::DailyList => "daily list",
         ReportTemplate::TdlFormA => "TDL",
         ReportTemplate::Sscl => "SSCL",
         ReportTemplate::Vat => "VAT",
         ReportTemplate::ServiceCharge => "service charge",
-    };
-    let message = format!("The {name} report PDF for {from} to {to} could not be made");
-    audit::alerts::raise(tx, tenant, property, AlertKind::Reports, &message).await?;
-    Ok(())
+    }
 }
 
 /// A report emailed to owners and managers.

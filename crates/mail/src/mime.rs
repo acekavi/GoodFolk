@@ -1,9 +1,12 @@
 //! A message as RFC 5322 raw MIME, for SES's `Content.Raw`: `multipart/mixed`, holding a `multipart/alternative` of
 //! the text and the HTML, then each attachment. Every body is base64 in lines of 76 characters, every line ends in
-//! CRLF, and a subject that is not ASCII is RFC 2047 encoded words.
+//! CRLF, and a subject or sender's name that is not ASCII is RFC 2047 encoded words. The message carries its `Date`
+//! and a `Message-ID` in the sender's domain.
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc2822;
 
 use crate::dev::safe_filename;
 use crate::{MailError, Message};
@@ -14,21 +17,29 @@ const WORD_BYTES: usize = 45;
 /// RFC 2045's longest base64 line.
 const LINE_CHARS: usize = 76;
 
-/// `message` from `from` as raw MIME, its parts separated by boundaries made from `boundary` (which must not occur in
-/// the message, as base64 and the headers here cannot hold `=_`). `Permanent` when `from`, the recipient or the
-/// subject holds a line break, which would start a header of its own.
-pub(crate) fn raw(from: &str, message: &Message, boundary: &str) -> Result<String, MailError> {
+/// `message` from `from` as raw MIME sent at `now`, with `id` (letters and digits, unique per message) making its
+/// `Message-ID` and its parts' boundaries (which cannot occur in the message, as base64 and the headers here cannot
+/// hold `=_`). `Permanent` when `from`, the recipient or the subject holds a line break, which would start a header of
+/// its own.
+pub(crate) fn raw(from: &str, message: &Message, id: &str, now: OffsetDateTime) -> Result<String, MailError> {
     for (name, value) in [("sender", from), ("recipient", &message.to), ("subject", &message.subject)] {
         if value.contains(['\r', '\n']) {
             return Err(MailError::Permanent(format!("the {name} holds a line break")));
         }
     }
-    let (mixed, alternative) = (format!("=_mixed_{boundary}"), format!("=_alt_{boundary}"));
+    let (mixed, alternative) = (format!("=_mixed_{id}"), format!("=_alt_{id}"));
+    let date = now.format(&Rfc2822).map_err(|error| MailError::Permanent(format!("dating the message: {error}")))?;
+    let (sender, address) = match from.rsplit_once('<') {
+        Some((name, address)) => (name.trim().trim_matches('"'), address.trim_end_matches('>')),
+        None => ("", from),
+    };
+    let domain = address.rsplit_once('@').map_or("localhost", |(_, domain)| domain);
+    let from = if sender.is_empty() { address.to_owned() } else { format!("{} <{address}>", words(sender)) };
     let mut mime = format!(
-        "From: {from}\r\nTo: {}\r\nSubject: {}\r\nMIME-Version: 1.0\r\n\
-         Content-Type: multipart/mixed; boundary=\"{mixed}\"\r\n\r\n",
+        "From: {from}\r\nTo: {}\r\nSubject: {}\r\nDate: {date}\r\nMessage-ID: <{id}@{domain}>\r\n\
+         MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"{mixed}\"\r\n\r\n",
         message.to,
-        subject(&message.subject)
+        words(&message.subject)
     );
     mime.push_str(&format!("--{mixed}\r\nContent-Type: multipart/alternative; boundary=\"{alternative}\"\r\n\r\n"));
     for (content_type, body) in [("text/plain", &message.text), ("text/html", &message.html)] {
@@ -51,15 +62,15 @@ pub(crate) fn raw(from: &str, message: &Message, boundary: &str) -> Result<Strin
     Ok(mime)
 }
 
-/// The subject as it is when it is ASCII, else as encoded words, each of whole characters, folded onto lines of
-/// their own.
-fn subject(subject: &str) -> String {
-    if subject.is_ascii() {
-        return subject.to_owned();
+/// `text` (a subject or a display name) as it is when it is ASCII, else as encoded words, each of whole characters,
+/// folded onto lines of their own.
+fn words(text: &str) -> String {
+    if text.is_ascii() {
+        return text.to_owned();
     }
     let mut words = Vec::new();
     let mut word = String::new();
-    for c in subject.chars() {
+    for c in text.chars() {
         if word.len() + c.len_utf8() > WORD_BYTES {
             words.push(std::mem::take(&mut word));
         }

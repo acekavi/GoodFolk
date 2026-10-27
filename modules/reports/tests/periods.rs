@@ -248,3 +248,79 @@ async fn a_catch_up_mails_only_the_periods_that_just_ended(_: PgPoolOptions, opt
         .unwrap();
     assert_eq!(jobs, 2);
 }
+
+/// A period that cannot be built is stored failed, named in the `reports` alert, and leaves the others to queue (and
+/// the week's email to go); the next close queues it again.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn one_bad_period_does_not_block_the_rest(_: PgPoolOptions, opts: PgConnectOptions) {
+    let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
+    let hotel = Hotel::new(opts).await;
+    hotel.set_business_date(date(2026, 6, 1)).await;
+    // Sunday 31 May ends the week, May and May's service charge; the service charge cannot be queued.
+    hotel.close_days(date(2026, 5, 25), date(2026, 5, 31), 5, 50_000).await;
+    sqlx::raw_sql(
+        "create function refuse_service_charge() returns trigger language plpgsql as $$
+         begin
+           if new.kind = 'service_charge' and new.status = 'rendering' then raise exception 'no service charge'; end if;
+           return new;
+         end $$;
+         create trigger refuse_service_charge before insert or update on report
+           for each row execute function refuse_service_charge();",
+    )
+    .execute(&superuser)
+    .await
+    .unwrap();
+    let mut tx = hotel.tx().await;
+    sqlx::query("insert into membership (tenant_id, user_id) values ($1, $2)")
+        .bind(hotel.tenant.0)
+        .bind(hotel.user.0)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("insert into role_grant (id, tenant_id, user_id, role) values (gen_random_uuid(), $1, $2, 'owner')")
+        .bind(hotel.tenant.0)
+        .bind(hotel.user.0)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(hotel.render_due(date(2026, 5, 31)).await, 2);
+
+    let failed = |kind: &str, from, to| (kind.to_owned(), from, to, "failed".to_owned());
+    assert_eq!(
+        hotel.reports().await,
+        [
+            row("monthly", date(2026, 5, 1), date(2026, 5, 31)),
+            failed("service_charge", date(2026, 5, 1), date(2026, 5, 31)),
+            row("weekly", date(2026, 5, 25), date(2026, 5, 31)),
+        ]
+    );
+    let alerts = audit::alerts::list(&mut hotel.tx().await, hotel.property).await.unwrap();
+    assert_eq!(
+        alerts[0].message,
+        "The service charge report for 2026-05-01 to 2026-05-31 could not be built: a database error stopped it; \
+         see the logs"
+    );
+    let weekly: uuid::Uuid = sqlx::query_scalar("select id from report where kind = 'weekly'")
+        .fetch_one(&mut *hotel.tx().await)
+        .await
+        .unwrap();
+    let mut tx = hotel.tx().await;
+    reports::set_report_pdf(&mut tx, hotel.tenant, weekly, &storage::report_pdf_key(hotel.tenant.0, weekly))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let mailed: i64 = sqlx::query_scalar("select count(*) from report_mail where report_id = $1")
+        .bind(weekly)
+        .fetch_one(&superuser)
+        .await
+        .unwrap();
+    assert_eq!(mailed, 1, "the week is mailed");
+    assert_eq!(audit::alerts::list(&mut hotel.tx().await, hotel.property).await.unwrap().len(), 1, "still failed");
+
+    sqlx::raw_sql("drop trigger refuse_service_charge on report").execute(&superuser).await.unwrap();
+    hotel.close_day(date(2026, 6, 1), 10, 5, 50_000, vec![]).await;
+    assert_eq!(hotel.render_due(date(2026, 6, 1)).await, 1, "the next close queues it again");
+    assert!(audit::alerts::list(&mut hotel.tx().await, hotel.property).await.unwrap().is_empty());
+}
