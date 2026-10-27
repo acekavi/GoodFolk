@@ -316,7 +316,7 @@ The owner split the original 7b in two (2026-10-20): the night audit, `jobs-svc`
 
 ## Phase 7d — Reports and liability reports ([spec](specs/phase-7d-reports.md), [plan](superpowers/plans/2026-10-26-phase-7d-reports.md))
 
-Migrations `0041`–`0044`. New module `modules/reports`; routes in `crates/core-api/src/routes/reports.rs`; media-svc gains `/render-report` (topic `report-render`).
+Migrations `0041`–`0045`. New module `modules/reports`; routes in `crates/core-api/src/routes/reports.rs`; media-svc gains `/render-report` (topic `report-render`).
 
 - **Everyday reports: done.** `reportSummary(propertyId, from, to)` (at most 366 days) reads 7b's snapshots: occupancy, ADR, RevPAR, room nights and revenue with the same period last year when a full year of closed days exists, each day, and the breakdowns by room type, segment, source, residency and outlet. Days not closed yet are listed, never estimated. `dailyList` gives arrivals, departures and in-house for a day. `ReportsView`: owner, manager, accountant; the daily lists also through `ReservationsView`.
 - **Liability reports: done**, from closed business dates, `ReportsLiability` (owner, accountant). **TDL** in SLTDA's Form A by quarter of the April–March year (1%, or 0.5% when the base is not over Rs 3,000,000; the fixture reproduces SLTDA's worked example, 34,535). **SSCL** by calendar quarter, month by month, with the foreign-currency exemption (item 10) for SLTDA-licensed properties. **VAT** per return period with IRD's Schedule 01 and 04 CSVs. **Service charge** collected per month.
@@ -330,18 +330,20 @@ Migrations `0041`–`0044`. New module `modules/reports`; routes in `crates/core
   - **A catch-up close renders but mails only the period just ended**, so a late or first close never floods the inbox.
   - **`setReportEmail` is a REST `PUT`**, and the email switches are on the Reports page, as there is no per-user settings page.
   - **An outlet's report group change applies from the next unclosed business date**, kept as a history.
-  - **Migrations beyond the spec:** `0042` (a generated `invoice.issued_on` and its index, for the VAT period scan), `0043` (`app.jobs_unrendered_runs`, for the tick), `0044` (`report.mail`).
+  - **Migrations beyond the spec:** `0042` (a generated `invoice.issued_on` and its index, for the VAT period scan), `0043` (`app.jobs_unrendered_runs`, for the tick), `0044` (`report.mail`), `0045` (`property_id` and `business_date` on `folio_line_tax`, for the quarter reads).
   - **The shared line reader reads taxes in a second query** (a hash join) instead of a lateral lookup per line, which was three times slower for a quarter's lines; the night audit's daily figures are unchanged.
 - **Performance gates: done**, release builds (200 rooms, 160 guest folios, a quarter of two lines a day each, one folio open since the quarter before and settled in it):
 
   | Gate | Spec | Measured |
   |---|---|---|
-  | `reportSummary`, 31 days | p95 < 100 ms | p95 5.5 ms (p50 4.7) |
-  | `tdlReport`, a quarter | p95 < 300 ms | p95 213.6 ms (p50 209; 387 before the tax read was changed) |
-  | `ssclReport`, a quarter | p95 < 300 ms | **p95 311 ms (p50 306): over the gate** (491 before the tax read was changed) |
-  | `render_reports` in a close ending a month and a quarter | < 5 s | 0.71 s for the step (0.81 s for the whole close) |
+  | `reportSummary`, 31 days | p95 < 100 ms | p95 6.2 ms |
+  | `tdlReport`, a quarter | p95 < 300 ms | p95 152 to 157 ms (three runs) |
+  | `ssclReport`, a quarter | p95 < 300 ms | p95 205 to 207 ms (three runs) |
+  | `render_reports` in a close ending a month and a quarter | < 5 s | 0.55 s (the whole close 0.63 s) |
 
-- **Still open:** `ssclReport` for a quarter of 30,000 lines misses its 300 ms gate by about 10 ms: it reads the quarter's lines (about 150 ms, 60,000 tax rows) and the settlements (about 95 ms). The next step is a `business_date` column on `folio_line_tax`, or one read shared by the lines and the settlements. The final layout of the IRD tax invoice (ARCHITECTURE §14); input VAT and RAMIS's web API (out of scope); bad debts are always Rs 0 until the system writes off debts.
+  The first runs missed (TDL p95 387 ms, SSCL 491 ms). Three changes: the line reader reads taxes in a second query, not a lateral lookup per line; migration `0045` stores `property_id` and `business_date` on `folio_line_tax` (a trigger sets them on insert), so a quarter's taxes are one index range; and SSCL's settlement walk reuses the quarter's lines it already holds (their currency and total), reading again only the adjustments and the history before the quarter.
+
+- **Still open:** the final layout of the IRD tax invoice (ARCHITECTURE §14); input VAT and RAMIS's web API (out of scope); bad debts are always Rs 0 until the system writes off debts.
 
 ## Linen and guest laundry (moved from Phase 5) ([spec](specs/laundry.md), [plan](superpowers/plans/2026-10-24-laundry.md))
 

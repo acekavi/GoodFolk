@@ -633,7 +633,7 @@ Not exercised here: an invitation's expiry (a token is refused after 7 days and 
 
 This script sets up its own small hotel, closes a week of it, and reads what the close produced: the weekly email with its PDF, the Reports pages, and the TDL, SSCL, VAT and service charge reports. It needs the media services (media-svc renders the PDFs and stores them in RustFS) and jobs-svc (it runs the close and sends the mail). Use the owner throughout. D is today, the business date the property starts on.
 
-1. Start the services and apply the migrations (through `0044`), as the schema owner, each in its own shell with the exports from Development, including `PUSH_ENDPOINT_REPORT_RENDER` and `PUSH_ENDPOINT_MAIL_SEND`. Start jobs-svc from the repository root with its tick off, so that nothing closes until you ask (see [jobs-svc](#jobs-svc)); the dev outbox is then `target/mail-outbox` (see [Email](#email)):
+1. Start the services and apply the migrations (through `0045`), as the schema owner, each in its own shell with the exports from Development, including `PUSH_ENDPOINT_REPORT_RENDER` and `PUSH_ENDPOINT_MAIL_SEND`. Start jobs-svc from the repository root with its tick off, so that nothing closes until you ask (see [jobs-svc](#jobs-svc)); the dev outbox is then `target/mail-outbox` (see [Email](#email)):
 
    ```sh
    docker compose up -d postgres              # or your own Postgres on :5432
