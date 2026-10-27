@@ -269,7 +269,8 @@ pub(crate) async fn period_failed(
         "insert into report (id, tenant_id, property_id, kind, period_start, period_end, data, status, error)
          values ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)
          on conflict (property_id, kind, period_start) where kind <> 'on_demand'
-         do update set status = 'failed', error = excluded.error",
+         do update set status = 'failed', error = excluded.error
+         where report.status = 'failed'",
     )
     .bind(Uuid::now_v7())
     .bind(tenant.0)

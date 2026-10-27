@@ -1,6 +1,7 @@
 //! A message as RFC 5322 raw MIME, for SES's `Content.Raw`: `multipart/mixed`, holding a `multipart/alternative` of
 //! the text and the HTML, then each attachment. Every body is base64 in lines of 76 characters, every line ends in
-//! CRLF, and a subject or sender's name that is not ASCII is RFC 2047 encoded words. The message carries its `Date`
+//! CRLF, a subject or sender's name that is not ASCII is RFC 2047 encoded words, and an ASCII sender's name is a quoted
+//! string. The message carries its `Date`
 //! and a `Message-ID` in the sender's domain.
 
 use base64::Engine;
@@ -29,12 +30,16 @@ pub(crate) fn raw(from: &str, message: &Message, id: &str, now: OffsetDateTime) 
     }
     let (mixed, alternative) = (format!("=_mixed_{id}"), format!("=_alt_{id}"));
     let date = now.format(&Rfc2822).map_err(|error| MailError::Permanent(format!("dating the message: {error}")))?;
-    let (sender, address) = match from.rsplit_once('<') {
-        Some((name, address)) => (name.trim().trim_matches('"'), address.trim_end_matches('>')),
-        None => ("", from),
+    let (sender, address) = match from.trim().rsplit_once('<') {
+        Some((name, address)) => (unquote(name.trim()), address.trim().trim_end_matches('>').trim()),
+        None => (String::new(), from.trim()),
     };
     let domain = address.rsplit_once('@').map_or("localhost", |(_, domain)| domain);
-    let from = if sender.is_empty() { address.to_owned() } else { format!("{} <{address}>", words(sender)) };
+    let from = match sender.as_str() {
+        "" => address.to_owned(),
+        name if name.is_ascii() => format!("{} <{address}>", quoted(name)),
+        name => format!("{} <{address}>", words(name)),
+    };
     let mut mime = format!(
         "From: {from}\r\nTo: {}\r\nSubject: {}\r\nDate: {date}\r\nMessage-ID: <{id}@{domain}>\r\n\
          MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"{mixed}\"\r\n\r\n",
@@ -78,6 +83,22 @@ fn words(text: &str) -> String {
     }
     words.push(word);
     words.iter().map(|word| format!("=?UTF-8?B?{}?=", STANDARD.encode(word))).collect::<Vec<_>>().join("\r\n ")
+}
+
+/// A display name as written in `MAIL_FROM`: a quoted string loses its quotes and escapes.
+fn unquote(name: &str) -> String {
+    let Some(inner) = name.strip_prefix('"').and_then(|name| name.strip_suffix('"')) else { return name.to_owned() };
+    let mut unquoted = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        unquoted.push(if c == '\\' { chars.next().unwrap_or(c) } else { c });
+    }
+    unquoted
+}
+
+/// An ASCII display name as an RFC 5322 quoted string, so specials such as `,` and `@` stay part of the name.
+fn quoted(name: &str) -> String {
+    format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// `bytes` in base64, in lines of at most 76 characters, each ending in CRLF.

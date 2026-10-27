@@ -191,6 +191,29 @@ async fn a_non_ascii_sender_name_is_encoded() {
     assert!(mime.contains(&encoded), "{mime}");
 }
 
+/// An ASCII display name is a quoted string, so its specials stay in the name; spaces around the address are dropped.
+#[tokio::test]
+async fn an_ascii_sender_name_is_quoted() {
+    for (from, header) in [
+        ("\"Lagoon, Hotels\" <a@b.lk>", "From: \"Lagoon, Hotels\" <a@b.lk>\r\n"),
+        ("Lagoon, Hotels  < a@b.lk >", "From: \"Lagoon, Hotels\" <a@b.lk>\r\n"),
+        (r#""Say \"hi\" \\ bye" <a@b.lk>"#, "From: \"Say \\\"hi\\\" \\\\ bye\" <a@b.lk>\r\n"),
+    ] {
+        let (endpoint, seen) = server(StatusCode::OK, None).await;
+        let mailer = SesMailer::new("ap-south-1", from, credentials()).unwrap().with_endpoint(&endpoint);
+        let attachment =
+            Attachment { filename: "a.pdf".into(), content_type: "application/pdf".into(), bytes: vec![1] };
+
+        mailer.send(&Message { attachments: vec![attachment], ..message() }).await.unwrap();
+
+        let calls = seen.0.lock().unwrap().clone();
+        let raw = STANDARD.decode(calls[0].2["Content"]["Raw"]["Data"].as_str().unwrap()).unwrap();
+        let mime = String::from_utf8(raw).unwrap();
+        assert!(mime.contains(header), "{from}: {mime}");
+        assert!(mime.contains("@b.lk>\r\n"), "the Message-ID's domain: {mime}");
+    }
+}
+
 #[tokio::test]
 async fn a_header_breaking_recipient_is_refused() {
     let (endpoint, seen) = server(StatusCode::OK, None).await;
