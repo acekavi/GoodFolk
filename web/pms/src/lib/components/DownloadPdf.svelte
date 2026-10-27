@@ -3,6 +3,7 @@
 	an invoice's PDF opens; a browser that blocks the tab is shown the link instead.
 -->
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import { errorMessage } from '$lib/api/problem';
 	import { reportLink, type RenderReportRequest } from '$lib/reports';
 
@@ -19,6 +20,8 @@
 	} = $props();
 
 	let busy = $state(false);
+	const polling = new AbortController();
+	onDestroy(() => polling.abort());
 	let problem = $state('');
 	/** A link the browser would not open in a tab, kept only while its dialog is open. */
 	let blocked = $state<string | null>(null);
@@ -28,7 +31,7 @@
 		problem = '';
 		busy = true;
 		try {
-			const url = await reportLink(propertyId, request);
+			const url = await reportLink(propertyId, request, polling.signal);
 			const tab = window.open(url, '_blank');
 			if (tab) {
 				// The PDF must not reach back into the app.
@@ -38,7 +41,7 @@
 			blocked = url;
 			viewer?.showModal();
 		} catch (err) {
-			problem = errorMessage(err);
+			if (!polling.signal.aborted) problem = errorMessage(err);
 		} finally {
 			busy = false;
 		}

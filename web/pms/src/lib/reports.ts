@@ -468,8 +468,33 @@ export function recentVatPeriods(
 	}));
 }
 
+/** The index a tab list moves to on `key` (arrows wrap; Home and End jump), or null for any other key. */
+export function tabTarget(key: string, index: number, count: number): number | null {
+	if (key === 'ArrowRight') return (index + 1) % count;
+	if (key === 'ArrowLeft') return (index - 1 + count) % count;
+	if (key === 'Home') return 0;
+	if (key === 'End') return count - 1;
+	return null;
+}
+
 const POLL_MS = 1000;
-const POLL_LIMIT_MS = 30_000;
+const POLLS = 30;
+
+/** Resolves after `ms`, or rejects with the abort reason as soon as `signal` aborts. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((done, fail) => {
+		if (signal?.aborted) return fail(signal.reason);
+		const timer = setTimeout(done, ms);
+		signal?.addEventListener(
+			'abort',
+			() => {
+				clearTimeout(timer);
+				fail(signal.reason);
+			},
+			{ once: true }
+		);
+	});
+}
 
 /** Renders a report as a PDF and returns a link to it, waiting up to 30 seconds for the render. */
 export async function reportLink(
@@ -484,7 +509,7 @@ export async function reportLink(
 			signal
 		})
 	);
-	for (let waited = 0; waited <= POLL_LIMIT_MS; waited += POLL_MS) {
+	for (let poll = 0; poll < POLLS; poll++) {
 		const read = unwrap(
 			await rest.GET('/api/v1/properties/{property}/reports/{report}', {
 				params: { path: { property: propertyId, report: id } },
@@ -499,7 +524,7 @@ export async function reportLink(
 				status: 500
 			});
 		}
-		await new Promise((done) => setTimeout(done, POLL_MS));
+		await sleep(POLL_MS, signal);
 	}
 	throw new ApiError({
 		type: 'about:blank',
@@ -534,7 +559,7 @@ export async function downloadSchedule(
 	anchor.href = url;
 	anchor.download = name;
 	anchor.click();
-	URL.revokeObjectURL(url);
+	setTimeout(() => URL.revokeObjectURL(url));
 }
 
 const DIMENSION_LABELS = {

@@ -10,7 +10,8 @@ import {
 	recentMonths,
 	recentQuarters,
 	recentVatPeriods,
-	reportLink
+	reportLink,
+	tabTarget
 } from './reports';
 
 describe('presets', () => {
@@ -152,19 +153,44 @@ describe('reportLink', () => {
 		expect(read).toHaveBeenCalledTimes(2);
 	});
 
-	it('gives up after 30 seconds', async () => {
+	it('gives up after 30 polls, one a second', async () => {
 		vi.useFakeTimers();
 		vi.spyOn(rest, 'POST').mockResolvedValue({ ...ok, data: { id: 'r1' } } as never);
-		vi.spyOn(rest, 'GET').mockResolvedValue({ ...ok, data: { status: 'rendering' } } as never);
+		const read = vi
+			.spyOn(rest, 'GET')
+			.mockResolvedValue({ ...ok, data: { status: 'rendering' } } as never);
 
 		const link = reportLink('p1', {
 			report: 'summary',
 			params: { from: '2026-10-12', to: '2026-10-18' }
 		});
 		const failed = expect(link).rejects.toThrow('taking too long');
-		await vi.advanceTimersByTimeAsync(31_000);
+		await vi.advanceTimersByTimeAsync(60_000);
 
 		await failed;
+		expect(read).toHaveBeenCalledTimes(30);
+	});
+
+	it('stops polling when aborted', async () => {
+		vi.useFakeTimers();
+		vi.spyOn(rest, 'POST').mockResolvedValue({ ...ok, data: { id: 'r1' } } as never);
+		const read = vi
+			.spyOn(rest, 'GET')
+			.mockResolvedValue({ ...ok, data: { status: 'rendering' } } as never);
+		const controller = new AbortController();
+
+		const link = reportLink(
+			'p1',
+			{ report: 'summary', params: { from: '2026-10-12', to: '2026-10-18' } },
+			controller.signal
+		);
+		const failed = expect(link).rejects.toBeDefined();
+		await vi.advanceTimersByTimeAsync(2000);
+		controller.abort();
+		await vi.advanceTimersByTimeAsync(10_000);
+
+		await failed;
+		expect(read).toHaveBeenCalledTimes(3);
 	});
 
 	it('fails when the render failed', async () => {
@@ -174,5 +200,15 @@ describe('reportLink', () => {
 		await expect(
 			reportLink('p1', { report: 'summary', params: { from: '2026-10-12', to: '2026-10-18' } })
 		).rejects.toThrow('could not be rendered');
+	});
+});
+
+describe('tabTarget', () => {
+	it('moves with the arrows, wrapping, and jumps with Home and End', () => {
+		expect(tabTarget('ArrowRight', 2, 3)).toBe(0);
+		expect(tabTarget('ArrowLeft', 0, 3)).toBe(2);
+		expect(tabTarget('Home', 2, 3)).toBe(0);
+		expect(tabTarget('End', 0, 3)).toBe(2);
+		expect(tabTarget('a', 0, 3)).toBeNull();
 	});
 });

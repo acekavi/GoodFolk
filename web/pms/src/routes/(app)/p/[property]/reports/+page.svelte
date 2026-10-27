@@ -87,11 +87,13 @@
 	const pending = new Pending();
 	let emailProblem = $state('');
 
-	async function switchEmail(send: 'weekly' | 'monthly', enabled: boolean) {
+	async function switchEmail(send: 'weekly' | 'monthly', box: HTMLInputElement) {
+		const enabled = box.checked;
 		emailProblem = '';
 		try {
 			await pending.run(send, () => setReportEmail(propertyId, send, enabled));
 		} catch (err) {
+			box.checked = !enabled;
 			emailProblem = errorMessage(err);
 		} finally {
 			await client.invalidateQueries({ queryKey: reportEmailsKey(propertyId) });
@@ -99,178 +101,180 @@
 	}
 </script>
 
-<h1>Reports</h1>
-<p>
-	<a href={resolve('/(app)/p/[property]/reports/lists', { property: propertyId })}>Daily lists</a>
-</p>
+{#key propertyId}
+	<h1>Reports</h1>
+	<p>
+		<a href={resolve('/(app)/p/[property]/reports/lists', { property: propertyId })}>Daily lists</a>
+	</p>
 
-<section aria-labelledby="range">
-	<h2 id="range">Range</h2>
-	<div class="ranges" role="group" aria-label="Range">
-		{#each ranges as range (range.id)}
+	<section aria-labelledby="range">
+		<h2 id="range">Range</h2>
+		<div class="ranges" role="group" aria-label="Range">
+			{#each ranges as range (range.id)}
+				<button
+					type="button"
+					class:secondary={rangeId !== range.id}
+					aria-pressed={rangeId === range.id}
+					onclick={() => (rangeId = range.id)}>{range.label}</button
+				>
+			{/each}
 			<button
 				type="button"
-				class:secondary={rangeId !== range.id}
-				aria-pressed={rangeId === range.id}
-				onclick={() => (rangeId = range.id)}>{range.label}</button
+				class:secondary={rangeId !== 'custom'}
+				aria-pressed={rangeId === 'custom'}
+				onclick={() => (rangeId = 'custom')}>Custom</button
 			>
-		{/each}
-		<button
-			type="button"
-			class:secondary={rangeId !== 'custom'}
-			aria-pressed={rangeId === 'custom'}
-			onclick={() => (rangeId = 'custom')}>Custom</button
-		>
-	</div>
-	{#if rangeId === 'custom'}
-		<div class="ranges">
-			<label>From <input type="date" bind:value={customFrom} /></label>
-			<label>To <input type="date" bind:value={customTo} /></label>
 		</div>
-	{/if}
-	{#if rangeProblem}<p class="error" role="alert">{rangeProblem}</p>{/if}
-	{#if valid}<p class="hint">{from} – {to}</p>{/if}
-</section>
-
-{#if summary.error && !data}
-	<p class="error" role="alert">{errorMessage(summary.error)}</p>
-{:else if data}
-	{#if data.notClosed.length > 0}
-		<p role="status" class="notice">
-			{#if data.closedFrom && data.closedTo}
-				Not closed yet: figures cover {data.closedFrom}–{data.closedTo}
-			{:else}
-				Not closed yet: no day of this range is closed
-			{/if}
-		</p>
-	{/if}
-	<div class="actions">
-		<DownloadPdf {propertyId} request={{ report: 'summary', params: { from, to } }} />
-	</div>
-	<p class="hint">Revenue is net of tax, in LKR.</p>
-
-	<section aria-labelledby="headline">
-		<h2 id="headline">Headline figures</h2>
-		<ul class="cards">
-			{#each cards(data.headline) as card, index (card.label)}
-				<li>
-					<span class="label">{card.label}</span>
-					<strong>{card.value}</strong>
-					{#if data.lastYear}
-						<span class="hint">Last year: {cards(data.lastYear)[index].value}</span>
-					{/if}
-				</li>
-			{/each}
-		</ul>
+		{#if rangeId === 'custom'}
+			<div class="ranges">
+				<label>From <input type="date" bind:value={customFrom} /></label>
+				<label>To <input type="date" bind:value={customTo} /></label>
+			</div>
+		{/if}
+		{#if rangeProblem}<p class="error" role="alert">{rangeProblem}</p>{/if}
+		{#if valid}<p class="hint">{from} – {to}</p>{/if}
 	</section>
 
-	<section aria-labelledby="days">
-		<h2 id="days">Days</h2>
-		<div class="scroll">
-			<table>
-				<thead>
-					<tr>
-						<th>Date</th>
-						<th>Occupancy</th>
-						<th>Rooms sold</th>
-						<th>Guests</th>
-						<th>Arrivals</th>
-						<th>Departures</th>
-						<th>Rooms</th>
-						<th>Meal plans</th>
-						<th>POS</th>
-						<th>Fees</th>
-						<th>Other</th>
-						<th>Total</th>
-						<th>ADR</th>
-						<th>RevPAR</th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each rows as { date, day } (date)}
-						<tr>
-							<td>{date}</td>
-							{#if day}
-								<td>{formatOccupancy(day.occupancyBp)}</td>
-								<td>{day.roomsSold}/{day.roomsAvailable}</td>
-								<td>{day.adults + day.children}</td>
-								<td>{day.arrivals}</td>
-								<td>{day.departures}</td>
-								<td>{formatLkr(day.roomRevenue)}</td>
-								<td>{formatLkr(day.mealPlanRevenue)}</td>
-								<td>{formatLkr(day.posRevenue)}</td>
-								<td>{formatLkr(day.feeRevenue)}</td>
-								<td>{formatLkr(day.otherRevenue)}</td>
-								<td>{formatLkr(day.totalRevenue)}</td>
-								<td>{formatLkr(day.adr)}</td>
-								<td>{formatLkr(day.revpar)}</td>
-							{:else}
-								<td colspan="13" class="hint">Not closed yet</td>
-							{/if}
-						</tr>
-					{/each}
-				</tbody>
-			</table>
+	{#if summary.error && !data}
+		<p class="error" role="alert">{errorMessage(summary.error)}</p>
+	{:else if data}
+		{#if data.notClosed.length > 0}
+			<p role="status" class="notice">
+				{#if data.closedFrom && data.closedTo}
+					Not closed yet: figures cover {data.closedFrom}–{data.closedTo}
+				{:else}
+					Not closed yet: no day of this range is closed
+				{/if}
+			</p>
+		{/if}
+		<div class="actions">
+			<DownloadPdf {propertyId} request={{ report: 'summary', params: { from, to } }} />
 		</div>
-	</section>
+		<p class="hint">Revenue is net of tax, in LKR.</p>
 
-	{#each data.breakdowns as breakdown (breakdown.dimension)}
-		{@const label = dimensionLabel(breakdown.dimension)}
-		<section aria-labelledby="by-{breakdown.dimension}">
-			<h2 id="by-{breakdown.dimension}">By {label.toLowerCase()}</h2>
+		<section aria-labelledby="headline">
+			<h2 id="headline">Headline figures</h2>
+			<ul class="cards">
+				{#each cards(data.headline) as card, index (card.label)}
+					<li>
+						<span class="label">{card.label}</span>
+						<strong>{card.value}</strong>
+						{#if data.lastYear}
+							<span class="hint">Last year: {cards(data.lastYear)[index].value}</span>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		</section>
+
+		<section aria-labelledby="days">
+			<h2 id="days">Days</h2>
 			<div class="scroll">
-				<table aria-label="Revenue by {label.toLowerCase()}">
+				<table>
 					<thead>
 						<tr>
-							<th>{label}</th>
-							<th>Room nights</th>
-							<th>Room revenue</th>
-							<th>Total revenue</th>
+							<th>Date</th>
+							<th>Occupancy</th>
+							<th>Rooms sold</th>
+							<th>Guests</th>
+							<th>Arrivals</th>
+							<th>Departures</th>
+							<th>Rooms</th>
+							<th>Meal plans</th>
+							<th>POS</th>
+							<th>Fees</th>
+							<th>Other</th>
+							<th>Total</th>
+							<th>ADR</th>
+							<th>RevPAR</th>
 						</tr>
 					</thead>
 					<tbody>
-						{#each breakdown.keys as entry (entry.key)}
+						{#each rows as { date, day } (date)}
 							<tr>
-								<td>{keyLabel(entry.key)}</td>
-								<td>{entry.roomNights}</td>
-								<td>{formatLkr(entry.roomRevenue)}</td>
-								<td>{formatLkr(entry.revenue)}</td>
+								<td>{date}</td>
+								{#if day}
+									<td>{formatOccupancy(day.occupancyBp)}</td>
+									<td>{day.roomsSold}/{day.roomsAvailable}</td>
+									<td>{day.adults + day.children}</td>
+									<td>{day.arrivals}</td>
+									<td>{day.departures}</td>
+									<td>{formatLkr(day.roomRevenue)}</td>
+									<td>{formatLkr(day.mealPlanRevenue)}</td>
+									<td>{formatLkr(day.posRevenue)}</td>
+									<td>{formatLkr(day.feeRevenue)}</td>
+									<td>{formatLkr(day.otherRevenue)}</td>
+									<td>{formatLkr(day.totalRevenue)}</td>
+									<td>{formatLkr(day.adr)}</td>
+									<td>{formatLkr(day.revpar)}</td>
+								{:else}
+									<td colspan="13" class="hint">Not closed yet</td>
+								{/if}
 							</tr>
-						{:else}
-							<tr><td colspan="4" class="hint">Nothing in the closed days.</td></tr>
 						{/each}
 					</tbody>
 				</table>
 			</div>
 		</section>
-	{/each}
-{:else if valid}
-	<p class="hint" role="status">Loading…</p>
-{/if}
 
-<section aria-labelledby="emails">
-	<h2 id="emails">Report emails for {property?.name ?? ''}</h2>
-	<p class="hint">
-		The weekly report goes out after Sunday closes, the monthly one after the month's last day
-		closes. They go to the property's owners and managers, and only if you have them on.
-	</p>
-	{#if emails.error && !emails.data}
-		<p class="error" role="alert">{errorMessage(emails.error)}</p>
-	{:else if emails.data}
-		{#each EMAIL_KINDS as entry (entry.kind)}
-			<label class="switch">
-				<input
-					type="checkbox"
-					checked={emails.data.find((email) => email.kind === entry.kind)?.enabled ?? true}
-					disabled={pending.has(entry.send)}
-					onchange={(event) => switchEmail(entry.send, event.currentTarget.checked)}
-				/>
-				{entry.label}
-			</label>
+		{#each data.breakdowns as breakdown (breakdown.dimension)}
+			{@const label = dimensionLabel(breakdown.dimension)}
+			<section aria-labelledby="by-{breakdown.dimension}">
+				<h2 id="by-{breakdown.dimension}">By {label.toLowerCase()}</h2>
+				<div class="scroll">
+					<table aria-label="Revenue by {label.toLowerCase()}">
+						<thead>
+							<tr>
+								<th>{label}</th>
+								<th>Room nights</th>
+								<th>Room revenue</th>
+								<th>Total revenue</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each breakdown.keys as entry (entry.key)}
+								<tr>
+									<td>{keyLabel(entry.key)}</td>
+									<td>{entry.roomNights}</td>
+									<td>{formatLkr(entry.roomRevenue)}</td>
+									<td>{formatLkr(entry.revenue)}</td>
+								</tr>
+							{:else}
+								<tr><td colspan="4" class="hint">Nothing in the closed days.</td></tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			</section>
 		{/each}
+	{:else if valid}
+		<p class="hint" role="status">Loading…</p>
 	{/if}
-	{#if emailProblem}<p class="error" role="alert">{emailProblem}</p>{/if}
-</section>
+
+	<section aria-labelledby="emails">
+		<h2 id="emails">Report emails for {property?.name ?? ''}</h2>
+		<p class="hint">
+			The weekly report goes out after Sunday closes, the monthly one after the month's last day
+			closes. They go to the property's owners and managers, and only if you have them on.
+		</p>
+		{#if emails.error && !emails.data}
+			<p class="error" role="alert">{errorMessage(emails.error)}</p>
+		{:else if emails.data}
+			{#each EMAIL_KINDS as entry (entry.kind)}
+				<label class="switch">
+					<input
+						type="checkbox"
+						checked={emails.data.find((email) => email.kind === entry.kind)?.enabled ?? true}
+						disabled={pending.has(entry.send)}
+						onchange={(event) => switchEmail(entry.send, event.currentTarget)}
+					/>
+					{entry.label}
+				</label>
+			{/each}
+		{/if}
+		{#if emailProblem}<p class="error" role="alert">{emailProblem}</p>{/if}
+	</section>
+{/key}
 
 <style>
 	.ranges {
