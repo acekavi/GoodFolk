@@ -61,22 +61,48 @@ pub struct BreakdownRow {
     pub revenue: i64,
 }
 
-/// The folio lines of the business dates `$2` to `$3` on the property's folios (`$1`), adjustments aside, with their
-/// taxes by code. Public so a test can `EXPLAIN` it: `business_date` is a leakproof comparison, so
-/// `folio_line_business_date_idx` serves it under RLS.
+/// The folio lines of the business dates `$2` to `$3` on the property's folios (`$1`), adjustments aside. Public so a
+/// test can `EXPLAIN` it: `business_date` is a leakproof comparison, so `folio_line_business_date_idx` serves it under
+/// RLS.
 pub const LINES_SQL: &str = "select l.id, l.business_date, l.folio_id, l.category, l.currency::text as currency,
-        l.base_total, l.rate, l.posting_key, l.reverses, l.transfer_id,
-        coalesce(t.codes, '{}') as tax_codes, coalesce(t.kinds, '{}') as tax_kinds,
-        coalesce(t.presentations, '{}') as tax_presentations, coalesce(t.rates, '{}') as tax_rates,
-        coalesce(t.amounts, '{}') as tax_amounts
+        l.base_total, l.rate, l.posting_key, l.reverses, l.transfer_id
  from folio_line l
  join folio f on f.id = l.folio_id
- left join lateral (select array_agg(code order by code) as codes, array_agg(kind order by code) as kinds,
-                           array_agg(presentation order by code) as presentations,
-                           array_agg(rate_bp order by code) as rates,
-                           array_agg(amount order by code) as amounts
-                    from folio_line_tax where line_id = l.id) t on true
  where l.business_date between $2 and $3 and f.property_id = $1 and l.source <> 'adjustment'";
+
+/// The taxes of [`LINES_SQL`]'s lines (same `$1` to `$3`), in one hash join with the lines rather than a lookup per
+/// line, which took three times as long for a quarter's 30,000 lines.
+const TAXES_SQL: &str = "select t.line_id, t.code, t.kind, t.presentation, t.rate_bp, t.amount
+ from folio_line_tax t
+ join folio_line l on l.id = t.line_id
+ join folio f on f.id = l.folio_id
+ where l.business_date between $2 and $3 and f.property_id = $1 and l.source <> 'adjustment'";
+
+#[derive(sqlx::FromRow)]
+struct LineTax {
+    line_id: Uuid,
+    code: String,
+    kind: String,
+    presentation: String,
+    rate_bp: i32,
+    amount: i64,
+}
+
+/// `lines` with their taxes, by code, from `taxes` (`order by code` is applied here).
+fn with_taxes(lines: Vec<Line>, taxes: Vec<LineTax>) -> Vec<(Line, Vec<LineTax>)> {
+    let mut by_line: HashMap<Uuid, Vec<LineTax>> = HashMap::new();
+    for tax in taxes {
+        by_line.entry(tax.line_id).or_default().push(tax);
+    }
+    lines
+        .into_iter()
+        .map(|line| {
+            let mut taxes = by_line.remove(&line.id).unwrap_or_default();
+            taxes.sort_by(|a, b| a.code.cmp(&b.code));
+            (line, taxes)
+        })
+        .collect()
+}
 
 /// One folio line, or one item of a POS bill settled at its outlet, as the revenue of its business date: in the
 /// property's base currency, net of its on-bill taxes.
@@ -124,7 +150,8 @@ pub async fn revenue_lines(tx: &mut Tx, property: Uuid, from: Date, to: Date) ->
     };
 
     let lines: Vec<Line> = sqlx::query_as(LINES_SQL).bind(property).bind(from).bind(to).fetch_all(&mut **tx).await?;
-    let mut revenue = folio_revenue(lines, base_exponent)?;
+    let taxes: Vec<LineTax> = sqlx::query_as(TAXES_SQL).bind(property).bind(from).bind(to).fetch_all(&mut **tx).await?;
+    let mut revenue = folio_revenue(with_taxes(lines, taxes), base_exponent)?;
 
     // The bills settled in the range: by their payment's date, so a late bill counts on the day it posted. A bill
     // dated in the range with no payment at all is read too, to be refused: every settled bill has one.
@@ -200,28 +227,34 @@ pub async fn folio_revenue_lines(
         .bind(folios)
         .fetch_all(&mut **tx)
         .await?;
-    folio_revenue(lines, fx::exponent(&base))
+    let taxes: Vec<LineTax> = sqlx::query_as(sqlx::AssertSqlSafe(format!("{TAXES_SQL} and l.folio_id = any($4)")))
+        .bind(property)
+        .bind(from)
+        .bind(to)
+        .bind(folios)
+        .fetch_all(&mut **tx)
+        .await?;
+    folio_revenue(with_taxes(lines, taxes), fx::exponent(&base))
 }
 
 /// Folio lines as revenue: net of their on-bill taxes, each tax converted at the line's rate.
-fn folio_revenue(lines: Vec<Line>, base_exponent: u32) -> Result<Vec<RevenueLine>, AuditError> {
+fn folio_revenue(lines: Vec<(Line, Vec<LineTax>)>, base_exponent: u32) -> Result<Vec<RevenueLine>, AuditError> {
     let mut revenue = Vec::with_capacity(lines.len());
-    for line in lines {
+    for (line, line_taxes) in lines {
         let mut net = line.base_total;
-        let mut taxes = Vec::with_capacity(line.tax_codes.len());
-        let tax_rows = line
-            .tax_codes
-            .into_iter()
-            .zip(line.tax_kinds)
-            .zip(line.tax_presentations)
-            .zip(line.tax_rates)
-            .zip(line.tax_amounts);
-        for ((((code, kind), presentation), rate_bp), amount) in tax_rows {
-            let amount = fx::to_base(amount, fx::exponent(&line.currency), base_exponent, line.rate)?;
-            if presentation == "on_bill" {
+        let mut taxes = Vec::with_capacity(line_taxes.len());
+        for tax in line_taxes {
+            let amount = fx::to_base(tax.amount, fx::exponent(&line.currency), base_exponent, line.rate)?;
+            if tax.presentation == "on_bill" {
                 net -= amount;
             }
-            taxes.push(RevenueTax { code, kind, presentation, rate_bp, amount });
+            taxes.push(RevenueTax {
+                code: tax.code,
+                kind: tax.kind,
+                presentation: tax.presentation,
+                rate_bp: tax.rate_bp,
+                amount,
+            });
         }
         revenue.push(RevenueLine {
             business_date: line.business_date,
@@ -588,11 +621,6 @@ struct Line {
     posting_key: Option<String>,
     reverses: Option<Uuid>,
     transfer_id: Option<Uuid>,
-    tax_codes: Vec<String>,
-    tax_kinds: Vec<String>,
-    tax_presentations: Vec<String>,
-    tax_rates: Vec<i32>,
-    tax_amounts: Vec<i64>,
 }
 
 #[derive(sqlx::FromRow)]
