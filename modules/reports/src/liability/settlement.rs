@@ -3,8 +3,9 @@
 
 use crate::ReportsError;
 use crate::everyday::ratio;
+use crate::liability::lines::RevenueLine;
 use db::Tx;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use time::Date;
 use uuid::Uuid;
 
@@ -66,6 +67,29 @@ struct Entry {
 /// Reads every folio with a line or payment in the range, with all its earlier history, in one statement, and the
 /// outlet bills in another. `NotFound` for a property not in the tenant.
 pub async fn segments(tx: &mut Tx, property: Uuid, from: Date, upto: Date) -> Result<Vec<Segment>, ReportsError> {
+    settlements(tx, property, from, upto, None).await
+}
+
+/// [`segments`] for a reader that already holds the revenue lines of `from` to `upto` ([`crate::liability::lines`]'s
+/// `revenue_lines` for the same range): their folio lines are the settlement walk's lines of the range, so only the
+/// adjustments of the range and the history before it are read again, and only for folios settling in the range.
+pub async fn segments_of(
+    tx: &mut Tx,
+    property: Uuid,
+    from: Date,
+    upto: Date,
+    lines: &[RevenueLine],
+) -> Result<Vec<Segment>, ReportsError> {
+    settlements(tx, property, from, upto, Some(lines)).await
+}
+
+async fn settlements(
+    tx: &mut Tx,
+    property: Uuid,
+    from: Date,
+    upto: Date,
+    shared: Option<&[RevenueLine]>,
+) -> Result<Vec<Segment>, ReportsError> {
     let business_date: Date = sqlx::query_scalar("select business_date from property where id = $1")
         .bind(property)
         .fetch_optional(&mut **tx)
@@ -75,10 +99,26 @@ pub async fn segments(tx: &mut Tx, property: Uuid, from: Date, upto: Date) -> Re
         return Ok(Vec::new());
     };
 
-    let entries: Vec<Entry> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "with folios as (
+    // The folios with a line or payment in the range, and the lines read of them: all up to the range's end, or, when
+    // the range's lines are held, those before it and the adjustments (which revenue leaves out).
+    let (range_folios, folio_lines) = if shared.is_some() {
+        (
+            "select unnest($4::uuid[]) as folio_id
+           union
            select l.folio_id from folio_line l join folio f on f.id = l.folio_id
-           where f.property_id = $1 and l.business_date between $2 and $3
+           where f.property_id = $1 and l.source = 'adjustment' and l.business_date between $2 and $3",
+            "(business_date < $2 or source = 'adjustment') and business_date <= $3",
+        )
+    } else {
+        (
+            "select l.folio_id from folio_line l join folio f on f.id = l.folio_id
+           where f.property_id = $1 and l.business_date between $2 and $3",
+            "business_date <= $3",
+        )
+    };
+    let query = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "with folios as (
+           {range_folios}
            union
            select p.folio_id from payment p join folio f on f.id = p.folio_id
            where f.property_id = $1 and p.business_date between $2 and $3
@@ -87,7 +127,7 @@ pub async fn segments(tx: &mut Tx, property: Uuid, from: Date, upto: Date) -> Re
                 sum(paid)::bigint as paid
          from (select folio_id, business_date, currency::text as currency, total as amount, 0::bigint as exempt,
                       0::bigint as paid
-               from folio_line where folio_id in (select folio_id from folios) and business_date <= $3
+               from folio_line where folio_id in (select folio_id from folios) and {folio_lines}
                union all
                select p.folio_id, p.business_date, p.currency::text, -p.amount,
                       case when p.method = 'transfer' then coalesce(source.exempt, 0) else {exempt_p} end,
@@ -109,10 +149,58 @@ pub async fn segments(tx: &mut Tx, property: Uuid, from: Date, upto: Date) -> Re
     )))
     .bind(property)
     .bind(from)
+    .bind(upto);
+    let mut entries: Vec<Entry> = match shared {
+        Some(lines) => {
+            let folios: HashSet<Uuid> = lines.iter().filter_map(|line| line.folio_id).collect();
+            let folios: Vec<Uuid> = folios.into_iter().collect();
+            query.bind(folios).fetch_all(&mut **tx).await?
+        }
+        None => query.fetch_all(&mut **tx).await?,
+    };
+    if let Some(lines) = shared {
+        let mut sums: HashMap<(Uuid, Date, &str), i64> = HashMap::new();
+        for line in lines {
+            if let Some(folio_id) = line.folio_id {
+                *sums.entry((folio_id, line.business_date, &line.currency)).or_default() += line.total;
+            }
+        }
+        entries.extend(sums.into_iter().map(|((folio_id, business_date, currency), amount)| Entry {
+            folio_id,
+            business_date,
+            currency: currency.to_owned(),
+            amount,
+            exempt: 0,
+            paid: 0,
+        }));
+        entries.sort_by_key(|entry| (entry.folio_id, entry.business_date));
+    }
+
+    let mut found = walk(&entries, from);
+    let bills: Vec<(Uuid, Date, i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select p.pos_bill_id, min(p.business_date), sum({exempt})::bigint, sum(p.base_amount)::bigint
+         from payment p join pos_bill b on b.id = p.pos_bill_id
+         where b.property_id = $1 and b.settled and p.folio_id is null and p.business_date between $2 and $3
+         group by p.pos_bill_id
+         order by p.pos_bill_id",
+        exempt = exempt_base("p"),
+    )))
+    .bind(property)
+    .bind(from)
     .bind(upto)
     .fetch_all(&mut **tx)
     .await?;
+    found.extend(bills.into_iter().map(|(bill, settled_on, exempt, paid)| Segment {
+        subject_id: bill,
+        settled_on,
+        exempt_share_bp: share_bp(exempt, paid),
+        covers_from: settled_on,
+    }));
+    Ok(found)
+}
 
+/// Each folio's settlements dated `from` or later, from its `entries` sorted by folio and business date.
+fn walk(entries: &[Entry], from: Date) -> Vec<Segment> {
     let mut found = Vec::new();
     for history in entries.chunk_by(|a, b| a.folio_id == b.folio_id) {
         let mut balances: HashMap<&str, i64> = HashMap::new();
@@ -138,27 +226,7 @@ pub async fn segments(tx: &mut Tx, property: Uuid, from: Date, upto: Date) -> Re
             }
         }
     }
-
-    let bills: Vec<(Uuid, Date, i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select p.pos_bill_id, min(p.business_date), sum({exempt})::bigint, sum(p.base_amount)::bigint
-         from payment p join pos_bill b on b.id = p.pos_bill_id
-         where b.property_id = $1 and b.settled and p.folio_id is null and p.business_date between $2 and $3
-         group by p.pos_bill_id
-         order by p.pos_bill_id",
-        exempt = exempt_base("p"),
-    )))
-    .bind(property)
-    .bind(from)
-    .bind(upto)
-    .fetch_all(&mut **tx)
-    .await?;
-    found.extend(bills.into_iter().map(|(bill, settled_on, exempt, paid)| Segment {
-        subject_id: bill,
-        settled_on,
-        exempt_share_bp: share_bp(exempt, paid),
-        covers_from: settled_on,
-    }));
-    Ok(found)
+    found
 }
 
 /// `exempt` of `paid`, in basis points clamped to the whole: 0 when the payments net to nothing. Both may be below 0

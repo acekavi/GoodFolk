@@ -65,18 +65,16 @@ pub struct BreakdownRow {
 /// test can `EXPLAIN` it: `business_date` is a leakproof comparison, so `folio_line_business_date_idx` serves it under
 /// RLS.
 pub const LINES_SQL: &str = "select l.id, l.business_date, l.folio_id, l.category, l.currency::text as currency,
-        l.base_total, l.rate, l.posting_key, l.reverses, l.transfer_id
+        l.base_total, l.total, l.rate, l.posting_key, l.reverses, l.transfer_id
  from folio_line l
  join folio f on f.id = l.folio_id
  where l.business_date between $2 and $3 and f.property_id = $1 and l.source <> 'adjustment'";
 
-/// The taxes of [`LINES_SQL`]'s lines (same `$1` to `$3`), in one hash join with the lines rather than a lookup per
-/// line, which took three times as long for a quarter's 30,000 lines.
+/// The taxes of [`LINES_SQL`]'s lines (same `$1` to `$3`), by the property and business date stored on each (migration
+/// 0045): one index range, with no join to the lines (the taxes of an adjustment line are read and left unmatched).
 const TAXES_SQL: &str = "select t.line_id, t.code, t.kind, t.presentation, t.rate_bp, t.amount
  from folio_line_tax t
- join folio_line l on l.id = t.line_id
- join folio f on f.id = l.folio_id
- where l.business_date between $2 and $3 and f.property_id = $1 and l.source <> 'adjustment'";
+ where t.property_id = $1 and t.business_date between $2 and $3";
 
 #[derive(sqlx::FromRow)]
 struct LineTax {
@@ -115,6 +113,10 @@ pub struct RevenueLine {
     /// A settled item's bill; `None` for a folio line.
     pub pos_bill_id: Option<Uuid>,
     pub category: String,
+    /// The line's currency, and its total in it (a folio line's `total`, including its taxes); a settled item's are
+    /// the bill's currency and the item's total.
+    pub currency: String,
+    pub total: i64,
     pub net: i64,
     /// By code; on-bill and absorbed.
     pub taxes: Vec<RevenueTax>,
@@ -196,6 +198,8 @@ pub async fn revenue_lines(tx: &mut Tx, property: Uuid, from: Date, to: Date) ->
                 folio_id: None,
                 pos_bill_id: Some(bill.id),
                 category: line.category,
+                currency: currency.clone(),
+                total: line.total,
                 net,
                 taxes,
                 link: None,
@@ -227,13 +231,15 @@ pub async fn folio_revenue_lines(
         .bind(folios)
         .fetch_all(&mut **tx)
         .await?;
-    let taxes: Vec<LineTax> = sqlx::query_as(sqlx::AssertSqlSafe(format!("{TAXES_SQL} and l.folio_id = any($4)")))
-        .bind(property)
-        .bind(from)
-        .bind(to)
-        .bind(folios)
-        .fetch_all(&mut **tx)
-        .await?;
+    let taxes: Vec<LineTax> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "{TAXES_SQL} and t.line_id in (select id from folio_line where folio_id = any($4))"
+    )))
+    .bind(property)
+    .bind(from)
+    .bind(to)
+    .bind(folios)
+    .fetch_all(&mut **tx)
+    .await?;
     folio_revenue(with_taxes(lines, taxes), fx::exponent(&base))
 }
 
@@ -261,6 +267,8 @@ fn folio_revenue(lines: Vec<(Line, Vec<LineTax>)>, base_exponent: u32) -> Result
             folio_id: Some(line.folio_id),
             pos_bill_id: None,
             category: line.category,
+            currency: line.currency,
+            total: line.total,
             net,
             taxes,
             link: Some(Link {
@@ -617,6 +625,7 @@ struct Line {
     category: String,
     currency: String,
     base_total: i64,
+    total: i64,
     rate: Decimal,
     posting_key: Option<String>,
     reverses: Option<Uuid>,

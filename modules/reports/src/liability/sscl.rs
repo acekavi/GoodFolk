@@ -2,7 +2,7 @@
 
 use crate::everyday::ratio;
 use crate::liability::lines::{folio_revenue_lines, revenue_lines};
-use crate::liability::settlement::{Segment, segments};
+use crate::liability::settlement::{Segment, segments_of};
 use crate::{RUPEE, ReportsError};
 use db::Tx;
 use serde::Serialize;
@@ -134,14 +134,14 @@ pub async fn sscl(tx: &mut Tx, property: Uuid, quarter: CalendarQuarter) -> Resu
     let sltda_registered = sltda_licence.is_some();
     let month_of = |date: Date| months.iter().position(|&(first, last)| first <= date && date <= last);
 
-    let settled = if sltda_registered { segments(tx, property, from, to).await? } else { Vec::new() };
+    let mut lines = revenue_lines(tx, property, from, to).await?;
+    let settled = if sltda_registered { segments_of(tx, property, from, to, &lines).await? } else { Vec::new() };
     let mut by_subject: HashMap<Uuid, Vec<Segment>> = HashMap::new();
     for segment in &settled {
         by_subject.entry(segment.subject_id).or_default().push(*segment);
     }
-    // The quarter's lines, then the earlier lines of only the folios whose settlements in the quarter reach back
-    // before it (a bill settled at its outlet covers its own date only).
-    let mut lines = revenue_lines(tx, property, from, to).await?;
+    // The earlier lines of only the folios whose settlements in the quarter reach back before it (a bill settled at its
+    // outlet covers its own date only).
     let reaching_back: Vec<&Segment> = settled.iter().filter(|segment| segment.covers_from < from).collect();
     if let Some(earliest) = reaching_back.iter().map(|segment| segment.covers_from).min() {
         let folios: Vec<Uuid> = reaching_back.iter().map(|segment| segment.subject_id).collect();

@@ -19,6 +19,9 @@ pub struct RevenueLine {
     pub category: String,
     /// The outlet a `pos:<OUTLET>` category names; `None` for every other category.
     pub outlet: Option<Uuid>,
+    /// The line's currency and its total in it, taxes included.
+    pub currency: String,
+    pub total: i64,
     /// Net of the on-bill taxes.
     pub net: i64,
     /// By code, on-bill and absorbed.
@@ -91,6 +94,8 @@ async fn with_outlets(
             pos_bill_id: line.pos_bill_id,
             outlet: line.category.strip_prefix("pos:").and_then(|code| outlets.get(code).copied()),
             category: line.category,
+            currency: line.currency,
+            total: line.total,
             net: line.net,
             taxes: line.taxes,
         })
