@@ -145,3 +145,62 @@ async fn bookings_and_cancellations_made_before_night_audit_get_their_business_d
     assert_eq!(by_room(cancelled).1, time::macros::date!(2026 - 03 - 06));
     assert_eq!(by_room(no_show).1, by_room(no_show).2, "a no-show is dated its arrival day");
 }
+
+/// The tax-line backfill of `migrations/0045_line_tax_date.sql`: the statements between its markers, run again here.
+fn tax_date_statements() -> &'static str {
+    let migration = include_str!("../../../migrations/0045_line_tax_date.sql");
+    let (_, rest) = migration.split_once("-- backfill: start\n").expect("backfill start marker");
+    rest.split_once("-- backfill: end").expect("backfill end marker").0
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_tax_line_backfill_gives_old_rows_their_property_and_business_date(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts).await;
+    let booking = hotel.book(None).await;
+    let line = Uuid::now_v7();
+    sqlx::query(
+        "insert into folio_line (id, tenant_id, folio_id, source, category, description, net, total, currency,
+                                 base_total, rate, rate_date, business_date)
+         values ($1, $2, $3, 'manual', 'misc', 'Old', 100, 110, 'LKR', 110, 1, $4, $4)",
+    )
+    .bind(line)
+    .bind(hotel.tenant.0)
+    .bind(booking.guests[0])
+    .bind(hotel.business_date)
+    .execute(&hotel.owner)
+    .await
+    .unwrap();
+    // The insert trigger sets the two columns; as before 0045, they are empty.
+    sqlx::query(
+        "insert into folio_line_tax (tenant_id, line_id, code, name, kind, rate_bp, base, amount, presentation)
+         values ($1, $2, 'SC', 'Service charge', 'service_charge', 1000, 100, 10, 'on_bill')",
+    )
+    .bind(hotel.tenant.0)
+    .bind(line)
+    .execute(&hotel.owner)
+    .await
+    .unwrap();
+    sqlx::raw_sql(
+        "alter table folio_line_tax alter column property_id drop not null;
+         alter table folio_line_tax alter column business_date drop not null;
+         update folio_line_tax set property_id = null, business_date = null;",
+    )
+    .execute(&hotel.owner)
+    .await
+    .unwrap();
+
+    sqlx::raw_sql(tax_date_statements()).execute(&hotel.owner).await.unwrap();
+    // Run twice, as a migration re-applied by hand would be.
+    sqlx::raw_sql(tax_date_statements()).execute(&hotel.owner).await.unwrap();
+
+    let found: (Option<Uuid>, Option<time::Date>) =
+        sqlx::query_as("select property_id, business_date from folio_line_tax where line_id = $1")
+            .bind(line)
+            .fetch_one(&hotel.owner)
+            .await
+            .unwrap();
+    assert_eq!(found, (Some(hotel.property), Some(hotel.business_date)));
+}

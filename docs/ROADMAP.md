@@ -326,7 +326,7 @@ Migrations `0041`–`0045`. New module `modules/reports`; routes in `crates/core
   - **Daily PDFs dropped** (spec): only the weekly, monthly and liability reports are rendered.
   - **SSCL settlement:** a folio is settled when its balance is zero in every currency; the exempt share is measured then. A transfer carries its source folio's share one level deep (a deposit moved to its stay), a charge to account lowers it, and a refund nets the share. Earlier-month lines are read only for folios settling in the quarter.
   - **Form A** rounds each line and deduction to whole rupees once, and the totals follow, so the printed form adds up; the TDL floors at 0 with a flag when credits exceed sales.
-  - **VAT totals** come from every supply on closed dates (absorbed VAT included), net of credit notes; Schedule 01's TIN rows come from tax invoices and the combined row is the rest, clamped at 0, with a **timing difference** shown for invoices issued in a later period.
+  - **VAT totals** come from every supply on closed dates (absorbed VAT included), net of credit notes; Schedule 01's TIN rows come from tax invoices (value = VAT / rate). The combined row is the return's total plus Schedule 04, less the TIN rows, clamped as a pair at 0 so that Schedule 01 less Schedule 04 equals the net; what the clamp cannot absorb is shown as a **timing difference** (invoices issued in a period for supplies of another).
   - **A catch-up close renders but mails only the period just ended**, so a late or first close never floods the inbox.
   - **`setReportEmail` is a REST `PUT`**, and the email switches are on the Reports page, as there is no per-user settings page.
   - **An outlet's report group change applies from the next unclosed business date**, kept as a history.
@@ -343,7 +343,11 @@ Migrations `0041`–`0045`. New module `modules/reports`; routes in `crates/core
 
   The first runs missed (TDL p95 387 ms, SSCL 491 ms). Three changes: the line reader reads taxes in a second query, not a lateral lookup per line; migration `0045` stores `property_id` and `business_date` on `folio_line_tax` (a trigger sets them on insert), so a quarter's taxes are one index range; and SSCL's settlement walk reuses the quarter's lines it already holds (their currency and total), reading again only the adjustments and the history before the quarter.
 
-- **Still open:** the final layout of the IRD tax invoice (ARCHITECTURE §14); input VAT and RAMIS's web API (out of scope); bad debts are always Rs 0 until the system writes off debts.
+- **Still open:**
+  - The SLTDA licence is read as it is now, so registering later applies the SSCL exemption to closed months when they are rendered again.
+  - A foreign-currency refund inside a segment whose payments are positive is exempted at 0%, not reversed at the original share.
+  - A 0%-rated VAT tax (not in the preset) goes to the timing difference, with a negative value.
+  - The final layout of the IRD tax invoice (ARCHITECTURE §14); input VAT and RAMIS's web API (out of scope); bad debts are always Rs 0 until the system writes off debts.
 
 ## Linen and guest laundry (moved from Phase 5) ([spec](specs/laundry.md), [plan](superpowers/plans/2026-10-24-laundry.md))
 

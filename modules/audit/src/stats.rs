@@ -72,7 +72,7 @@ pub const LINES_SQL: &str = "select l.id, l.business_date, l.folio_id, l.categor
 
 /// The taxes of [`LINES_SQL`]'s lines (same `$1` to `$3`), by the property and business date stored on each (migration
 /// 0045): one index range, with no join to the lines (the taxes of an adjustment line are read and left unmatched).
-const TAXES_SQL: &str = "select t.line_id, t.code, t.kind, t.presentation, t.rate_bp, t.amount
+pub const TAXES_SQL: &str = "select t.line_id, t.code, t.kind, t.presentation, t.rate_bp, t.amount
  from folio_line_tax t
  where t.property_id = $1 and t.business_date between $2 and $3";
 

@@ -17,7 +17,7 @@ alter table folio_line_tax force row level security;
 alter table folio_line_tax alter column property_id set not null;
 alter table folio_line_tax alter column business_date set not null;
 
-create function folio_line_tax_dates() returns trigger language plpgsql as $$
+create function folio_line_tax_dates() returns trigger language plpgsql set search_path = pg_catalog, public as $$
 begin
   select f.property_id, l.business_date into new.property_id, new.business_date
   from folio_line l join folio f on f.id = l.folio_id

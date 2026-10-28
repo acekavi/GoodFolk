@@ -30,7 +30,7 @@ pub use close::{
 };
 
 pub use stats::{
-    BreakdownRow, DailyStats, LINES_SQL, RevenueLine, RevenueTax, compute, daily_stats, folio_revenue_lines,
+    BreakdownRow, DailyStats, LINES_SQL, RevenueLine, RevenueTax, TAXES_SQL, compute, daily_stats, folio_revenue_lines,
     revenue_lines, store,
 };
 

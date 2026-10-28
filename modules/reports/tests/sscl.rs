@@ -5,13 +5,26 @@ mod common;
 
 use common::{Hotel, date};
 use folio::{Method, ReportGroup};
-use reports::liability::settlement::{Segment, segments};
+use reports::liability::lines::revenue_lines;
+use reports::liability::settlement::{Segment, segments, segments_of};
 use reports::{CalendarQuarter, SsclReport};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use time::Month;
 
 /// July to September 2026.
 const Q3: CalendarQuarter = CalendarQuarter { year: 2026, q: 3 };
+
+/// The settlements of Q3 as the report reads them, from the revenue lines it already holds, equal [`segments`]' own read.
+async fn assert_both_reads_agree(hotel: &Hotel, found: &[Segment]) {
+    let (from, to) = (date(2026, 7, 1), date(2026, 9, 30));
+    let mut tx = hotel.tx().await;
+    let lines = revenue_lines(&mut tx, hotel.property, from, to).await.unwrap();
+    let mut shared = segments_of(&mut tx, hotel.property, from, to, &lines).await.unwrap();
+    let mut own = found.to_vec();
+    shared.sort_by_key(|segment| (segment.subject_id, segment.settled_on));
+    own.sort_by_key(|segment| (segment.subject_id, segment.settled_on));
+    assert_eq!(shared, own);
+}
 
 async fn sscl(hotel: &Hotel, quarter: CalendarQuarter) -> SsclReport {
     reports::sscl(&mut hotel.tx().await, hotel.property, quarter).await.unwrap()
@@ -42,6 +55,7 @@ async fn usd_card_share_exempt_lkr_cash_not(_: PgPoolOptions, opts: PgConnectOpt
     hotel.set_business_date(date(2026, 10, 1)).await;
 
     let found = segments(&mut hotel.tx().await, hotel.property, date(2026, 7, 1), date(2026, 9, 30)).await.unwrap();
+    assert_both_reads_agree(&hotel, &found).await;
     assert_eq!(
         found,
         vec![Segment {
@@ -142,6 +156,7 @@ async fn resettled_folio_not_double_counted(_: PgPoolOptions, opts: PgConnectOpt
     hotel.set_business_date(date(2026, 10, 1)).await;
 
     let found = segments(&mut hotel.tx().await, hotel.property, date(2026, 7, 1), date(2026, 9, 30)).await.unwrap();
+    assert_both_reads_agree(&hotel, &found).await;
     let shares: Vec<_> = found.iter().map(|segment| (segment.settled_on, segment.exempt_share_bp)).collect();
     assert_eq!(shares, vec![(date(2026, 7, 10), 10_000), (date(2026, 8, 10), 0), (date(2026, 9, 10), 10_000)]);
     let report = sscl(&hotel, Q3).await;
@@ -182,6 +197,7 @@ async fn deposit_transfer_carries_its_share(_: PgPoolOptions, opts: PgConnectOpt
     hotel.set_business_date(date(2026, 10, 1)).await;
 
     let found = segments(&mut hotel.tx().await, hotel.property, date(2026, 7, 1), date(2026, 9, 30)).await.unwrap();
+    assert_both_reads_agree(&hotel, &found).await;
     let stay_segment = found.iter().find(|segment| segment.subject_id == guest).unwrap();
     assert_eq!((stay_segment.settled_on, stay_segment.exempt_share_bp), (date(2026, 7, 11), 5_000));
     let july = &sscl(&hotel, Q3).await.months[0];
@@ -225,6 +241,7 @@ async fn refund_after_overpayment_keeps_full_share(_: PgPoolOptions, opts: PgCon
     hotel.set_business_date(date(2026, 10, 1)).await;
 
     let found = segments(&mut hotel.tx().await, hotel.property, date(2026, 7, 1), date(2026, 9, 30)).await.unwrap();
+    assert_both_reads_agree(&hotel, &found).await;
     let shares: Vec<_> = found.iter().map(|segment| (segment.settled_on, segment.exempt_share_bp)).collect();
     assert_eq!(shares, vec![(date(2026, 7, 11), 10_000)]);
     assert_eq!(sscl(&hotel, Q3).await.months[0].exempt_same_month, 3_000_000);
@@ -287,6 +304,7 @@ async fn account_payment_settles_with_no_share(_: PgPoolOptions, opts: PgConnect
     hotel.set_business_date(date(2026, 10, 1)).await;
 
     let found = segments(&mut hotel.tx().await, hotel.property, date(2026, 7, 1), date(2026, 9, 30)).await.unwrap();
+    assert_both_reads_agree(&hotel, &found).await;
     let stay_segment = found.iter().find(|segment| segment.subject_id == guest).unwrap();
     assert_eq!((stay_segment.settled_on, stay_segment.exempt_share_bp), (date(2026, 7, 10), 0));
     let july = &sscl(&hotel, Q3).await.months[0];

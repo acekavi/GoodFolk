@@ -1972,7 +1972,7 @@ async fn tdl_report_for_a_quarter_p95_under_300ms(_: PgPoolOptions, opts: PgConn
     let hotel = quarter_hotel(opts).await;
     let (form, p50, p95) = time_report(&hotel, TDL_REPORT, json!({"p": hotel.property}), "tdlReport").await;
     assert_eq!(form["notClosed"], json!(false), "{form:?}");
-    assert_ne!(form["tdl"], json!("0"), "{form:?}");
+    assert!(form["tdl"].as_i64().is_some_and(|tdl| tdl > 0), "{form:?}");
     println!("tdlReport, a quarter of {IN_HOUSE} folios, {SAMPLES} samples: p50 {p50:?}, p95 {p95:?}");
     assert!(p95 < Duration::from_millis(300), "p95 {p95:?} is over the 300 ms gate");
 }
@@ -1986,7 +1986,7 @@ async fn sscl_report_for_a_quarter_p95_under_300ms(_: PgPoolOptions, opts: PgCon
     let months = report["months"].as_array().unwrap();
     assert_eq!(months.len(), 3, "{report:?}");
     // The long-open folio settles in August: its exemption for the earlier months lands there.
-    assert_ne!(months[1]["exemptEarlierMonths"], json!("0"), "{report:?}");
+    assert!(months[1]["exemptEarlierMonths"].as_i64().is_some_and(|exempt| exempt > 0), "{report:?}");
     println!("ssclReport, a quarter of {IN_HOUSE} folios, {SAMPLES} samples: p50 {p50:?}, p95 {p95:?}");
     assert!(p95 < Duration::from_millis(300), "p95 {p95:?} is over the 300 ms gate");
 }
