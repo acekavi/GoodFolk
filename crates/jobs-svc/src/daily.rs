@@ -49,7 +49,8 @@ pub(crate) async fn run(svc: &JobsSvc, now_for: &impl Fn(&str) -> PrimitiveDateT
         if let Some(storage) = &svc.storage {
             global(svc, "media_sweep", due, async || sweep(&svc.pool, storage).await.map(|()| today), jobs).await;
         }
-        global(svc, "cleanup", due, async || cleanup::run(&svc.pool).await.map(|()| today), jobs).await;
+        let storage = svc.storage.as_deref();
+        global(svc, "cleanup", due, async || cleanup::run(&svc.pool, storage).await.map(|()| today), jobs).await;
     }
     let properties: Vec<Property> =
         match sqlx::query_as("select tenant_id, property_id, business_date from app.jobs_properties()")

@@ -4,8 +4,8 @@
 //!   nothing to send when the invitation is no longer pending, or a resend has replaced the job's token, so its link
 //!   would not work.
 //! - A weekly or monthly report's email carries its headline figures, as its PDF prints them, and the PDF itself, read
-//!   from storage. There is nothing to send when the report or the recipient's membership is gone; a PDF that cannot
-//!   be read yet is tried again.
+//!   from storage. There is nothing to send when the report is gone, or the recipient is no longer an owner or manager
+//!   of its property (or of every property); a PDF that cannot be read yet is tried again.
 //!
 //! The answer is 204 once the email is sent, also when there is nothing to send or the provider refused it for good,
 //! which is logged as an error: delivering the job again cannot help. It is 503 when the send may succeed later, so the
@@ -228,7 +228,8 @@ struct Figure {
 const EMAILED_FIGURES: [&str; 4] = ["Occupancy", "ADR", "RevPAR", "Total revenue"];
 
 /// Report `id`'s email to `user`, with its PDF attached, or `None` when the report is not `tenant`'s, is not weekly or
-/// monthly, or `user` is not a member of `tenant`. `Err` (try again) when the PDF cannot be read.
+/// monthly, or `user` no longer holds an owner or manager grant for its property or for every property (a grant
+/// revoked since the report was ready). `Err` (try again) when the PDF cannot be read.
 async fn report_message(svc: &JobsSvc, tenant: TenantId, id: Uuid, user: Uuid) -> Result<Option<Message>, String> {
     let mut tx = db::begin(&svc.pool, Scope::tenant(tenant)).await.map_err(|e| e.to_string())?;
     let row: Option<ReportRow> = sqlx::query_as(
@@ -238,7 +239,10 @@ async fn report_message(svc: &JobsSvc, tenant: TenantId, id: Uuid, user: Uuid) -
          join property p on p.id = r.property_id
          join membership m on m.tenant_id = r.tenant_id and m.user_id = $2
          join app_user u on u.id = m.user_id
-         where r.id = $1 and r.kind in ('weekly', 'monthly')",
+         where r.id = $1 and r.kind in ('weekly', 'monthly')
+           and exists (select 1 from role_grant g
+                       where g.tenant_id = r.tenant_id and g.user_id = $2 and g.role in ('owner', 'manager')
+                         and (g.property_id is null or g.property_id = r.property_id))",
     )
     .bind(id)
     .bind(user)
@@ -247,7 +251,7 @@ async fn report_message(svc: &JobsSvc, tenant: TenantId, id: Uuid, user: Uuid) -
     .map_err(|e| e.to_string())?;
     tx.commit().await.map_err(|e| e.to_string())?;
     let Some(row) = row else {
-        tracing::warn!(report = %id, %user, "no such report or member in the tenant; nothing sent");
+        tracing::warn!(report = %id, %user, "no such report, or no owner or manager of its property; nothing sent");
         return Ok(None);
     };
     let key = row.pdf_key.as_deref().ok_or("the report has no PDF yet")?;
@@ -279,7 +283,7 @@ fn render_report(row: &ReportRow, pdf: Vec<u8>) -> Message {
     for (label, value) in &figures {
         text.push_str(&format!("{label}: {value}\n"));
     }
-    text.push_str("\nThe full report is attached as a PDF. You can turn this email off in your account settings.\n");
+    text.push_str("\nThe full report is attached as a PDF. You can turn this email off on the Reports page.\n");
 
     let mut html = format!(
         "<p>Hello {},</p>\n<p>Here is {}'s {kind} report for {}.</p>\n<ul>\n",
@@ -291,7 +295,7 @@ fn render_report(row: &ReportRow, pdf: Vec<u8>) -> Message {
         html.push_str(&format!("<li>{}: {}</li>\n", escape(label), escape(value)));
     }
     html.push_str(
-        "</ul>\n<p>The full report is attached as a PDF. You can turn this email off in your account settings.</p>\n",
+        "</ul>\n<p>The full report is attached as a PDF. You can turn this email off on the Reports page.</p>\n",
     );
     let attachment = Attachment {
         filename: format!("{kind}-report-{}.pdf", row.period_start),

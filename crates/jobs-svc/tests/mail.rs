@@ -251,8 +251,28 @@ async fn a_body_that_is_not_a_job_is_400(_: PgPoolOptions, opts: PgConnectOption
     assert_eq!(post_mail(addr, serde_json::to_vec(&envelope).unwrap(), Some(SECRET)).await, 400);
 }
 
+/// Gives `hotel`'s user exactly `grants`, `(role, property)`, a `None` property being every property.
+async fn grant(hotel: &Hotel, grants: &[(&str, Option<Uuid>)]) {
+    let mut tx = hotel.tx().await;
+    sqlx::query("delete from role_grant where user_id = $1").bind(hotel.user.0).execute(&mut *tx).await.unwrap();
+    for (role, property) in grants {
+        sqlx::query(
+            "insert into role_grant (id, tenant_id, user_id, property_id, role)
+             values (gen_random_uuid(), $1, $2, $3, $4)",
+        )
+        .bind(hotel.tenant.0)
+        .bind(hotel.user.0)
+        .bind(property)
+        .bind(role)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+}
+
 /// A rendered `kind` report of `hotel` for `from` to `to`, its PDF `pdf` in storage when given; `hotel`'s user is a
-/// member of its tenant.
+/// member of its tenant and its owner.
 async fn ready_report(hotel: &Hotel, kind: &str, from: time::Date, to: time::Date, pdf: Option<&[u8]>) -> Uuid {
     let id = Uuid::now_v7();
     let key = storage::report_pdf_key(hotel.tenant.0, id);
@@ -288,6 +308,7 @@ async fn ready_report(hotel: &Hotel, kind: &str, from: time::Date, to: time::Dat
     .await
     .unwrap();
     tx.commit().await.unwrap();
+    grant(hotel, &[("owner", None)]).await;
     if let Some(pdf) = pdf {
         storage().await.put(Bucket::Private, &key, pdf.to_vec(), "application/pdf", None).await.unwrap();
     }
@@ -320,6 +341,8 @@ async fn a_report_email_carries_the_headline_and_attaches_the_pdf(_: PgPoolOptio
         assert!(message.html.contains(line), "{line} in {}", message.html);
     }
     assert!(!message.text.contains("Room nights"), "{}", message.text);
+    assert!(message.text.contains("You can turn this email off on the Reports page."), "{}", message.text);
+    assert!(message.html.contains("You can turn this email off on the Reports page."), "{}", message.html);
     assert_eq!(message.attachments.len(), 1);
     assert_eq!(
         (message.attachments[0].filename.as_str(), message.attachments[0].content_type.as_str()),
@@ -363,4 +386,28 @@ async fn a_report_job_for_no_such_report_or_member_sends_nothing(_: PgPoolOption
         assert_eq!(post_mail(addr, push(&job), Some(SECRET)).await, 204, "{job:?}");
     }
     assert!(sent(&outbox).is_empty());
+}
+
+/// The recipient is checked again when the email is sent: an owner or manager of the property then, or an owner or
+/// manager of every property. Anyone else, such as someone whose grant was revoked since the PDF was ready, gets
+/// nothing.
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_report_email_goes_only_to_an_owner_or_manager_of_the_property_now(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts.clone()).await;
+    let (svc, outbox) = mailing(&hotel, opts);
+    let addr = serve(JobsSvc { storage: Some(storage().await), ..svc }).await;
+    let report = ready_report(&hotel, "weekly", date!(2026 - 10 - 19), date!(2026 - 10 - 25), Some(b"%PDF-")).await;
+    let other = hotel.add_property("OTH").await;
+
+    for grants in [vec![], vec![("accountant", Some(hotel.property))], vec![("manager", Some(other))]] {
+        grant(&hotel, &grants).await;
+        assert_eq!(post_mail(addr, push(&report_job(&hotel, report)), Some(SECRET)).await, 204, "{grants:?}");
+        assert!(sent(&outbox).is_empty(), "{grants:?}");
+    }
+    for grants in [vec![("manager", Some(hotel.property))], vec![("manager", None)]] {
+        grant(&hotel, &grants).await;
+        assert_eq!(post_mail(addr, push(&report_job(&hotel, report)), Some(SECRET)).await, 204, "{grants:?}");
+    }
+    assert_eq!(sent(&outbox).len(), 2);
+    std::fs::remove_dir_all(outbox).unwrap();
 }
