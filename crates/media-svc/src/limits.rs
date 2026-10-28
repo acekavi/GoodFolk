@@ -16,11 +16,13 @@ const VIDEO_TYPES: &[SourceType] = &[SourceType::Mp4, SourceType::Quicktime, Sou
 /// |---|---|---|
 /// | gallery and issue_photo | 26_214_400 | jpeg, png, webp |
 /// | guest_document | 15_728_640 | jpeg, png, webp, pdf |
+/// | ibe_logo | 5_242_880 | jpeg, png, webp |
 /// | gallery_video | 524_288_000 | mp4, mov, webm, mkv |
 pub fn limits(profile: Profile) -> Limits {
     match profile {
         Profile::Gallery | Profile::IssuePhoto => Limits { max_bytes: 26_214_400, types: PHOTO_TYPES },
         Profile::GuestDocument => Limits { max_bytes: 15_728_640, types: DOCUMENT_TYPES },
+        Profile::IbeLogo => Limits { max_bytes: 5_242_880, types: PHOTO_TYPES },
         Profile::GalleryVideo => Limits { max_bytes: 524_288_000, types: VIDEO_TYPES },
     }
 }
@@ -31,7 +33,9 @@ mod tests {
 
     #[test]
     fn heic_is_never_accepted() {
-        for profile in [Profile::Gallery, Profile::IssuePhoto, Profile::GuestDocument, Profile::GalleryVideo] {
+        for profile in
+            [Profile::Gallery, Profile::IssuePhoto, Profile::GuestDocument, Profile::GalleryVideo, Profile::IbeLogo]
+        {
             assert!(!limits(profile).types.contains(&SourceType::Heic));
         }
     }
@@ -45,10 +49,16 @@ mod tests {
 
     #[test]
     fn only_gallery_video_takes_video() {
-        for profile in [Profile::Gallery, Profile::IssuePhoto, Profile::GuestDocument] {
+        for profile in [Profile::Gallery, Profile::IssuePhoto, Profile::GuestDocument, Profile::IbeLogo] {
             assert!(!limits(profile).types.iter().any(|ty| ty.is_video()));
         }
         assert!(limits(Profile::GalleryVideo).types.iter().all(|ty| ty.is_video()));
+    }
+
+    #[test]
+    fn ibe_logo_is_5_mb_of_photo_types() {
+        assert_eq!(limits(Profile::IbeLogo).max_bytes, 5_242_880);
+        assert!(!limits(Profile::IbeLogo).types.contains(&SourceType::Pdf));
     }
 
     #[test]

@@ -69,6 +69,7 @@ impl Role {
                     | LaundryPricesManage
                     | StaffManage
                     | ReportsView
+                    | IbeManage
             ),
             Role::FrontDesk => matches!(
                 permission,
@@ -209,6 +210,8 @@ pub enum Permission {
     ReportsView,
     /// See [`describe`].
     ReportsLiability,
+    /// See [`describe`].
+    IbeManage,
 }
 
 impl Permission {
@@ -250,12 +253,13 @@ impl Permission {
             StaffManage => "StaffManage",
             ReportsView => "ReportsView",
             ReportsLiability => "ReportsLiability",
+            IbeManage => "IbeManage",
         }
     }
 }
 
 /// Every permission, in declaration order.
-pub const ALL_PERMISSIONS: [Permission; 34] = [
+pub const ALL_PERMISSIONS: [Permission; 35] = [
     Permission::PropertiesView,
     Permission::PropertiesCreate,
     Permission::PropertiesManage,
@@ -290,6 +294,7 @@ pub const ALL_PERMISSIONS: [Permission; 34] = [
     Permission::StaffManage,
     Permission::ReportsView,
     Permission::ReportsLiability,
+    Permission::IbeManage,
 ];
 
 /// Every role.
@@ -355,6 +360,7 @@ pub fn describe(permission: Permission) -> &'static str {
         }
         ReportsView => "See the weekly and monthly reports and the service charge report, and run an on-demand report.",
         ReportsLiability => "See and download the TDL, SSCL and VAT reports.",
+        IbeManage => "Change a property's booking site settings: turn it on, brand it, and set its terms.",
     }
 }
 

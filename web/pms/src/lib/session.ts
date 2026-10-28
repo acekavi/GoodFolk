@@ -74,7 +74,9 @@ const ACTIONS = {
 	/** The TDL, SSCL, VAT and service charge reports; mirrors `ReportsLiability`. */
 	reportsLiability: ['owner', 'accountant'],
 	/** Invite staff, change their roles and remove them; mirrors `StaffManage`. */
-	staffManage: ['owner', 'manager']
+	staffManage: ['owner', 'manager'],
+	/** The booking site settings; mirrors `IbeManage`. */
+	ibeManage: ['owner', 'manager']
 } satisfies Record<string, Role[]>;
 
 /** UI hint only; the API enforces permissions. A grant counts tenant-wide or for `propertyId`. */

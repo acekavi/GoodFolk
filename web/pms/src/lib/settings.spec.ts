@@ -94,7 +94,7 @@ describe('settingsIndex', () => {
 
 	it('shows the owner every group and page, in the order the spec lists them', () => {
 		expect(index([{ role: 'owner' }])).toEqual([
-			'Property: General, Taxes and invoices, Currencies and exchange rates',
+			'Property: General, Taxes and invoices, Currencies and exchange rates, Booking site',
 			'Operations: Sections, Block reasons, Outlets, Laundry prices',
 			'Rates: Cancellation policies',
 			'Staff: Staff, Permissions'
@@ -106,6 +106,12 @@ describe('settingsIndex', () => {
 
 	it('shows a manager the same pages at their property', () => {
 		expect(index([{ role: 'manager', property_id: 'p1' }])).toEqual(index([{ role: 'owner' }]));
+	});
+
+	it('shows the Booking site to owners and managers only', () => {
+		for (const role of ['front_desk', 'accountant', 'housekeeping', 'hk_supervisor'] as const) {
+			expect(index([{ role }]).join(' ')).not.toContain('Booking site');
+		}
 	});
 
 	it('shows a manager elsewhere only Staff and Permissions here', () => {

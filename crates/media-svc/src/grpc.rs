@@ -41,6 +41,7 @@ fn profile(purpose: Purpose) -> Result<Profile, Status> {
         Purpose::IssuePhoto => Ok(Profile::IssuePhoto),
         Purpose::GuestDocument => Ok(Profile::GuestDocument),
         Purpose::GalleryVideo => Ok(Profile::GalleryVideo),
+        Purpose::IbeLogo => Ok(Profile::IbeLogo),
         Purpose::Unspecified => Err(Status::invalid_argument("purpose is required")),
     }
 }

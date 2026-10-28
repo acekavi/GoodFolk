@@ -86,6 +86,7 @@ pub enum Profile {
     IssuePhoto,
     GuestDocument,
     GalleryVideo,
+    IbeLogo,
 }
 
 impl Profile {
@@ -95,6 +96,7 @@ impl Profile {
             Self::IssuePhoto => &[Size::Thumb, Size::Sm, Size::Md, Size::Lg],
             Self::GuestDocument => &[Size::Thumb, Size::Md],
             Self::GalleryVideo => &[Size::V1080, Size::V720],
+            Self::IbeLogo => &[Size::Sm, Size::Md],
         }
     }
 }

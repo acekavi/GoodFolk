@@ -35,7 +35,8 @@
 	});
 	let draft = $state(emptyDraft());
 	let editing = $state<
-		({ id: string; version: number; name: string } & Capacity & Overbooking) | null
+		| ({ id: string; version: number; name: string; description: string } & Capacity & Overbooking)
+		| null
 	>(null);
 	let dragged = $state<number | null>(null);
 	let error = $state('');
@@ -96,7 +97,7 @@
 
 	function update(
 		type: RoomType,
-		body: { name?: string; active?: boolean; overbooking?: number } & object
+		body: { name?: string; active?: boolean; overbooking?: number; description?: string } & object
 	) {
 		return run(async () => {
 			unwrap(
@@ -229,7 +230,8 @@
 											update(type, {
 												name: editing.name,
 												...capacity(editing),
-												overbooking: editing.overbooking
+												overbooking: editing.overbooking,
+												description: editing.description
 											})}>Save</button
 									>
 									<button class="secondary" onclick={() => (editing = null)}>Cancel</button>
@@ -263,6 +265,16 @@
 							</td>
 						{/if}
 					</tr>
+					{#if editing?.id === type.id}
+						<tr>
+							<td colspan="9">
+								<label class="description"
+									>Description of {type.code}, shown on the booking site
+									<textarea maxlength="1000" rows="3" bind:value={editing.description}></textarea>
+								</label>
+							</td>
+						</tr>
+					{/if}
 				{:else}
 					<tr><td colspan="9">No room types yet.</td></tr>
 				{/each}
@@ -316,5 +328,9 @@
 	/* The table scrolls sideways on a phone rather than widening the page. */
 	.scroll {
 		overflow-x: auto;
+	}
+	.description {
+		display: grid;
+		gap: 0.25rem;
 	}
 </style>

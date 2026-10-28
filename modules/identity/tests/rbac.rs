@@ -79,6 +79,7 @@ fn each_role_has_exactly_its_permissions() {
                 LaundryPricesManage,
                 StaffManage,
                 ReportsView,
+                IbeManage,
             ],
         ),
         (
@@ -245,6 +246,11 @@ fn only_owners_manage_tax_settings() {
 }
 
 #[test]
+fn only_owners_and_managers_manage_the_booking_site() {
+    assert_eq!(roles_allowed(Permission::IbeManage), [Role::Owner, Role::Manager]);
+}
+
+#[test]
 fn only_owners_and_managers_override_exchange_rates() {
     assert_eq!(roles_allowed(Permission::FxOverride), [Role::Owner, Role::Manager]);
 }
@@ -358,6 +364,7 @@ fn slot(permission: Permission) -> usize {
         StaffManage => 31,
         ReportsView => 32,
         ReportsLiability => 33,
+        IbeManage => 34,
     }
 }
 

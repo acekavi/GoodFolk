@@ -189,9 +189,9 @@ where
 /// Writes the archive and renditions, checks the archive landed whole, and describes them.
 async fn store(svc: &MediaSvc, job: &ProcessJob, output: Output) -> anyhow::Result<MediaResult> {
     let (tenant, asset) = (job.tenant_id, job.asset_id);
-    // Only gallery renditions are public; archives never are.
+    // Only gallery and logo renditions are public; archives never are.
     let (rendition_bucket, cache_control) = match job.purpose {
-        Profile::Gallery | Profile::GalleryVideo => (Bucket::Public, Some(IMMUTABLE)),
+        Profile::Gallery | Profile::GalleryVideo | Profile::IbeLogo => (Bucket::Public, Some(IMMUTABLE)),
         Profile::IssuePhoto | Profile::GuestDocument => (Bucket::Private, None),
     };
 

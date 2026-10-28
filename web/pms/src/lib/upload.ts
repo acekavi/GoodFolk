@@ -20,7 +20,8 @@ export const LIMITS: Record<Purpose, { types: readonly string[]; maxBytes: numbe
 	gallery: { types: IMAGES, maxBytes: 25 * MIB },
 	issue_photo: { types: IMAGES, maxBytes: 25 * MIB },
 	guest_document: { types: [...IMAGES, 'application/pdf'], maxBytes: 15 * MIB },
-	gallery_video: { types: VIDEOS, maxBytes: 500 * MIB }
+	gallery_video: { types: VIDEOS, maxBytes: 500 * MIB },
+	ibe_logo: { types: IMAGES, maxBytes: 5 * MIB }
 };
 
 const BY_EXTENSION: Record<string, string> = {

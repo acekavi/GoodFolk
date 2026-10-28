@@ -217,6 +217,7 @@ async fn delete_orphan(
            and not exists (select 1 from room_type_media l where l.asset_id = a.id)
            and not exists (select 1 from room_issue_media l where l.asset_id = a.id)
            and not exists (select 1 from guest_document l where l.asset_id = a.id)
+           and not exists (select 1 from ibe_site l where a.id in (l.logo_asset_id, l.hero_asset_id))
          returning a.purpose, a.archive_key, a.renditions",
     )
     .bind(asset)

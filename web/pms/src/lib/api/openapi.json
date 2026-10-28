@@ -1651,6 +1651,108 @@
         }
       }
     },
+    "/api/v1/properties/{property}/ibe-site": {
+      "get": {
+        "tags": [
+          "crate::routes::properties"
+        ],
+        "summary": "The property's booking site settings: the defaults, at version 0, until it saves any. Needs `IbeManage`. The `ETag`\nis the version to send back as `If-Match`.",
+        "operationId": "get_ibe_site",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"3\"; send it back as If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbeSiteView"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {}
+        }
+      },
+      "put": {
+        "tags": [
+          "crate::routes::properties"
+        ],
+        "summary": "Replaces the property's booking site settings. Needs `IbeManage`; send the version as `If-Match` (0 for the first\nsave). The accent must give white text a contrast of 4.5 or more, the logo must be a completed `ibe_logo` upload and\nthe hero a finished room type gallery photo of this property, and the custom host must be unused (each 422).\nAudited as `ibe_site.updated` with the values before and after.",
+        "operationId": "update_ibe_site",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "the version edited, e.g. \"3\"; 0 for the first save",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateIbeSiteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "the version, e.g. \"4\"; send it back as If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbeSiteView"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "412": {},
+          "422": {},
+          "428": {}
+        }
+      }
+    },
     "/api/v1/properties/{property}/invoices/{invoice}/credit-note": {
       "post": {
         "tags": [
@@ -2807,7 +2909,7 @@
         "tags": [
           "crate::routes::media"
         ],
-        "summary": "Starts an upload: records the asset and has media-svc open a multipart upload, whose part URLs work for an hour.\nNeeds `MediaManage` for a gallery photo, `RoomIssuesReport` for an issue photo and `GuestDocumentsManage` for a\nguest document, and `MediaManage` for a room type's video (`gallery_video`). An issue holds at most 5 photos and a\nroom type at most 3 videos, counting uploads in progress (409). A video can be up to 500 MB. When media-svc cannot be\nreached in 2 s the answer is 502 and nothing is recorded. A retried request with the same `Idempotency-Key` is\nanswered without starting another upload.",
+        "summary": "Starts an upload: records the asset and has media-svc open a multipart upload, whose part URLs work for an hour.\nNeeds `MediaManage` for a gallery photo, `RoomIssuesReport` for an issue photo and `GuestDocumentsManage` for a\nguest document, `MediaManage` for a room type's video (`gallery_video`) and `IbeManage` for the booking site's logo\n(`ibe_logo`, up to 5 MB, with the property as the target). An issue holds at most 5 photos and a\nroom type at most 3 videos, counting uploads in progress (409). A video can be up to 500 MB. When media-svc cannot be\nreached in 2 s the answer is 502 and nothing is recorded. A retried request with the same `Idempotency-Key` is\nanswered without starting another upload.",
         "operationId": "start_media_upload",
         "parameters": [
           {
@@ -7939,6 +8041,114 @@
           }
         }
       },
+      "IbeSite": {
+        "type": "object",
+        "description": "A property's booking site settings. A property that never saved any has the defaults, at version 0.",
+        "required": [
+          "property_id",
+          "enabled",
+          "description",
+          "terms",
+          "privacy",
+          "version"
+        ],
+        "properties": {
+          "accent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`#rrggbb`, lowercase, with a contrast of 4.5 or more against white."
+          },
+          "contact_email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contact_phone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "custom_host": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A lowercase domain name, unique across all tenants."
+          },
+          "description": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "While off, the site answers `404` for the property."
+          },
+          "hero_asset_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "A ready gallery photo of one of the property's room types."
+          },
+          "logo_asset_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "An `ibe_logo` asset of the property, which may still be processing."
+          },
+          "privacy": {
+            "type": "string"
+          },
+          "property_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "terms": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Send it as `If-Match`: 0 until the first save."
+          }
+        }
+      },
+      "IbeSiteView": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/IbeSite"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "logo_status": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/AssetStatus",
+                    "description": "Null when there is no logo."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "logo_url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "The booking site settings with the logo's state and, once it is ready, its public URL."
+      },
       "IdDocRequest": {
         "type": "object",
         "description": "An identity document. `Debug` hides the number, which is sealed on arrival and never shown again.",
@@ -9790,7 +10000,8 @@
           "gallery",
           "issue_photo",
           "guest_document",
-          "gallery_video"
+          "gallery_video",
+          "ibe_logo"
         ]
       },
       "RatePlan": {
@@ -10656,6 +10867,7 @@
           "overbooking",
           "bed_config",
           "amenities",
+          "description",
           "sort_order",
           "active",
           "version"
@@ -10682,6 +10894,10 @@
           },
           "code": {
             "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "description": "What the booking site says about the room type, at most 1000 characters; empty when there is nothing."
           },
           "id": {
             "type": "string",
@@ -11130,7 +11346,7 @@
           "bytes": {
             "type": "integer",
             "format": "int64",
-            "description": "The file's size: at most 25 MiB for photos, 15 MiB for guest documents and 500 MB for videos.",
+            "description": "The file's size: at most 25 MiB for photos, 5 MiB for a logo, 15 MiB for guest documents and 500 MB for videos.",
             "minimum": 0
           },
           "filename": {
@@ -11158,7 +11374,7 @@
           "target_id": {
             "type": "string",
             "format": "uuid",
-            "description": "The room type (`gallery`, `gallery_video`), room issue (`issue_photo`) or guest (`guest_document`)."
+            "description": "The room type (`gallery`, `gallery_video`), room issue (`issue_photo`), guest (`guest_document`) or the property\nitself (`ibe_logo`)."
           }
         }
       },
@@ -11776,6 +11992,74 @@
           }
         }
       },
+      "UpdateIbeSiteRequest": {
+        "type": "object",
+        "description": "The booking site settings, as the page sends them back: every field is written. `null` or a missing optional field\nclears it.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "accent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`#rrggbb` in lowercase, giving white text a contrast of 4.5 or more (422)."
+          },
+          "contact_email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contact_phone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "1 to 50 characters."
+          },
+          "custom_host": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A lowercase domain name of 3 to 253 letters, digits, `.` and `-`, unique across all tenants."
+          },
+          "description": {
+            "type": "string",
+            "description": "At most 500 characters."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "While off, the site answers `404` for the property."
+          },
+          "hero_asset_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "A finished gallery photo of one of the property's room types."
+          },
+          "logo_asset_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "A completed `ibe_logo` upload of the property, which may still be processing."
+          },
+          "privacy": {
+            "type": "string",
+            "description": "Plain text, at most 10,000 characters."
+          },
+          "terms": {
+            "type": "string",
+            "description": "Plain text, at most 10,000 characters."
+          }
+        }
+      },
       "UpdateIssueRequest": {
         "type": "object",
         "required": [
@@ -12186,6 +12470,13 @@
             "items": {
               "$ref": "#/components/schemas/BedRequest"
             }
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Up to 1000 characters, shown on the booking site; empty clears it."
           },
           "max_adults": {
             "type": [

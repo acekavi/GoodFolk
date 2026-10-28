@@ -14,6 +14,7 @@
 	const hrefs: Record<SettingsLink, string> = $derived({
 		general: resolve('/(app)/p/[property]/settings/general', { property }),
 		taxes: resolve('/(app)/p/[property]/settings/taxes', { property }),
+		'booking-site': resolve('/(app)/p/[property]/settings/booking-site', { property }),
 		'exchange-rates': resolve('/(app)/p/[property]/settings/exchange-rates', { property }),
 		sections: resolve('/(app)/p/[property]/rooms', { property }),
 		'block-reasons': resolve('/(app)/p/[property]/settings/block-reasons', { property }),

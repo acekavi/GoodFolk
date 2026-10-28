@@ -202,5 +202,8 @@ Membership revocation deletes the `membership` row, its `role_grant` rows (casca
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `ibe_site` | `id`, `tenant_id`, `property_id`, `domain` (unique), `branding jsonb`, `published bool` | |
+| `ibe_site` | `tenant_id`, `property_id` (pk), `enabled`, `custom_host` (unique, lowercase), `logo_asset_id`, `hero_asset_id`, `accent`, `description`, `contact_phone`, `contact_email`, `terms`, `privacy`, `version` | One row per property, created by its first save (migration 0047); `app.ibe_resolve(code, host)` maps a property code or custom host to an enabled site |
+| `room_type.description` | `text not null default ''`, at most 1000 characters | Shown on the booking site |
+| `reservation_access_token` | `tenant_id`, `reservation_id` (pk), `sha256` (unique), `expires_at`, `created_at` | The manage link of a booking: only the hash of the token is stored |
+| `ibe_rate_hit` | `scope`, `ip`, `window_start`, `hits` (pk on the first three) | The public API's per-IP limits; global, so no tenant and no row-level security |
 | Holds | `reservation_room.status = 'tentative'` with `reservation.hold_expires_at` | A job releases expired holds (and their inventory) |

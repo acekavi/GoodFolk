@@ -14,6 +14,7 @@ export const RoomTypesDocument = graphql(`
 			maxOccupancy
 			overbooking
 			amenities
+			description
 			sortOrder
 			active
 			version

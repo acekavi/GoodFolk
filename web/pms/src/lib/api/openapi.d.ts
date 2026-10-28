@@ -600,6 +600,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/properties/{property}/ibe-site": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The property's booking site settings: the defaults, at version 0, until it saves any. Needs `IbeManage`. The `ETag`
+         *     is the version to send back as `If-Match`.
+         */
+        get: operations["get_ibe_site"];
+        /**
+         * Replaces the property's booking site settings. Needs `IbeManage`; send the version as `If-Match` (0 for the first
+         *     save). The accent must give white text a contrast of 4.5 or more, the logo must be a completed `ibe_logo` upload and
+         *     the hero a finished room type gallery photo of this property, and the custom host must be unused (each 422).
+         *     Audited as `ibe_site.updated` with the values before and after.
+         */
+        put: operations["update_ibe_site"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/invoices/{invoice}/credit-note": {
         parameters: {
             query?: never;
@@ -953,7 +979,8 @@ export interface paths {
         /**
          * Starts an upload: records the asset and has media-svc open a multipart upload, whose part URLs work for an hour.
          *     Needs `MediaManage` for a gallery photo, `RoomIssuesReport` for an issue photo and `GuestDocumentsManage` for a
-         *     guest document, and `MediaManage` for a room type's video (`gallery_video`). An issue holds at most 5 photos and a
+         *     guest document, `MediaManage` for a room type's video (`gallery_video`) and `IbeManage` for the booking site's logo
+         *     (`ibe_logo`, up to 5 MB, with the property as the target). An issue holds at most 5 photos and a
          *     room type at most 3 videos, counting uploads in progress (409). A video can be up to 500 MB. When media-svc cannot be
          *     reached in 2 s the answer is 502 and nothing is recorded. A retried request with the same `Idempotency-Key` is
          *     answered without starting another upload.
@@ -2697,6 +2724,42 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        /** @description A property's booking site settings. A property that never saved any has the defaults, at version 0. */
+        IbeSite: {
+            /** @description `#rrggbb`, lowercase, with a contrast of 4.5 or more against white. */
+            accent?: string | null;
+            contact_email?: string | null;
+            contact_phone?: string | null;
+            /** @description A lowercase domain name, unique across all tenants. */
+            custom_host?: string | null;
+            description: string;
+            /** @description While off, the site answers `404` for the property. */
+            enabled: boolean;
+            /**
+             * Format: uuid
+             * @description A ready gallery photo of one of the property's room types.
+             */
+            hero_asset_id?: string | null;
+            /**
+             * Format: uuid
+             * @description An `ibe_logo` asset of the property, which may still be processing.
+             */
+            logo_asset_id?: string | null;
+            privacy: string;
+            /** Format: uuid */
+            property_id: string;
+            terms: string;
+            /**
+             * Format: int32
+             * @description Send it as `If-Match`: 0 until the first save.
+             */
+            version: number;
+        };
+        /** @description The booking site settings with the logo's state and, once it is ready, its public URL. */
+        IbeSiteView: components["schemas"]["IbeSite"] & {
+            logo_status?: components["schemas"]["AssetStatus"] | null;
+            logo_url?: string | null;
+        };
         /** @description An identity document. `Debug` hides the number, which is sealed on arrival and never shown again. */
         IdDocRequest: {
             /** @description 1 to 50 characters. Responses show only its last 4 characters behind a mask, such as `•••• 1234`. */
@@ -3440,7 +3503,7 @@ export interface components {
          * @description What an asset is for. It decides the visibility, the size limit and the renditions.
          * @enum {string}
          */
-        Purpose: "gallery" | "issue_photo" | "guest_document" | "gallery_video";
+        Purpose: "gallery" | "issue_photo" | "guest_document" | "gallery_video" | "ibe_logo";
         RatePlan: {
             active: boolean;
             allowed_meal_plans: components["schemas"]["MealPlan"][];
@@ -3754,6 +3817,8 @@ export interface components {
             base_occupancy: number;
             bed_config: components["schemas"]["Bed"][];
             code: string;
+            /** @description What the booking site says about the room type, at most 1000 characters; empty when there is nothing. */
+            description: string;
             /** Format: uuid */
             id: string;
             /** Format: int32 */
@@ -3926,7 +3991,7 @@ export interface components {
         StartUploadRequest: {
             /**
              * Format: int64
-             * @description The file's size: at most 25 MiB for photos, 15 MiB for guest documents and 500 MB for videos.
+             * @description The file's size: at most 25 MiB for photos, 5 MiB for a logo, 15 MiB for guest documents and 500 MB for videos.
              */
             bytes: number;
             /** @description 1 to 255 characters. Only shown; the file's type is decided from its bytes. */
@@ -3937,7 +4002,8 @@ export interface components {
             sha256: string;
             /**
              * Format: uuid
-             * @description The room type (`gallery`, `gallery_video`), room issue (`issue_photo`) or guest (`guest_document`).
+             * @description The room type (`gallery`, `gallery_video`), room issue (`issue_photo`), guest (`guest_document`) or the property
+             *     itself (`ibe_logo`).
              */
             target_id: string;
         };
@@ -4138,6 +4204,37 @@ export interface components {
             phone?: string | null;
             residency?: components["schemas"]["Residency"] | null;
         };
+        /**
+         * @description The booking site settings, as the page sends them back: every field is written. `null` or a missing optional field
+         *     clears it.
+         */
+        UpdateIbeSiteRequest: {
+            /** @description `#rrggbb` in lowercase, giving white text a contrast of 4.5 or more (422). */
+            accent?: string | null;
+            contact_email?: string | null;
+            /** @description 1 to 50 characters. */
+            contact_phone?: string | null;
+            /** @description A lowercase domain name of 3 to 253 letters, digits, `.` and `-`, unique across all tenants. */
+            custom_host?: string | null;
+            /** @description At most 500 characters. */
+            description?: string;
+            /** @description While off, the site answers `404` for the property. */
+            enabled: boolean;
+            /**
+             * Format: uuid
+             * @description A finished gallery photo of one of the property's room types.
+             */
+            hero_asset_id?: string | null;
+            /**
+             * Format: uuid
+             * @description A completed `ibe_logo` upload of the property, which may still be processing.
+             */
+            logo_asset_id?: string | null;
+            /** @description Plain text, at most 10,000 characters. */
+            privacy?: string;
+            /** @description Plain text, at most 10,000 characters. */
+            terms?: string;
+        };
         UpdateIssueRequest: {
             /** @description Only `resolved` is accepted. */
             status: components["schemas"]["IssueStatus"];
@@ -4252,6 +4349,8 @@ export interface components {
             /** Format: int32 */
             base_occupancy?: number | null;
             bed_config?: components["schemas"]["BedRequest"][] | null;
+            /** @description Up to 1000 characters, shown on the booking site; empty clears it. */
+            description?: string | null;
             /** Format: int32 */
             max_adults?: number | null;
             /** Format: int32 */
@@ -5877,6 +5976,101 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_ibe_site: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "3"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IbeSiteView"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_ibe_site: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description the version edited, e.g. "3"; 0 for the first save */
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateIbeSiteRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "4"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IbeSiteView"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };

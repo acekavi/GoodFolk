@@ -58,6 +58,7 @@ fn upload_permission(purpose: Purpose) -> Permission {
         Purpose::Gallery | Purpose::GalleryVideo => Permission::MediaManage,
         Purpose::IssuePhoto => Permission::RoomIssuesReport,
         Purpose::GuestDocument => Permission::GuestDocumentsManage,
+        Purpose::IbeLogo => Permission::IbeManage,
     }
 }
 
@@ -65,7 +66,7 @@ fn upload_permission(purpose: Purpose) -> Permission {
 fn finalize_deadline(purpose: Purpose) -> Duration {
     match purpose {
         Purpose::GalleryVideo => VIDEO_FINALIZE_DEADLINE,
-        Purpose::Gallery | Purpose::IssuePhoto | Purpose::GuestDocument => FINALIZE_DEADLINE,
+        Purpose::Gallery | Purpose::IssuePhoto | Purpose::GuestDocument | Purpose::IbeLogo => FINALIZE_DEADLINE,
     }
 }
 
@@ -75,6 +76,7 @@ fn grpc_purpose(purpose: Purpose) -> proto::media::Purpose {
         Purpose::IssuePhoto => proto::media::Purpose::IssuePhoto,
         Purpose::GuestDocument => proto::media::Purpose::GuestDocument,
         Purpose::GalleryVideo => proto::media::Purpose::GalleryVideo,
+        Purpose::IbeLogo => proto::media::Purpose::IbeLogo,
     }
 }
 
@@ -82,7 +84,8 @@ fn grpc_purpose(purpose: Purpose) -> proto::media::Purpose {
 pub struct StartUploadRequest {
     #[garde(skip)]
     pub purpose: Purpose,
-    /// The room type (`gallery`, `gallery_video`), room issue (`issue_photo`) or guest (`guest_document`).
+    /// The room type (`gallery`, `gallery_video`), room issue (`issue_photo`), guest (`guest_document`) or the property
+    /// itself (`ibe_logo`).
     #[garde(skip)]
     pub target_id: Uuid,
     /// The kind of ID document; required for `guest_document`, and only for it.
@@ -91,7 +94,7 @@ pub struct StartUploadRequest {
     /// 1 to 255 characters. Only shown; the file's type is decided from its bytes.
     #[garde(length(chars, min = 1, max = 255))]
     pub filename: String,
-    /// The file's size: at most 25 MiB for photos, 15 MiB for guest documents and 500 MB for videos.
+    /// The file's size: at most 25 MiB for photos, 5 MiB for a logo, 15 MiB for guest documents and 500 MB for videos.
     #[garde(skip)]
     pub bytes: u64,
     /// The file's SHA-256, as 64 hexadecimal digits.
@@ -231,7 +234,8 @@ where
 
 /// Starts an upload: records the asset and has media-svc open a multipart upload, whose part URLs work for an hour.
 /// Needs `MediaManage` for a gallery photo, `RoomIssuesReport` for an issue photo and `GuestDocumentsManage` for a
-/// guest document, and `MediaManage` for a room type's video (`gallery_video`). An issue holds at most 5 photos and a
+/// guest document, `MediaManage` for a room type's video (`gallery_video`) and `IbeManage` for the booking site's logo
+/// (`ibe_logo`, up to 5 MB, with the property as the target). An issue holds at most 5 photos and a
 /// room type at most 3 videos, counting uploads in progress (409). A video can be up to 500 MB. When media-svc cannot be
 /// reached in 2 s the answer is 502 and nothing is recorded. A retried request with the same `Idempotency-Key` is
 /// answered without starting another upload.
@@ -252,6 +256,8 @@ pub async fn start_upload(
         (Purpose::Gallery, None) => Target::RoomType(body.target_id),
         (Purpose::GalleryVideo, None) => Target::RoomTypeVideo(body.target_id),
         (Purpose::IssuePhoto, None) => Target::RoomIssue(body.target_id),
+        (Purpose::IbeLogo, None) if body.target_id == property => Target::IbeLogo,
+        (Purpose::IbeLogo, None) => return Err(ApiError::unprocessable("a logo's target is the property")),
         (Purpose::GuestDocument, Some(kind)) => Target::Guest { guest: body.target_id, kind },
         (Purpose::GuestDocument, None) => return Err(ApiError::unprocessable("a guest document needs its kind")),
         (_, Some(_)) => return Err(ApiError::unprocessable("only a guest document has a kind")),

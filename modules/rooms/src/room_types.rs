@@ -29,6 +29,8 @@ pub struct RoomType {
     #[sqlx(json)]
     pub bed_config: Vec<Bed>,
     pub amenities: Vec<String>,
+    /// What the booking site says about the room type, at most 1000 characters; empty when there is nothing.
+    pub description: String,
     pub sort_order: i32,
     pub active: bool,
     pub version: i32,
@@ -58,11 +60,15 @@ pub struct RoomTypeChanges {
     pub overbooking: Option<i32>,
     pub bed_config: Option<Vec<Bed>>,
     pub amenities: Option<Vec<String>>,
+    pub description: Option<String>,
     pub active: Option<bool>,
 }
 
 const COLUMNS: &str = "id, property_id, code, name, base_occupancy, max_adults, max_children, max_occupancy, \
-                       overbooking, bed_config, amenities, sort_order, active, version";
+                       overbooking, bed_config, amenities, description, sort_order, active, version";
+
+/// The longest description, in characters (`room_type_description_check`).
+const MAX_DESCRIPTION: usize = 1000;
 
 /// The capacity rules the database also enforces, checked first for a readable message.
 fn check_capacity(base: i32, adults: i32, children: i32, max: i32) -> Result<(), RoomsError> {
@@ -162,6 +168,9 @@ pub async fn update_room_type(
     if let Some(overbooking) = changes.overbooking {
         check_overbooking(overbooking)?;
     }
+    if changes.description.as_ref().is_some_and(|description| description.chars().count() > MAX_DESCRIPTION) {
+        return Err(RoomsError::Invalid(format!("description can be at most {MAX_DESCRIPTION} characters")));
+    }
     if changes.active == Some(false) && current.active {
         let rooms: i64 = sqlx::query_scalar("select count(*) from room where room_type_id = $1 and active")
             .bind(id)
@@ -178,7 +187,8 @@ pub async fn update_room_type(
                 max_adults = coalesce($5, max_adults), max_children = coalesce($6, max_children),
                 max_occupancy = coalesce($7, max_occupancy), overbooking = coalesce($8, overbooking),
                 bed_config = coalesce($9, bed_config),
-                amenities = coalesce($10, amenities), active = coalesce($11, active), version = version + 1
+                amenities = coalesce($10, amenities), active = coalesce($11, active),
+                description = coalesce($12, description), version = version + 1
          where id = $1 and version = $2
          returning {COLUMNS}"
     )))
@@ -193,6 +203,7 @@ pub async fn update_room_type(
     .bind(changes.bed_config.as_ref().map(sqlx::types::Json))
     .bind(&changes.amenities)
     .bind(changes.active)
+    .bind(&changes.description)
     .fetch_one(&mut **tx)
     .await?;
     audit(tx, tenant, actor, "room_type.updated", "room_type", id, serde_json::json!({ "active": changes.active }))

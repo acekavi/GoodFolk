@@ -698,7 +698,7 @@ export type RoomTypesQueryVariables = Exact<{
 }>;
 
 
-export type RoomTypesQuery = { roomTypes: Array<{ id: string, code: string, name: string, baseOccupancy: number, maxAdults: number, maxChildren: number, maxOccupancy: number, overbooking: number, amenities: Array<string>, sortOrder: number, active: boolean, version: number }> };
+export type RoomTypesQuery = { roomTypes: Array<{ id: string, code: string, name: string, baseOccupancy: number, maxAdults: number, maxChildren: number, maxOccupancy: number, overbooking: number, amenities: Array<string>, description: string, sortOrder: number, active: boolean, version: number }> };
 
 export type RoomsQueryVariables = Exact<{
   propertyId: string;
@@ -1897,12 +1897,13 @@ export const RoomTypesDocument = new TypedDocumentString(`
     maxOccupancy
     overbooking
     amenities
+    description
     sortOrder
     active
     version
   }
 }
-    `, {"hash":"sha256:e944b6bd50087c8b30c3842d1992880957eaa4f49c2d0fec0f60837b8b04b55d"}) as unknown as TypedDocumentString<RoomTypesQuery, RoomTypesQueryVariables>;
+    `, {"hash":"sha256:4b4cf97fd187437b563bbeaa8448dcb241f5ad1a19c07bb814b1394d4d2b075d"}) as unknown as TypedDocumentString<RoomTypesQuery, RoomTypesQueryVariables>;
 export const RoomsDocument = new TypedDocumentString(`
     query Rooms($propertyId: UUID!) {
   rooms(propertyId: $propertyId) {

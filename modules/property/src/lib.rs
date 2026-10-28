@@ -1,5 +1,9 @@
 //! Properties (hotels) within a tenant.
 
+mod ibe;
+
+pub use ibe::{IbeSite, IbeSiteChanges, MIN_ACCENT_CONTRAST, contrast_with_white, ibe_site, update_ibe_site};
+
 use db::{Event, TenantId, Tx, UserId};
 use serde::Serialize;
 use time::Date;

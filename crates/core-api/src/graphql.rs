@@ -115,6 +115,8 @@ pub struct RoomTypeNode {
     pub overbooking: i32,
     pub beds: Vec<BedNode>,
     pub amenities: Vec<String>,
+    /// What the booking site says about the room type; empty when there is nothing.
+    pub description: String,
     pub sort_order: i32,
     pub active: bool,
     pub version: i32,
@@ -135,6 +137,7 @@ impl From<rooms::RoomType> for RoomTypeNode {
             overbooking: t.overbooking,
             beds: t.bed_config.into_iter().map(|bed| BedNode { kind: bed.kind, count: bed.count }).collect(),
             amenities: t.amenities,
+            description: t.description,
             sort_order: t.sort_order,
             active: t.active,
             version: t.version,

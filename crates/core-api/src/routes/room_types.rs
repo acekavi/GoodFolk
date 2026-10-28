@@ -70,6 +70,9 @@ pub struct UpdateRoomTypeRequest {
     pub bed_config: Option<Vec<BedRequest>>,
     #[garde(inner(length(max = 50), inner(length(chars, min = 1, max = 60))))]
     pub amenities: Option<Vec<String>>,
+    /// Up to 1000 characters, shown on the booking site; empty clears it.
+    #[garde(inner(length(chars, max = 1000)))]
+    pub description: Option<String>,
     /// `false` retires the type; it must have no active rooms.
     #[garde(skip)]
     pub active: Option<bool>,
@@ -85,6 +88,7 @@ impl Changes for UpdateRoomTypeRequest {
             && self.overbooking.is_none()
             && self.bed_config.is_none()
             && self.amenities.is_none()
+            && self.description.is_none()
             && self.active.is_none()
     }
 }
@@ -144,6 +148,7 @@ pub async fn update(
         overbooking: body.overbooking,
         bed_config: body.bed_config.map(beds),
         amenities: body.amenities,
+        description: body.description,
         active: body.active,
     };
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
