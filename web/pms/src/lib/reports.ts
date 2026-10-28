@@ -626,15 +626,20 @@ export async function reportPdfLink(
 ): Promise<string> {
 	const period = storedPeriod(request);
 	if (period) {
-		const { storedReport } = await query(StoredReportDocument, { propertyId, ...period }, signal);
-		if (storedReport?.status === 'READY') {
-			const read = unwrap(
-				await rest.GET('/api/v1/properties/{property}/reports/{report}', {
-					params: { path: { property: propertyId, report: storedReport.id } },
-					signal
-				})
-			);
-			if (read.status === 'ready' && read.url) return read.url;
+		try {
+			const { storedReport } = await query(StoredReportDocument, { propertyId, ...period }, signal);
+			if (storedReport?.status === 'READY') {
+				const read = unwrap(
+					await rest.GET('/api/v1/properties/{property}/reports/{report}', {
+						params: { path: { property: propertyId, report: storedReport.id } },
+						signal
+					})
+				);
+				if (read.status === 'ready' && read.url) return read.url;
+			}
+		} catch (error) {
+			// A failed lookup of the stored copy still leaves the on-demand render; a cancelled download stays cancelled.
+			if (signal?.aborted) throw error;
 		}
 	}
 	return reportLink(propertyId, request, signal);

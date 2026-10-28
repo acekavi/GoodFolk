@@ -309,6 +309,20 @@ describe('reportPdfLink', () => {
 		}
 	});
 
+	it('renders on demand when looking up the stored copy fails', async () => {
+		vi.mocked(query).mockRejectedValue(new Error('network'));
+		const render = vi
+			.spyOn(rest, 'POST')
+			.mockResolvedValue({ ...ok, data: { id: 'new' } } as never);
+		vi.spyOn(rest, 'GET').mockResolvedValue({
+			...ok,
+			data: { status: 'ready', url: 'https://files/new.pdf' }
+		} as never);
+
+		await expect(reportPdfLink('p1', tdl)).resolves.toBe('https://files/new.pdf');
+		expect(render).toHaveBeenCalledOnce();
+	});
+
 	it('renders a range no stored report covers without asking for one', async () => {
 		vi.mocked(query).mockClear();
 		vi.spyOn(rest, 'POST').mockResolvedValue({ ...ok, data: { id: 'new' } } as never);
