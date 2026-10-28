@@ -323,6 +323,12 @@
 								</tfoot>
 							</table>
 						</div>
+						{#each report.months.filter((month) => month.excessExemption) as month (month.month)}
+							<p class="hint">
+								{monthName(month.month)}: Exemption exceeds turnover this month: the excess is not
+								carried to other months
+							</p>
+						{/each}
 						{#if report.exemptionNote}<p class="hint">{report.exemptionNote}</p>{/if}
 						<p class="hint">{report.methodNote}</p>
 						<DownloadPdf {propertyId} {request} />

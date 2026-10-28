@@ -1,7 +1,8 @@
 // The Social Security Contribution Levy of a calendar quarter, month by month (reports::document, `sscl`). After the
 // head:
 //   months: three month names; rows: [{label, values: three months and the quarter, strong}];
-//   foreign_cash: {label, values}; return_due; exemption_note (or none); bad_debts_note; method_note.
+//   foreign_cash: {label, values}; return_due; exemption_note (or none); excess_exemption_notes: one for each month
+//   whose exemption exceeds its turnover; bad_debts_note; method_note.
 
 #import "common.typ": *
 
@@ -30,6 +31,11 @@
   ([Listed, never exempt], ..d.months, [Quarter]),
   ((d.foreign_cash.label, ..d.foreign_cash.values),),
 )
+
+#for note in d.excess_exemption_notes [
+  #v(2mm)
+  #text(weight: "bold", note)
+]
 
 #v(4mm)
 #text(weight: "bold")[The quarter's return is due on #d.return_due.]

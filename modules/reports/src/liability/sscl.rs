@@ -20,6 +20,10 @@ const DUE_DAY: u8 = 20;
 pub const METHOD_NOTE: &str = "Exempt: services paid in foreign currency by card or bank transfer (SSCL Act No. 25 of \
                                2022, First Schedule Part II item 10), measured when each bill is settled.";
 
+/// What a month whose exemption exceeds its turnover shows.
+pub const EXCESS_EXEMPTION_NOTE: &str =
+    "Exemption exceeds turnover this month: the excess is not carried to other months";
+
 /// Why a property without an SLTDA licence exempts nothing.
 pub const NOT_REGISTERED_NOTE: &str = "Not SLTDA registered: no exemption";
 
@@ -71,7 +75,8 @@ fn due_after(last_day: Date) -> Result<Date, ReportsError> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SsclMonth {
     pub month: Month,
-    /// Every revenue line dated in the month, with every tax but VAT: the passed-on TDL and SSCL stay in.
+    /// Every revenue line dated in the month, with every tax but VAT passed on to the guest: the passed-on TDL and
+    /// SSCL stay in. An absorbed tax is inside the line's net already.
     pub turnover: i64,
     /// The exempt share of the month's turnover settled in the month.
     pub exempt_same_month: i64,
@@ -83,6 +88,9 @@ pub struct SsclMonth {
     pub liable: i64,
     /// Never below 0.
     pub levy: i64,
+    /// The liable turnover is below 0: the month's exemption exceeds its turnover, and the excess is not carried to
+    /// other months. Shown as [`EXCESS_EXEMPTION_NOTE`].
+    pub excess_exemption: bool,
     /// Payments in foreign currency in cash in the month: listed, never exempt.
     pub foreign_cash: i64,
     /// The 20th of the following month.
@@ -118,10 +126,11 @@ pub struct SsclReport {
 }
 
 /// `property`'s SSCL for `quarter`, from its closed days. The turnover is [`revenue_lines`]' net plus every tax but
-/// VAT, by month. For an SLTDA-registered property, each settlement ([`segments`]) in a month exempts its exempt share
-/// of the turnover of the lines it covers: those dated in the month as `exempt_same_month`, earlier ones as
-/// `exempt_earlier_months`. Turnover not settled by a month's end is not exempt in it, so a closed month never
-/// changes. `Invalid` for a quarter outside 1 to 4; `NotFound` for a property not in the tenant.
+/// VAT passed on to the guest (an absorbed one is inside the net), by month. For an SLTDA-registered property, each
+/// settlement ([`segments`]) in a month exempts its exempt share of the turnover of the lines it covers: those dated
+/// in the month as `exempt_same_month`, earlier ones as `exempt_earlier_months`. Turnover not settled by a month's end
+/// is not exempt in it, so a closed month never changes. A month whose liable turnover is below 0 owes no levy and is
+/// flagged `excess_exemption`. `Invalid` for a quarter outside 1 to 4; `NotFound` for a property not in the tenant.
 pub async fn sscl(tx: &mut Tx, property: Uuid, quarter: CalendarQuarter) -> Result<SsclReport, ReportsError> {
     let months = quarter.months()?;
     let (from, to) = (months[0].0, months[2].1);
@@ -152,7 +161,8 @@ pub async fn sscl(tx: &mut Tx, property: Uuid, quarter: CalendarQuarter) -> Resu
     // Sums in minor units, and the exemptions in minor units × basis points, rounded once per printed figure.
     let (mut turnover, mut same_month, mut earlier) = ([0i64; 3], [0i64; 3], [0i64; 3]);
     for line in lines {
-        let sales = line.net + line.taxes.iter().filter(|tax| tax.code != "VAT").map(|tax| tax.amount).sum::<i64>();
+        let passed_on = line.taxes.iter().filter(|tax| tax.code != "VAT" && tax.presentation == "on_bill");
+        let sales = line.net + passed_on.map(|tax| tax.amount).sum::<i64>();
         if let Some(at) = month_of(line.business_date) {
             turnover[at] += sales;
         }
@@ -217,6 +227,7 @@ pub async fn sscl(tx: &mut Tx, property: Uuid, quarter: CalendarQuarter) -> Resu
             bad_debts,
             liable,
             levy,
+            excess_exemption: liable < 0,
             foreign_cash,
             due: due_after(last_day)?,
             not_closed: last_day >= business_date,

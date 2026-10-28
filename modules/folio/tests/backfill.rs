@@ -146,6 +146,31 @@ async fn bookings_and_cancellations_made_before_night_audit_get_their_business_d
     assert_eq!(by_room(no_show).1, by_room(no_show).2, "a no-show is dated its arrival day");
 }
 
+/// Runs `statements` as a table owner that is neither a superuser nor BYPASSRLS, as a managed database's migration
+/// role is: forced row-level security applies to it, so a backfill sees only what it lifts that for.
+async fn as_plain_owner(hotel: &Hotel, statements: &'static str) {
+    let mut tx = hotel.owner.begin().await.unwrap();
+    // Roles are the cluster's, so tests running at once may race to create or grant this one.
+    sqlx::raw_sql(
+        "do $$ begin
+           create role goodfolk_plain_owner nologin nosuperuser nobypassrls;
+         exception when duplicate_object or unique_violation then null;
+         end $$;
+         do $$ begin
+           grant goodfolk_owner to goodfolk_plain_owner;
+         exception when others then null;
+         end $$;",
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let mut tx = hotel.owner.begin().await.unwrap();
+    sqlx::query("set local role goodfolk_plain_owner").execute(&mut *tx).await.unwrap();
+    sqlx::raw_sql(statements).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+}
+
 /// The tax-line backfill of `migrations/0045_line_tax_date.sql`: the statements between its markers, run again here.
 fn tax_date_statements() -> &'static str {
     let migration = include_str!("../../../migrations/0045_line_tax_date.sql");
@@ -192,9 +217,9 @@ async fn the_tax_line_backfill_gives_old_rows_their_property_and_business_date(
     .await
     .unwrap();
 
-    sqlx::raw_sql(tax_date_statements()).execute(&hotel.owner).await.unwrap();
+    as_plain_owner(&hotel, tax_date_statements()).await;
     // Run twice, as a migration re-applied by hand would be.
-    sqlx::raw_sql(tax_date_statements()).execute(&hotel.owner).await.unwrap();
+    as_plain_owner(&hotel, tax_date_statements()).await;
 
     let found: (Option<Uuid>, Option<time::Date>) =
         sqlx::query_as("select property_id, business_date from folio_line_tax where line_id = $1")
@@ -203,4 +228,43 @@ async fn the_tax_line_backfill_gives_old_rows_their_property_and_business_date(
             .await
             .unwrap();
     assert_eq!(found, (Some(hotel.property), Some(hotel.business_date)));
+}
+
+/// The outlet backfill of `migrations/0046_reports_fixes.sql`: the statements between its markers, run again here.
+fn report_group_statements() -> &'static str {
+    let migration = include_str!("../../../migrations/0046_reports_fixes.sql");
+    let (_, rest) = migration.split_once("-- backfill: start\n").expect("backfill start marker");
+    rest.split_once("-- backfill: end").expect("backfill end marker").0
+}
+
+/// An outlet that 0041 could not give a report group (its owner read no outlets under forced row-level security) gets
+/// its `food` one; an outlet with a group keeps it.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_report_group_backfill_gives_each_outlet_without_one_food(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let (missing, kept) = (hotel.outlet("SPA", "Spa", false).await, hotel.outlet("BAR", "Bar", true).await);
+    sqlx::query("update outlet_report_group set report_group = 'bar' where outlet_id = $1")
+        .bind(kept.id)
+        .execute(&hotel.owner)
+        .await
+        .unwrap();
+    sqlx::query("delete from outlet_report_group where outlet_id = $1")
+        .bind(missing.id)
+        .execute(&hotel.owner)
+        .await
+        .unwrap();
+
+    as_plain_owner(&hotel, report_group_statements()).await;
+    as_plain_owner(&hotel, report_group_statements()).await;
+
+    let groups: Vec<(Uuid, String, time::Date)> = sqlx::query_as(
+        "select outlet_id, report_group, effective_from from outlet_report_group where outlet_id = any($1)
+         order by report_group",
+    )
+    .bind([missing.id, kept.id])
+    .fetch_all(&hotel.owner)
+    .await
+    .unwrap();
+    let start = time::macros::date!(2000 - 01 - 01);
+    assert_eq!(groups, [(kept.id, "bar".to_owned(), start), (missing.id, "food".to_owned(), start)]);
 }

@@ -78,9 +78,9 @@ pub struct StoredReport {
 /// Queues the render of `property`'s report of `kind` for `period_start` to `period_end`, laid out by `template` from
 /// `data`: inserts the `report` row as `rendering` and the `report-render` outbox row, in the caller's transaction.
 ///
-/// Idempotent for every kind but `OnDemand`: a report of the same property, kind and `period_start` already stored is
-/// returned as it is, and nothing is queued again, unless it failed: then it is queued again with `data`. `Invalid` for
-/// data over [`MAX_REPORT_BYTES`].
+/// Idempotent for every kind but `OnDemand`: a report of the same property, kind and period (`period_start` and
+/// `period_end`) already stored is returned as it is, and nothing is queued again, unless it failed: then it is queued
+/// again with `data`. `Invalid` for data over [`MAX_REPORT_BYTES`].
 #[allow(clippy::too_many_arguments, reason = "the report's key, its template and its data")]
 pub async fn queue_render(
     tx: &mut Tx,
@@ -100,8 +100,8 @@ pub async fn queue_render(
     let inserted: Option<Uuid> = sqlx::query_scalar(
         "insert into report (id, tenant_id, property_id, kind, period_start, period_end, data, status)
          values ($1, $2, $3, $4, $5, $6, $7, 'rendering')
-         on conflict (property_id, kind, period_start) where kind <> 'on_demand'
-         do update set period_end = excluded.period_end, data = excluded.data, status = 'rendering', error = null
+         on conflict (property_id, kind, period_start, period_end) where kind <> 'on_demand'
+         do update set data = excluded.data, status = 'rendering', error = null
          where report.status = 'failed'
          returning id",
     )
@@ -116,11 +116,13 @@ pub async fn queue_render(
     .await?;
     let Some(report_id) = inserted else {
         let existing = sqlx::query_scalar(
-            "select id from report where property_id = $1 and kind = $2 and period_start = $3 and kind <> 'on_demand'",
+            "select id from report
+             where property_id = $1 and kind = $2 and period_start = $3 and period_end = $4 and kind <> 'on_demand'",
         )
         .bind(property)
         .bind(kind.as_str())
         .bind(period_start)
+        .bind(period_end)
         .fetch_one(&mut **tx)
         .await?;
         return Ok(existing);
@@ -144,6 +146,34 @@ pub async fn stored_report(tx: &mut Tx, property: Uuid, report: Uuid) -> Result<
     let status = ReportStatus::parse(&status)
         .ok_or_else(|| sqlx::Error::Decode(format!("unknown report status {status:?}").into()))?;
     Ok(StoredReport { id: report, template, status, pdf_key })
+}
+
+/// `property`'s report of `kind` for `period_start` to `period_end` that the close stored, as `(id, status)`: the
+/// record whose PDF is downloaded once it is ready. `None` when there is none, and always for `OnDemand`.
+pub async fn period_report(
+    tx: &mut Tx,
+    property: Uuid,
+    kind: ReportKind,
+    period_start: Date,
+    period_end: Date,
+) -> Result<Option<(Uuid, ReportStatus)>, ReportsError> {
+    let found: Option<(Uuid, String)> = sqlx::query_as(
+        "select id, status from report
+         where property_id = $1 and kind = $2 and period_start = $3 and period_end = $4 and kind <> 'on_demand'",
+    )
+    .bind(property)
+    .bind(kind.as_str())
+    .bind(period_start)
+    .bind(period_end)
+    .fetch_optional(&mut **tx)
+    .await?;
+    found
+        .map(|(id, status)| {
+            let status = ReportStatus::parse(&status)
+                .ok_or_else(|| sqlx::Error::Decode(format!("unknown report status {status:?}").into()))?;
+            Ok((id, status))
+        })
+        .transpose()
 }
 
 /// Audits a link to `report`'s PDF as `report.viewed`.
@@ -174,7 +204,7 @@ pub async fn report_viewed(
 /// A report the close marked to mail (`report.mail`: a weekly or monthly one that just ended, see
 /// [`crate::render_due`]) is emailed: a `report_mail` row and a `mail-send` job for each of the property's owners and
 /// managers (a grant for every property counts) who has not turned that email off, each at most once however often the
-/// result comes. The property's `reports` alert clears unless another of its reports failed.
+/// result comes. The property's `reports` alert clears unless another of the close's reports failed.
 pub async fn set_report_pdf(tx: &mut Tx, tenant: TenantId, report: Uuid, key: &str) -> Result<(), ReportsError> {
     if key != storage::report_pdf_key(tenant.0, report) {
         return Err(ReportsError::Invalid(format!("{key:?} is not the PDF of report {report}")));
@@ -215,13 +245,14 @@ pub async fn set_report_pdf(tx: &mut Tx, tenant: TenantId, report: Uuid, key: &s
     clear_reports_alert(tx, property).await
 }
 
-/// Clears `property`'s `reports` alert unless one of its reports failed.
+/// Clears `property`'s `reports` alert unless one of the close's reports failed (one rendered on demand never counts).
 pub(crate) async fn clear_reports_alert(tx: &mut Tx, property: Uuid) -> Result<(), ReportsError> {
-    let failed: bool =
-        sqlx::query_scalar("select exists (select 1 from report where property_id = $1 and status = 'failed')")
-            .bind(property)
-            .fetch_one(&mut **tx)
-            .await?;
+    let failed: bool = sqlx::query_scalar(
+        "select exists (select 1 from report where property_id = $1 and status = 'failed' and kind <> 'on_demand')",
+    )
+    .bind(property)
+    .fetch_one(&mut **tx)
+    .await?;
     if !failed {
         audit::alerts::clear(tx, property, AlertKind::Reports).await?;
     }
@@ -229,21 +260,25 @@ pub(crate) async fn clear_reports_alert(tx: &mut Tx, property: Uuid) -> Result<(
 }
 
 /// Records that `report` can never be rendered, for the internal events receiver: `failed`, with `reason` (cut to
-/// 2000 characters), and raises the property's `reports` ops alert. Only a report still rendering changes, so a
-/// redelivered failure raises nothing again.
+/// 2000 characters), and for one of the close's reports raises the property's `reports` ops alert; one rendered on
+/// demand raises none, as its caller sees it failed. Only a report still rendering changes, so a redelivered failure
+/// raises nothing again.
 pub async fn report_failed(tx: &mut Tx, tenant: TenantId, report: Uuid, reason: &str) -> Result<(), ReportsError> {
     let reason: String = reason.chars().take(MAX_ERROR_CHARS).collect();
-    let failed: Option<(Uuid, serde_json::Value, Date, Date)> = sqlx::query_as(
+    let failed: Option<(Uuid, String, serde_json::Value, Date, Date)> = sqlx::query_as(
         "update report set status = 'failed', error = $2
          where id = $1 and tenant_id = $3 and status = 'rendering'
-         returning property_id, data->'template', period_start, period_end",
+         returning property_id, kind, data->'template', period_start, period_end",
     )
     .bind(report)
     .bind(&reason)
     .bind(tenant.0)
     .fetch_optional(&mut **tx)
     .await?;
-    let Some((property, template, from, to)) = failed else { return Ok(()) };
+    let Some((property, kind, template, from, to)) = failed else { return Ok(()) };
+    if kind == ReportKind::OnDemand.as_str() {
+        return Ok(());
+    }
     let template: ReportTemplate = serde_json::from_value(template).map_err(|err| sqlx::Error::Decode(err.into()))?;
     let message = format!("The {} report PDF for {from} to {to} could not be made", template_name(template));
     audit::alerts::raise(tx, tenant, property, AlertKind::Reports, &message).await?;
@@ -268,7 +303,7 @@ pub(crate) async fn period_failed(
     sqlx::query(
         "insert into report (id, tenant_id, property_id, kind, period_start, period_end, data, status, error)
          values ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)
-         on conflict (property_id, kind, period_start) where kind <> 'on_demand'
+         on conflict (property_id, kind, period_start, period_end) where kind <> 'on_demand'
          do update set status = 'failed', error = excluded.error
          where report.status = 'failed'",
     )

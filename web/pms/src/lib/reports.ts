@@ -6,6 +6,7 @@ import type {
 	ReportSummaryQuery,
 	ServiceChargeReportQuery,
 	SsclReportQuery,
+	StoredReportKind,
 	TdlReportQuery,
 	VatReportQuery
 } from './api/gql/graphql';
@@ -121,6 +122,7 @@ export const SsclReportDocument = graphql(`
 				badDebts
 				liable
 				levy
+				excessExemption
 				foreignCash
 				due
 				notClosed
@@ -215,6 +217,26 @@ export const ReportEmailsDocument = graphql(`
 		reportEmails(propertyId: $propertyId) {
 			kind
 			enabled
+		}
+	}
+`);
+
+/** The report the close stored for a period, whose PDF is the record once it is ready. */
+export const StoredReportDocument = graphql(`
+	query StoredReport(
+		$propertyId: UUID!
+		$kind: StoredReportKind!
+		$periodStart: Date!
+		$periodEnd: Date!
+	) {
+		storedReport(
+			propertyId: $propertyId
+			kind: $kind
+			periodStart: $periodStart
+			periodEnd: $periodEnd
+		) {
+			id
+			status
 		}
 	}
 `);
@@ -531,6 +553,91 @@ export async function reportLink(
 		title: 'The report is taking too long to render. Try again in a moment.',
 		status: 504
 	});
+}
+
+/** A period the close stores a report of. */
+export interface StoredPeriod {
+	kind: StoredReportKind;
+	periodStart: string;
+	periodEnd: string;
+}
+
+/** The first day of month `month` (1 to 12) of `year`. */
+function monthStart(year: number, month: number): string {
+	return `${year}-${String(month).padStart(2, '0')}-01`;
+}
+
+/** Months `first` to `first + count - 1` of `year` as a period of `kind`. */
+function monthsPeriod(kind: StoredReportKind, year: number, first: number, count: number) {
+	return {
+		kind,
+		periodStart: monthStart(year, first),
+		periodEnd: monthEnd(monthStart(year, first + count - 1))
+	};
+}
+
+/**
+ * The period of the report the close stores that `request` asks for: every liability period, and a summary of a
+ * whole Monday-to-Sunday week or calendar month. `null` for anything else, which is only ever rendered on demand.
+ */
+export function storedPeriod(request: RenderReportRequest): StoredPeriod | null {
+	switch (request.report) {
+		case 'summary': {
+			const { from, to } = request.params;
+			const monday = new Date(`${from}T00:00:00Z`).getUTCDay() === 1;
+			if (monday && to === addDays(from, 6)) {
+				return { kind: 'WEEKLY', periodStart: from, periodEnd: to };
+			}
+			if (from.endsWith('-01') && to === monthEnd(from)) {
+				return { kind: 'MONTHLY', periodStart: from, periodEnd: to };
+			}
+			return null;
+		}
+		case 'tdl': {
+			const { fy_start_year: year, quarter } = request.params;
+			return quarter === 4
+				? monthsPeriod('TDL', year + 1, 1, 3)
+				: monthsPeriod('TDL', year, 4 + (quarter - 1) * 3, 3);
+		}
+		case 'sscl':
+			return monthsPeriod('SSCL', request.params.year, (request.params.quarter - 1) * 3 + 1, 3);
+		case 'vat': {
+			const [y1, y2, quarter, month] = request.params.period.split('').map(Number);
+			const year = 2000 + y1 * 10 + y2;
+			return month === 0
+				? monthsPeriod('VAT', year, (quarter - 1) * 3 + 1, 3)
+				: monthsPeriod('VAT', year, (quarter - 1) * 3 + month, 1);
+		}
+		case 'service_charge':
+			return monthsPeriod('SERVICE_CHARGE', request.params.year, request.params.month, 1);
+		case 'daily_list':
+			return null;
+	}
+}
+
+/**
+ * A link to the PDF of `request`'s report: the one the close stored for the period once it is ready, as that is the
+ * record, or else one rendered now (`reportLink`).
+ */
+export async function reportPdfLink(
+	propertyId: string,
+	request: RenderReportRequest,
+	signal?: AbortSignal
+): Promise<string> {
+	const period = storedPeriod(request);
+	if (period) {
+		const { storedReport } = await query(StoredReportDocument, { propertyId, ...period }, signal);
+		if (storedReport?.status === 'READY') {
+			const read = unwrap(
+				await rest.GET('/api/v1/properties/{property}/reports/{report}', {
+					params: { path: { property: propertyId, report: storedReport.id } },
+					signal
+				})
+			);
+			if (read.status === 'ready' && read.url) return read.url;
+		}
+	}
+	return reportLink(propertyId, request, signal);
 }
 
 /** Saves a VAT schedule's CSV under the file name the server gives it. */

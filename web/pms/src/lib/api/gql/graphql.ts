@@ -231,6 +231,12 @@ export type ReportEmailKind =
   | 'MONTHLY'
   | 'WEEKLY';
 
+/** Where a stored report's PDF is: being rendered, ready to download, or never to be rendered. */
+export type ReportStatus =
+  | 'FAILED'
+  | 'READY'
+  | 'RENDERING';
+
 /**
  * Which reservation rooms to list. Left out, a field does not filter; an empty `statuses` or `sources`
  * matches nothing.
@@ -302,6 +308,15 @@ export type Source =
   | 'FRONT_DESK'
   | 'IBE'
   | 'PHONE';
+
+/** A report the close stores for each period that ends: the weekly and monthly reports and the liability reports. */
+export type StoredReportKind =
+  | 'MONTHLY'
+  | 'SERVICE_CHARGE'
+  | 'SSCL'
+  | 'TDL'
+  | 'VAT'
+  | 'WEEKLY';
 
 export type TaxKind =
   | 'LEVY'
@@ -583,7 +598,7 @@ export type SsclReportQueryVariables = Exact<{
 }>;
 
 
-export type SsclReportQuery = { ssclReport: { returnDue: string, sltdaRegistered: boolean, exemptionNote: string | null, methodNote: string, months: Array<{ month: number, turnover: number, exemptSameMonth: number, exemptEarlierMonths: number, badDebts: number, liable: number, levy: number, foreignCash: number, due: string, notClosed: boolean }>, quarterTotals: { turnover: number, exemptSameMonth: number, exemptEarlierMonths: number, badDebts: number, liable: number, levy: number, foreignCash: number } } };
+export type SsclReportQuery = { ssclReport: { returnDue: string, sltdaRegistered: boolean, exemptionNote: string | null, methodNote: string, months: Array<{ month: number, turnover: number, exemptSameMonth: number, exemptEarlierMonths: number, badDebts: number, liable: number, levy: number, excessExemption: boolean, foreignCash: number, due: string, notClosed: boolean }>, quarterTotals: { turnover: number, exemptSameMonth: number, exemptEarlierMonths: number, badDebts: number, liable: number, levy: number, foreignCash: number } } };
 
 export type VatReportQueryVariables = Exact<{
   propertyId: string;
@@ -608,6 +623,16 @@ export type ReportEmailsQueryVariables = Exact<{
 
 
 export type ReportEmailsQuery = { reportEmails: Array<{ kind: ReportEmailKind, enabled: boolean }> };
+
+export type StoredReportQueryVariables = Exact<{
+  propertyId: string;
+  kind: StoredReportKind;
+  periodStart: string;
+  periodEnd: string;
+}>;
+
+
+export type StoredReportQuery = { storedReport: { id: string, status: ReportStatus } | null };
 
 export type AvailabilityQueryVariables = Exact<{
   propertyId: string;
@@ -1533,6 +1558,7 @@ export const SsclReportDocument = new TypedDocumentString(`
       badDebts
       liable
       levy
+      excessExemption
       foreignCash
       due
       notClosed
@@ -1552,7 +1578,7 @@ export const SsclReportDocument = new TypedDocumentString(`
     methodNote
   }
 }
-    `, {"hash":"sha256:69b00e55049099d661a863b8f9073d5558a40a34ab144042981a9a553f696871"}) as unknown as TypedDocumentString<SsclReportQuery, SsclReportQueryVariables>;
+    `, {"hash":"sha256:8a9194eb5bcdf3b345a2f91d116964737073abb0fbc46519418ac8039e17e374"}) as unknown as TypedDocumentString<SsclReportQuery, SsclReportQueryVariables>;
 export const VatReportDocument = new TypedDocumentString(`
     query VatReport($propertyId: UUID!, $period: String!) {
   vatReport(propertyId: $propertyId, period: $period) {
@@ -1624,6 +1650,19 @@ export const ReportEmailsDocument = new TypedDocumentString(`
   }
 }
     `, {"hash":"sha256:429d44ca1ef7e0ad567a2b57075c37662a6f8f2a84c26792962a97f055c28a0c"}) as unknown as TypedDocumentString<ReportEmailsQuery, ReportEmailsQueryVariables>;
+export const StoredReportDocument = new TypedDocumentString(`
+    query StoredReport($propertyId: UUID!, $kind: StoredReportKind!, $periodStart: Date!, $periodEnd: Date!) {
+  storedReport(
+    propertyId: $propertyId
+    kind: $kind
+    periodStart: $periodStart
+    periodEnd: $periodEnd
+  ) {
+    id
+    status
+  }
+}
+    `, {"hash":"sha256:87c390d59419bc8ea5edd6c458df1439a45f9aba4f2aae09f6158af3c39471de"}) as unknown as TypedDocumentString<StoredReportQuery, StoredReportQueryVariables>;
 export const AvailabilityDocument = new TypedDocumentString(`
     query Availability($propertyId: UUID!, $checkIn: Date!, $checkOut: Date!, $adults: Int!, $children: Int!, $residency: Residency!) {
   availability(

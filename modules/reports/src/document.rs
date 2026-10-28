@@ -5,7 +5,7 @@
 
 use crate::everyday::{Dimension, ListKind, RangeKind, Summary, daily_list, ratio, summary};
 use crate::liability::service_charge::{ServiceChargeReport, service_charge};
-use crate::liability::sscl::{CalendarQuarter, SsclReport, sscl};
+use crate::liability::sscl::{CalendarQuarter, EXCESS_EXEMPTION_NOTE, SsclReport, sscl};
 use crate::liability::tdl::{FiscalQuarter, TdlForm, tdl};
 use crate::liability::vat::{VatPeriod, VatReport, percent, us_date, vat};
 use crate::{RUPEE, ReportsError};
@@ -272,6 +272,12 @@ fn sscl_data(property: &str, quarter: CalendarQuarter, report: &SsclReport) -> V
     let months: Vec<String> = report.months.iter().map(|m| m.month.to_string()).collect();
     let period = format!("Q{} {}: {} – {}", quarter.q, quarter.year, months[0], months[2]);
     let not_closed = report.months.iter().any(|m| m.not_closed).then(|| PERIOD_NOT_CLOSED.to_owned());
+    let excess: Vec<String> = report
+        .months
+        .iter()
+        .filter(|m| m.excess_exemption)
+        .map(|m| format!("{}: {EXCESS_EXEMPTION_NOTE}", m.month))
+        .collect();
     with(
         head("SSCL", Some("Social Security Contribution Levy"), property, period, not_closed),
         json!({
@@ -280,6 +286,7 @@ fn sscl_data(property: &str, quarter: CalendarQuarter, report: &SsclReport) -> V
             "foreign_cash": { "label": foreign_cash["label"], "values": foreign_cash["values"] },
             "return_due": day_of(report.return_due),
             "exemption_note": report.exemption_note,
+            "excess_exemption_notes": excess,
             "bad_debts_note": "Bad debts: none until the system writes off debts.",
             "method_note": report.method_note,
         }),

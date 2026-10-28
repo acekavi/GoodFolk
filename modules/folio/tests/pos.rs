@@ -454,6 +454,32 @@ async fn outlets_are_created_updated_and_listed_with_unique_codes(_: PgPoolOptio
     assert_eq!(hotel.audited("outlet.updated").await.len(), 1);
 }
 
+/// A report-group change reads the business date `for share`, as every writer does, so it waits for the night audit's
+/// roll (which holds the property `for update`) and never lands on the day just closed.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_report_group_change_waits_for_the_roll(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let bar = hotel.outlet("BAR", "Pool Bar", true).await;
+    let mut roll = hotel.tx().await;
+    sqlx::query("select business_date from property where id = $1 for update")
+        .bind(hotel.property)
+        .execute(&mut *roll)
+        .await
+        .unwrap();
+
+    let mut tx = hotel.tx().await;
+    sqlx::query("set local lock_timeout = '300ms'").execute(&mut *tx).await.unwrap();
+    let changes = OutletChanges { report_group: Some(ReportGroup::Bar), ..OutletChanges::default() };
+    let waited =
+        folio::update_outlet(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, bar.id, 1, changes).await;
+
+    assert!(
+        matches!(&waited, Err(FolioError::Database(error)) if error.to_string().contains("lock timeout")),
+        "{waited:?}"
+    );
+    roll.commit().await.unwrap();
+}
+
 async fn group_on(hotel: &Hotel, outlet: Uuid, date: time::Date) -> ReportGroup {
     let mut tx = hotel.tx().await;
     folio::outlet_report_group(&mut tx, outlet, date).await.unwrap()

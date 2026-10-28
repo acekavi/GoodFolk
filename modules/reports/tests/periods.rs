@@ -95,6 +95,40 @@ async fn month_end_queues_monthly_sscl_sc_and_vat_when_monthly(_: PgPoolOptions,
     );
 }
 
+/// A property that changes its VAT return period from quarterly to monthly keeps the Q3 return and gets July's: both
+/// start on 1 July, and neither stands for the other.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn switching_the_vat_return_period_queues_both_periods(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    hotel.register_vat("quarterly").await;
+    hotel.set_business_date(date(2026, 10, 1)).await;
+    hotel.close_days(date(2026, 7, 29), date(2026, 9, 30), 5, 50_000).await;
+    hotel.render_due(date(2026, 9, 30)).await;
+    hotel.register_vat("monthly").await;
+
+    hotel.render_due(date(2026, 9, 30)).await;
+
+    let mut vat: Vec<(Date, Date)> = hotel
+        .reports()
+        .await
+        .into_iter()
+        .filter(|(kind, ..)| kind == "vat")
+        .map(|(_, from, to, _)| (from, to))
+        .collect();
+    vat.sort();
+    let (july, august, september) = (date(2026, 7, 1), date(2026, 8, 1), date(2026, 9, 1));
+    assert_eq!(
+        vat,
+        [
+            (july, date(2026, 7, 31)),
+            (july, date(2026, 9, 30)),
+            (august, date(2026, 8, 31)),
+            (september, date(2026, 9, 30))
+        ]
+    );
+    assert_eq!(hotel.due(date(2026, 9, 30)).await, [], "each one stored once");
+}
+
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn quarter_end_march_queues_tdl_q4(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;
@@ -168,6 +202,47 @@ async fn a_failed_report_is_queued_again(_: PgPoolOptions, opts: PgConnectOption
     assert_eq!((id, error), (report, None), "the same report, rendering again");
     assert_eq!(render_jobs(&superuser).await, 2);
     assert!(audit::alerts::list(&mut hotel.tx().await, hotel.property).await.unwrap().is_empty());
+}
+
+/// A report rendered on demand that fails is the caller's to see, never an ops alert, and does not hold up clearing the
+/// alert of the close's reports.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_on_demand_failure_raises_no_alert(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    hotel.set_business_date(date(2026, 10, 27)).await;
+    hotel.close_days(date(2026, 10, 19), date(2026, 10, 25), 5, 50_000).await;
+    let alerts = async || audit::alerts::list(&mut hotel.tx().await, hotel.property).await.unwrap().len();
+    let mut tx = hotel.tx().await;
+    let (from, to) = (date(2026, 10, 19), date(2026, 10, 20));
+    let data = serde_json::json!({ "title": "Summary report" });
+    let on_demand = reports::queue_render(
+        &mut tx,
+        hotel.tenant,
+        hotel.property,
+        ReportKind::OnDemand,
+        from,
+        to,
+        media_types::ReportTemplate::Summary,
+        data,
+    )
+    .await
+    .unwrap();
+    reports::report_failed(&mut tx, hotel.tenant, on_demand, "laying out the report failed").await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(alerts().await, 0);
+
+    hotel.render_due(date(2026, 10, 25)).await;
+    let weekly: uuid::Uuid = sqlx::query_scalar("select id from report where kind = 'weekly'")
+        .fetch_one(&mut *hotel.tx().await)
+        .await
+        .unwrap();
+    let mut tx = hotel.tx().await;
+    reports::report_failed(&mut tx, hotel.tenant, weekly, "laying out the report failed").await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(alerts().await, 1);
+
+    hotel.render_due(date(2026, 10, 25)).await;
+    assert_eq!(alerts().await, 0, "the weekly report is rendering again; the failed on-demand one counts for nothing");
 }
 
 /// The scan reaches back 13 months at most, and never before the property's first closed day.

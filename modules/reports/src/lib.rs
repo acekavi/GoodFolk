@@ -17,7 +17,7 @@ pub use everyday::{
     summary,
 };
 pub use liability::service_charge::{OutletServiceCharge, ServiceCharge, ServiceChargeReport, service_charge};
-pub use liability::sscl::{CalendarQuarter, SsclMonth, SsclReport, SsclTotals, sscl};
+pub use liability::sscl::{CalendarQuarter, EXCESS_EXEMPTION_NOTE, SsclMonth, SsclReport, SsclTotals, sscl};
 pub use liability::tdl::{FiscalQuarter, TdlForm, tdl};
 pub use liability::vat::{
     DUMMY_TIN, Schedule01Row, Schedule04Row, VAT_DOCUMENTS_SQL, VatPeriod, VatReport, VatTimingDifference,
@@ -25,8 +25,8 @@ pub use liability::vat::{
 };
 pub use periods::{due_periods, render_due};
 pub use store::{
-    EmailedReport, REPORT_RENDER_TOPIC, ReportKind, ReportStatus, StoredReport, queue_render, report_emails,
-    report_failed, report_viewed, set_report_email, set_report_pdf, stored_report,
+    EmailedReport, REPORT_RENDER_TOPIC, ReportKind, ReportStatus, StoredReport, period_report, queue_render,
+    report_emails, report_failed, report_viewed, set_report_email, set_report_pdf, stored_report,
 };
 
 /// One rupee in LKR minor units.

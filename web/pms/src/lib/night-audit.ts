@@ -315,6 +315,17 @@ export function stepLabel(step: AuditStep): string {
 	return STEP_LABELS[step];
 }
 
+/**
+ * How many steps a run took, as its summary reads: `5 of 6 steps` while a run has steps to go; a completed run that
+ * never had the last (one closed before reports were queued) counts its own, `5 steps`.
+ */
+export function stepsText(run: Pick<AuditRun, 'status' | 'steps'>): string {
+	const done = run.steps.length;
+	const older =
+		run.status === 'COMPLETED' && !run.steps.some((entry) => entry.step === 'RENDER_REPORTS');
+	return older ? `${done} steps` : `${done} of ${AUDIT_STEPS.length} steps`;
+}
+
 export type StepState = 'pending' | 'running' | 'done' | 'failed';
 
 function record(value: unknown): Record<string, unknown> {

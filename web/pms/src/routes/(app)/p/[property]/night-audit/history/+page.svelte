@@ -9,7 +9,6 @@
 	import { money } from '$lib/folio';
 	import { addDays } from '$lib/inventory';
 	import {
-		AUDIT_STEPS,
 		auditRunsKey,
 		dailyStatsKey,
 		dayRevenue,
@@ -19,7 +18,8 @@
 		occupancyText,
 		runDuration,
 		stepDetailText,
-		stepLabel
+		stepLabel,
+		stepsText
 	} from '$lib/night-audit';
 	import { fetchProperties, propertiesKey } from '$lib/properties';
 	import { fetchMe } from '$lib/session';
@@ -102,7 +102,7 @@
 							</td>
 							<td>
 								<details>
-									<summary>{run.steps.length} of {AUDIT_STEPS.length} steps</summary>
+									<summary>{stepsText(run)}</summary>
 									<p class="hint">Started {when(run.startedAt)}</p>
 									<ol>
 										{#each run.steps as step (step.step)}

@@ -1727,6 +1727,12 @@ type Query {
 	"""
 	reportEmails(propertyId: UUID!): [ReportEmailNode!]!
 	"""
+	The report of `kind` for `period_start` to `period_end` that the close stored, or null when there is none: the
+	record whose PDF is downloaded (`GET …/reports/{id}`) once it is `READY`. Needs `ReportsView` for a weekly or
+	monthly report and `ReportsLiability` for the others.
+	"""
+	storedReport(propertyId: UUID!, kind: StoredReportKind!, periodStart: Date!, periodEnd: Date!): StoredReportNode
+	"""
 	SLTDA's Form A of quarter `quarter` (1 to 4: April–June to January–March) of the financial year starting in
 	April `fy_start_year`, from its closed days. Needs `ReportsLiability`.
 	"""
@@ -1943,6 +1949,15 @@ type ReportHeadlineNode {
 	revpar: Int!
 	roomNights: Int!
 	totalRevenue: Int!
+}
+
+"""
+Where a stored report's PDF is: being rendered, ready to download, or never to be rendered.
+"""
+enum ReportStatus {
+	RENDERING
+	READY
+	FAILED
 }
 
 """
@@ -2352,6 +2367,11 @@ type SsclMonthNode {
 	"""
 	levy: Int!
 	"""
+	The liable turnover is below 0: the month's exemption exceeds its turnover, and the excess is not carried to
+	other months.
+	"""
+	excessExemption: Boolean!
+	"""
 	Payments in foreign currency in cash in the month: listed, never exempt.
 	"""
 	foreignCash: Int!
@@ -2417,6 +2437,26 @@ type StatsBreakdownNode {
 	roomNights: Int!
 	roomRevenue: Int!
 	revenue: Int!
+}
+
+"""
+A report the close stores for each period that ends: the weekly and monthly reports and the liability reports.
+"""
+enum StoredReportKind {
+	WEEKLY
+	MONTHLY
+	TDL
+	SSCL
+	VAT
+	SERVICE_CHARGE
+}
+
+"""
+A report the close stored; once `READY`, its PDF is read with `GET …/reports/{id}`.
+"""
+type StoredReportNode {
+	id: UUID!
+	status: ReportStatus!
 }
 
 """

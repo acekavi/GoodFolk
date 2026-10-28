@@ -132,8 +132,10 @@ async fn unsettled_folio_adjusts_month_it_settles(_: PgPoolOptions, opts: PgConn
     assert_eq!(after.months[0], before.months[0]);
     let august = &after.months[1];
     assert_eq!((august.turnover, august.exempt_same_month, august.exempt_earlier_months), (0, 0, 3_000_000));
-    // The adjustment takes August below 0; the levy never does.
+    // The adjustment takes August below 0; the levy never does, and the excess is flagged, not carried.
     assert_eq!((august.liable, august.levy), (-3_000_000, 0));
+    assert!(august.excess_exemption);
+    assert!(!after.months[0].excess_exemption && !after.months[2].excess_exemption);
 }
 
 /// A folio settled in July, then charged and settled again in August and September: each settlement exempts only
@@ -400,4 +402,24 @@ async fn levy_is_two_and_half_percent_of_liable(_: PgPoolOptions, opts: PgConnec
     }
     let totals = &report.quarter_totals;
     assert_eq!((totals.turnover, totals.liable, totals.levy), (2_010_100, 2_010_100, 50_300));
+}
+
+/// A levy the hotel absorbs is inside the line's net already, so it is no part of the turnover again; one passed on
+/// is.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn absorbed_levies_are_not_turnover(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let folio = hotel.folio().await;
+    let taxes = [
+        ("SC", "service_charge", "on_bill", 100_000),
+        ("TDL", "levy", "absorbed", 10_000),
+        ("SSCL", "levy", "absorbed", 27_750),
+        ("VAT", "tax", "on_bill", 198_000),
+    ];
+    hotel.line(folio, date(2026, 7, 2), "room", "room", 1_000_000, &taxes, None).await;
+    hotel.set_business_date(date(2026, 10, 1)).await;
+
+    let july = &sscl(&hotel, Q3).await.months[0];
+
+    assert_eq!((july.turnover, july.liable), (1_100_000, 1_100_000));
 }

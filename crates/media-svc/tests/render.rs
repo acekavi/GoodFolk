@@ -391,6 +391,8 @@ fn report_fixture(template: ReportTemplate) -> Value {
                                   "values": ["Rs 0", "Rs 0", "Rs 0", "Rs 0"] },
                 "return_due": "20 Oct 2026",
                 "exemption_note": null,
+                "excess_exemption_notes": ["September: Exemption exceeds turnover this month: the excess is not \
+                                            carried to other months"],
                 "bad_debts_note": "Bad debts: none until the system writes off debts.",
                 "method_note": "Exempt: services paid in foreign currency by card or bank transfer (SSCL Act No. 25 \
                                 of 2022, First Schedule Part II item 10), measured when each bill is settled.",
@@ -406,7 +408,7 @@ fn report_fixture(template: ReportTemplate) -> Value {
                     { "label": "Output VAT", "value": "Rs 18,000" },
                 ],
                 "schedule01": [{ "serial_no": "1", "date": "09/30/2026", "invoice_no": "INCL01_2630",
-                                 "tin": "100902885", "name": "Purchasers without a TIN",
+                                 "tin": "100902885", "name": "Total value of Inclusive Invoices for Q3 2026",
                                  "description": "Inclusive Invoices at 18%", "value": "100000",
                                  "vat": "18000" }],
                 "schedule04": [],
@@ -451,7 +453,16 @@ fn every_report_template_renders_its_fixture() {
                 "Date",
             ],
         ),
-        (ReportTemplate::Sscl, &["SSCL", "Levy at 2.5%", "20 Oct 2026", "Exempt: services paid in foreign currency"]),
+        (
+            ReportTemplate::Sscl,
+            &[
+                "SSCL",
+                "Levy at 2.5%",
+                "20 Oct 2026",
+                "September: Exemption exceeds turnover this month",
+                "Exempt: services paid in foreign currency",
+            ],
+        ),
         (
             ReportTemplate::Vat,
             &["VAT return", "2630", "114567890", "INCL01_2630", "Inclusive Invoices at 18% 100000 18000"],

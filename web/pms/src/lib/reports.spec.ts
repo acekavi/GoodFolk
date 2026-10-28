@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { query } from './api/graphql';
 import { rest } from './api/rest';
 import {
 	fiscalQuarterLabel,
@@ -11,8 +12,12 @@ import {
 	recentQuarters,
 	recentVatPeriods,
 	reportLink,
+	reportPdfLink,
+	storedPeriod,
 	tabTarget
 } from './reports';
+
+vi.mock(import('./api/graphql'), async (original) => ({ ...(await original()), query: vi.fn() }));
 
 describe('presets', () => {
 	// A Wednesday.
@@ -200,6 +205,122 @@ describe('reportLink', () => {
 		await expect(
 			reportLink('p1', { report: 'summary', params: { from: '2026-10-12', to: '2026-10-18' } })
 		).rejects.toThrow('could not be rendered');
+	});
+});
+
+describe('storedPeriod', () => {
+	it('is the week or month the close stored for a whole Monday-to-Sunday week or calendar month', () => {
+		expect(
+			storedPeriod({ report: 'summary', params: { from: '2026-10-19', to: '2026-10-25' } })
+		).toEqual({ kind: 'WEEKLY', periodStart: '2026-10-19', periodEnd: '2026-10-25' });
+		expect(
+			storedPeriod({ report: 'summary', params: { from: '2026-02-01', to: '2026-02-28' } })
+		).toEqual({ kind: 'MONTHLY', periodStart: '2026-02-01', periodEnd: '2026-02-28' });
+		expect(
+			storedPeriod({ report: 'summary', params: { from: '2026-10-20', to: '2026-10-26' } })
+		).toBeNull();
+		expect(
+			storedPeriod({ report: 'summary', params: { from: '2026-10-01', to: '2026-10-30' } })
+		).toBeNull();
+		expect(
+			storedPeriod({ report: 'daily_list', params: { date: '2026-10-20', kind: 'arrivals' } })
+		).toBeNull();
+	});
+
+	it('is the liability period a request names', () => {
+		expect(storedPeriod({ report: 'tdl', params: { fy_start_year: 2026, quarter: 4 } })).toEqual({
+			kind: 'TDL',
+			periodStart: '2027-01-01',
+			periodEnd: '2027-03-31'
+		});
+		expect(storedPeriod({ report: 'tdl', params: { fy_start_year: 2026, quarter: 2 } })).toEqual({
+			kind: 'TDL',
+			periodStart: '2026-07-01',
+			periodEnd: '2026-09-30'
+		});
+		expect(storedPeriod({ report: 'sscl', params: { year: 2026, quarter: 3 } })).toEqual({
+			kind: 'SSCL',
+			periodStart: '2026-07-01',
+			periodEnd: '2026-09-30'
+		});
+		expect(storedPeriod({ report: 'vat', params: { period: '2630' } })).toEqual({
+			kind: 'VAT',
+			periodStart: '2026-07-01',
+			periodEnd: '2026-09-30'
+		});
+		expect(storedPeriod({ report: 'vat', params: { period: '2632' } })).toEqual({
+			kind: 'VAT',
+			periodStart: '2026-08-01',
+			periodEnd: '2026-08-31'
+		});
+		expect(storedPeriod({ report: 'service_charge', params: { year: 2024, month: 2 } })).toEqual({
+			kind: 'SERVICE_CHARGE',
+			periodStart: '2024-02-01',
+			periodEnd: '2024-02-29'
+		});
+	});
+});
+
+describe('reportPdfLink', () => {
+	const ok = { response: new Response(null, { status: 200 }) };
+	const tdl = { report: 'tdl', params: { fy_start_year: 2026, quarter: 2 } } as const;
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("downloads the close's stored PDF when it is ready", async () => {
+		vi.mocked(query).mockResolvedValue({ storedReport: { id: 'stored', status: 'READY' } });
+		const render = vi.spyOn(rest, 'POST');
+		const read = vi.spyOn(rest, 'GET').mockResolvedValue({
+			...ok,
+			data: { status: 'ready', url: 'https://files/stored.pdf' }
+		} as never);
+
+		await expect(reportPdfLink('p1', tdl)).resolves.toBe('https://files/stored.pdf');
+
+		expect(vi.mocked(query).mock.calls[0][1]).toEqual({
+			propertyId: 'p1',
+			kind: 'TDL',
+			periodStart: '2026-07-01',
+			periodEnd: '2026-09-30'
+		});
+		expect(read).toHaveBeenCalledWith(
+			'/api/v1/properties/{property}/reports/{report}',
+			expect.objectContaining({ params: { path: { property: 'p1', report: 'stored' } } })
+		);
+		expect(render).not.toHaveBeenCalled();
+	});
+
+	it('renders on demand when the close stored none, or it is not ready', async () => {
+		for (const stored of [null, { id: 'stored', status: 'FAILED' }]) {
+			vi.mocked(query).mockResolvedValue({ storedReport: stored });
+			const render = vi
+				.spyOn(rest, 'POST')
+				.mockResolvedValue({ ...ok, data: { id: 'new' } } as never);
+			vi.spyOn(rest, 'GET').mockResolvedValue({
+				...ok,
+				data: { status: 'ready', url: 'https://files/new.pdf' }
+			} as never);
+
+			await expect(reportPdfLink('p1', tdl)).resolves.toBe('https://files/new.pdf');
+			expect(render).toHaveBeenCalledOnce();
+			vi.restoreAllMocks();
+		}
+	});
+
+	it('renders a range no stored report covers without asking for one', async () => {
+		vi.mocked(query).mockClear();
+		vi.spyOn(rest, 'POST').mockResolvedValue({ ...ok, data: { id: 'new' } } as never);
+		vi.spyOn(rest, 'GET').mockResolvedValue({
+			...ok,
+			data: { status: 'ready', url: 'https://files/new.pdf' }
+		} as never);
+
+		await expect(
+			reportPdfLink('p1', { report: 'summary', params: { from: '2026-10-20', to: '2026-10-22' } })
+		).resolves.toBe('https://files/new.pdf');
+		expect(query).not.toHaveBeenCalled();
 	});
 });
 

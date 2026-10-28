@@ -15,6 +15,7 @@ import {
 	seesOpsAlerts,
 	stepDetailText,
 	stepStates,
+	stepsText,
 	totalAfterDelay,
 	type AuditRun,
 	type PaymentGroup
@@ -129,6 +130,29 @@ describe('stepStates', () => {
 		expect(states(completed)).toEqual(['done', 'done', 'done', 'done', 'done', 'done']);
 		expect(stepStates(completed).map((entry) => entry.label)[4]).toBe('Advance the business date');
 		expect(stepStates(completed).map((entry) => entry.label)[5]).toBe('Queue reports');
+	});
+});
+
+describe('stepsText', () => {
+	const step = (name: string) => ({ step: name, completedAt: '2026-10-25T21:00:00Z', detail: {} });
+	const five = [
+		'RESOLVE',
+		'POST_CHARGES',
+		'LOCK_FX',
+		'SNAPSHOT_STATS',
+		'ADVANCE_BUSINESS_DATE'
+	].map(step);
+
+	it('counts a close made before reports were queued by its own steps', () => {
+		expect(stepsText({ status: 'COMPLETED', steps: five } as never)).toBe('5 steps');
+	});
+
+	it('counts against every step while a run has steps to go, and once it has all', () => {
+		expect(stepsText({ status: 'RUNNING', steps: five } as never)).toBe('5 of 6 steps');
+		expect(stepsText({ status: 'FAILED', steps: five.slice(0, 2) } as never)).toBe('2 of 6 steps');
+		expect(
+			stepsText({ status: 'COMPLETED', steps: [...five, step('RENDER_REPORTS')] } as never)
+		).toBe('6 of 6 steps');
 	});
 });
 

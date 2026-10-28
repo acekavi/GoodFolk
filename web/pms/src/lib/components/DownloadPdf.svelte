@@ -1,11 +1,12 @@
 <!--
-	A report's Download PDF button: renders the report, waits for it, and opens its signed link in a new tab, as
-	an invoice's PDF opens; a browser that blocks the tab is shown the link instead.
+	A report's Download PDF button: opens the PDF the close stored for the period when it is ready, or else renders
+	the report and waits for it, and opens its signed link in a new tab, as an invoice's PDF opens; a browser that
+	blocks the tab is shown the link instead.
 -->
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { errorMessage } from '$lib/api/problem';
-	import { reportLink, type RenderReportRequest } from '$lib/reports';
+	import { reportPdfLink, type RenderReportRequest } from '$lib/reports';
 
 	let {
 		propertyId,
@@ -31,7 +32,7 @@
 		problem = '';
 		busy = true;
 		try {
-			const url = await reportLink(propertyId, request, polling.signal);
+			const url = await reportPdfLink(propertyId, request, polling.signal);
 			const tab = window.open(url, '_blank');
 			if (tab) {
 				// The PDF must not reach back into the app.

@@ -2207,6 +2207,43 @@ mirror_enum!(
     ReportEmailKindNode as "ReportEmailKind" from reports::EmailedReport { Weekly, Monthly }
 );
 
+/// A report the close stores for each period that ends: the weekly and monthly reports and the liability reports.
+#[derive(Enum, Clone, Copy, PartialEq, Eq)]
+#[graphql(name = "StoredReportKind")]
+pub enum StoredReportKindNode {
+    Weekly,
+    Monthly,
+    Tdl,
+    Sscl,
+    Vat,
+    ServiceCharge,
+}
+
+impl From<StoredReportKindNode> for reports::ReportKind {
+    fn from(kind: StoredReportKindNode) -> Self {
+        match kind {
+            StoredReportKindNode::Weekly => Self::Weekly,
+            StoredReportKindNode::Monthly => Self::Monthly,
+            StoredReportKindNode::Tdl => Self::Tdl,
+            StoredReportKindNode::Sscl => Self::Sscl,
+            StoredReportKindNode::Vat => Self::Vat,
+            StoredReportKindNode::ServiceCharge => Self::ServiceCharge,
+        }
+    }
+}
+
+mirror_enum!(
+    /// Where a stored report's PDF is: being rendered, ready to download, or never to be rendered.
+    ReportStatusNode as "ReportStatus" from reports::ReportStatus { Rendering, Ready, Failed }
+);
+
+/// A report the close stored; once `READY`, its PDF is read with `GET …/reports/{id}`.
+#[derive(SimpleObject)]
+pub struct StoredReportNode {
+    pub id: Uuid,
+    pub status: ReportStatusNode,
+}
+
 /// Whether the signed-in user gets one of a property's report emails.
 #[derive(SimpleObject)]
 pub struct ReportEmailNode {
@@ -2446,6 +2483,9 @@ pub struct SsclMonthNode {
     pub liable: i64,
     /// Never below 0.
     pub levy: i64,
+    /// The liable turnover is below 0: the month's exemption exceeds its turnover, and the excess is not carried to
+    /// other months.
+    pub excess_exemption: bool,
     /// Payments in foreign currency in cash in the month: listed, never exempt.
     pub foreign_cash: i64,
     /// The 20th of the following month.
@@ -2496,6 +2536,7 @@ impl From<reports::SsclReport> for SsclReportNode {
                     bad_debts: m.bad_debts,
                     liable: m.liable,
                     levy: m.levy,
+                    excess_exemption: m.excess_exemption,
                     foreign_cash: m.foreign_cash,
                     due: m.due,
                     not_closed: m.not_closed,
@@ -4222,6 +4263,32 @@ impl Query {
         let emails = reports::report_emails(&mut tx, user, property_id).await.map_err(reports_error)?;
         tx.commit().await.map_err(internal)?;
         Ok(emails.into_iter().map(|(kind, enabled)| ReportEmailNode { kind: kind.into(), enabled }).collect())
+    }
+
+    /// The report of `kind` for `period_start` to `period_end` that the close stored, or null when there is none: the
+    /// record whose PDF is downloaded (`GET …/reports/{id}`) once it is `READY`. Needs `ReportsView` for a weekly or
+    /// monthly report and `ReportsLiability` for the others.
+    async fn stored_report(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        kind: StoredReportKindNode,
+        period_start: Date,
+        period_end: Date,
+    ) -> async_graphql::Result<Option<StoredReportNode>> {
+        let permission = match kind {
+            StoredReportKindNode::Weekly | StoredReportKindNode::Monthly => Permission::ReportsView,
+            StoredReportKindNode::Tdl
+            | StoredReportKindNode::Sscl
+            | StoredReportKindNode::Vat
+            | StoredReportKindNode::ServiceCharge => Permission::ReportsLiability,
+        };
+        let mut tx = scoped(ctx, permission, property_id).await?;
+        let found = reports::period_report(&mut tx, property_id, kind.into(), period_start, period_end)
+            .await
+            .map_err(reports_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(found.map(|(id, status)| StoredReportNode { id, status: status.into() }))
     }
 
     /// SLTDA's Form A of quarter `quarter` (1 to 4: April–June to January–March) of the financial year starting in

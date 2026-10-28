@@ -218,7 +218,8 @@ pub async fn create_outlet(
 
 /// Changes the outlet `id` of `property` (`NotFound` otherwise) at `expected_version` (`VersionMismatch` otherwise).
 /// A deactivated outlet keeps its past bills and takes no new ones. Changes that leave every field as it is are
-/// `Invalid` ("Nothing to change"). Audited as `outlet.updated`, with the values before under `previous`.
+/// `Invalid` ("Nothing to change"). A new report group is in force from the business date, read `for share` so the
+/// change waits for the night audit's roll. Audited as `outlet.updated`, with the values before under `previous`.
 pub async fn update_outlet(
     tx: &mut Tx,
     tenant: TenantId,
@@ -259,15 +260,16 @@ pub async fn update_outlet(
     .execute(&mut **tx)
     .await?;
     if let Some(group) = changes.report_group.filter(|group| *group != current.report_group) {
+        let today = business_date(tx, property).await?;
         sqlx::query(
             "insert into outlet_report_group (tenant_id, outlet_id, report_group, effective_from)
-             select $1, $2, $3, business_date from property where id = $4
+             values ($1, $2, $3, $4)
              on conflict (outlet_id, effective_from) do update set report_group = excluded.report_group",
         )
         .bind(tenant.0)
         .bind(id)
         .bind(group.as_str())
-        .bind(property)
+        .bind(today)
         .execute(&mut **tx)
         .await?;
     }

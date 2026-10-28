@@ -178,6 +178,62 @@ async fn liability_reports_are_for_owners_and_accountants(_: PgPoolOptions, opts
     assert!(disposition.contains("300767028_VAT_SCHEDULE04_2630_"), "{disposition}");
 }
 
+const STORED_REPORT: &str = "query ($p: UUID!, $kind: StoredReportKind!, $from: Date!, $to: Date!) {
+    storedReport(propertyId: $p, kind: $kind, periodStart: $from, periodEnd: $to) { id status }
+}";
+
+/// The close's stored report of a period, so its PDF is the one downloaded: a liability report's needs
+/// `ReportsLiability`, a weekly or monthly one's `ReportsView`; a period with none stored is null.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn stored_report_is_the_closes_own_row(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let (superuser, owner, property) = hotel(&app, opts).await;
+    let manager = app.staff(&superuser, &owner, "manager@example.com", "manager").await;
+    let accountant = app.staff(&superuser, &owner, "accountant@example.com", "accountant").await;
+    let tenant: Uuid = sqlx::query_scalar("select tenant_id from property where id = $1")
+        .bind(property)
+        .fetch_one(&superuser)
+        .await
+        .unwrap();
+    let store = async |kind: &str, from: time::Date, to: time::Date, status: &str| -> Uuid {
+        let id = Uuid::now_v7();
+        sqlx::query(
+            "insert into report (id, tenant_id, property_id, kind, period_start, period_end, data, status)
+             values ($1, $2, $3, $4, $5, $6, '{}', $7)",
+        )
+        .bind(id)
+        .bind(tenant)
+        .bind(property)
+        .bind(kind)
+        .bind(from)
+        .bind(to)
+        .bind(status)
+        .execute(&superuser)
+        .await
+        .unwrap();
+        id
+    };
+    let tdl = store("tdl", date!(2026 - 07 - 01), date!(2026 - 09 - 30), "ready").await;
+    let weekly = store("weekly", date!(2026 - 10 - 19), date!(2026 - 10 - 25), "rendering").await;
+    store("vat", date!(2026 - 07 - 01), date!(2026 - 09 - 30), "ready").await;
+    let july = store("vat", date!(2026 - 07 - 01), date!(2026 - 07 - 31), "failed").await;
+    store("on_demand", date!(2026 - 07 - 01), date!(2026 - 09 - 30), "ready").await;
+    let ask = |kind: &str, from: &str, to: &str| json!({"p": property, "kind": kind, "from": from, "to": to});
+
+    let refused = graphql(&app, &manager, STORED_REPORT, ask("TDL", "2026-07-01", "2026-09-30")).await;
+    assert!(denied(&refused), "{refused}");
+    let found = graphql(&app, &accountant, STORED_REPORT, ask("TDL", "2026-07-01", "2026-09-30")).await;
+    assert_eq!(found["data"]["storedReport"], json!({"id": tdl, "status": "READY"}), "{found}");
+    let found = graphql(&app, &manager, STORED_REPORT, ask("WEEKLY", "2026-10-19", "2026-10-25")).await;
+    assert_eq!(found["data"]["storedReport"], json!({"id": weekly, "status": "RENDERING"}), "{found}");
+    let found = graphql(&app, &owner, STORED_REPORT, ask("VAT", "2026-07-01", "2026-07-31")).await;
+    assert_eq!(found["data"]["storedReport"], json!({"id": july, "status": "FAILED"}), "{found}");
+    for kind in ["SSCL", "SERVICE_CHARGE", "MONTHLY"] {
+        let none = graphql(&app, &owner, STORED_REPORT, ask(kind, "2026-07-01", "2026-09-30")).await;
+        assert_eq!(none["data"]["storedReport"], Value::Null, "{none}");
+    }
+}
+
 /// A property that is not VAT registered, has no TIN, or files the other kind of period gets a 422 and no file; over
 /// GraphQL, the same refusal.
 #[sqlx::test(migrator = "db::MIGRATOR")]

@@ -199,7 +199,8 @@ async fn schedule01_exact_columns_and_dates(_: PgPoolOptions, opts: PgConnectOpt
             "{SCHEDULE01_HEADER}\
              1,07/15/2026,GAL-2026-000002,100200300,Ceylon Traders,Tax invoice at 18%,11000,1980\r\n\
              2,08/20/2026,GAL-2026-000003,400500600,\"Lanka Tours, Ltd\",Tax invoice at 18%,11000,1980\r\n\
-             3,09/30/2026,INCL01_2630,100902885,Purchasers without a TIN,Inclusive Invoices at 18%,44000,7920\r\n"
+             3,09/30/2026,INCL01_2630,100902885,Total value of Inclusive Invoices for Q3 2026,Inclusive Invoices at \
+             18%,44000,7920\r\n"
         )
     );
     assert_eq!(reports::schedule04_csv(&report), SCHEDULE04_HEADER);
@@ -353,6 +354,35 @@ async fn uninvoiced_and_absorbed_vat_are_in_the_combined_row(_: PgPoolOptions, o
     assert_eq!(rows, [("GAL-2026-000001", 11_000, 1_980), ("INCL01_2630", 22_000, 3_960)]);
     assert!(report.timing_difference.is_empty());
     assert_reconciles(&report);
+}
+
+/// A levy the hotel absorbs is inside the line's net already, so it is no part of the value of supply again; one
+/// passed on is. A monthly period's combined row is named for its month.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_absorbed_levy_is_not_added_to_the_value_of_supply(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = registered(opts).await;
+    let mut tx = hotel.tx().await;
+    sqlx::query("update property set vat_return_period = 'monthly' where id = $1")
+        .bind(hotel.property)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let folio = hotel.folio().await;
+    let taxes = [
+        ("SC", "service_charge", "on_bill", 100_000),
+        ("TDL", "levy", "absorbed", 10_000),
+        ("SSCL", "levy", "on_bill", 27_750),
+        ("VAT", "tax", "on_bill", 203_000),
+    ];
+    hotel.line(folio, date(2026, 7, 10), "room", "room", 1_000_000, &taxes, None).await;
+    hotel.set_business_date(date(2026, 8, 1)).await;
+
+    let report = vat(&hotel, VatPeriod::Month(2026, Month::July)).await.unwrap();
+
+    // Rs 10,000 net, Rs 1,000 service charge and Rs 277.50 SSCL passed on: Rs 11,277.50, so Rs 11,278.
+    assert_eq!((report.value_of_supply, report.output_vat), (11_278, 2_030));
+    assert_eq!(report.schedule01[0].purchaser_name, "Total value of Inclusive Invoices for July 2026");
 }
 
 /// A TIN invoice issued in October for a September supply: Q3 has the supply in its combined row, and Q4's TIN row

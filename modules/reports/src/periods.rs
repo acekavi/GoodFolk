@@ -44,8 +44,8 @@ pub async fn due_periods(
         kinds.push(ReportKind::Vat);
     }
     kinds.push(ReportKind::ServiceCharge);
-    let stored: Vec<(String, Date)> = sqlx::query_as(
-        "select kind, period_start from report
+    let stored: Vec<(String, Date, Date)> = sqlx::query_as(
+        "select kind, period_start, period_end from report
          where property_id = $1 and kind <> 'on_demand' and period_end >= $2 and status <> 'failed'",
     )
     .bind(property)
@@ -63,7 +63,7 @@ pub async fn due_periods(
         due.extend(
             periods
                 .into_iter()
-                .filter(|(start, _)| !stored.iter().any(|(k, s)| k == kind.as_str() && s == start))
+                .filter(|(start, end)| !stored.iter().any(|(k, s, e)| k == kind.as_str() && s == start && e == end))
                 .map(|(start, end)| (kind, start, end)),
         );
     }

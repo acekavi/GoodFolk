@@ -5,15 +5,19 @@
 alter table folio_line_tax add column property_id uuid;
 alter table folio_line_tax add column business_date date;
 
--- `folio_line_tax` has FORCE ROW LEVEL SECURITY, which applies to the migration owner too and no tenant is set here, so
--- lift it for the backfill, as 0031 does.
-alter table folio_line_tax no force row level security;
+-- `folio_line_tax`, `folio_line` and `folio` have FORCE ROW LEVEL SECURITY, which applies to the migration owner too
+-- and no tenant is set here, so lift it for the backfill, as 0027 and 0031 do.
 -- backfill: start
+alter table folio_line_tax no force row level security;
+alter table folio_line no force row level security;
+alter table folio no force row level security;
 update folio_line_tax t set property_id = f.property_id, business_date = l.business_date
   from folio_line l join folio f on f.id = l.folio_id
   where l.id = t.line_id;
--- backfill: end
 alter table folio_line_tax force row level security;
+alter table folio_line force row level security;
+alter table folio force row level security;
+-- backfill: end
 alter table folio_line_tax alter column property_id set not null;
 alter table folio_line_tax alter column business_date set not null;
 

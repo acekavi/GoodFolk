@@ -15,9 +15,6 @@ use uuid::Uuid;
 /// IRD's TIN for purchasers without one: their supplies are one combined row per rate.
 pub const DUMMY_TIN: &str = "100902885";
 
-/// The name the combined row of invoices without a purchaser TIN carries.
-const NO_TIN_PURCHASERS: &str = "Purchasers without a TIN";
-
 /// The code of the VAT tax rule.
 const VAT: &str = "VAT";
 
@@ -57,6 +54,14 @@ impl VatPeriod {
         }
         let month = Month::try_from((quarter - 1) * 3 + month).map_err(|_| invalid())?;
         Ok(Self::Month(year, month))
+    }
+
+    /// The period as the combined row of Schedule 01 names it: "July 2026", or "Q3 2026".
+    pub fn label(self) -> String {
+        match self {
+            Self::Month(year, month) => format!("{month} {year}"),
+            Self::Quarter(year, q) => format!("Q{q} {year}"),
+        }
     }
 
     /// The period's first and last days. `Invalid` for a quarter outside 1 to 4 or a year out of range.
@@ -121,9 +126,9 @@ pub struct VatTimingDifference {
 ///
 /// The totals are the period's supplies: every revenue line of its closed days with VAT on it, on the bill or
 /// absorbed, so a folio never invoiced counts too, and a reversal or transfer reduces the period of its own business
-/// date. The value of supply excludes VAT and, under the cascade, includes the service charge and the TDL and SSCL.
-/// Credit notes do not reduce the totals again (their reversals already do): Schedule 01's combined row carries them,
-/// so Schedule 01 less Schedule 04 is the net, unless there is a timing difference.
+/// date. The value of supply excludes VAT and, under the cascade, includes the service charge and the TDL and SSCL
+/// passed on. Credit notes do not reduce the totals again (their reversals already do): Schedule 01's combined row
+/// carries them, so Schedule 01 less Schedule 04 is the net, unless there is a timing difference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VatReport {
     pub period_code: String,
@@ -177,14 +182,16 @@ struct Document {
 /// `property`'s VAT for `period`, from its closed days.
 ///
 /// - **The totals, by rate,** come from the period's revenue lines ([`revenue_lines`]) with a `VAT` tax, on the bill
-///   or absorbed: the value of supply is the line's net plus every other tax on it, the VAT its VAT. Each is summed in
-///   minor units and rounded once to whole rupees per rate.
+///   or absorbed: the value of supply is the line's net plus every other tax on it passed on to the guest (an
+///   absorbed one is inside the net), the VAT its VAT. Each is summed in minor units and rounded once to whole rupees
+///   per rate.
 /// - **Schedule 01:** each VAT rate of a tax invoice (`kind = 'invoice'`) issued in the period to a purchaser with a
 ///   TIN is a row, from the invoice's snapshot, so it matches the printed invoice. A tax there is VAT by its code, or,
 ///   on an invoice issued before taxes carried their code, by the name of one of the property's `VAT` rules. Its
 ///   value of supply is the VAT over the rate ([`by_rate`]).
 /// - **Schedule 04:** each VAT rate of a credit note issued in the period is a row, from its snapshot.
-/// - **The combined row** of each rate, under [`DUMMY_TIN`], is the rate's total plus its Schedule 04 values less its
+/// - **The combined row** of each rate, under [`DUMMY_TIN`] and named "Total value of Inclusive Invoices for" the
+///   period ([`VatPeriod::label`]) as IRD's guide names it, is the rate's total plus its Schedule 04 values less its
 ///   TIN rows: every supply without a TIN invoice, invoiced or not, so that Schedule 01 less Schedule 04 is the net.
 ///   When that is not above 0 in both value and VAT (TIN invoices issued this period for supplies of an earlier one),
 ///   there is no combined row and the pair, negated, is that rate's [`VatTimingDifference`].
@@ -221,7 +228,8 @@ pub async fn vat(tx: &mut Tx, property: Uuid, period: VatPeriod) -> Result<VatRe
     let mut supplies: BTreeMap<i32, (i64, i64)> = BTreeMap::new();
     for line in revenue_lines(tx, property, from, to).await? {
         let Some(vat) = line.taxes.iter().find(|tax| tax.code == VAT) else { continue };
-        let others: i64 = line.taxes.iter().filter(|tax| tax.code != VAT).map(|tax| tax.amount).sum();
+        let passed_on = line.taxes.iter().filter(|tax| tax.code != VAT && tax.presentation == "on_bill");
+        let others: i64 = passed_on.map(|tax| tax.amount).sum();
         let sum = supplies.entry(vat.rate_bp).or_default();
         sum.0 += line.net + others;
         sum.1 += vat.amount;
@@ -320,7 +328,7 @@ pub async fn vat(tx: &mut Tx, property: Uuid, period: VatPeriod) -> Result<VatRe
             invoice_date: to,
             invoice_no: format!("INCL01_{period_code}"),
             purchaser_tin: DUMMY_TIN.into(),
-            purchaser_name: NO_TIN_PURCHASERS.into(),
+            purchaser_name: format!("Total value of Inclusive Invoices for {}", period.label()),
             description: format!("Inclusive Invoices at {}", percent(rate_bp)),
             value_of_supply: value,
             vat_amount,
