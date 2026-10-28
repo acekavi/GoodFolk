@@ -26,6 +26,10 @@
 //!   POS bills over 2 outlets (half posted to stays, half settled) and 120 payments in LKR and USD each day, in under
 //!   10 s at the median of 3 consecutive business dates; `nightAudit` for that day plus 20 arrivals and 20 departures
 //!   due in under 100 ms at p95 (200 samples).
+//! - Phase 7d: `reportSummary` for 31 days of the 200-room property in under 100 ms at p95; `tdlReport` and `ssclReport`
+//!   for a quarter of its 160 guest folios (two lines a day, paid every 4 days, one folio open for a quarter before and
+//!   settled within it) in under 300 ms at p95 (200 samples each); the `render_reports` step of a close that ends a month
+//!   and a quarter (every earlier period already rendered) in under 5 s.
 //!
 //! Ignored by default because debug builds are several times slower. Run them in release mode, one at a time:
 //!
@@ -1544,7 +1548,12 @@ impl NightHotel {
     async fn audit_setup(&self, user: db::UserId) -> Vec<Uuid> {
         let mut tx = self.tx(user).await;
         for (code, name) in [("BAR", "Bar"), ("REST", "Restaurant")] {
-            let outlet = folio::NewOutlet { code: code.into(), name: name.into(), service_charge: true };
+            let outlet = folio::NewOutlet {
+                code: code.into(),
+                name: name.into(),
+                service_charge: true,
+                report_group: folio::ReportGroup::Food,
+            };
             folio::create_outlet(&mut tx, self.tenant, Some(user), self.property, outlet).await.unwrap();
         }
         fx::set_manual(&mut tx, self.tenant, user, self.property, self.day0, "USD", rust_decimal::Decimal::new(300, 0))
@@ -1744,6 +1753,302 @@ async fn night_audit_review_p95_under_100ms(_: PgPoolOptions, opts: PgConnectOpt
          p50 {p50:?}, p95 {p95:?}"
     );
     assert!(p95 < Duration::from_millis(100), "p95 {p95:?} is over the 100 ms gate");
+}
+
+/// The quarter of the Phase 7d reports gates: July to September 2026 (SLTDA's Q2 of the 2026 financial year, and the
+/// third calendar quarter).
+const QUARTER_FIRST: time::Date = time::macros::date!(2026 - 07 - 01);
+const QUARTER_LAST: time::Date = time::macros::date!(2026 - 09 - 30);
+/// When the long-open folio's trade starts, in the quarter before.
+const OPEN_SINCE: time::Date = time::macros::date!(2026 - 04 - 01);
+/// The day the long-open folio is settled.
+const OPEN_SETTLED: time::Date = time::macros::date!(2026 - 08 - 15);
+/// The nights a guest folio's trade covers between two payments.
+const PAYMENT_EVERY: i32 = 4;
+
+impl NightHotel {
+    /// A quarter of closed trade on the 160 guest `folios` of [`Self::audit_setup`]: each folio posts a room night at
+    /// 25,000.00 (USD 100.00 on the odd ones, at 300) and a restaurant item, both with the service charge and VAT, every
+    /// day of the quarter, and is paid and so settled every [`PAYMENT_EVERY`] days (LKR cash; USD by card on every
+    /// fifth folio, else in cash). The second folio, a USD card folio, is open since [`OPEN_SINCE`] and settled only on
+    /// [`OPEN_SETTLED`], so SSCL reads its earlier history. The property is SLTDA registered, and its business date
+    /// is `business_date`.
+    async fn seed_quarter(&self, folios: &[Uuid], business_date: time::Date) {
+        sqlx::query("update property set sltda_licence = 'SLTDA/PERF/001', business_date = $2 where id = $1")
+            .bind(self.property)
+            .bind(business_date)
+            .execute(&self.superuser)
+            .await
+            .unwrap();
+        sqlx::query(
+            "with f as (select id, ord - 1 as i from unnest($3::uuid[]) with ordinality as t (id, ord)),
+                  trade as (
+                    select f.id as folio_id, f.i, d::date as day, kind.category, kind.source, kind.share,
+                           case when f.i % 2 = 1 then 'USD' else 'LKR' end as currency,
+                           case when f.i % 2 = 1 then 300 else 1 end as rate,
+                           case when f.i % 2 = 1 then 10000 else 2500000 end * kind.share / 100 as net
+                    from f
+                    cross join generate_series($4::date, $5::date, '1 day') d
+                    cross join (values ('room', 'room', 100), ('pos:REST', 'pos', 12)) as kind (category, source, share)
+                    where d >= case when f.i = 1 then $4::date else $6::date end),
+                  lines as (
+                    insert into folio_line (id, tenant_id, folio_id, source, category, description, net, total,
+                                            currency, base_total, rate, rate_date, business_date)
+                    select gen_random_uuid(), $1, folio_id, source, category,
+                           case source when 'room' then 'Room night' else 'Dinner' end, net,
+                           net + net / 10 + (net + net / 10) * 18 / 100, currency,
+                           (net + net / 10 + (net + net / 10) * 18 / 100) * rate, rate, day, day
+                    from trade
+                    returning id, folio_id, net, business_date)
+             insert into folio_line_tax (tenant_id, line_id, code, name, kind, rate_bp, base, amount, presentation)
+             select $1, id, tax.code, tax.name, tax.kind,
+                    tax.rate_bp, net + case when tax.code = 'VAT' then net / 10 else 0 end,
+                    case when tax.code = 'SC' then net / 10 else (net + net / 10) * 18 / 100 end, 'on_bill'
+             from lines
+             cross join (values ('SC', 'Service charge', 'service_charge', 1000), ('VAT', 'VAT', 'tax', 1800))
+                  as tax (code, name, kind, rate_bp)",
+        )
+        .bind(self.tenant.0)
+        .bind(self.property)
+        .bind(folios)
+        .bind(OPEN_SINCE)
+        .bind(QUARTER_LAST)
+        .bind(QUARTER_FIRST)
+        .execute(&self.superuser)
+        .await
+        .unwrap();
+        sqlx::query(
+            "with f as (select id, ord - 1 as i from unnest($2::uuid[]) with ordinality as t (id, ord)),
+                  blocks as (
+                    select l.folio_id, f.i, l.currency::text as currency, l.rate, max(l.business_date) as day,
+                           sum(l.total)::bigint as amount
+                    from folio_line l join f on f.id = l.folio_id
+                    group by l.folio_id, f.i, l.currency, l.rate,
+                             case when f.i = 1 and l.business_date <= $5::date then 0
+                                  when f.i = 1 then (l.business_date - $5::date - 1) / $6 + 1
+                                  else (l.business_date - $3::date) / $6 + 1 end)
+             insert into payment (id, tenant_id, folio_id, method, amount, currency, base_amount, rate, rate_date,
+                                  business_date)
+             select gen_random_uuid(), $1, folio_id,
+                    case when currency <> 'LKR' and i % 5 = 0 or i = 1 then 'card_terminal' else 'cash' end, amount,
+                    currency, (amount * rate)::bigint, rate, day, day
+             from blocks",
+        )
+        .bind(self.tenant.0)
+        .bind(folios)
+        .bind(QUARTER_FIRST)
+        .bind(QUARTER_LAST)
+        .bind(OPEN_SETTLED)
+        .bind(PAYMENT_EVERY)
+        .execute(&self.superuser)
+        .await
+        .unwrap();
+    }
+
+    /// The statistics of every business date from `from` to `to`, as the closes of 160 rooms sold of 200 store them,
+    /// with the breakdowns of the five dimensions.
+    async fn seed_stats(&self, from: time::Date, to: time::Date) {
+        sqlx::query(
+            "insert into daily_stats (tenant_id, property_id, business_date, rooms_total, rooms_out_of_order,
+                                      rooms_available, rooms_sold, complimentary_rooms, occupancy_bp, adults, children,
+                                      arrivals, departures, no_shows, cancellations, walk_ins, room_revenue,
+                                      meal_plan_revenue, pos_revenue, fee_revenue, other_revenue, adr, revpar, taxes,
+                                      payments)
+             select $1, $2, d::date, 200, 0, 200, 160, 0, 8000, 320, 0, 20, 20, 0, 0, 0, 400000000, 24000000, 9600000,
+                    0, 0, 2500000, 2000000, '{}', '{}'
+             from generate_series($3::date, $4::date, '1 day') d",
+        )
+        .bind(self.tenant.0)
+        .bind(self.property)
+        .bind(from)
+        .bind(to)
+        .execute(&self.superuser)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into daily_stats_breakdown (tenant_id, property_id, business_date, dimension, key, room_nights,
+                                                room_revenue, revenue)
+             select $1, $2, d::date, k.dimension, k.key, 10, 25000000, 27000000
+             from generate_series($3::date, $4::date, '1 day') d
+             cross join (select 'room_type' as dimension, 'T' || n as key from generate_series(1, 12) n
+                         union all select 'segment', s from unnest(array['IBE', 'OTA', 'CORPORATE', 'WALK_IN']) s
+                         union all select 'source', s from unnest(array['front_desk', 'web', 'ota']) s
+                         union all select 'residency', s from unnest(array['resident', 'foreign']) s
+                         union all select 'outlet', s from unnest(array['BAR', 'REST']) s) k",
+        )
+        .bind(self.tenant.0)
+        .bind(self.property)
+        .bind(from)
+        .bind(to)
+        .execute(&self.superuser)
+        .await
+        .unwrap();
+    }
+}
+
+const REPORT_SUMMARY: &str = "query ($p: UUID!, $from: Date!, $to: Date!) {
+    reportSummary(propertyId: $p, from: $from, to: $to) {
+        closedFrom closedTo notClosed
+        headline { occupancyBp adr revpar roomNights totalRevenue }
+        lastYear { roomNights totalRevenue }
+        days { businessDate roomsSold roomRevenue totalRevenue }
+        breakdowns { dimension keys { key roomNights roomRevenue revenue } }
+    }
+}";
+
+const TDL_REPORT: &str = "query ($p: UUID!) {
+    tdlReport(propertyId: $p, fyStartYear: 2026, quarter: 2) { periodLabel totalTurnover tdl notClosed }
+}";
+
+const SSCL_REPORT: &str = "query ($p: UUID!) {
+    ssclReport(propertyId: $p, year: 2026, quarter: 3) {
+        months { month turnover exemptSameMonth exemptEarlierMonths levy due } quarterTotals { turnover levy }
+        returnDue sltdaRegistered
+    }
+}";
+
+/// Times `query` for the hotel's owner, `SAMPLES` times after the warm-up ones, and returns the data of the last
+/// response with the p50 and p95.
+async fn time_report(hotel: &NightHotel, query: &str, variables: Value, name: &str) -> (Value, Duration, Duration) {
+    let request = json!({"query": query, "variables": variables});
+    let mut samples: Vec<Duration> = Vec::with_capacity(SAMPLES);
+    let mut data = Value::Null;
+    for round in 0..SAMPLES + FOLIO_WARMUP {
+        let started = Instant::now();
+        let response = hotel.app.send(Method::POST, "/graphql", Some(&hotel.owner), Some(request.clone())).await;
+        let elapsed = started.elapsed();
+        assert_eq!(response.status, StatusCode::OK, "{:?}", response.body);
+        assert!(response.body["errors"].is_null(), "{:?}", response.body);
+        data = response.body["data"][name].clone();
+        if round >= FOLIO_WARMUP {
+            samples.push(elapsed);
+        }
+    }
+    samples.sort();
+    (data, samples[SAMPLES / 2], samples[p95_index(SAMPLES)])
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn report_summary_for_31_days_of_200_rooms_p95_under_100ms(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = NightHotel::new(opts).await;
+    let user = hotel.owner_user().await;
+    hotel.audit_setup(user).await;
+    // A year and two months of closed days, so the same month last year is read too.
+    let first = time::macros::date!(2025 - 08 - 01);
+    hotel.seed_stats(first, QUARTER_LAST).await;
+    sqlx::query("update property set business_date = $2 where id = $1")
+        .bind(hotel.property)
+        .bind(QUARTER_LAST + time::Duration::days(1))
+        .execute(&hotel.superuser)
+        .await
+        .unwrap();
+    hotel.analyze().await;
+
+    let variables = json!({"p": hotel.property, "from": "2026-08-01", "to": "2026-08-31"});
+    let (summary, p50, p95) = time_report(&hotel, REPORT_SUMMARY, variables, "reportSummary").await;
+    assert_eq!(summary["days"].as_array().map(Vec::len), Some(31), "{summary:?}");
+    assert_eq!(summary["notClosed"].as_array().map(Vec::len), Some(0), "{summary:?}");
+    assert_eq!(summary["headline"]["roomNights"], json!(31 * 160), "{summary:?}");
+    assert_eq!(summary["lastYear"]["roomNights"], json!(31 * 160), "{summary:?}");
+    assert_eq!(summary["breakdowns"].as_array().map(Vec::len), Some(5), "{summary:?}");
+    println!("reportSummary, 31 days of {ROOMS} rooms, {SAMPLES} samples: p50 {p50:?}, p95 {p95:?}");
+    assert!(p95 < Duration::from_millis(100), "p95 {p95:?} is over the 100 ms gate");
+}
+
+/// The hotel with a closed quarter of trade ([`NightHotel::seed_quarter`]), the business date the day after it.
+async fn quarter_hotel(opts: PgConnectOptions) -> NightHotel {
+    let hotel = NightHotel::new(opts).await;
+    let user = hotel.owner_user().await;
+    let folios = hotel.audit_setup(user).await;
+    hotel.seed_quarter(&folios, QUARTER_LAST + time::Duration::days(1)).await;
+    hotel.analyze().await;
+    hotel
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn tdl_report_for_a_quarter_p95_under_300ms(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = quarter_hotel(opts).await;
+    let (form, p50, p95) = time_report(&hotel, TDL_REPORT, json!({"p": hotel.property}), "tdlReport").await;
+    assert_eq!(form["notClosed"], json!(false), "{form:?}");
+    assert!(form["tdl"].as_i64().is_some_and(|tdl| tdl > 0), "{form:?}");
+    println!("tdlReport, a quarter of {IN_HOUSE} folios, {SAMPLES} samples: p50 {p50:?}, p95 {p95:?}");
+    assert!(p95 < Duration::from_millis(300), "p95 {p95:?} is over the 300 ms gate");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn sscl_report_for_a_quarter_p95_under_300ms(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = quarter_hotel(opts).await;
+    let (report, p50, p95) = time_report(&hotel, SSCL_REPORT, json!({"p": hotel.property}), "ssclReport").await;
+    assert_eq!(report["sltdaRegistered"], json!(true), "{report:?}");
+    let months = report["months"].as_array().unwrap();
+    assert_eq!(months.len(), 3, "{report:?}");
+    // The long-open folio settles in August: its exemption for the earlier months lands there.
+    assert!(months[1]["exemptEarlierMonths"].as_i64().is_some_and(|exempt| exempt > 0), "{report:?}");
+    println!("ssclReport, a quarter of {IN_HOUSE} folios, {SAMPLES} samples: p50 {p50:?}, p95 {p95:?}");
+    assert!(p95 < Duration::from_millis(300), "p95 {p95:?} is over the 300 ms gate");
+}
+
+/// The close's hooks as jobs-svc runs them, timing the `render_reports` step.
+struct TimedReports {
+    inner: jobs_svc::tick::ReportHooks,
+    step: std::sync::Mutex<Option<(Duration, usize)>>,
+}
+
+impl audit::CloseHooks for TimedReports {
+    fn render_reports<'a>(
+        &'a self,
+        tx: &'a mut db::Tx,
+        tenant: db::TenantId,
+        property: Uuid,
+        closed_through: time::Date,
+    ) -> audit::HookFuture<'a, Result<usize, audit::AuditError>> {
+        Box::pin(async move {
+            let started = Instant::now();
+            let queued = audit::CloseHooks::render_reports(&self.inner, tx, tenant, property, closed_through).await?;
+            *self.step.lock().unwrap() = Some((started.elapsed(), queued));
+            Ok(queued)
+        })
+    }
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn month_end_close_renders_reports_in_under_5s(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = NightHotel::new(opts.clone()).await;
+    let user = hotel.owner_user().await;
+    let folios = hotel.audit_setup(user).await;
+    // The quarter's last day is open: the close of it ends the month, the quarter, the week before it and the VAT
+    // period. Every earlier period was rendered by the closes before.
+    let last_closed = QUARTER_LAST - time::Duration::days(1);
+    hotel.seed_quarter(&folios, QUARTER_LAST).await;
+    hotel.seed_stats(QUARTER_FIRST, last_closed).await;
+    sqlx::query("update property set vat_registered = true, tin = '300767028' where id = $1")
+        .bind(hotel.property)
+        .execute(&hotel.superuser)
+        .await
+        .unwrap();
+    let mut tx = hotel.tx(user).await;
+    reports::render_due(&mut tx, hotel.tenant, hotel.property, last_closed).await.unwrap();
+    tx.commit().await.unwrap();
+    hotel.analyze().await;
+
+    let hooks = TimedReports { inner: jobs_svc::tick::ReportHooks, step: std::sync::Mutex::new(None) };
+    let started = Instant::now();
+    let started_run =
+        audit::start_run(&hotel.app.pool, hotel.tenant, Some(user), hotel.property, audit::Mode::Manual).await.unwrap();
+    let closed =
+        audit::execute(&hotel.app.pool, &opts, hotel.tenant, started_run.id, &hooks).await.unwrap().expect("the lock");
+    let whole = started.elapsed();
+    assert_eq!(closed.status, audit::RunStatus::Completed, "{:?}", closed.error);
+    assert_eq!(closed.business_date, QUARTER_LAST);
+    let (step, queued) = hooks.step.lock().unwrap().expect("the close ran render_reports");
+    // The month's report, the quarter's TDL and SSCL, the VAT period and the month's service charge.
+    assert!(queued >= 5, "{queued} reports queued");
+    println!("month-end close, {queued} reports queued: render_reports {step:?}, the whole close {whole:?}");
+    assert!(step < Duration::from_secs(5), "render_reports {step:?} is over the 5 s gate");
 }
 
 const INVOICE_RUNS: usize = 5;

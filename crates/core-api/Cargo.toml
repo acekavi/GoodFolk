@@ -31,6 +31,7 @@ mimalloc.workspace = true
 property.workspace = true
 proto.workspace = true
 rates.workspace = true
+reports.workspace = true
 reservations.workspace = true
 rooms.workspace = true
 rust_decimal.workspace = true

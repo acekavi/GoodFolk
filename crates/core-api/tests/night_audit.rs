@@ -168,7 +168,13 @@ impl Hotel {
             let read = graphql(app, &self.owner, AUDIT_RUNS, json!({"p": self.id})).await;
             assert!(read["errors"].is_null(), "{read:?}");
             let found = read["data"]["auditRuns"].as_array().unwrap().iter().find(|r| uuid(&r["id"]) == run).cloned();
-            if let Some(found) = found.filter(|found| found["status"] == status) {
+            // A completed run is done once its last step, `render_reports`, is.
+            let done = |found: &Value| {
+                found["status"] == status
+                    && (status != "COMPLETED"
+                        || found["steps"].as_array().unwrap().iter().any(|s| s["step"] == "RENDER_REPORTS"))
+            };
+            if let Some(found) = found.filter(done) {
                 return found;
             }
             assert!(tokio::time::Instant::now() < deadline, "run {run} is not {status}: {read:?}");
@@ -312,7 +318,10 @@ async fn a_close_runs_through_jobs_svc_and_moves_the_business_date(_: PgPoolOpti
     let completed = hotel.wait_for(&app, run, "COMPLETED").await;
     assert_eq!(completed["businessDate"], hotel.day(0));
     let steps: Vec<&str> = completed["steps"].as_array().unwrap().iter().map(|s| s["step"].as_str().unwrap()).collect();
-    assert_eq!(steps, ["RESOLVE", "POST_CHARGES", "LOCK_FX", "SNAPSHOT_STATS", "ADVANCE_BUSINESS_DATE"]);
+    assert_eq!(
+        steps,
+        ["RESOLVE", "POST_CHARGES", "LOCK_FX", "SNAPSHOT_STATS", "ADVANCE_BUSINESS_DATE", "RENDER_REPORTS"]
+    );
     assert_eq!(hotel.business_date_now(&app).await, hotel.day(1));
     let stats =
         graphql(&app, &hotel.owner, DAILY_STATS, json!({"p": hotel.id, "from": hotel.day(0), "to": hotel.day(1)}))

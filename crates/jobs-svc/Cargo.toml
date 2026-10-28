@@ -17,6 +17,7 @@ identity.workspace = true
 mail.workspace = true
 media.workspace = true
 proto.workspace = true
+reports.workspace = true
 rooms.workspace = true
 serde.workspace = true
 serde_json.workspace = true

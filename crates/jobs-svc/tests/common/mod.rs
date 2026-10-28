@@ -15,6 +15,7 @@ use mail::DevMailer;
 use proto::jobs::jobs_client::JobsClient;
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
+use storage::{Storage, StorageConfig};
 use svc_auth::Verifier;
 use tokio::net::TcpListener;
 use tokio_util::task::TaskTracker;
@@ -47,6 +48,13 @@ pub fn svc(pool: PgPool, lock: PgConnectOptions) -> JobsSvc {
     }
 }
 
+/// The dev object storage (RustFS), with its buckets.
+pub async fn storage() -> Arc<Storage> {
+    let storage = Storage::new(StorageConfig::dev().unwrap()).unwrap();
+    storage.ensure_dev_buckets().await.expect("start RustFS: deploy/dev/rustfs.sh start");
+    Arc::new(storage)
+}
+
 /// Serves `svc`'s router on a random port; returns its address.
 pub async fn serve(svc: JobsSvc) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -70,12 +78,21 @@ pub fn http() -> reqwest::Client {
     reqwest::Client::new()
 }
 
-/// Waits up to 60 s for `run` to reach `status`, reading as the superuser.
+/// Waits up to 60 s for `run` to reach `status`, reading as the superuser. A completed run counts once its last step,
+/// `render_reports`, is done too.
 pub async fn wait_for(owner: &PgPool, run: Uuid, status: &str) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
-        let now: String =
-            sqlx::query_scalar("select status from audit_run where id = $1").bind(run).fetch_one(owner).await.unwrap();
+        let now: String = sqlx::query_scalar(
+            "select case when status = 'completed' and not exists (select 1 from audit_run_step s
+                                                                   where s.run_id = r.id and s.step = 'render_reports')
+                         then 'rendering reports' else status end
+             from audit_run r where id = $1",
+        )
+        .bind(run)
+        .fetch_one(owner)
+        .await
+        .unwrap();
         if now == status {
             return;
         }

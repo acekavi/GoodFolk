@@ -1,11 +1,12 @@
 //! The close over gRPC: started by a person, retried, raced against a tick, run by the tick at the audit moment and
-//! resumed by it after a crash.
+//! resumed by it after a crash; and its `render_reports` step, run by the tick again when it failed.
 
 mod common;
 
-use audit::{AuditError, CloseHooks, Mode, RunStatus, Step};
+use audit::{AlertKind, AuditError, CloseHooks, HookFuture, Mode, RunStatus, Step};
 use common::hotel::Hotel;
 use common::{SECRET, client, close_counts, http, serve, svc, wait_for};
+use db::{TenantId, Tx};
 use jobs_svc::due::audit_moment;
 use jobs_svc::tick::tick_with;
 use proto::jobs::{RetryCloseRequest, StartCloseRequest, TickRequest};
@@ -55,7 +56,7 @@ async fn a_close_started_by_hand_completes_and_cannot_be_retried(_: PgPoolOption
         .unwrap_err();
     assert_eq!(retried.code(), Code::FailedPrecondition, "{retried:?}");
     assert!(retried.message().contains("completed"), "{retried:?}");
-    assert_eq!(close_counts(&owner, hotel.property).await, (5, 1, 1));
+    assert_eq!(close_counts(&owner, hotel.property).await, (6, 1, 1));
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -79,7 +80,7 @@ async fn a_second_start_returns_the_same_run(_: PgPoolOptions, opts: PgConnectOp
     lock.close().await.unwrap();
     client.tick(TickRequest {}).await.unwrap();
     wait_for(&owner, first.parse().unwrap(), "completed").await;
-    assert_eq!(close_counts(&owner, hotel.property).await, (5, 1, 1));
+    assert_eq!(close_counts(&owner, hotel.property).await, (6, 1, 1));
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -131,7 +132,7 @@ async fn a_tick_racing_a_start_gives_one_run_closed_once(_: PgPoolOptions, opts:
         .await
         .unwrap();
     assert_eq!(runs, vec![id], "{ticked:?}");
-    assert_eq!(close_counts(&owner, hotel.property).await, (5, 1, 1), "{ticked:?}");
+    assert_eq!(close_counts(&owner, hotel.property).await, (6, 1, 1), "{ticked:?}");
     assert_eq!(business_date(&owner, hotel.property).await, hotel.day(1));
 }
 
@@ -192,5 +193,60 @@ async fn the_tick_resumes_a_crashed_close(_: PgPoolOptions, opts: PgConnectOptio
     assert_eq!((resumed[0].key.as_str(), resumed[0].outcome.as_str()), (hotel.property.to_string().as_str(), "ran"));
     let done = audit::get_run(&mut hotel.tx().await, run.id).await.unwrap();
     assert_eq!((done.status, done.mode, done.attempts), (RunStatus::Completed, Mode::Manual, 1));
-    assert_eq!(close_counts(&owner, hotel.property).await, (5, 1, 1));
+    assert_eq!(close_counts(&owner, hotel.property).await, (6, 1, 1));
+}
+
+/// A `render_reports` that always fails.
+struct RenderFails;
+
+impl CloseHooks for RenderFails {
+    fn render_reports<'a>(
+        &'a self,
+        _: &'a mut Tx,
+        _: TenantId,
+        _: Uuid,
+        _: time::Date,
+    ) -> HookFuture<'a, Result<usize, AuditError>> {
+        Box::pin(async { Err(AuditError::Invalid("media is down".into())) })
+    }
+}
+
+/// A close whose `render_reports` failed has D closed and the `reports` alert raised; the next tick queues the reports
+/// of the periods it closed (D is a Sunday, so the week's) and clears the alert, without closing D again.
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_tick_queues_the_reports_a_failed_render_left(_: PgPoolOptions, opts: PgConnectOptions) {
+    let owner = PgPool::connect_with(opts.clone()).await.unwrap();
+    let hotel = Hotel::new(opts.clone()).await;
+    let sunday = time::macros::date!(2026 - 10 - 25);
+    hotel.move_business_date(hotel.property, (sunday - hotel.business_date).whole_days()).await;
+    let run = audit::start_run(&hotel.pool, hotel.tenant, None, hotel.property, Mode::Auto).await.unwrap();
+    let unrendered = audit::execute(&hotel.pool, &opts, hotel.tenant, run.id, &RenderFails).await.unwrap().unwrap();
+    assert_eq!((unrendered.status, unrendered.steps.len()), (RunStatus::Completed, 5));
+    let alerts = audit::alerts::list(&mut hotel.tx().await, hotel.property).await.unwrap();
+    assert_eq!(alerts.iter().map(|alert| alert.kind).collect::<Vec<_>>(), [AlertKind::Reports]);
+    let svc = svc(hotel.pool.clone(), opts);
+    let before_the_moment = audit_moment(sunday, time::macros::time!(03:00)) - time::Duration::hours(1);
+
+    let response = tick_with(&svc, |_| before_the_moment).await;
+
+    let rendered: Vec<_> = response.jobs.iter().filter(|job| job.job == "render_reports").collect();
+    assert_eq!(rendered.len(), 1, "{response:?}");
+    assert_eq!((rendered[0].key.as_str(), rendered[0].outcome.as_str()), (hotel.property.to_string().as_str(), "ran"));
+    let done = audit::get_run(&mut hotel.tx().await, run.id).await.unwrap();
+    assert_eq!(
+        done.steps.last().map(|step| (step.step, step.detail.clone())),
+        Some((Step::RenderReports, serde_json::json!({ "queued": 1 })))
+    );
+    assert_eq!(close_counts(&owner, hotel.property).await, (6, 1, 1));
+    let weekly: (time::Date, time::Date) =
+        sqlx::query_as("select period_start, period_end from report where property_id = $1 and kind = 'weekly'")
+            .bind(hotel.property)
+            .fetch_one(&owner)
+            .await
+            .unwrap();
+    assert_eq!(weekly, (time::macros::date!(2026 - 10 - 19), sunday));
+    assert!(audit::alerts::list(&mut hotel.tx().await, hotel.property).await.unwrap().is_empty());
+
+    let again = tick_with(&svc, |_| before_the_moment).await;
+    assert!(again.jobs.iter().all(|job| job.job != "render_reports"), "{again:?}");
 }

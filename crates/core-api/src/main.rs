@@ -43,7 +43,7 @@ async fn serve() -> anyhow::Result<()> {
         Box::pin(async move { media_auth.header().await.map_err(|e| ::events::BusError::Retryable(e.to_string())) })
     });
     let bus = ::events::bus_from_env(
-        &[::media::PROCESS_TOPIC, ::folio::INVOICE_RENDER_TOPIC, ::mail::SEND_TOPIC],
+        &[::media::PROCESS_TOPIC, ::folio::INVOICE_RENDER_TOPIC, ::reports::REPORT_RENDER_TOPIC, ::mail::SEND_TOPIC],
         Some(push_auth),
     )?;
     // One direct connection, kept open, used only for LISTEN (and to reconnect it).

@@ -65,6 +65,7 @@ export default defineConfig({
 				MEDIA_SVC_URL: `http://localhost:${MEDIA_PORT}`,
 				PUSH_ENDPOINT_MEDIA_PROCESS: `http://localhost:${MEDIA_PORT}/work`,
 				PUSH_ENDPOINT_INVOICE_RENDER: `http://localhost:${MEDIA_PORT}/render`,
+				PUSH_ENDPOINT_REPORT_RENDER: `http://localhost:${MEDIA_PORT}/render-report`,
 				PUSH_ENDPOINT_MAIL_SEND: `http://localhost:${JOBS_PORT}/mail`,
 				JOBS_SVC_URL: `http://localhost:${JOBS_PORT}`,
 				RUST_LOG: 'warn'

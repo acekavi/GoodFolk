@@ -69,6 +69,10 @@ const ACTIONS = {
 	laundryOrders: ['owner', 'manager', 'front_desk', 'hk_supervisor', 'housekeeping'],
 	/** The guest laundry price list; mirrors `LaundryPricesManage`. */
 	laundryPricesManage: ['owner', 'manager'],
+	/** The everyday reports and the report emails; mirrors `ReportsView`. */
+	reportsView: ['owner', 'manager', 'accountant'],
+	/** The TDL, SSCL, VAT and service charge reports; mirrors `ReportsLiability`. */
+	reportsLiability: ['owner', 'accountant'],
 	/** Invite staff, change their roles and remove them; mirrors `StaffManage`. */
 	staffManage: ['owner', 'manager']
 } satisfies Record<string, Role[]>;

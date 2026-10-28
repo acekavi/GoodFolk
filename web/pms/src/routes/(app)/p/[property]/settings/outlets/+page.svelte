@@ -21,9 +21,15 @@
 		queryFn: ({ signal }) => fetchOutlets(propertyId, signal)
 	}));
 
-	const emptyDraft = () => ({ code: '', name: '', serviceCharge: true });
+	const emptyDraft = () => ({ code: '', name: '', serviceCharge: true, reportGroup: 'food' });
+	const groupLabels: Record<string, string> = { food: 'Food', bar: 'Bar', other: 'Other' };
 	let draft = $state(emptyDraft());
-	let editing = $state<{ id: string; name: string; serviceCharge: boolean } | null>(null);
+	let editing = $state<{
+		id: string;
+		name: string;
+		serviceCharge: boolean;
+		reportGroup: string;
+	} | null>(null);
 	let error = $state('');
 	const pending = new Pending();
 	const addForm = formKeys();
@@ -43,7 +49,8 @@
 		const body = {
 			code: draft.code.trim().toUpperCase(),
 			name: draft.name.trim(),
-			service_charge: draft.serviceCharge
+			service_charge: draft.serviceCharge,
+			report_group: draft.reportGroup as 'food' | 'bar' | 'other'
 		};
 		try {
 			await pending.run('add', async () => {
@@ -118,6 +125,7 @@
 				<th>Code</th>
 				<th>Name</th>
 				<th>Service charge</th>
+				<th>Report group</th>
 				<th>Active</th>
 				{#if manage}<th><span class="visually-hidden">Actions</span></th>{/if}
 			</tr>
@@ -140,6 +148,13 @@
 								<input type="checkbox" bind:checked={editing.serviceCharge} /> Applies
 							</label>
 						</td>
+						<td>
+							<select aria-label="Report group for {outlet.code}" bind:value={editing.reportGroup}>
+								{#each Object.entries(groupLabels) as [value, label] (value)}
+									<option {value}>{label}</option>
+								{/each}
+							</select>
+						</td>
 						<td>{outlet.active ? 'Active' : 'Inactive'}</td>
 						<td class="actions">
 							<button
@@ -149,7 +164,8 @@
 									editing &&
 									update(outlet, {
 										name: editing.name.trim(),
-										service_charge: editing.serviceCharge
+										service_charge: editing.serviceCharge,
+										report_group: editing.reportGroup
 									})}>Save</button
 							>
 							<button class="secondary" onclick={() => (editing = null)}>Cancel</button>
@@ -157,6 +173,7 @@
 					{:else}
 						<td>{outlet.name}</td>
 						<td>{outlet.serviceCharge ? 'Applies' : 'Off'}</td>
+						<td>{groupLabels[outlet.reportGroup] ?? outlet.reportGroup}</td>
 						<td>{outlet.active ? 'Active' : 'Inactive'}</td>
 						{#if manage}
 							<td class="actions">
@@ -168,7 +185,8 @@
 										(editing = {
 											id: outlet.id,
 											name: outlet.name,
-											serviceCharge: outlet.serviceCharge
+											serviceCharge: outlet.serviceCharge,
+											reportGroup: outlet.reportGroup
 										})}>Edit</button
 								>
 								<button
@@ -183,7 +201,7 @@
 					{/if}
 				</tr>
 			{:else}
-				<tr><td colspan={manage ? 5 : 4}>No outlets yet.</td></tr>
+				<tr><td colspan={manage ? 6 : 5}>No outlets yet.</td></tr>
 			{/each}
 		</tbody>
 	</table>
@@ -205,10 +223,21 @@
 			<label class="check">
 				<input type="checkbox" bind:checked={draft.serviceCharge} /> Service charge applies
 			</label>
+			<label>
+				Report group
+				<select bind:value={draft.reportGroup}>
+					{#each Object.entries(groupLabels) as [value, label] (value)}
+						<option {value}>{label}</option>
+					{/each}
+				</select>
+			</label>
 			<button disabled={pending.has('add')}>Add outlet</button>
 		</form>
 		<p class="hint">The code names the outlet's bills (pos:CODE) and can't be changed later.</p>
 	{/if}
+	<p class="hint">
+		Report group: used for SLTDA's TDL form; a change applies from today's business date.
+	</p>
 {:else}
 	<p>Loading…</p>
 {/if}

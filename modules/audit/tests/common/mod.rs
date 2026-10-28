@@ -304,7 +304,12 @@ impl Hotel {
     /// An active outlet of `property` with its service charge on.
     pub async fn outlet(&self, property: Uuid, code: &str, name: &str) {
         let mut tx = self.tx().await;
-        let input = folio::NewOutlet { code: code.into(), name: name.into(), service_charge: true };
+        let input = folio::NewOutlet {
+            code: code.into(),
+            name: name.into(),
+            service_charge: true,
+            report_group: folio::ReportGroup::Food,
+        };
         folio::create_outlet(&mut tx, self.tenant, Some(self.user), property, input).await.unwrap();
         tx.commit().await.unwrap();
     }

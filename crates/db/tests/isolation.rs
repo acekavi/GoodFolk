@@ -495,6 +495,7 @@ enum Seed {
     NightAudit,
     Laundry,
     Staff,
+    Reports,
 }
 
 impl Seed {
@@ -509,6 +510,7 @@ impl Seed {
             Seed::NightAudit => seed_night_audit(pool, tenant).await,
             Seed::Laundry => seed_laundry(pool, tenant).await,
             Seed::Staff => seed_staff(pool, tenant).await,
+            Seed::Reports => seed_reports(pool, tenant).await,
         }
     }
 }
@@ -1411,6 +1413,81 @@ async fn invitations_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOpt
          select gen_random_uuid(), $1, 'other@example.com', 'Other', grants, sha256(gen_random_uuid()::text::bytea), 'pending', expires_at
          from invitation",
         Seed::Staff,
+    )
+    .await;
+}
+
+/// On top of [`seed_folio`], for `tenant`: one row in every Phase 7d table, with a user the mail records name.
+async fn seed_reports(pool: &PgPool, tenant: TenantId) {
+    seed_folio(pool, tenant).await;
+    let (user, report) = (Uuid::now_v7(), Uuid::now_v7());
+    let mut tx = begin(pool, Scope::tenant(tenant)).await.unwrap();
+    sqlx::query("insert into app_user (id, email, password_hash, display_name) values ($1, $2, 'x', 'U')")
+        .bind(user)
+        .bind(format!("{user}@example.com"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let statements = [
+        "insert into outlet_report_group (tenant_id, outlet_id, report_group, effective_from)
+         select $1, id, 'bar', date '2026-01-01' from outlet",
+        "insert into report (id, tenant_id, property_id, kind, period_start, period_end, data, status)
+         select $3, $1, id, 'weekly', date '2026-10-19', date '2026-10-25', '{}', 'ready' from property",
+        "insert into report_mail_pref (tenant_id, user_id, property_id, kind, enabled)
+         select $1, $2, id, 'weekly', false from property",
+        "insert into report_mail (tenant_id, report_id, user_id) values ($1, $3, $2)",
+    ];
+    for statement in statements {
+        sqlx::query(statement).bind(tenant.0).bind(user).bind(report).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn outlet_report_groups_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "outlet_report_group",
+        "insert into outlet_report_group (tenant_id, outlet_id, report_group, effective_from)
+         select $1, outlet_id, 'food', date '2026-02-01' from outlet_report_group",
+        Seed::Reports,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn reports_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "report",
+        "insert into report (id, tenant_id, property_id, kind, period_start, period_end, data, status)
+         select gen_random_uuid(), $1, property_id, 'monthly', date '2026-09-01', date '2026-09-30', '{}', 'ready'
+         from report",
+        Seed::Reports,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn report_mail_preferences_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "report_mail_pref",
+        "insert into report_mail_pref (tenant_id, user_id, property_id, kind, enabled)
+         select $1, user_id, property_id, 'monthly', true from report_mail_pref",
+        Seed::Reports,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn report_mail_records_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "report_mail",
+        "insert into report_mail (tenant_id, report_id, user_id)
+         select $1, report_id, user_id from report_mail",
+        Seed::Reports,
     )
     .await;
 }

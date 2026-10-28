@@ -3100,7 +3100,7 @@
         "tags": [
           "crate::routes::pos"
         ],
-        "summary": "Changes an outlet's name, service charge or whether it is active. Audited.",
+        "summary": "Changes an outlet's name, service charge, report group or whether it is active. Audited.",
         "operationId": "update_outlet",
         "parameters": [
           {
@@ -3569,6 +3569,240 @@
           "403": {},
           "404": {},
           "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/report-emails/{kind}": {
+      "put": {
+        "tags": [
+          "crate::routes::reports"
+        ],
+        "summary": "Turns the signed-in user's own weekly or monthly report email of the property on or off, and returns both. The\nemails go to owners and managers. Needs `ReportsView`.",
+        "operationId": "set_report_email",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ReportEmailKind"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetReportEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReportEmail"
+                  }
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/reports/render": {
+      "post": {
+        "tags": [
+          "crate::routes::reports"
+        ],
+        "summary": "Renders a report as a PDF, from the closed days as they are now: 202 with the stored report's id, whose status\n[`report`] reads. Refused as the report itself is (422), such as VAT for a property that is not registered or has\nno TIN. Needs the report's permission: `ReportsView`, also `ReservationsView` for a daily list, and\n`ReportsLiability` for TDL, SSCL, VAT and service charge.",
+        "operationId": "render_report",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenderReportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderQueued"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/reports/vat/{period}/schedule01.csv": {
+      "get": {
+        "tags": [
+          "crate::routes::reports"
+        ],
+        "summary": "Schedule 01 (output tax invoices) of the VAT return `period`, an IRD period code such as `2630` (Q3 2026) or `2632`\n(August 2026) of the kind the property files, from its closed days. Named\n`<TIN>_VAT_SCHEDULE01_<period>_<YYYYMMDD>_ORIGINAL_V1.csv`, dated the property's today. A property that is not VAT\nregistered, has no TIN, or files the other kind of period is refused (422). Needs `ReportsLiability`.",
+        "operationId": "vat_schedule01",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "period",
+            "in": "path",
+            "description": "IRD period code: `YYQ0` or `YYQM`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/reports/vat/{period}/schedule04.csv": {
+      "get": {
+        "tags": [
+          "crate::routes::reports"
+        ],
+        "summary": "Schedule 04 (credit notes issued) of the VAT return `period`, as [`vat_schedule01`] gives Schedule 01. Needs\n`ReportsLiability`.",
+        "operationId": "vat_schedule04",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "period",
+            "in": "path",
+            "description": "IRD period code: `YYQ0` or `YYQM`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {},
+          "422": {}
+        }
+      }
+    },
+    "/api/v1/properties/{property}/reports/{report}": {
+      "get": {
+        "tags": [
+          "crate::routes::reports"
+        ],
+        "summary": "A stored report's status, `rendering`, `ready` or `failed`, with a link to its PDF once it is ready. Each link\nissued is audited as `report.viewed`. Needs the permission its report needs to render.",
+        "operationId": "report_status",
+        "parameters": [
+          {
+            "name": "property",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "report",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportRead"
+                }
+              }
+            }
+          },
+          "403": {},
+          "404": {}
         }
       }
     },
@@ -5804,7 +6038,7 @@
         "tags": [
           "crate::routes::taxes"
         ],
-        "summary": "Changes the property's tax settings: VAT registration, TIN, the small-turnover levy band, the legal name and\naddress printed on invoices, and the accepted currencies. Shares the property's version. Audited with the values\nbefore and after.",
+        "summary": "Changes the property's tax settings: VAT registration, TIN, the TDL registration number, the VAT return period, the small-turnover levy band, the legal name and\naddress printed on invoices, and the accepted currencies. Shares the property's version. Audited with the values\nbefore and after.",
         "operationId": "update_tax_settings",
         "parameters": [
           {
@@ -7014,6 +7248,10 @@
             "type": "string",
             "description": "1 to 100 characters once trimmed."
           },
+          "report_group": {
+            "$ref": "#/components/schemas/ReportGroup",
+            "description": "The line of SLTDA's TDL form the outlet's sales fall under; `food` when left out."
+          },
           "service_charge": {
             "type": "boolean",
             "description": "Whether the property's service charge applies to the outlet's bills; true when left out."
@@ -7504,6 +7742,14 @@
             "description": "The room's version, for `If-Match` on its commands (cancel, assign, unassign)."
           }
         }
+      },
+      "DailyListKind": {
+        "type": "string",
+        "enum": [
+          "arrivals",
+          "departures",
+          "in_house"
+        ]
       },
       "DepositDue": {
         "oneOf": [
@@ -8739,7 +8985,8 @@
           "name",
           "service_charge",
           "active",
-          "version"
+          "version",
+          "report_group"
         ],
         "properties": {
           "active": {
@@ -8759,6 +9006,10 @@
           "property_id": {
             "type": "string",
             "format": "uuid"
+          },
+          "report_group": {
+            "$ref": "#/components/schemas/ReportGroup",
+            "description": "The TDL line the outlet's sales fall under on the property's current business date."
           },
           "service_charge": {
             "type": "boolean",
@@ -9814,6 +10065,221 @@
           }
         }
       },
+      "RenderQueued": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "RenderReportRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The everyday reports from `from` to `to`, both included, at most 366 days.",
+            "required": [
+              "params",
+              "report"
+            ],
+            "properties": {
+              "params": {
+                "type": "object",
+                "description": "The everyday reports from `from` to `to`, both included, at most 366 days.",
+                "required": [
+                  "from",
+                  "to"
+                ],
+                "properties": {
+                  "from": {
+                    "type": "string",
+                    "format": "date"
+                  },
+                  "to": {
+                    "type": "string",
+                    "format": "date"
+                  }
+                }
+              },
+              "report": {
+                "type": "string",
+                "enum": [
+                  "summary"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "params",
+              "report"
+            ],
+            "properties": {
+              "params": {
+                "type": "object",
+                "required": [
+                  "date",
+                  "kind"
+                ],
+                "properties": {
+                  "date": {
+                    "type": "string",
+                    "format": "date"
+                  },
+                  "kind": {
+                    "$ref": "#/components/schemas/DailyListKind"
+                  }
+                }
+              },
+              "report": {
+                "type": "string",
+                "enum": [
+                  "daily_list"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Quarter 1 to 4 (April–June to January–March) of the financial year starting in April `fy_start_year`.",
+            "required": [
+              "params",
+              "report"
+            ],
+            "properties": {
+              "params": {
+                "type": "object",
+                "description": "Quarter 1 to 4 (April–June to January–March) of the financial year starting in April `fy_start_year`.",
+                "required": [
+                  "fy_start_year",
+                  "quarter"
+                ],
+                "properties": {
+                  "fy_start_year": {
+                    "type": "integer",
+                    "format": "int32"
+                  },
+                  "quarter": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              },
+              "report": {
+                "type": "string",
+                "enum": [
+                  "tdl"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Calendar quarter 1 to 4 of `year`.",
+            "required": [
+              "params",
+              "report"
+            ],
+            "properties": {
+              "params": {
+                "type": "object",
+                "description": "Calendar quarter 1 to 4 of `year`.",
+                "required": [
+                  "year",
+                  "quarter"
+                ],
+                "properties": {
+                  "quarter": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  },
+                  "year": {
+                    "type": "integer",
+                    "format": "int32"
+                  }
+                }
+              },
+              "report": {
+                "type": "string",
+                "enum": [
+                  "sscl"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "`YYQ0` or `YYQM`, of the kind the property files.",
+            "required": [
+              "params",
+              "report"
+            ],
+            "properties": {
+              "params": {
+                "type": "object",
+                "description": "`YYQ0` or `YYQM`, of the kind the property files.",
+                "required": [
+                  "period"
+                ],
+                "properties": {
+                  "period": {
+                    "type": "string"
+                  }
+                }
+              },
+              "report": {
+                "type": "string",
+                "enum": [
+                  "vat"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Month 1 to 12 of `year`.",
+            "required": [
+              "params",
+              "report"
+            ],
+            "properties": {
+              "params": {
+                "type": "object",
+                "description": "Month 1 to 12 of `year`.",
+                "required": [
+                  "year",
+                  "month"
+                ],
+                "properties": {
+                  "month": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  },
+                  "year": {
+                    "type": "integer",
+                    "format": "int32"
+                  }
+                }
+              },
+              "report": {
+                "type": "string",
+                "enum": [
+                  "service_charge"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "The report to render and what its on-screen query takes: `summary` (`from`, `to`), `daily_list` (`date`, `kind`),\n`tdl` (`fy_start_year`, `quarter`), `sscl` (`year`, `quarter`), `vat` (`period`, an IRD period code) or\n`service_charge` (`year`, `month`)."
+      },
       "ReorderMediaRequest": {
         "type": "object",
         "required": [
@@ -9846,6 +10312,39 @@
           }
         }
       },
+      "ReportEmail": {
+        "type": "object",
+        "description": "Whether the signed-in user gets one of the property's report emails.",
+        "required": [
+          "kind",
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ReportEmailKind"
+          }
+        }
+      },
+      "ReportEmailKind": {
+        "type": "string",
+        "description": "A report emailed to the property's owners and managers.",
+        "enum": [
+          "weekly",
+          "monthly"
+        ]
+      },
+      "ReportGroup": {
+        "type": "string",
+        "description": "The line of SLTDA's TDL form an outlet's sales fall under.",
+        "enum": [
+          "food",
+          "bar",
+          "other"
+        ]
+      },
       "ReportIssueRequest": {
         "type": "object",
         "required": [
@@ -9866,6 +10365,32 @@
             "description": "`low`, `medium` or `high`."
           }
         }
+      },
+      "ReportRead": {
+        "type": "object",
+        "description": "A stored report's status and, once it is ready, a link to its PDF that works for 5 minutes.",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/ReportStatusNode"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ReportStatusNode": {
+        "type": "string",
+        "enum": [
+          "rendering",
+          "ready",
+          "failed"
+        ]
       },
       "ReservationRoomRequest": {
         "type": "object",
@@ -10421,6 +10946,17 @@
           }
         }
       },
+      "SetReportEmailRequest": {
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
       "SettleBatchRequest": {
         "oneOf": [
           {
@@ -10882,6 +11418,7 @@
         "required": [
           "property_id",
           "vat_registered",
+          "vat_return_period",
           "tdl_small_turnover",
           "base_currency",
           "accepted_currencies",
@@ -10922,6 +11459,13 @@
             ],
             "description": "The SLTDA licence number printed under the TIN on invoices."
           },
+          "tdl_registration_no": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The registration number printed on the SLTDA tourism development levy return."
+          },
           "tdl_small_turnover": {
             "type": "boolean",
             "description": "The tourism development levy's small-turnover band (0.5% instead of 1%), used when the preset is applied."
@@ -10936,6 +11480,10 @@
           "vat_registered": {
             "type": "boolean",
             "description": "VAT applies, and invoices are tax invoices, which need the TIN."
+          },
+          "vat_return_period": {
+            "$ref": "#/components/schemas/VatReturnPeriod",
+            "description": "How often the VAT return is filed; the VAT schedule covers a month or a quarter accordingly."
           },
           "version": {
             "type": "integer",
@@ -11374,6 +11922,17 @@
               "null"
             ]
           },
+          "report_group": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReportGroup",
+                "description": "Applies from the property's current business date; earlier days keep the group they were reported under."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "service_charge": {
             "type": [
               "boolean",
@@ -11748,7 +12307,7 @@
       },
       "UpdateTaxSettingsRequest": {
         "type": "object",
-        "description": "Fields left out keep their value; `null` clears `tin`, `sltda_licence`, `legal_name` or `address`.",
+        "description": "Fields left out keep their value; `null` clears `tin`, `sltda_licence`, `tdl_registration_no`, `legal_name` or\n`address`.",
         "properties": {
           "accepted_currencies": {
             "type": [
@@ -11779,6 +12338,13 @@
             ],
             "description": "1 to 50 characters, with no whitespace around them."
           },
+          "tdl_registration_no": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "1 to 30 characters, with no whitespace around them."
+          },
           "tdl_small_turnover": {
             "type": [
               "boolean",
@@ -11797,6 +12363,17 @@
             "type": [
               "boolean",
               "null"
+            ]
+          },
+          "vat_return_period": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/VatReturnPeriod",
+                "description": "`monthly` or `quarterly`."
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         }
@@ -11865,6 +12442,14 @@
             "minimum": 0
           }
         }
+      },
+      "VatReturnPeriod": {
+        "type": "string",
+        "description": "How often the property files its VAT return.",
+        "enum": [
+          "monthly",
+          "quarterly"
+        ]
       }
     }
   }

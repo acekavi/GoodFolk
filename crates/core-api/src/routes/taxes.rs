@@ -14,7 +14,7 @@ use db::Scope;
 use folio::{PresetApplied, TaxRuleChanges, TaxRuleRow};
 use garde::Validate;
 use identity::Permission;
-use property::{TaxSettings, TaxSettingsChanges};
+use property::{TaxSettings, TaxSettingsChanges, VatReturnPeriod};
 use serde::Deserialize;
 use time::Date;
 use utoipa::ToSchema;
@@ -225,7 +225,8 @@ pub async fn apply_preset(
     Ok(Json(applied))
 }
 
-/// Fields left out keep their value; `null` clears `tin`, `sltda_licence`, `legal_name` or `address`.
+/// Fields left out keep their value; `null` clears `tin`, `sltda_licence`, `tdl_registration_no`, `legal_name` or
+/// `address`.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct UpdateTaxSettingsRequest {
     #[garde(skip)]
@@ -240,6 +241,14 @@ pub struct UpdateTaxSettingsRequest {
     #[schema(value_type = Option<String>, nullable)]
     #[garde(inner(inner(length(chars, min = 1, max = 50), pattern(r"^\S(.*\S)?$"))))]
     pub sltda_licence: Option<Option<String>>,
+    /// 1 to 30 characters, with no whitespace around them.
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<String>, nullable)]
+    #[garde(inner(inner(length(chars, min = 1, max = 30), pattern(r"^\S(.*\S)?$"))))]
+    pub tdl_registration_no: Option<Option<String>>,
+    /// `monthly` or `quarterly`.
+    #[garde(skip)]
+    pub vat_return_period: Option<VatReturnPeriod>,
     /// The tourism development levy's small-turnover band; takes effect on the rules when the preset is applied.
     #[garde(skip)]
     pub tdl_small_turnover: Option<bool>,
@@ -261,6 +270,8 @@ impl Changes for UpdateTaxSettingsRequest {
         self.vat_registered.is_none()
             && self.tin.is_none()
             && self.sltda_licence.is_none()
+            && self.tdl_registration_no.is_none()
+            && self.vat_return_period.is_none()
             && self.tdl_small_turnover.is_none()
             && self.legal_name.is_none()
             && self.address.is_none()
@@ -268,7 +279,7 @@ impl Changes for UpdateTaxSettingsRequest {
     }
 }
 
-/// Changes the property's tax settings: VAT registration, TIN, the small-turnover levy band, the legal name and
+/// Changes the property's tax settings: VAT registration, TIN, the TDL registration number, the VAT return period, the small-turnover levy band, the legal name and
 /// address printed on invoices, and the accepted currencies. Shares the property's version. Audited with the values
 /// before and after.
 #[utoipa::path(patch, operation_id = "update_tax_settings", path = "/api/v1/properties/{property}/tax-settings", request_body = UpdateTaxSettingsRequest,
@@ -288,6 +299,8 @@ pub async fn update_settings(
         vat_registered: body.vat_registered,
         tin: body.tin,
         sltda_licence: body.sltda_licence,
+        tdl_registration_no: body.tdl_registration_no,
+        vat_return_period: body.vat_return_period,
         tdl_small_turnover: body.tdl_small_turnover,
         legal_name: body.legal_name,
         address: body.address,

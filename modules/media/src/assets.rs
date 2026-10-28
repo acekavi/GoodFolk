@@ -273,7 +273,8 @@ pub async fn refuse_upload(tx: &mut Tx, property: Uuid, asset: Uuid) -> Result<(
 /// marks a processing asset failed with the reason (at most 200 characters). Applying a result again, or one for an
 /// asset that is gone (or in another tenant), changes nothing. A `Ready` naming any object outside the asset's own
 /// `t/{tenant}/a/{asset}/` is logged and applied as a failure ("Processing failed"), so no link can ever be signed for
-/// another asset's file. `InvoiceRendered` is not an asset's result and changes nothing here.
+/// another asset's file. `InvoiceRendered`, `ReportRendered` and `ReportFailed` are not an asset's results and change
+/// nothing here.
 pub async fn apply_result(tx: &mut Tx, result: &MediaResult) -> Result<(), MediaError> {
     let changed: Option<(Uuid, Uuid)> = match result {
         MediaResult::Ready { tenant_id, asset_id, width, height, archive_key, renditions } => {
@@ -306,8 +307,10 @@ pub async fn apply_result(tx: &mut Tx, result: &MediaResult) -> Result<(), Media
             let reason: String = reason.chars().take(MAX_ERROR).collect();
             mark_failed(tx, *asset_id, &reason).await?
         }
-        // An invoice's PDF, not an asset's result.
-        MediaResult::InvoiceRendered { .. } => None,
+        // An invoice's or a report's, not an asset's.
+        MediaResult::InvoiceRendered { .. } | MediaResult::ReportRendered { .. } | MediaResult::ReportFailed { .. } => {
+            None
+        }
     };
     if let Some((tenant, property)) = changed {
         notify(tx, TenantId(tenant), property).await?;

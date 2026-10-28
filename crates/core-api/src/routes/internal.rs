@@ -23,7 +23,9 @@ pub async fn events(State(state): State<AppState>, body: Bytes) -> StatusCode {
     let tenant = match &result {
         MediaResult::Ready { tenant_id, .. }
         | MediaResult::Failed { tenant_id, .. }
-        | MediaResult::InvoiceRendered { tenant_id, .. } => TenantId(*tenant_id),
+        | MediaResult::InvoiceRendered { tenant_id, .. }
+        | MediaResult::ReportRendered { tenant_id, .. }
+        | MediaResult::ReportFailed { tenant_id, .. } => TenantId(*tenant_id),
     };
     match apply(&state, &envelope, tenant, &result).await {
         Ok(()) => StatusCode::NO_CONTENT,
@@ -40,7 +42,7 @@ pub async fn events(State(state): State<AppState>, body: Bytes) -> StatusCode {
 
 /// Why a result was not applied.
 enum Unapplied {
-    /// It never will be, such as an invoice PDF key outside the invoice's own objects.
+    /// It never will be, such as an invoice or report PDF key outside the document's own objects.
     Never(String),
     /// A failure worth delivering it again for.
     Retry(String),
@@ -67,8 +69,18 @@ impl From<folio::FolioError> for Unapplied {
     }
 }
 
+impl From<reports::ReportsError> for Unapplied {
+    fn from(err: reports::ReportsError) -> Self {
+        match err {
+            reports::ReportsError::Invalid(message) => Unapplied::Never(message),
+            other => Unapplied::Retry(other.to_string()),
+        }
+    }
+}
+
 /// Records the message as seen and applies its result, in one transaction scoped to the result's tenant: an asset's
-/// result through the media module, an invoice's rendered PDF through the folio module.
+/// result through the media module, an invoice's rendered PDF through the folio module, and a report's PDF or failure
+/// through the reports module.
 async fn apply(
     state: &AppState,
     envelope: &PushEnvelope,
@@ -80,6 +92,12 @@ async fn apply(
         match result {
             MediaResult::InvoiceRendered { invoice_id, key, .. } => {
                 folio::set_invoice_pdf(&mut tx, tenant, *invoice_id, key).await?;
+            }
+            MediaResult::ReportRendered { report_id, key, .. } => {
+                reports::set_report_pdf(&mut tx, tenant, *report_id, key).await?;
+            }
+            MediaResult::ReportFailed { report_id, reason, .. } => {
+                reports::report_failed(&mut tx, tenant, *report_id, reason).await?;
             }
             MediaResult::Ready { .. } | MediaResult::Failed { .. } => media::apply_result(&mut tx, result).await?,
         }

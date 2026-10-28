@@ -1,11 +1,17 @@
-//! `POST /mail`: a `mail-send` push carrying a [`MailJob`]. An invitation's email is rendered from the invitation as
-//! it is now, read through `app.invitation_by_id`, and sent with the service's [`mail::Mailer`].
+//! `POST /mail`: a `mail-send` push carrying a [`MailJob`], sent with the service's [`mail::Mailer`].
 //!
-//! The answer is 204 once the email is sent, and also when there is nothing to send (the invitation is no longer
-//! pending, or a resend has replaced the job's token, so its link would not work) or the provider refused it for good, which is logged as an error: delivering the job again cannot help.
-//! It is 503 when the send may succeed later, so the bus delivers the job again, and 400 for a body that is not a
-//! job. The job carries the invitation's token, so nothing here logs the job, the body or a decoding error (which may
-//! quote the payload).
+//! - An invitation's email is rendered from the invitation as it is now, read through `app.invitation_by_id`. There is
+//!   nothing to send when the invitation is no longer pending, or a resend has replaced the job's token, so its link
+//!   would not work.
+//! - A weekly or monthly report's email carries its headline figures, as its PDF prints them, and the PDF itself, read
+//!   from storage. There is nothing to send when the report is gone, or the recipient is no longer an owner or manager
+//!   of its property (or of every property); a PDF that cannot be read yet is tried again.
+//!
+//! The answer is 204 once the email is sent, also when there is nothing to send or the provider refused it for good,
+//! which is logged as an error: delivering the job again cannot help. It is 503 when the send may succeed later, so the
+//! bus delivers the job again, and 400 for a body that is not a job. An invitation's job carries its token, so nothing
+//! here logs the job's fields (its `Debug` hides the token), the body or a decoding error (which may quote the
+//! payload).
 
 use std::collections::HashMap;
 
@@ -15,12 +21,14 @@ use axum::http::StatusCode;
 use db::{Scope, TenantId};
 use events::PushEnvelope;
 use identity::Role;
-use mail::{MailError, MailJob, Message};
+use mail::{Attachment, MailError, MailJob, Message};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use sqlx::types::Json;
-use time::OffsetDateTime;
+use storage::Bucket;
+use time::format_description::BorrowedFormatItem;
 use time::macros::format_description;
+use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::JobsSvc;
@@ -34,23 +42,30 @@ pub(crate) async fn mail(State(svc): State<JobsSvc>, body: Bytes) -> StatusCode 
         tracing::error!(id = envelope.dedupe_id(), "a mail-send message is not a mail job");
         return StatusCode::BAD_REQUEST;
     };
-    let MailJob::Invitation { invitation_id, tenant_id, token } = job;
-    let message = match invitation_message(&svc, TenantId(tenant_id), invitation_id, &token).await {
+    let message = match &job {
+        MailJob::Invitation { invitation_id, tenant_id, token } => {
+            invitation_message(&svc, TenantId(*tenant_id), *invitation_id, token).await.map_err(|e| e.to_string())
+        }
+        MailJob::Report { tenant_id, report_id, user_id } => {
+            report_message(&svc, TenantId(*tenant_id), *report_id, *user_id).await
+        }
+    };
+    let message = match message {
         Ok(Some(message)) => message,
         Ok(None) => return StatusCode::NO_CONTENT,
         Err(error) => {
-            tracing::warn!(invitation = %invitation_id, %error, "reading the invitation failed; it will be sent again");
+            tracing::warn!(?job, error, "building the email failed; it will be sent again");
             return StatusCode::SERVICE_UNAVAILABLE;
         }
     };
     match svc.mailer.send(&message).await {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(MailError::Retryable(error)) => {
-            tracing::warn!(invitation = %invitation_id, to = %message.to, %error, "the email will be sent again");
+            tracing::warn!(?job, to = %message.to, %error, "the email will be sent again");
             StatusCode::SERVICE_UNAVAILABLE
         }
         Err(MailError::Permanent(error)) => {
-            tracing::error!(invitation = %invitation_id, to = %message.to, %error, "the email was refused");
+            tracing::error!(?job, to = %message.to, %error, "the email was refused");
             StatusCode::NO_CONTENT
         }
     }
@@ -159,7 +174,7 @@ fn render(row: &InvitationRow, properties: &HashMap<Uuid, String>, base_url: &st
         escape(&link),
         escape(&expires)
     ));
-    Message { to: row.email.clone(), subject, text, html }
+    Message { to: row.email.clone(), subject, text, html, attachments: vec![] }
 }
 
 /// The role as the email names it.
@@ -188,4 +203,156 @@ fn escape(text: &str) -> String {
         }
     }
     escaped
+}
+
+#[derive(sqlx::FromRow)]
+struct ReportRow {
+    kind: String,
+    period_start: Date,
+    period_end: Date,
+    pdf_key: Option<String>,
+    headline: Option<Json<Vec<Figure>>>,
+    property_name: String,
+    email: String,
+    display_name: String,
+}
+
+/// One of a report's headline figures as its PDF prints it.
+#[derive(Deserialize)]
+struct Figure {
+    label: String,
+    value: String,
+}
+
+/// The figures a report's email carries, of the headline's.
+const EMAILED_FIGURES: [&str; 4] = ["Occupancy", "ADR", "RevPAR", "Total revenue"];
+
+/// Report `id`'s email to `user`, with its PDF attached, or `None` when the report is not `tenant`'s, is not weekly or
+/// monthly, or `user` no longer holds an owner or manager grant for its property or for every property (a grant
+/// revoked since the report was ready). `Err` (try again) when the PDF cannot be read.
+async fn report_message(svc: &JobsSvc, tenant: TenantId, id: Uuid, user: Uuid) -> Result<Option<Message>, String> {
+    let mut tx = db::begin(&svc.pool, Scope::tenant(tenant)).await.map_err(|e| e.to_string())?;
+    let row: Option<ReportRow> = sqlx::query_as(
+        "select r.kind, r.period_start, r.period_end, r.pdf_key, r.data->'data'->'headline' as headline,
+                p.name as property_name, u.email::text as email, u.display_name
+         from report r
+         join property p on p.id = r.property_id
+         join membership m on m.tenant_id = r.tenant_id and m.user_id = $2
+         join app_user u on u.id = m.user_id
+         where r.id = $1 and r.kind in ('weekly', 'monthly')
+           and exists (select 1 from role_grant g
+                       where g.tenant_id = r.tenant_id and g.user_id = $2 and g.role in ('owner', 'manager')
+                         and (g.property_id is null or g.property_id = r.property_id))",
+    )
+    .bind(id)
+    .bind(user)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    let Some(row) = row else {
+        tracing::warn!(report = %id, %user, "no such report, or no owner or manager of its property; nothing sent");
+        return Ok(None);
+    };
+    let key = row.pdf_key.as_deref().ok_or("the report has no PDF yet")?;
+    let storage = svc.storage.as_ref().ok_or("no object storage to read the PDF from")?;
+    let pdf = storage.get(Bucket::Private, key).await.map_err(|e| format!("reading the PDF: {e}"))?;
+    Ok(Some(render_report(&row, pdf.to_vec())))
+}
+
+fn render_report(row: &ReportRow, pdf: Vec<u8>) -> Message {
+    let (kind, period) = if row.kind == "monthly" {
+        ("monthly", month_name(row.period_start))
+    } else {
+        ("weekly", date_range(row.period_start, row.period_end))
+    };
+    // A control character in the name would break the subject header; it reads as a space.
+    let property: String = row.property_name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let subject = format!("{property} {kind} report, {period}");
+    let figures: Vec<(&str, &str)> = EMAILED_FIGURES
+        .iter()
+        .filter_map(|label| {
+            let figures = row.headline.as_ref()?;
+            let figure = figures.iter().find(|figure| figure.label == *label)?;
+            Some((figure.label.as_str(), figure.value.as_str()))
+        })
+        .collect();
+
+    let mut text =
+        format!("Hello {},\n\nHere is {}'s {kind} report for {period}.\n\n", row.display_name, row.property_name);
+    for (label, value) in &figures {
+        text.push_str(&format!("{label}: {value}\n"));
+    }
+    text.push_str("\nThe full report is attached as a PDF. You can turn this email off on the Reports page.\n");
+
+    let mut html = format!(
+        "<p>Hello {},</p>\n<p>Here is {}'s {kind} report for {}.</p>\n<ul>\n",
+        escape(&row.display_name),
+        escape(&row.property_name),
+        escape(&period)
+    );
+    for (label, value) in &figures {
+        html.push_str(&format!("<li>{}: {}</li>\n", escape(label), escape(value)));
+    }
+    html.push_str(
+        "</ul>\n<p>The full report is attached as a PDF. You can turn this email off on the Reports page.</p>\n",
+    );
+    let attachment = Attachment {
+        filename: format!("{kind}-report-{}.pdf", row.period_start),
+        content_type: "application/pdf".to_owned(),
+        bytes: pdf,
+    };
+    Message { to: row.email.clone(), subject, text, html, attachments: vec![attachment] }
+}
+
+/// A month as the monthly email names it: "October 2026".
+fn month_name(date: Date) -> String {
+    date.format(format_description!("[month repr:long] [year]")).unwrap_or_else(|_| date.to_string())
+}
+
+/// A week as the weekly email names it: "19–25 Oct 2026", "28 Sep – 4 Oct 2026" or "29 Dec 2025 – 4 Jan 2026".
+fn date_range(from: Date, to: Date) -> String {
+    let print = |date: Date, description: &[BorrowedFormatItem<'_>]| {
+        date.format(description).unwrap_or_else(|_| date.to_string())
+    };
+    let end = print(to, format_description!("[day padding:none] [month repr:short] [year]"));
+    if from.year() != to.year() {
+        format!("{} – {end}", print(from, format_description!("[day padding:none] [month repr:short] [year]")))
+    } else if from.month() != to.month() {
+        format!("{} – {end}", print(from, format_description!("[day padding:none] [month repr:short]")))
+    } else {
+        format!("{}–{end}", from.day())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReportRow, date_range, month_name, render_report};
+    use time::macros::date;
+
+    #[test]
+    fn a_control_character_in_the_property_name_reads_as_a_space() {
+        let row = ReportRow {
+            kind: "weekly".into(),
+            period_start: date!(2026 - 10 - 19),
+            period_end: date!(2026 - 10 - 25),
+            pdf_key: None,
+            headline: None,
+            property_name: "Hotel\r\nGAL\t".into(),
+            email: "kamala@example.com".into(),
+            display_name: "Kamala".into(),
+        };
+
+        let message = render_report(&row, b"%PDF-".to_vec());
+
+        assert_eq!(message.subject, "Hotel  GAL  weekly report, 19–25 Oct 2026");
+    }
+
+    #[test]
+    fn periods_print_as_the_subject_names_them() {
+        assert_eq!(date_range(date!(2026 - 10 - 19), date!(2026 - 10 - 25)), "19–25 Oct 2026");
+        assert_eq!(date_range(date!(2026 - 9 - 28), date!(2026 - 10 - 4)), "28 Sep – 4 Oct 2026");
+        assert_eq!(date_range(date!(2025 - 12 - 29), date!(2026 - 1 - 4)), "29 Dec 2025 – 4 Jan 2026");
+        assert_eq!(month_name(date!(2026 - 10 - 1)), "October 2026");
+    }
 }

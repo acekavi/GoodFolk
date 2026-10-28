@@ -108,7 +108,7 @@ async fn a_close_killed_midway_is_completed_by_the_next_tick(_: PgPoolOptions, o
     let business_date: time::Date =
         sqlx::query_scalar("select business_date from property where id = $1").bind(p).fetch_one(&owner).await.unwrap();
     assert_eq!(business_date, hotel.day(1));
-    assert_eq!(close_counts(&owner, p).await, (5, 1, 1));
+    assert_eq!(close_counts(&owner, p).await, (6, 1, 1));
     let done = audit::get_run(&mut hotel.tx().await, run).await.unwrap();
     assert_eq!(done.attempts, 1);
 }

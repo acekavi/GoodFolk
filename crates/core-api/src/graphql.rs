@@ -1663,6 +1663,8 @@ pub struct OutletNode {
     pub service_charge: bool,
     pub active: bool,
     pub version: i32,
+    /// `food`, `bar` or `other`: the TDL line the outlet's sales fall under on the business date.
+    pub report_group: String,
 }
 
 impl From<folio::OutletRow> for OutletNode {
@@ -1674,6 +1676,7 @@ impl From<folio::OutletRow> for OutletNode {
             service_charge: o.service_charge,
             active: o.active,
             version: o.version,
+            report_group: o.report_group.as_str().to_owned(),
         }
     }
 }
@@ -1721,6 +1724,9 @@ pub struct TaxSettingsNode {
     pub vat_registered: bool,
     pub tin: Option<String>,
     pub sltda_licence: Option<String>,
+    pub tdl_registration_no: Option<String>,
+    /// `monthly` or `quarterly`.
+    pub vat_return_period: String,
     /// The tourism development levy's small-turnover band, used when the preset is applied.
     pub tdl_small_turnover: bool,
     /// The supplier's name on invoices; the property's name when `null`.
@@ -1738,6 +1744,8 @@ impl From<property::TaxSettings> for TaxSettingsNode {
             vat_registered: s.vat_registered,
             tin: s.tin,
             sltda_licence: s.sltda_licence,
+            tdl_registration_no: s.tdl_registration_no,
+            vat_return_period: s.vat_return_period.as_str().to_owned(),
             tdl_small_turnover: s.tdl_small_turnover,
             legal_name: s.legal_name,
             address: s.address,
@@ -2038,6 +2046,7 @@ mirror_enum!(
         LockFx,
         SnapshotStats,
         AdvanceBusinessDate,
+        RenderReports,
     }
 );
 
@@ -2188,11 +2197,530 @@ impl From<audit::DailyStats> for DailyStatsNode {
     }
 }
 
-mirror_enum!(OpsAlertKindNode as "OpsAlertKind" from audit::AlertKind { Audit, Drift, Linen });
+mirror_enum!(
+    /// Which stays a daily list holds.
+    DailyListKindNode as "DailyListKind" from reports::ListKind { Arrivals, Departures, InHouse }
+);
+
+mirror_enum!(
+    /// A report emailed to the property's owners and managers.
+    ReportEmailKindNode as "ReportEmailKind" from reports::EmailedReport { Weekly, Monthly }
+);
+
+/// A report the close stores for each period that ends: the weekly and monthly reports and the liability reports.
+#[derive(Enum, Clone, Copy, PartialEq, Eq)]
+#[graphql(name = "StoredReportKind")]
+pub enum StoredReportKindNode {
+    Weekly,
+    Monthly,
+    Tdl,
+    Sscl,
+    Vat,
+    ServiceCharge,
+}
+
+impl From<StoredReportKindNode> for reports::ReportKind {
+    fn from(kind: StoredReportKindNode) -> Self {
+        match kind {
+            StoredReportKindNode::Weekly => Self::Weekly,
+            StoredReportKindNode::Monthly => Self::Monthly,
+            StoredReportKindNode::Tdl => Self::Tdl,
+            StoredReportKindNode::Sscl => Self::Sscl,
+            StoredReportKindNode::Vat => Self::Vat,
+            StoredReportKindNode::ServiceCharge => Self::ServiceCharge,
+        }
+    }
+}
+
+mirror_enum!(
+    /// Where a stored report's PDF is: being rendered, ready to download, or never to be rendered.
+    ReportStatusNode as "ReportStatus" from reports::ReportStatus { Rendering, Ready, Failed }
+);
+
+/// A report the close stored; once `READY`, its PDF is read with `GET …/reports/{id}`.
+#[derive(SimpleObject)]
+pub struct StoredReportNode {
+    pub id: Uuid,
+    pub status: ReportStatusNode,
+}
+
+/// Whether the signed-in user gets one of a property's report emails.
+#[derive(SimpleObject)]
+pub struct ReportEmailNode {
+    pub kind: ReportEmailKindNode,
+    pub enabled: bool,
+}
+
+mirror_enum!(
+    /// What a report breaks its totals down by.
+    ReportDimensionNode as "ReportDimension" from reports::Dimension { Segment, Source, Residency, RoomType, Outlet }
+);
+
+/// Occupancy, ADR, RevPAR, room nights and total revenue of a set of closed days, each rounded once from sums.
+#[derive(SimpleObject)]
+pub struct ReportHeadlineNode {
+    /// Rooms sold over rooms available, in basis points: 10000 is full.
+    pub occupancy_bp: i32,
+    /// Base-currency minor units, net of tax.
+    pub adr: i64,
+    pub revpar: i64,
+    pub room_nights: i64,
+    pub total_revenue: i64,
+}
+
+impl From<reports::Headline> for ReportHeadlineNode {
+    fn from(h: reports::Headline) -> Self {
+        Self {
+            occupancy_bp: h.occupancy_bp,
+            adr: h.adr,
+            revpar: h.revpar,
+            room_nights: h.room_nights,
+            total_revenue: h.total_revenue,
+        }
+    }
+}
+
+/// One closed day of a report, in base-currency minor units, revenue net of tax.
+#[derive(SimpleObject)]
+pub struct ReportDayNode {
+    pub business_date: Date,
+    pub rooms_available: i32,
+    pub rooms_sold: i32,
+    pub occupancy_bp: i32,
+    pub adults: i32,
+    pub children: i32,
+    pub arrivals: i32,
+    pub departures: i32,
+    pub room_revenue: i64,
+    pub meal_plan_revenue: i64,
+    pub pos_revenue: i64,
+    pub fee_revenue: i64,
+    pub other_revenue: i64,
+    pub total_revenue: i64,
+    pub adr: i64,
+    pub revpar: i64,
+}
+
+impl From<reports::DayRow> for ReportDayNode {
+    fn from(d: reports::DayRow) -> Self {
+        Self {
+            business_date: d.business_date,
+            rooms_available: d.rooms_available,
+            rooms_sold: d.rooms_sold,
+            occupancy_bp: d.occupancy_bp,
+            adults: d.adults,
+            children: d.children,
+            arrivals: d.arrivals,
+            departures: d.departures,
+            room_revenue: d.room_revenue,
+            meal_plan_revenue: d.meal_plan_revenue,
+            pos_revenue: d.pos_revenue,
+            fee_revenue: d.fee_revenue,
+            other_revenue: d.other_revenue,
+            total_revenue: d.total_revenue,
+            adr: d.adr,
+            revpar: d.revpar,
+        }
+    }
+}
+
+/// One key of a dimension summed over a report's closed days.
+#[derive(SimpleObject)]
+pub struct ReportBreakdownKeyNode {
+    /// The dimension's value; `unattributed` for revenue no stay accounts for.
+    pub key: String,
+    pub room_nights: i64,
+    pub room_revenue: i64,
+    pub revenue: i64,
+}
+
+/// A dimension's keys summed over a report's closed days.
+#[derive(SimpleObject)]
+pub struct ReportBreakdownNode {
+    pub dimension: ReportDimensionNode,
+    /// By key.
+    pub keys: Vec<ReportBreakdownKeyNode>,
+}
+
+/// The everyday reports of a date range, from its closed days only.
+#[derive(SimpleObject)]
+pub struct ReportSummaryNode {
+    /// The first and last closed day of the range.
+    pub closed_from: Option<Date>,
+    pub closed_to: Option<Date>,
+    /// The days of the range not closed yet; they are never estimated.
+    pub not_closed: Vec<Date>,
+    pub headline: ReportHeadlineNode,
+    /// The same period last year; null unless every day of it is closed.
+    pub last_year: Option<ReportHeadlineNode>,
+    pub days: Vec<ReportDayNode>,
+    pub breakdowns: Vec<ReportBreakdownNode>,
+}
+
+impl From<reports::Summary> for ReportSummaryNode {
+    fn from(s: reports::Summary) -> Self {
+        Self {
+            closed_from: s.closed_from,
+            closed_to: s.closed_to,
+            not_closed: s.not_closed,
+            headline: s.headline.into(),
+            last_year: s.last_year.map(Into::into),
+            days: s.days.into_iter().map(Into::into).collect(),
+            breakdowns: s
+                .breakdowns
+                .into_iter()
+                .map(|(dimension, keys)| ReportBreakdownNode {
+                    dimension: dimension.into(),
+                    keys: keys
+                        .into_iter()
+                        .map(|k| ReportBreakdownKeyNode {
+                            key: k.key,
+                            room_nights: k.room_nights,
+                            room_revenue: k.room_revenue,
+                            revenue: k.revenue,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// A stay on a daily list.
+#[derive(SimpleObject)]
+pub struct DailyListRowNode {
+    pub reservation_room_id: Uuid,
+    pub reservation_id: Uuid,
+    pub confirmation: String,
+    pub guest: String,
+    pub room_number: Option<String>,
+    pub arrival: Date,
+    pub departure: Date,
+    pub status: RoomStatusNode,
+    pub adults: i32,
+    pub children: i32,
+}
+
+impl From<reports::ListRow> for DailyListRowNode {
+    fn from(r: reports::ListRow) -> Self {
+        Self {
+            reservation_room_id: r.reservation_room,
+            reservation_id: r.reservation_id,
+            confirmation: r.confirmation,
+            guest: r.guest,
+            room_number: r.room_number,
+            arrival: r.arrival,
+            departure: r.departure,
+            status: r.status.into(),
+            adults: r.adults,
+            children: r.children,
+        }
+    }
+}
+
+/// SLTDA's Form A of a quarter, in base-currency minor units, every figure whole rupees.
+#[derive(SimpleObject)]
+pub struct TdlReportNode {
+    /// The property's legal name, or its name when it has none.
+    pub name: String,
+    pub registration_no: Option<String>,
+    pub period_label: String,
+    pub room: i64,
+    pub food: i64,
+    pub bar: i64,
+    pub other: i64,
+    pub total_turnover: i64,
+    /// The deductions: the service charge and VAT within the four sales lines.
+    pub service_charge: i64,
+    pub vat: i64,
+    /// Total Turnover less the deductions.
+    pub base: i64,
+    /// 100 (1%), or 50 (0.5%) for a base not over Rs 3,000,000.
+    pub rate_bp: i32,
+    /// Never below 0.
+    pub tdl: i64,
+    /// The base is below 0: no TDL is due.
+    pub credit_exceeds_sales: bool,
+    /// Some day of the quarter is not closed yet: the figures cover the closed days only.
+    pub not_closed: bool,
+}
+
+impl From<reports::TdlForm> for TdlReportNode {
+    fn from(f: reports::TdlForm) -> Self {
+        Self {
+            name: f.name,
+            registration_no: f.registration_no,
+            period_label: f.period_label,
+            room: f.room,
+            food: f.food,
+            bar: f.bar,
+            other: f.other,
+            total_turnover: f.total_turnover,
+            service_charge: f.service_charge,
+            vat: f.vat,
+            base: f.base,
+            rate_bp: f.rate_bp,
+            tdl: f.tdl,
+            credit_exceeds_sales: f.credit_exceeds_sales,
+            not_closed: f.not_closed,
+        }
+    }
+}
+
+/// One month of an SSCL quarter, in base-currency minor units, every figure whole rupees.
+#[derive(SimpleObject)]
+pub struct SsclMonthNode {
+    /// 1 to 12.
+    pub month: u8,
+    /// Every revenue line dated in the month, with every tax but VAT.
+    pub turnover: i64,
+    /// The exempt share of the month's turnover settled in the month.
+    pub exempt_same_month: i64,
+    /// "Exemption for folios settled this month (turnover of earlier months)".
+    pub exempt_earlier_months: i64,
+    pub bad_debts: i64,
+    /// Below 0 when an earlier month's exemption outweighs the month's turnover.
+    pub liable: i64,
+    /// Never below 0.
+    pub levy: i64,
+    /// The liable turnover is below 0: the month's exemption exceeds its turnover, and the excess is not carried to
+    /// other months.
+    pub excess_exemption: bool,
+    /// Payments in foreign currency in cash in the month: listed, never exempt.
+    pub foreign_cash: i64,
+    /// The 20th of the following month.
+    pub due: Date,
+    /// Some day of the month is not closed yet: its figures cover the closed days only.
+    pub not_closed: bool,
+}
+
+/// An SSCL quarter's totals: the sums of its months' printed figures.
+#[derive(SimpleObject)]
+pub struct SsclTotalsNode {
+    pub turnover: i64,
+    pub exempt_same_month: i64,
+    pub exempt_earlier_months: i64,
+    pub bad_debts: i64,
+    pub liable: i64,
+    pub levy: i64,
+    pub foreign_cash: i64,
+}
+
+/// The SSCL of a calendar quarter, month by month.
+#[derive(SimpleObject)]
+pub struct SsclReportNode {
+    pub months: Vec<SsclMonthNode>,
+    pub quarter_totals: SsclTotalsNode,
+    /// The 20th of the month after the quarter.
+    pub return_due: Date,
+    /// The property's SLTDA licence is filled in: without it nothing is exempt.
+    pub sltda_registered: bool,
+    /// Why nothing is exempt, for a property that is not SLTDA registered.
+    pub exemption_note: Option<String>,
+    /// How the exemption is measured.
+    pub method_note: String,
+}
+
+impl From<reports::SsclReport> for SsclReportNode {
+    fn from(r: reports::SsclReport) -> Self {
+        let t = r.quarter_totals;
+        Self {
+            months: r
+                .months
+                .into_iter()
+                .map(|m| SsclMonthNode {
+                    month: m.month.into(),
+                    turnover: m.turnover,
+                    exempt_same_month: m.exempt_same_month,
+                    exempt_earlier_months: m.exempt_earlier_months,
+                    bad_debts: m.bad_debts,
+                    liable: m.liable,
+                    levy: m.levy,
+                    excess_exemption: m.excess_exemption,
+                    foreign_cash: m.foreign_cash,
+                    due: m.due,
+                    not_closed: m.not_closed,
+                })
+                .collect(),
+            quarter_totals: SsclTotalsNode {
+                turnover: t.turnover,
+                exempt_same_month: t.exempt_same_month,
+                exempt_earlier_months: t.exempt_earlier_months,
+                bad_debts: t.bad_debts,
+                liable: t.liable,
+                levy: t.levy,
+                foreign_cash: t.foreign_cash,
+            },
+            return_due: r.return_due,
+            sltda_registered: r.sltda_registered,
+            exemption_note: r.exemption_note.map(Into::into),
+            method_note: r.method_note.into(),
+        }
+    }
+}
+
+/// A row of IRD's Schedule 01, in whole rupees.
+#[derive(SimpleObject)]
+pub struct VatSchedule01RowNode {
+    pub serial_no: u32,
+    pub invoice_date: Date,
+    pub invoice_no: String,
+    pub purchaser_tin: String,
+    pub purchaser_name: String,
+    pub description: String,
+    pub value_of_supply: i64,
+    pub vat_amount: i64,
+}
+
+/// A row of IRD's Schedule 04: a credit note with the invoice it credits, in whole rupees.
+#[derive(SimpleObject)]
+pub struct VatSchedule04RowNode {
+    pub serial_no: u32,
+    pub tin: String,
+    pub invoice_date: Date,
+    pub invoice_no: String,
+    pub note_date: Date,
+    pub note_no: String,
+    pub value: i64,
+    pub vat_amount: i64,
+}
+
+/// Tax invoices issued in a VAT period for supplies of an earlier one, at one rate, in whole rupees.
+#[derive(SimpleObject)]
+pub struct VatTimingDifferenceNode {
+    pub rate_bp: i32,
+    pub value: i64,
+    pub vat: i64,
+}
+
+/// A VAT return period, in whole rupees: the totals are the period's supplies, already net of its reversals; the
+/// credit notes are shown for information.
+#[derive(SimpleObject)]
+pub struct VatReportNode {
+    /// IRD's period code, such as `2630`.
+    pub period_code: String,
+    pub value_of_supply: i64,
+    pub output_vat: i64,
+    pub credit_notes_value: i64,
+    pub credit_notes_vat: i64,
+    /// The return's cage A.
+    pub net_value: i64,
+    /// The return's cage 0.
+    pub net_vat: i64,
+    pub schedule01: Vec<VatSchedule01RowNode>,
+    pub schedule04: Vec<VatSchedule04RowNode>,
+    /// "Tax invoices issued this period for earlier supplies", by rate.
+    pub timing_difference: Vec<VatTimingDifferenceNode>,
+    /// Some day of the period is not closed yet: the figures cover the closed days only.
+    pub not_closed: bool,
+}
+
+impl From<reports::VatReport> for VatReportNode {
+    fn from(r: reports::VatReport) -> Self {
+        Self {
+            period_code: r.period_code,
+            value_of_supply: r.value_of_supply,
+            output_vat: r.output_vat,
+            credit_notes_value: r.credit_notes_value,
+            credit_notes_vat: r.credit_notes_vat,
+            net_value: r.net_value,
+            net_vat: r.net_vat,
+            schedule01: r
+                .schedule01
+                .into_iter()
+                .map(|row| VatSchedule01RowNode {
+                    serial_no: row.serial_no,
+                    invoice_date: row.invoice_date,
+                    invoice_no: row.invoice_no,
+                    purchaser_tin: row.purchaser_tin,
+                    purchaser_name: row.purchaser_name,
+                    description: row.description,
+                    value_of_supply: row.value_of_supply,
+                    vat_amount: row.vat_amount,
+                })
+                .collect(),
+            schedule04: r
+                .schedule04
+                .into_iter()
+                .map(|row| VatSchedule04RowNode {
+                    serial_no: row.serial_no,
+                    tin: row.tin,
+                    invoice_date: row.invoice_date,
+                    invoice_no: row.invoice_no,
+                    note_date: row.note_date,
+                    note_no: row.note_no,
+                    value: row.value,
+                    vat_amount: row.vat_amount,
+                })
+                .collect(),
+            timing_difference: r
+                .timing_difference
+                .into_iter()
+                .map(|t| VatTimingDifferenceNode { rate_bp: t.rate_bp, value: t.value, vat: t.vat })
+                .collect(),
+            not_closed: r.not_closed,
+        }
+    }
+}
+
+/// Service charge in base-currency minor units, whole rupees.
+#[derive(SimpleObject)]
+pub struct ServiceChargeNode {
+    /// On the bill, paid by the guest.
+    pub collected: i64,
+    /// Inside the price, borne by the hotel.
+    pub absorbed: i64,
+}
+
+impl From<reports::ServiceCharge> for ServiceChargeNode {
+    fn from(s: reports::ServiceCharge) -> Self {
+        Self { collected: s.collected, absorbed: s.absorbed }
+    }
+}
+
+/// The service charge of one outlet.
+#[derive(SimpleObject)]
+pub struct OutletServiceChargeNode {
+    /// The outlet's code.
+    pub outlet: String,
+    pub collected: i64,
+    pub absorbed: i64,
+}
+
+/// A month's service charge, by outlet, on rooms and on everything else.
+#[derive(SimpleObject)]
+pub struct ServiceChargeReportNode {
+    /// By outlet code, the outlets with service charge in the month only.
+    pub by_outlet: Vec<OutletServiceChargeNode>,
+    pub rooms: ServiceChargeNode,
+    /// Meal plans, laundry, fees and the rest.
+    pub other: ServiceChargeNode,
+    pub total: ServiceChargeNode,
+    /// Some day of the month is not closed yet: its figures cover the closed days only.
+    pub not_closed: bool,
+}
+
+impl From<reports::ServiceChargeReport> for ServiceChargeReportNode {
+    fn from(r: reports::ServiceChargeReport) -> Self {
+        Self {
+            by_outlet: r
+                .by_outlet
+                .into_iter()
+                .map(|o| OutletServiceChargeNode { outlet: o.outlet, collected: o.collected, absorbed: o.absorbed })
+                .collect(),
+            rooms: r.rooms.into(),
+            other: r.other.into(),
+            total: r.total.into(),
+            not_closed: r.not_closed,
+        }
+    }
+}
+
+mirror_enum!(OpsAlertKindNode as "OpsAlertKind" from audit::AlertKind { Audit, Drift, Linen, Reports });
 
 /// A problem a person must look at: an automatic close that failed its third attempt (`AUDIT`), inventory
-/// counters that drifted from the stays they count (`DRIFT`), or linen below par (`LINEN`). Shown until what raised it
-/// is resolved.
+/// counters that drifted from the stays they count (`DRIFT`), linen below par (`LINEN`), or a report that could not
+/// be built (`REPORTS`). Shown until what raised it is resolved.
 #[derive(SimpleObject)]
 pub struct OpsAlertNode {
     pub kind: OpsAlertKindNode,
@@ -2635,6 +3163,14 @@ fn audit_error(err: audit::AuditError) -> async_graphql::Error {
             tracing::error!("the night-audit close was interrupted");
             async_graphql::Error::new("Internal error")
         }
+        other => async_graphql::Error::new(other.to_string()),
+    }
+}
+
+/// A reports rule the query broke, as a GraphQL error; database errors stay hidden.
+fn reports_error(err: reports::ReportsError) -> async_graphql::Error {
+    match err {
+        reports::ReportsError::Database(db_err) => internal(db_err),
         other => async_graphql::Error::new(other.to_string()),
     }
 }
@@ -3688,8 +4224,140 @@ impl Query {
         Ok(days.into_iter().map(DailyStatsNode::from).collect())
     }
 
-    /// The property's raised ops alerts that the caller may see, by kind; empty when all is well. The `AUDIT` and
-    /// `DRIFT` alerts need `PropertiesManage`, the `LINEN` alert `LinenManage`.
+    /// The everyday reports of the property's closed business dates from `from` to `to`, both included (at most 366
+    /// days): the headline figures with the same period last year, each day, and the breakdowns. The days of the range
+    /// not closed yet are listed, never estimated. Needs `ReportsView`.
+    async fn report_summary(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        from: Date,
+        to: Date,
+    ) -> async_graphql::Result<ReportSummaryNode> {
+        let mut tx = scoped(ctx, Permission::ReportsView, property_id).await?;
+        let summary = reports::summary(&mut tx, property_id, from, to).await.map_err(reports_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(summary.into())
+    }
+
+    /// The stays arriving, leaving or in house on `date` (a closed day or today), by room number. Needs
+    /// `ReportsView` or `ReservationsView`.
+    async fn daily_list(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        date: Date,
+        kind: DailyListKindNode,
+    ) -> async_graphql::Result<Vec<DailyListRowNode>> {
+        let mut tx = scoped_any(ctx, &[Permission::ReportsView, Permission::ReservationsView], property_id).await?;
+        let rows = reports::daily_list(&mut tx, property_id, date, kind.into()).await.map_err(reports_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(rows.into_iter().map(DailyListRowNode::from).collect())
+    }
+
+    /// The signed-in user's weekly and monthly report emails of the property, each on unless they turned it off (with
+    /// `PUT …/report-emails/{kind}`). The emails go to owners and managers. Needs `ReportsView`.
+    async fn report_emails(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<ReportEmailNode>> {
+        let mut tx = scoped(ctx, Permission::ReportsView, property_id).await?;
+        let user = ctx.data::<TenantContext>()?.user;
+        let emails = reports::report_emails(&mut tx, user, property_id).await.map_err(reports_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(emails.into_iter().map(|(kind, enabled)| ReportEmailNode { kind: kind.into(), enabled }).collect())
+    }
+
+    /// The report of `kind` for `period_start` to `period_end` that the close stored, or null when there is none: the
+    /// record whose PDF is downloaded (`GET …/reports/{id}`) once it is `READY`. Needs `ReportsView` for a weekly or
+    /// monthly report and `ReportsLiability` for the others.
+    async fn stored_report(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        kind: StoredReportKindNode,
+        period_start: Date,
+        period_end: Date,
+    ) -> async_graphql::Result<Option<StoredReportNode>> {
+        let permission = match kind {
+            StoredReportKindNode::Weekly | StoredReportKindNode::Monthly => Permission::ReportsView,
+            StoredReportKindNode::Tdl
+            | StoredReportKindNode::Sscl
+            | StoredReportKindNode::Vat
+            | StoredReportKindNode::ServiceCharge => Permission::ReportsLiability,
+        };
+        let mut tx = scoped(ctx, permission, property_id).await?;
+        let found = reports::period_report(&mut tx, property_id, kind.into(), period_start, period_end)
+            .await
+            .map_err(reports_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(found.map(|(id, status)| StoredReportNode { id, status: status.into() }))
+    }
+
+    /// SLTDA's Form A of quarter `quarter` (1 to 4: April–June to January–March) of the financial year starting in
+    /// April `fy_start_year`, from its closed days. Needs `ReportsLiability`.
+    async fn tdl_report(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        fy_start_year: i32,
+        quarter: u8,
+    ) -> async_graphql::Result<TdlReportNode> {
+        let mut tx = scoped(ctx, Permission::ReportsLiability, property_id).await?;
+        let quarter = reports::FiscalQuarter { fy_start_year, q: quarter };
+        let form = reports::tdl(&mut tx, property_id, quarter).await.map_err(reports_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(form.into())
+    }
+
+    /// The SSCL of calendar quarter `quarter` (1 to 4) of `year`, month by month, with the foreign-currency exemption,
+    /// from its closed days. Needs `ReportsLiability`.
+    async fn sscl_report(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        year: i32,
+        quarter: u8,
+    ) -> async_graphql::Result<SsclReportNode> {
+        let mut tx = scoped(ctx, Permission::ReportsLiability, property_id).await?;
+        let report = reports::sscl(&mut tx, property_id, reports::CalendarQuarter { year, q: quarter })
+            .await
+            .map_err(reports_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(report.into())
+    }
+
+    /// The VAT of return period `period`, an IRD period code such as `2630` (Q3 2026) or `2632` (August 2026) of the
+    /// kind the property files, with its Schedule 01 and 04 rows, from its closed days. A property that is not VAT
+    /// registered or has no TIN is refused. Needs `ReportsLiability`.
+    async fn vat_report(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        period: String,
+    ) -> async_graphql::Result<VatReportNode> {
+        let mut tx = scoped(ctx, Permission::ReportsLiability, property_id).await?;
+        let period = reports::VatPeriod::from_code(&period).map_err(reports_error)?;
+        let report = reports::vat(&mut tx, property_id, period).await.map_err(reports_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(report.into())
+    }
+
+    /// The service charge of `month` (1 to 12) of `year`, collected and absorbed, by outlet, on rooms and on
+    /// everything else, from its closed days. Needs `ReportsLiability`.
+    async fn service_charge_report(
+        &self,
+        ctx: &Context<'_>,
+        property_id: Uuid,
+        year: i32,
+        month: u8,
+    ) -> async_graphql::Result<ServiceChargeReportNode> {
+        let mut tx = scoped(ctx, Permission::ReportsLiability, property_id).await?;
+        let month = time::Month::try_from(month).map_err(|_| async_graphql::Error::new("a month is 1 to 12"))?;
+        let report = reports::service_charge(&mut tx, property_id, year, month).await.map_err(reports_error)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(report.into())
+    }
+
+    /// The property's raised ops alerts that the caller may see, by kind; empty when all is well. The `AUDIT`,
+    /// `DRIFT` and `REPORTS` alerts need `PropertiesManage`, the `LINEN` alert `LinenManage`.
     async fn ops_alerts(&self, ctx: &Context<'_>, property_id: Uuid) -> async_graphql::Result<Vec<OpsAlertNode>> {
         let mut tx = scoped_any(ctx, &[Permission::PropertiesManage, Permission::LinenManage], property_id).await?;
         let tenant = ctx.data::<TenantContext>()?;
@@ -3700,7 +4368,7 @@ impl Query {
         Ok(alerts
             .into_iter()
             .filter(|a| match a.kind {
-                audit::AlertKind::Audit | audit::AlertKind::Drift => properties,
+                audit::AlertKind::Audit | audit::AlertKind::Drift | audit::AlertKind::Reports => properties,
                 audit::AlertKind::Linen => linen,
             })
             .map(|a| OpsAlertNode { kind: a.kind.into(), message: a.message, raised_at: a.raised_at })

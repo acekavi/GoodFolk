@@ -79,7 +79,7 @@ pub use payments::{
 };
 pub use pos::{
     NewOutlet, OutletChanges, OutletRow, PosBillIn, PosBillRow, PosItem, PosLine, PosLineTax, PosOutcome, PosTarget,
-    create_outlet, list_outlets, post_pos_bill, update_outlet,
+    ReportGroup, create_outlet, list_outlets, outlet_report_group, post_pos_bill, update_outlet,
 };
 pub use posting::{
     InHouseGuest, NightPreview, PostReport, in_house_guests, in_house_stays, lock_stay_folios,

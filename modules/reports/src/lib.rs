@@ -1,0 +1,65 @@
+//! The hotel's reports: the everyday reports read from the night audit's stored statistics, the daily lists, and the
+//! liability reports computed live from closed business dates.
+//!
+//! Every function takes a transaction scoped to the caller's tenant. The reports only read; [`queue_render`],
+//! [`render_due`] (the night audit's `render_reports` step) and the render results' receivers write the stored
+//! reports, and [`set_report_pdf`] enqueues the weekly and monthly emails.
+
+mod document;
+mod everyday;
+pub mod liability;
+mod periods;
+mod store;
+
+pub use document::{RenderRequest, ReportDocument, document};
+pub use everyday::{
+    BreakdownTotal, DayRow, Dimension, Headline, ListKind, ListRow, RangeKind, Summary, daily_list, last_year_range,
+    summary,
+};
+pub use liability::service_charge::{OutletServiceCharge, ServiceCharge, ServiceChargeReport, service_charge};
+pub use liability::sscl::{CalendarQuarter, EXCESS_EXEMPTION_NOTE, SsclMonth, SsclReport, SsclTotals, sscl};
+pub use liability::tdl::{FiscalQuarter, TdlForm, tdl};
+pub use liability::vat::{
+    DUMMY_TIN, Schedule01Row, Schedule04Row, VAT_DOCUMENTS_SQL, VatPeriod, VatReport, VatTimingDifference,
+    schedule_file_name, schedule01_csv, schedule04_csv, vat,
+};
+pub use periods::{due_periods, render_due};
+pub use store::{
+    EmailedReport, REPORT_RENDER_TOPIC, ReportKind, ReportStatus, StoredReport, period_report, queue_render,
+    report_emails, report_failed, report_viewed, set_report_email, set_report_pdf, stored_report,
+};
+
+/// One rupee in LKR minor units.
+pub(crate) const RUPEE: i64 = 100;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReportsError {
+    /// The property does not exist in this tenant.
+    #[error("{0} not found")]
+    NotFound(&'static str),
+    /// A malformed range or value.
+    #[error("{0}")]
+    Invalid(String),
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+impl From<audit::AuditError> for ReportsError {
+    fn from(err: audit::AuditError) -> Self {
+        match err {
+            audit::AuditError::NotFound(what) => Self::NotFound(what),
+            audit::AuditError::Database(err) => Self::Database(err),
+            other => Self::Invalid(other.to_string()),
+        }
+    }
+}
+
+impl From<folio::FolioError> for ReportsError {
+    fn from(err: folio::FolioError) -> Self {
+        match err {
+            folio::FolioError::NotFound(what) => Self::NotFound(what),
+            folio::FolioError::Database(err) => Self::Database(err),
+            other => Self::Invalid(other.to_string()),
+        }
+    }
+}

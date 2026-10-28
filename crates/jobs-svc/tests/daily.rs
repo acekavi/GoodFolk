@@ -6,12 +6,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use common::hotel::Hotel;
-use common::svc;
+use common::{storage, svc};
 use jobs_svc::JobsSvc;
 use jobs_svc::tick::tick_with;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
-use storage::{Bucket, Storage, StorageConfig};
+use storage::Bucket;
 use time::{Date, Duration, PrimitiveDateTime};
 use uuid::Uuid;
 
@@ -67,12 +67,6 @@ impl fx::RateSource for FakeSource {
             .map(|c| (c.clone(), on, rust_decimal::Decimal::from(300)))
             .collect())
     }
-}
-
-async fn storage() -> Arc<Storage> {
-    let storage = Storage::new(StorageConfig::dev().unwrap()).unwrap();
-    storage.ensure_dev_buckets().await.expect("start RustFS: deploy/dev/rustfs.sh start");
-    Arc::new(storage)
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -228,6 +222,46 @@ async fn cleanup_deletes_exactly_the_expired_rows(_: PgPoolOptions, opts: PgConn
     assert_eq!(counts().await, (1, 1, 1));
     let left: Vec<String> = sqlx::query_scalar("select key from idempotency_key").fetch_all(&owner).await.unwrap();
     assert_eq!(left, ["key-aged-6-days"]);
+}
+
+/// Cleanup deletes the reports rendered on demand once they are 30 days old, with their PDFs; the close's reports and
+/// younger ones stay.
+#[sqlx::test(migrations = "../../migrations")]
+async fn cleanup_deletes_on_demand_reports_after_30_days_with_their_pdfs(_: PgPoolOptions, opts: PgConnectOptions) {
+    let owner = PgPool::connect_with(opts.clone()).await.unwrap();
+    let hotel = Hotel::new(opts.clone()).await;
+    let storage = storage().await;
+    let svc = JobsSvc { storage: Some(storage.clone()), ..svc(hotel.pool.clone(), opts) };
+    let mut reports = Vec::new();
+    for (kind, age) in [("on_demand", "31 days"), ("on_demand", "29 days"), ("weekly", "400 days")] {
+        let id = Uuid::now_v7();
+        let key = storage::report_pdf_key(hotel.tenant.0, id);
+        storage.put(Bucket::Private, &key, b"%PDF-".to_vec(), "application/pdf", None).await.unwrap();
+        sqlx::query(
+            "insert into report (id, tenant_id, property_id, kind, period_start, period_end, data, status, pdf_key,
+                                 created_at)
+             values ($1, $2, $3, $4, '2025-09-01', '2025-09-07', '{}', 'ready', $5, now() - $6::interval)",
+        )
+        .bind(id)
+        .bind(hotel.tenant.0)
+        .bind(hotel.property)
+        .bind(kind)
+        .bind(&key)
+        .bind(age)
+        .execute(&owner)
+        .await
+        .unwrap();
+        reports.push((id, key));
+    }
+
+    assert!(daily(&svc, at(&hotel, 0, 12, 0)).await.contains(&ran("cleanup", "")));
+
+    let left: Vec<Uuid> = sqlx::query_scalar("select id from report order by id").fetch_all(&owner).await.unwrap();
+    assert_eq!(left, [reports[1].0, reports[2].0]);
+    assert_eq!(storage.head(Bucket::Private, &reports[0].1).await.unwrap(), None);
+    for (_, key) in &reports[1..] {
+        assert!(storage.head(Bucket::Private, key).await.unwrap().is_some(), "{key}");
+    }
 }
 
 #[sqlx::test(migrations = "../../migrations")]

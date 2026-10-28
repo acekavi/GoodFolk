@@ -26,6 +26,7 @@ media-types = { path = "crates/media-types" }
 property = { path = "modules/property" }
 proto = { path = "crates/proto" }
 rates = { path = "modules/rates" }
+reports = { path = "modules/reports" }
 reservations = { path = "modules/reservations" }
 rooms = { path = "modules/rooms" }
 storage = { path = "crates/storage" }

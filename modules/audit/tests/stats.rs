@@ -414,14 +414,53 @@ async fn the_days_lines_are_read_through_the_business_date_index(_: PgPoolOption
     sqlx::query("analyze folio_line").execute(&owner).await.unwrap();
 
     let mut tx = hotel.tx().await;
-    let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("explain {}", audit::DAY_LINES_SQL)))
+    let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("explain {}", audit::LINES_SQL)))
         .bind(p)
+        .bind(hotel.business_date)
         .bind(hotel.business_date)
         .fetch_all(&mut *tx)
         .await
         .unwrap();
     let plan = plan.join("\n");
     assert!(plan.contains("folio_line_business_date_idx"), "{plan}");
+}
+
+/// D's taxes are found through `folio_line_tax_property_date_idx`, as the application role under row-level security,
+/// among a year of the tenant's earlier tax lines (analyzed).
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_days_taxes_are_read_through_the_property_date_index(_: PgPoolOptions, opts: PgConnectOptions) {
+    let owner = PgPoolOptions::new().max_connections(1).connect_with(opts.clone()).await.unwrap();
+    let hotel = Hotel::new(opts).await;
+    let p = hotel.property;
+    let stay = hotel.stay(Stay { room: Some("101"), ..Stay::new(p, "checked_in", 0, 1) }).await;
+    sqlx::query(
+        "with l as (
+           insert into folio_line (id, tenant_id, folio_id, source, category, description, net, total, currency,
+                                   base_total, rate, rate_date, business_date)
+           select gen_random_uuid(), $1, $2, 'manual', 'misc', 'Old', 100, 110, 'LKR', 110, 1, d, d
+           from generate_series(1, 5000) as g, lateral (select $3::date - 1 - g % 365 as d) as day
+           returning id)
+         insert into folio_line_tax (tenant_id, line_id, code, name, kind, rate_bp, base, amount, presentation)
+         select $1, id, 'SC', 'Service charge', 'service_charge', 1000, 100, 10, 'on_bill' from l",
+    )
+    .bind(hotel.tenant.0)
+    .bind(stay.guest_folio)
+    .bind(hotel.business_date)
+    .execute(&owner)
+    .await
+    .unwrap();
+    sqlx::query("analyze folio_line_tax").execute(&owner).await.unwrap();
+
+    let mut tx = hotel.tx().await;
+    let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("explain {}", audit::TAXES_SQL)))
+        .bind(p)
+        .bind(hotel.business_date)
+        .bind(hotel.business_date)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    let plan = plan.join("\n");
+    assert!(plan.contains("folio_line_tax_property_date_idx"), "{plan}");
 }
 
 /// A line moved to another stay's folio the day before and reversed on D still counts against the stay whose key the

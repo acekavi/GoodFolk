@@ -555,6 +555,53 @@ async fn the_sltda_licence_is_validated_and_round_trips(_: PgPoolOptions, opts: 
     assert_eq!(cleared.body["sltda_licence"], Value::Null);
 }
 
+/// The TDL registration number is 1 to 30 characters with no whitespace around them and the VAT return period
+/// `monthly` or `quarterly`; both are audited with their values before and after, and a stale `If-Match` is refused.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_tdl_registration_number_and_vat_return_period_are_validated_audited_and_versioned(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "owner@example.com", "GAL").await;
+    let path = format!("{}/tax-settings", hotel.path);
+    let too_long = "T".repeat(31);
+    for refused in [
+        json!({ "tdl_registration_no": "" }),
+        json!({ "tdl_registration_no": too_long }),
+        json!({ "tdl_registration_no": " TDL/1" }),
+        json!({ "vat_return_period": "weekly" }),
+    ] {
+        let response = versioned(&app, Method::PATCH, &hotel.owner, &path, 1, Some(refused.clone())).await;
+        assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}: {:?}", response.body);
+    }
+    let body = Some(json!({ "tdl_registration_no": "TDL/GAL/0007", "vat_return_period": "monthly" }));
+    let stale = versioned(&app, Method::PATCH, &hotel.owner, &path, 7, body.clone()).await;
+    assert_eq!(stale.status, StatusCode::PRECONDITION_FAILED, "{:?}", stale.body);
+    let set = versioned(&app, Method::PATCH, &hotel.owner, &path, 1, body).await;
+    assert_eq!(set.status, StatusCode::OK, "{:?}", set.body);
+    assert_eq!(
+        (&set.body["tdl_registration_no"], &set.body["vat_return_period"]),
+        (&json!("TDL/GAL/0007"), &json!("monthly"))
+    );
+    let cleared =
+        versioned(&app, Method::PATCH, &hotel.owner, &path, 2, Some(json!({ "tdl_registration_no": null }))).await;
+    assert_eq!(cleared.status, StatusCode::OK, "{:?}", cleared.body);
+    assert_eq!(cleared.body["tdl_registration_no"], Value::Null);
+    assert_eq!(cleared.body["vat_return_period"], "monthly");
+
+    let audit: Vec<Value> =
+        sqlx::query_scalar("select data from audit_log where action = 'property.tax_settings_updated' order by id")
+            .fetch_all(&hotel.superuser)
+            .await
+            .unwrap();
+    assert_eq!(audit[0]["before"]["vat_return_period"], "quarterly");
+    assert_eq!(audit[0]["after"]["tdl_registration_no"], "TDL/GAL/0007");
+    assert_eq!(audit[0]["after"]["vat_return_period"], "monthly");
+    assert_eq!(audit[1]["before"]["tdl_registration_no"], "TDL/GAL/0007");
+    assert_eq!(audit[1]["after"]["tdl_registration_no"], Value::Null);
+}
+
 /// `folios` of a reservation reads its deposit, stay and account folios with each one's own lines and payments; a
 /// charge sends `folio:<id>` to the property's live streams.
 #[sqlx::test(migrator = "db::MIGRATOR")]

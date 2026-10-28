@@ -509,8 +509,8 @@ fn figures(lines: &[LineWithTaxes], sequences: &HashMap<String, i32>) -> Result<
     }
     let taxes = taxes
         .into_iter()
-        .map(|((_, _, rate_bp), (name, base))| {
-            Ok(InvoiceTax { name, rate_bp, amount_lkr: fit(round_half_up(base, unit))? })
+        .map(|((_, code, rate_bp), (name, base))| {
+            Ok(InvoiceTax { code, name, rate_bp, amount_lkr: fit(round_half_up(base, unit))? })
         })
         .collect::<Result<Vec<_>, FolioError>>()?;
     let tax_total: i128 = taxes.iter().map(|tax| i128::from(tax.amount_lkr)).sum();

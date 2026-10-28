@@ -1081,7 +1081,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Changes an outlet's name, service charge or whether it is active. Audited. */
+        /** Changes an outlet's name, service charge, report group or whether it is active. Audited. */
         patch: operations["update_outlet"];
         trace?: never;
     };
@@ -1207,6 +1207,110 @@ export interface paths {
         };
         get?: never;
         put: operations["set_restrictions"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/report-emails/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Turns the signed-in user's own weekly or monthly report email of the property on or off, and returns both. The
+         *     emails go to owners and managers. Needs `ReportsView`.
+         */
+        put: operations["set_report_email"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reports/render": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Renders a report as a PDF, from the closed days as they are now: 202 with the stored report's id, whose status
+         *     [`report`] reads. Refused as the report itself is (422), such as VAT for a property that is not registered or has
+         *     no TIN. Needs the report's permission: `ReportsView`, also `ReservationsView` for a daily list, and
+         *     `ReportsLiability` for TDL, SSCL, VAT and service charge.
+         */
+        post: operations["render_report"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reports/vat/{period}/schedule01.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Schedule 01 (output tax invoices) of the VAT return `period`, an IRD period code such as `2630` (Q3 2026) or `2632`
+         *     (August 2026) of the kind the property files, from its closed days. Named
+         *     `<TIN>_VAT_SCHEDULE01_<period>_<YYYYMMDD>_ORIGINAL_V1.csv`, dated the property's today. A property that is not VAT
+         *     registered, has no TIN, or files the other kind of period is refused (422). Needs `ReportsLiability`.
+         */
+        get: operations["vat_schedule01"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reports/vat/{period}/schedule04.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Schedule 04 (credit notes issued) of the VAT return `period`, as [`vat_schedule01`] gives Schedule 01. Needs
+         *     `ReportsLiability`.
+         */
+        get: operations["vat_schedule04"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/properties/{property}/reports/{report}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A stored report's status, `rendering`, `ready` or `failed`, with a link to its PDF once it is ready. Each link
+         *     issued is audited as `report.viewed`. Needs the permission its report needs to render.
+         */
+        get: operations["report_status"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -1860,7 +1964,7 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Changes the property's tax settings: VAT registration, TIN, the small-turnover levy band, the legal name and
+         * Changes the property's tax settings: VAT registration, TIN, the TDL registration number, the VAT return period, the small-turnover levy band, the legal name and
          *     address printed on invoices, and the accepted currencies. Shares the property's version. Audited with the values
          *     before and after.
          */
@@ -2321,6 +2425,8 @@ export interface components {
             code: string;
             /** @description 1 to 100 characters once trimmed. */
             name: string;
+            /** @description The line of SLTDA's TDL form the outlet's sales fall under; `food` when left out. */
+            report_group?: components["schemas"]["ReportGroup"];
             /** @description Whether the property's service charge applies to the outlet's bills; true when left out. */
             service_charge?: boolean;
         };
@@ -2521,6 +2627,8 @@ export interface components {
              */
             version: number;
         };
+        /** @enum {string} */
+        DailyListKind: "arrivals" | "departures" | "in_house";
         /** @description When a deposit is due: on the business date of the booking, or `days` (0 to 365) before arrival. */
         DepositDue: {
             /** @enum {string} */
@@ -3005,6 +3113,8 @@ export interface components {
             name: string;
             /** Format: uuid */
             property_id: string;
+            /** @description The TDL line the outlet's sales fall under on the property's current business date. */
+            report_group: components["schemas"]["ReportGroup"];
             /** @description Whether the property's service charge applies to the outlet's bills. */
             service_charge: boolean;
             /** Format: int32 */
@@ -3436,6 +3546,71 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        RenderQueued: {
+            /** Format: uuid */
+            id: string;
+        };
+        /**
+         * @description The report to render and what its on-screen query takes: `summary` (`from`, `to`), `daily_list` (`date`, `kind`),
+         *     `tdl` (`fy_start_year`, `quarter`), `sscl` (`year`, `quarter`), `vat` (`period`, an IRD period code) or
+         *     `service_charge` (`year`, `month`).
+         */
+        RenderReportRequest: {
+            /** @description The everyday reports from `from` to `to`, both included, at most 366 days. */
+            params: {
+                /** Format: date */
+                from: string;
+                /** Format: date */
+                to: string;
+            };
+            /** @enum {string} */
+            report: "summary";
+        } | {
+            params: {
+                /** Format: date */
+                date: string;
+                kind: components["schemas"]["DailyListKind"];
+            };
+            /** @enum {string} */
+            report: "daily_list";
+        } | {
+            /** @description Quarter 1 to 4 (April–June to January–March) of the financial year starting in April `fy_start_year`. */
+            params: {
+                /** Format: int32 */
+                fy_start_year: number;
+                /** Format: int32 */
+                quarter: number;
+            };
+            /** @enum {string} */
+            report: "tdl";
+        } | {
+            /** @description Calendar quarter 1 to 4 of `year`. */
+            params: {
+                /** Format: int32 */
+                quarter: number;
+                /** Format: int32 */
+                year: number;
+            };
+            /** @enum {string} */
+            report: "sscl";
+        } | {
+            /** @description `YYQ0` or `YYQM`, of the kind the property files. */
+            params: {
+                period: string;
+            };
+            /** @enum {string} */
+            report: "vat";
+        } | {
+            /** @description Month 1 to 12 of `year`. */
+            params: {
+                /** Format: int32 */
+                month: number;
+                /** Format: int32 */
+                year: number;
+            };
+            /** @enum {string} */
+            report: "service_charge";
+        };
         ReorderMediaRequest: {
             /** @description Every photo of the room type, each once, in the new order. */
             asset_ids: string[];
@@ -3444,6 +3619,21 @@ export interface components {
             /** @description Every id of the collection, in the new display order. */
             ids: string[];
         };
+        /** @description Whether the signed-in user gets one of the property's report emails. */
+        ReportEmail: {
+            enabled: boolean;
+            kind: components["schemas"]["ReportEmailKind"];
+        };
+        /**
+         * @description A report emailed to the property's owners and managers.
+         * @enum {string}
+         */
+        ReportEmailKind: "weekly" | "monthly";
+        /**
+         * @description The line of SLTDA's TDL form an outlet's sales fall under.
+         * @enum {string}
+         */
+        ReportGroup: "food" | "bar" | "other";
         ReportIssueRequest: {
             description: string;
             /** Format: uuid */
@@ -3451,6 +3641,13 @@ export interface components {
             /** @description `low`, `medium` or `high`. */
             severity: components["schemas"]["Severity"];
         };
+        /** @description A stored report's status and, once it is ready, a link to its PDF that works for 5 minutes. */
+        ReportRead: {
+            status: components["schemas"]["ReportStatusNode"];
+            url?: string | null;
+        };
+        /** @enum {string} */
+        ReportStatusNode: "rendering" | "ready" | "failed";
         /** @description One room of a booking: a room type on a rate plan and meal plan for `[check_in, check_out)`. */
         ReservationRoomRequest: {
             /** Format: int32 */
@@ -3665,6 +3862,9 @@ export interface components {
              */
             rate: string;
         };
+        SetReportEmailRequest: {
+            enabled: boolean;
+        };
         /**
          * @description What a received batch still has out: `{"how": "return", "items": [...]}` for items found and returned (to
          *     `back_to`, else where the batch came from), or `{"how": "write_off", "reason": "...", "items": [...]}` for items
@@ -3845,12 +4045,16 @@ export interface components {
             property_id: string;
             /** @description The SLTDA licence number printed under the TIN on invoices. */
             sltda_licence?: string | null;
+            /** @description The registration number printed on the SLTDA tourism development levy return. */
+            tdl_registration_no?: string | null;
             /** @description The tourism development levy's small-turnover band (0.5% instead of 1%), used when the preset is applied. */
             tdl_small_turnover: boolean;
             /** @description The taxpayer identification number printed on invoices. */
             tin?: string | null;
             /** @description VAT applies, and invoices are tax invoices, which need the TIN. */
             vat_registered: boolean;
+            /** @description How often the VAT return is filed; the VAT schedule covers a month or a quarter accordingly. */
+            vat_return_period: components["schemas"]["VatReturnPeriod"];
             /**
              * Format: int32
              * @description The property's version, shared with its other settings: send it as `If-Match`.
@@ -3979,6 +4183,7 @@ export interface components {
             /** @description An inactive outlet takes no new bills; its past bills stay. */
             active?: boolean | null;
             name?: string | null;
+            report_group?: components["schemas"]["ReportGroup"] | null;
             service_charge?: boolean | null;
         };
         UpdatePropertyRequest: {
@@ -4077,7 +4282,10 @@ export interface components {
             /** Format: int32 */
             sequence?: number | null;
         };
-        /** @description Fields left out keep their value; `null` clears `tin`, `sltda_licence`, `legal_name` or `address`. */
+        /**
+         * @description Fields left out keep their value; `null` clears `tin`, `sltda_licence`, `tdl_registration_no`, `legal_name` or
+         *     `address`.
+         */
         UpdateTaxSettingsRequest: {
             /** @description ISO 4217 codes, 1 to 20, including the base currency. */
             accepted_currencies?: string[] | null;
@@ -4085,11 +4293,14 @@ export interface components {
             legal_name?: string | null;
             /** @description 1 to 50 characters, with no whitespace around them. */
             sltda_licence?: string | null;
+            /** @description 1 to 30 characters, with no whitespace around them. */
+            tdl_registration_no?: string | null;
             /** @description The tourism development levy's small-turnover band; takes effect on the rules when the preset is applied. */
             tdl_small_turnover?: boolean | null;
             /** @description 5 to 20 digits, capital letters or `-`. */
             tin?: string | null;
             vat_registered?: boolean | null;
+            vat_return_period?: components["schemas"]["VatReturnPeriod"] | null;
         };
         /** @description A reservation after [`update_reservation`]. */
         UpdatedReservation: {
@@ -4113,6 +4324,11 @@ export interface components {
             /** Format: int32 */
             number: number;
         };
+        /**
+         * @description How often the property files its VAT return.
+         * @enum {string}
+         */
+        VatReturnPeriod: "monthly" | "quarterly";
     };
     responses: never;
     parameters: never;
@@ -7400,6 +7616,205 @@ export interface operations {
                 content?: never;
             };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_report_email: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                kind: components["schemas"]["ReportEmailKind"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetReportEmailRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportEmail"][];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    render_report: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenderReportRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderQueued"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    vat_schedule01: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                /** @description IRD period code: `YYQ0` or `YYQM` */
+                period: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    vat_schedule04: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                /** @description IRD period code: `YYQ0` or `YYQM` */
+                period: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    report_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+                report: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportRead"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

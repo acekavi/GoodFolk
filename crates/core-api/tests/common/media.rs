@@ -3,18 +3,21 @@
 //! test's profile.
 
 use super::{TestApp, TestResponse, uuid};
-use axum::http::{Method, StatusCode};
+use axum::body::Body;
+use axum::http::{Method, Request, StatusCode, header};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use core_api::events::spawn_listener;
 use core_api::state::MediaServices;
 use core_api::{AppState, router};
-use events::{BusError, HeaderProvider, PushBus};
+use events::{BusError, HeaderProvider, PushBus, PushEnvelope, PushMessage};
 use media_svc::MediaSvc;
 use media_svc::config::Config;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,6 +26,7 @@ use svc_auth::{TokenSource, Verifier};
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
+use tower::ServiceExt;
 use uuid::Uuid;
 
 pub const SECRET: &str = "core-api-media-test-secret-0123456789abcdef";
@@ -69,7 +73,8 @@ pub fn services(storage: Arc<Storage>, media_svc: SocketAddr) -> MediaServices {
 }
 
 /// core-api served on a random port with an in-process media-svc on another, each pushing to the other: the relay
-/// sends `media-process` to media-svc's `/work` and `invoice-render` to its `/render`, which publish `media-results` to
+/// sends `media-process` to media-svc's `/work`, `invoice-render` to its `/render` and `report-render` to its
+/// `/render-report`, which publish `media-results` to
 /// core-api's `/internal/events`.
 /// core-api's event listener runs too, so event streams hear changes and an enqueue wakes the relay.
 pub struct Stack {
@@ -119,7 +124,12 @@ pub async fn stack(opts: PgConnectOptions) -> Stack {
     let shutdown = CancellationToken::new();
     let work = format!("http://{media_svc}/work").parse().unwrap();
     let render = format!("http://{media_svc}/render").parse().unwrap();
-    let endpoints = HashMap::from([("media-process".to_owned(), work), ("invoice-render".to_owned(), render)]);
+    let render_report = format!("http://{media_svc}/render-report").parse().unwrap();
+    let endpoints = HashMap::from([
+        ("media-process".to_owned(), work),
+        ("invoice-render".to_owned(), render),
+        ("report-render".to_owned(), render_report),
+    ]);
     let bus = PushBus::new(endpoints, Some(secret_header())).unwrap();
     tokio::spawn(events::run_relay(pool.clone(), Arc::new(bus), outbox_wake, shutdown.clone()));
     Stack { app: TestApp { router: router(state.clone()), state, pool }, shutdown }
@@ -201,4 +211,34 @@ pub fn start_body(purpose: &str, target: Uuid, body: &[u8]) -> Value {
 
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// A `media-results` push for `result`, delivered as message `id`.
+pub fn envelope(id: Uuid, result: &Value) -> Value {
+    serde_json::to_value(PushEnvelope {
+        message: PushMessage {
+            data: STANDARD.encode(serde_json::to_vec(result).unwrap()),
+            message_id: Uuid::now_v7().to_string(),
+            attributes: BTreeMap::from([("message_id".to_owned(), id.to_string())]),
+        },
+        subscription: "push/media-results".to_owned(),
+    })
+    .unwrap()
+}
+
+pub async fn push(app: &TestApp, body: &str, authorization: Option<&str>) -> StatusCode {
+    let mut request = Request::post("/internal/events").header(header::CONTENT_TYPE, "application/json");
+    if let Some(authorization) = authorization {
+        request = request.header(header::AUTHORIZATION, authorization);
+    }
+    app.router.clone().oneshot(request.body(Body::from(body.to_owned())).unwrap()).await.unwrap().status()
+}
+
+/// An app whose `/internal/events` accepts the test secret.
+pub async fn internal_app(opts: PgConnectOptions) -> TestApp {
+    let pool = db::testing::app_pool(opts, 5).await;
+    let unused = "127.0.0.1:9".parse().unwrap();
+    let state =
+        AppState::with_media(pool.clone(), false, db::testing::guest_id_keys(), services(storage().await, unused));
+    TestApp { router: router(state.clone()), state, pool }
 }

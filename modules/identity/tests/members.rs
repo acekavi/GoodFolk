@@ -73,7 +73,9 @@ impl Tenant {
                 .fetch_one(&self.superuser)
                 .await
                 .unwrap();
-        let MailJob::Invitation { invitation_id, token, .. } = serde_json::from_value(payload).unwrap();
+        let MailJob::Invitation { invitation_id, token, .. } = serde_json::from_value(payload).unwrap() else {
+            panic!("not an invitation's job")
+        };
         assert_eq!(invitation_id, invitation.id);
         accept(&self.pool, &token, acceptor).await.unwrap().0
     }

@@ -7,6 +7,9 @@
 //! second, older TLS stack (rustls 0.21, hyper 0.14, h2 0.3) that fails `cargo deny check` with seven advisories. The
 //! one API call this crate needs does not justify either.
 //!
+//! **Attachments.** A message with attachments goes to SES as raw MIME (see [`SesMailer`]); one without, as SES's
+//! simple content.
+//!
 //! **The token in the outbox.** An invitation's link must carry its token, and the token is stored only as a hash, so
 //! [`MailJob::Invitation`] carries the token itself through the outbox to the sender. The undelivered outbox row is
 //! the one place it is kept: the relay drops it from the row once the row is delivered or refused (migration 0038).
@@ -14,6 +17,7 @@
 //! `Debug` hides the token.
 
 mod dev;
+mod mime;
 mod ses;
 
 use std::sync::Arc;
@@ -31,13 +35,37 @@ pub const SEND_TOPIC: &str = "mail-send";
 /// Where [`DevMailer`] writes when `MAIL_OUTBOX_DIR` is not set.
 pub const DEFAULT_OUTBOX_DIR: &str = "target/mail-outbox";
 
-/// One email to one recipient, in text and HTML.
+/// One email to one recipient, in text and HTML, with its attachments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
     pub to: String,
     pub subject: String,
     pub text: String,
     pub html: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
+}
+
+/// A file attached to a [`Message`]. Its bytes are not serialized (the dev mailer writes them to a file of their
+/// own), and `Debug` shows only their length.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    /// The name the recipient sees, such as `weekly-report-2026-10-19.pdf`.
+    pub filename: String,
+    /// Its media type, such as `application/pdf`.
+    pub content_type: String,
+    #[serde(skip)]
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for Attachment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attachment")
+            .field("filename", &self.filename)
+            .field("content_type", &self.content_type)
+            .field("bytes", &self.bytes.len())
+            .finish()
+    }
 }
 
 #[async_trait::async_trait]
@@ -61,6 +89,8 @@ pub enum MailError {
 pub enum MailJob {
     /// Send invitation `invitation_id`'s email; `token` is what its link carries.
     Invitation { invitation_id: Uuid, tenant_id: Uuid, token: String },
+    /// Send weekly or monthly report `report_id`, its PDF attached, to `user_id`.
+    Report { tenant_id: Uuid, report_id: Uuid, user_id: Uuid },
 }
 
 impl std::fmt::Debug for MailJob {
@@ -71,6 +101,12 @@ impl std::fmt::Debug for MailJob {
                 .field("invitation_id", invitation_id)
                 .field("tenant_id", tenant_id)
                 .field("token", &"<redacted>")
+                .finish(),
+            Self::Report { tenant_id, report_id, user_id } => f
+                .debug_struct("Report")
+                .field("tenant_id", tenant_id)
+                .field("report_id", report_id)
+                .field("user_id", user_id)
                 .finish(),
         }
     }

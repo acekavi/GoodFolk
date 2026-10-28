@@ -6,18 +6,16 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
-use common::media::{Hotel, SECRET, fixture, http, post, services, stack, start_body, storage, upload};
+use common::media::{
+    Hotel, SECRET, envelope, fixture, http, internal_app, post, push, services, stack, start_body, storage, upload,
+};
 use common::{TestApp, uuid};
 use core_api::{AppState, router};
-use events::{PushEnvelope, PushMessage};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use std::collections::BTreeMap;
 use std::time::Duration;
 use storage::{Bucket, Storage};
 use tokio::net::TcpListener;
@@ -724,36 +722,6 @@ async fn cross_tenant_asset_is_404(_: PgPoolOptions, opts: PgConnectOptions) {
     assert_eq!(documents["data"]["guestDocuments"], json!([]));
     let gallery = graphql(&app, &hotel.owner, GALLERY, json!({"p": hotel.id})).await;
     assert_eq!(gallery["data"]["roomTypes"][0]["media"][0]["assetId"], json!(photo), "untouched");
-}
-
-/// A `media-results` push for `result`, delivered as message `id`.
-fn envelope(id: Uuid, result: &Value) -> Value {
-    serde_json::to_value(PushEnvelope {
-        message: PushMessage {
-            data: STANDARD.encode(serde_json::to_vec(result).unwrap()),
-            message_id: Uuid::now_v7().to_string(),
-            attributes: BTreeMap::from([("message_id".to_owned(), id.to_string())]),
-        },
-        subscription: "push/media-results".to_owned(),
-    })
-    .unwrap()
-}
-
-async fn push(app: &TestApp, body: &str, authorization: Option<&str>) -> StatusCode {
-    let mut request = Request::post("/internal/events").header(header::CONTENT_TYPE, "application/json");
-    if let Some(authorization) = authorization {
-        request = request.header(header::AUTHORIZATION, authorization);
-    }
-    app.router.clone().oneshot(request.body(Body::from(body.to_owned())).unwrap()).await.unwrap().status()
-}
-
-/// An app whose `/internal/events` accepts the test secret.
-async fn internal_app(opts: PgConnectOptions) -> TestApp {
-    let pool = db::testing::app_pool(opts, 5).await;
-    let unused = "127.0.0.1:9".parse().unwrap();
-    let state =
-        AppState::with_media(pool.clone(), false, db::testing::guest_id_keys(), services(storage().await, unused));
-    TestApp { router: router(state.clone()), state, pool }
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

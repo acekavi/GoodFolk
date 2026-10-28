@@ -1,5 +1,9 @@
-//! The close of a business date: a checkpointed run of five steps, each committed with its `audit_run_step` row, so a
+//! The close of a business date: a checkpointed run of six steps, each committed with its `audit_run_step` row, so a
 //! run that stops anywhere resumes from the first step without a row and never does a step twice.
+//!
+//! The last step, `render_reports`, runs after the business date has advanced and the run is completed, so it can never
+//! hold the date back. When it fails, the run stays completed without its row and the `reports` alert is raised;
+//! [`execute`] on such a run (jobs-svc's next tick finds it through `app.jobs_unrendered_runs`) runs that step alone.
 
 use crate::alerts::{self, AlertKind};
 use crate::{AuditError, audit_key, blocking, compute, store};
@@ -9,6 +13,8 @@ use serde::Serialize;
 use serde_json::json;
 use sqlx::postgres::PgConnectOptions;
 use sqlx::{Connection, PgConnection, PgPool};
+use std::future::Future;
+use std::pin::Pin;
 use time::{Date, Duration, OffsetDateTime};
 use uuid::Uuid;
 
@@ -21,12 +27,19 @@ pub enum Step {
     LockFx,
     SnapshotStats,
     AdvanceBusinessDate,
+    RenderReports,
 }
 
 impl Step {
     /// Every step, in order.
-    pub const ALL: [Step; 5] =
-        [Step::Resolve, Step::PostCharges, Step::LockFx, Step::SnapshotStats, Step::AdvanceBusinessDate];
+    pub const ALL: [Step; 6] = [
+        Step::Resolve,
+        Step::PostCharges,
+        Step::LockFx,
+        Step::SnapshotStats,
+        Step::AdvanceBusinessDate,
+        Step::RenderReports,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -35,6 +48,7 @@ impl Step {
             Step::LockFx => "lock_fx",
             Step::SnapshotStats => "snapshot_stats",
             Step::AdvanceBusinessDate => "advance_business_date",
+            Step::RenderReports => "render_reports",
         }
     }
 
@@ -121,13 +135,28 @@ pub struct RunStep {
     pub detail: serde_json::Value,
 }
 
-/// Test seam: called around each step's commit. Production passes &NoHooks.
+/// A hook's future.
+pub type HookFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// What a close calls out to: `render_reports`'s work, which jobs-svc gives the reports module (this module does not
+/// depend on it), and a test seam called around each step's commit. [`NoHooks`] renders nothing.
 pub trait CloseHooks: Send + Sync {
     fn before_commit(&self, _step: Step) -> Result<(), AuditError> {
         Ok(())
     }
     fn after_commit(&self, _step: Step) -> Result<(), AuditError> {
         Ok(())
+    }
+    /// The `render_reports` step's work, in its transaction: queues the reports of every period closed through
+    /// `closed_through` and says how many. The default queues none.
+    fn render_reports<'a>(
+        &'a self,
+        _tx: &'a mut Tx,
+        _tenant: TenantId,
+        _property: Uuid,
+        _closed_through: Date,
+    ) -> HookFuture<'a, Result<usize, AuditError>> {
+        Box::pin(async { Ok(0) })
     }
 }
 
@@ -234,8 +263,12 @@ pub async fn retry_run(
 /// audits night_audit.failed, raises ops_alert audit when mode is auto and attempts >= 3) and returns the run;
 /// AuditError::Interrupted is returned as is, leaving the run running.
 ///
+/// Once the run has completed, `render_reports` runs through `hooks`; its failure raises the `reports` alert and
+/// returns the run completed without that step. A completed run without it runs that step alone.
+///
 /// The lock is the session advisory lock `hashtext('audit:' || property)`, so `lock` must be a direct connection (a
-/// transaction-mode pooler cannot hold a session lock). A run that is not `running` is returned as it is.
+/// transaction-mode pooler cannot hold a session lock). A failed run, or a completed one with every step, is returned
+/// as it is.
 pub async fn execute(
     pool: &PgPool,
     lock: &PgConnectOptions,
@@ -244,7 +277,7 @@ pub async fn execute(
     hooks: &dyn CloseHooks,
 ) -> Result<Option<AuditRun>, AuditError> {
     let found = read_run(pool, tenant, run).await?;
-    if found.status != RunStatus::Running {
+    if !unfinished(&found) {
         return Ok(Some(found));
     }
     let mut conn = PgConnection::connect_with(lock).await?;
@@ -398,6 +431,15 @@ impl From<folio::FolioError> for Stop {
     }
 }
 
+/// Whether `run` has steps left: it is running, or completed without `render_reports`.
+fn unfinished(run: &AuditRun) -> bool {
+    match run.status {
+        RunStatus::Running => true,
+        RunStatus::Completed => !run.steps.iter().any(|done| done.step == Step::RenderReports),
+        RunStatus::Failed => false,
+    }
+}
+
 /// Re-reads the run now that this session holds its lock, then runs its steps without a row.
 async fn execute_locked(
     pool: &PgPool,
@@ -406,14 +448,14 @@ async fn execute_locked(
     hooks: &dyn CloseHooks,
 ) -> Result<AuditRun, AuditError> {
     let current = read_run(pool, tenant, run).await?;
-    if current.status != RunStatus::Running {
+    if !unfinished(&current) {
         return Ok(current);
     }
     let done = |step: Step| current.steps.iter().any(|done| done.step == step);
     let close = Close { pool, tenant, run: &current, hooks };
     let mut outcome = Ok(());
     for step in [Step::Resolve, Step::PostCharges, Step::LockFx, Step::AdvanceBusinessDate] {
-        if done(step) {
+        if current.status == RunStatus::Completed || done(step) {
             continue;
         }
         let result = match step {
@@ -434,7 +476,10 @@ async fn execute_locked(
         }
     }
     match outcome {
-        Ok(()) => read_run(pool, tenant, run).await,
+        Ok(()) => {
+            close.render_reports().await?;
+            read_run(pool, tenant, run).await
+        }
         Err((_, Stop::Error(AuditError::Interrupted))) => Err(AuditError::Interrupted),
         Err((step, Stop::Failed { error, failure })) => fail(pool, tenant, &current, step, &error, failure).await,
         Err((step, Stop::Error(err))) => {
@@ -786,6 +831,31 @@ impl Close<'_> {
         let steps = [(Step::SnapshotStats, headline), (Step::AdvanceBusinessDate, json!({ "business_date": next }))];
         let keys = vec![audit_key(property), property::PROPERTIES_KEY.into(), reservations::reservations_key(property)];
         self.finish(tx, &steps, keys).await
+    }
+
+    /// `render_reports`, once D is closed: the hook queues the reports of the periods closed through D, in the step's
+    /// own transaction. When it fails nothing it wrote stays, the `reports` alert says why, and the run is left
+    /// completed without the step for the next tick to run again. It errs only for `Interrupted` (a test's) or when
+    /// the alert cannot be raised.
+    async fn render_reports(&self) -> Result<(), AuditError> {
+        let (tenant, property, date) = (self.tenant, self.property(), self.date());
+        let rendered = async {
+            let mut tx = self.begin().await?;
+            let queued = self.hooks.render_reports(&mut tx, tenant, property, date).await?;
+            self.finish(tx, &[(Step::RenderReports, json!({ "queued": queued }))], vec![audit_key(property)]).await
+        };
+        let error = match rendered.await {
+            Ok(()) => return Ok(()),
+            Err(Stop::Error(AuditError::Interrupted)) => return Err(AuditError::Interrupted),
+            Err(Stop::Error(err)) => stored_error(&err),
+            Err(Stop::Failed { error, .. }) => error,
+        };
+        tracing::warn!(%property, %date, error, "queuing the reports failed; the next tick tries again");
+        let message = format!("The reports of {date} could not be queued: {error}. The next tick tries again.");
+        let mut tx = self.begin().await?;
+        alerts::raise(&mut tx, tenant, property, AlertKind::Reports, &message).await?;
+        tx.commit().await?;
+        Ok(())
     }
 }
 
