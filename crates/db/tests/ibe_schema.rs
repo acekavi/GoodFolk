@@ -22,14 +22,21 @@ async fn hotel(pool: &PgPool, code: &str) -> (Uuid, Uuid) {
 }
 
 async fn site(pool: &PgPool, hotel: (Uuid, Uuid), enabled: bool, host: Option<&str>) {
-    sqlx::query("insert into ibe_site (tenant_id, property_id, enabled, custom_host) values ($1, $2, $3, $4)")
-        .bind(hotel.0)
-        .bind(hotel.1)
-        .bind(enabled)
-        .bind(host)
-        .execute(pool)
-        .await
-        .unwrap();
+    try_site(pool, hotel, enabled, host).await.unwrap();
+}
+
+async fn try_site(pool: &PgPool, hotel: (Uuid, Uuid), enabled: bool, host: Option<&str>) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into ibe_site (tenant_id, property_id, enabled, custom_host, public_code)
+         select $1, id, $3, $4, code from property where id = $2",
+    )
+    .bind(hotel.0)
+    .bind(hotel.1)
+    .bind(enabled)
+    .bind(host)
+    .execute(pool)
+    .await
+    .map(|_| ())
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

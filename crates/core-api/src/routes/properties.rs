@@ -62,6 +62,7 @@ pub(crate) fn property_error(err: PropertyError) -> ApiError {
         PropertyError::NotFound => ApiError::not_found(err.to_string()),
         PropertyError::VersionMismatch => ApiError::precondition_failed(err.to_string()),
         PropertyError::Invalid(message) => ApiError::unprocessable(message),
+        PropertyError::CodeInUse(message) => ApiError::unprocessable(message).with("field", "enabled"),
         PropertyError::Database(db_err) => db_err.into(),
     }
 }
@@ -121,8 +122,12 @@ pub struct UpdateIbeSiteRequest {
     /// While off, the site answers `404` for the property.
     #[garde(skip)]
     pub enabled: bool,
-    /// A lowercase domain name of 3 to 253 letters, digits, `.` and `-`, unique across all tenants.
-    #[garde(inner(pattern(r"^[a-z0-9.-]{3,253}$")))]
+    /// A lowercase host name of at least two labels (each 1 to 63 letters, digits and inner hyphens), at most 253
+    /// characters, unique across all tenants.
+    #[garde(inner(
+        length(max = 253),
+        pattern(r"^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+    ))]
     pub custom_host: Option<String>,
     /// A completed `ibe_logo` upload of the property, which may still be processing.
     #[garde(skip)]

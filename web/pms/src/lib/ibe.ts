@@ -45,3 +45,16 @@ export const IBE_PUBLIC_ORIGIN: string = import.meta.env.VITE_IBE_PUBLIC_ORIGIN 
 export function previewUrl(code: string, origin: string = IBE_PUBLIC_ORIGIN): string | null {
 	return origin ? `${origin.replace(/\/$/, '')}/${code}` : null;
 }
+
+/** The host of the public origin, or `''` when there is none or it is not a URL. */
+export function bookingHost(origin: string): string {
+	try {
+		return origin ? new URL(origin).host : '';
+	} catch {
+		return '';
+	}
+}
+
+/** What the server takes as a custom host: at least two labels of 1 to 63 letters, digits and inner hyphens. */
+export const HOST_PATTERN =
+	'([a-z0-9]([a-z0-9\\-]{0,61}[a-z0-9])?\\.)+[a-z0-9]([a-z0-9\\-]{0,61}[a-z0-9])?';

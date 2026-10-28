@@ -106,7 +106,9 @@ pub async fn update_ibe_site(
     expected_version: i32,
     changes: IbeSiteChanges,
 ) -> Result<IbeSite, PropertyError> {
-    require_property(tx, property).await?;
+    let code: Option<String> =
+        sqlx::query_scalar("select code from property where id = $1").bind(property).fetch_optional(&mut **tx).await?;
+    let code = code.ok_or(PropertyError::NotFound)?;
     if let Some(accent) = &changes.accent
         && contrast_with_white(accent).is_none_or(|ratio| ratio < MIN_ACCENT_CONTRAST)
     {
@@ -158,7 +160,7 @@ pub async fn update_ibe_site(
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update ibe_site set enabled = $2, custom_host = $3, logo_asset_id = $4, hero_asset_id = $5,
                         accent = $6, description = $7, contact_phone = $8, contact_email = $9, terms = $10,
-                        privacy = $11, version = version + 1
+                        privacy = $11, public_code = $12, version = version + 1
                  where property_id = $1
                  returning {IBE_SITE_COLUMNS}"
             )))
@@ -173,14 +175,15 @@ pub async fn update_ibe_site(
             .bind(&changes.contact_email)
             .bind(&changes.terms)
             .bind(&changes.privacy)
+            .bind(&code)
             .fetch_one(&mut **tx)
             .await
         }
         None => {
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "insert into ibe_site (tenant_id, property_id, enabled, custom_host, logo_asset_id, hero_asset_id,
-                                       accent, description, contact_phone, contact_email, terms, privacy)
-                 values ($12, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                                       accent, description, contact_phone, contact_email, terms, privacy, public_code)
+                 values ($13, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                  returning {IBE_SITE_COLUMNS}"
             )))
             .bind(property)
@@ -194,6 +197,7 @@ pub async fn update_ibe_site(
             .bind(&changes.contact_email)
             .bind(&changes.terms)
             .bind(&changes.privacy)
+            .bind(&code)
             .bind(tenant.0)
             .fetch_one(&mut **tx)
             .await
@@ -202,14 +206,17 @@ pub async fn update_ibe_site(
     let after: IbeSite = match saved {
         Ok(site) => site,
         Err(err) => {
-            let taken = err
-                .as_database_error()
-                .and_then(|db_err| db_err.constraint())
-                .is_some_and(|constraint| constraint == "ibe_site_custom_host_key");
-            return Err(if taken {
-                PropertyError::Invalid("That host is already used by another booking site".into())
-            } else {
-                err.into()
+            let constraint = err.as_database_error().and_then(|db_err| db_err.constraint());
+            return Err(match constraint {
+                Some("ibe_site_custom_host_key") => {
+                    PropertyError::Invalid("That host is already used by another booking site".into())
+                }
+                Some("ibe_site_public_code_idx") => PropertyError::CodeInUse(format!(
+                    "Another hotel already uses the code {code} for its booking site. Change this property's code to publish it."
+                )),
+                // Two first saves at once: the other one won, so this one's version is stale.
+                Some("ibe_site_pkey") => PropertyError::VersionMismatch,
+                _ => err.into(),
             });
         }
     };
@@ -225,8 +232,10 @@ pub async fn update_ibe_site(
     .bind(data)
     .execute(&mut **tx)
     .await?;
-    db::notify(tx, &Event { tenant_id: tenant, property_id: Some(property), keys: vec![PROPERTIES_KEY.into()] })
-        .await?;
+    // The page reads the site under the property's media key (the logo finishing is a media event), so a save
+    // refreshes other open pages through it as well.
+    let keys = vec![PROPERTIES_KEY.into(), format!("media:{property}")];
+    db::notify(tx, &Event { tenant_id: tenant, property_id: Some(property), keys }).await?;
     Ok(after)
 }
 

@@ -1498,7 +1498,7 @@ async fn seed_ibe(pool: &PgPool, tenant: TenantId) {
     seed_reservations(pool, tenant).await;
     let mut tx = begin(pool, Scope::tenant(tenant)).await.unwrap();
     let statements = [
-        "insert into ibe_site (tenant_id, property_id, enabled) select $1, id, true from property",
+        "insert into ibe_site (tenant_id, property_id, enabled, public_code) select $1, id, false, code from property",
         "insert into reservation_access_token (tenant_id, reservation_id, sha256, expires_at)
          select $1, id, sha256($2), now() + interval '30 days' from reservation",
     ];

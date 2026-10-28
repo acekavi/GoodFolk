@@ -16,6 +16,8 @@
 		accentProblem,
 		contrastWithWhite,
 		fetchIbeSite,
+		bookingHost,
+		HOST_PATTERN,
 		IBE_PUBLIC_ORIGIN,
 		ibeSiteKey,
 		previewUrl
@@ -108,7 +110,7 @@
 		(plans.data?.ratePlans ?? []).some((plan) => plan.segment === 'IBE' && plan.active)
 	);
 	const preview = $derived(code ? previewUrl(code) : null);
-	const bookingDomain = $derived(IBE_PUBLIC_ORIGIN ? new URL(IBE_PUBLIC_ORIGIN).host : '');
+	const bookingDomain = $derived(bookingHost(IBE_PUBLIC_ORIGIN));
 
 	/** The ready gallery photos, with the room type each is in. */
 	const photos = $derived.by(() => {
@@ -226,7 +228,7 @@
 				<input
 					bind:value={draft.customHost}
 					maxlength="253"
-					pattern={'[a-z0-9.\\-]{3,253}'}
+					pattern={HOST_PATTERN}
 					inputmode="url"
 					autocapitalize="none"
 					spellcheck="false"

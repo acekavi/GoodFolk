@@ -6,7 +6,11 @@ create table ibe_site (
   tenant_id uuid not null,
   property_id uuid primary key,
   enabled boolean not null default false,
-  custom_host text unique check (custom_host = lower(custom_host) and custom_host ~ '^[a-z0-9.-]{3,253}$'),
+  -- The property's code when last saved. Codes are unique only within a tenant, but the public site is addressed by
+  -- the code alone, so among enabled sites it must be unique across all of them.
+  public_code text,
+  custom_host text unique check (custom_host = lower(custom_host) and length(custom_host) <= 253
+    and custom_host ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'),
   logo_asset_id uuid,
   hero_asset_id uuid,
   accent char(7) check (accent ~ '^#[0-9a-f]{6}$'),
@@ -20,6 +24,8 @@ create table ibe_site (
   foreign key (tenant_id, logo_asset_id) references media_asset (tenant_id, id),
   foreign key (tenant_id, hero_asset_id) references media_asset (tenant_id, id)
 );
+
+create unique index ibe_site_public_code_idx on ibe_site (upper(public_code)) where enabled;
 
 alter table room_type add column description text not null default '' check (length(description) <= 1000);
 
@@ -71,16 +77,16 @@ alter table media_asset add constraint media_asset_check
 -- nothing from it.
 create policy ibe_read on ibe_site for select to current_user using (true);
 
--- $1 is the property code, $2 the host: a parameter name would lose to the columns of the same name.
+-- By host when a host is given, else by code: never either. The unique indexes on `custom_host` and on the enabled
+-- sites' `public_code` make the answer at most one row. $1 is the code, $2 the host: a parameter name would lose to
+-- the columns of the same name.
 create function app.ibe_resolve(code text, host text)
 returns table (tenant_id uuid, property_id uuid)
 language sql stable security definer set search_path = pg_catalog, public, pg_temp
 as $$ select s.tenant_id, s.property_id
-      from ibe_site s join property p on p.tenant_id = s.tenant_id and p.id = s.property_id
+      from ibe_site s
       where s.enabled
-        and (upper(p.code) = upper($1) or s.custom_host = lower($2))
-      order by s.property_id
-      limit 1 $$;
+        and case when $2 is not null then s.custom_host = lower($2) else upper(s.public_code) = upper($1) end $$;
 
 revoke all on function app.ibe_resolve(text, text) from public;
 grant execute on function app.ibe_resolve(text, text) to goodfolk_app;

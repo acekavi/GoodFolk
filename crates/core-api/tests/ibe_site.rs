@@ -227,12 +227,17 @@ async fn fields_are_bounded(_: PgPoolOptions, opts: PgConnectOptions) {
         json!({"enabled": false, "privacy": "x".repeat(10_001)}),
         json!({"enabled": false, "contact_email": "not an email"}),
         json!({"enabled": false, "custom_host": "ab"}),
+        json!({"enabled": false, "custom_host": "localhost"}),
+        json!({"enabled": false, "custom_host": "-a-.com"}),
+        json!({"enabled": false, "custom_host": "a..b"}),
     ] {
         let response = versioned(&app, Method::PUT, &hotel.owner, &path, 0, Some(refused.clone())).await;
         assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}: {:?}", response.body);
     }
+    let real = json!({"enabled": false, "custom_host": "book.galleforthotel.lk"});
+    assert_eq!(versioned(&app, Method::PUT, &hotel.owner, &path, 0, Some(real)).await.status, StatusCode::OK);
     let longest = json!({"enabled": false, "description": "x".repeat(500), "terms": "é".repeat(10_000)});
-    let response = versioned(&app, Method::PUT, &hotel.owner, &path, 0, Some(longest)).await;
+    let response = versioned(&app, Method::PUT, &hotel.owner, &path, 1, Some(longest)).await;
     assert_eq!(response.status, StatusCode::OK, "{:?}", response.body);
 }
 
@@ -283,4 +288,30 @@ async fn the_room_type_description_round_trips_and_is_at_most_1000_characters(
     assert_eq!(too_long.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(longest.status, StatusCode::OK, "{:?}", longest.body);
     assert_eq!(read.body["data"]["roomTypes"][0]["description"], "é".repeat(1000));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn two_hotels_cannot_both_publish_under_the_same_code(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let first = Hotel::new(&app, opts.clone(), "one@example.com", "GAL").await;
+    let second = Hotel::new(&app, opts, "two@example.com", "GAL").await;
+    let first_path = format!("{}/ibe-site", first.path);
+    let second_path = format!("{}/ibe-site", second.path);
+
+    let taken = versioned(&app, Method::PUT, &first.owner, &first_path, 0, Some(json!({"enabled": true}))).await;
+    let refused = versioned(&app, Method::PUT, &second.owner, &second_path, 0, Some(json!({"enabled": true}))).await;
+    let draft = versioned(&app, Method::PUT, &second.owner, &second_path, 0, Some(json!({"enabled": false}))).await;
+    let released = versioned(&app, Method::PUT, &first.owner, &first_path, 1, Some(json!({"enabled": false}))).await;
+    let now_free = versioned(&app, Method::PUT, &second.owner, &second_path, 1, Some(json!({"enabled": true}))).await;
+
+    assert_eq!(taken.status, StatusCode::OK, "{:?}", taken.body);
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", refused.body);
+    assert_eq!(refused.body["field"], "enabled");
+    assert_eq!(
+        refused.body["detail"],
+        "Another hotel already uses the code GAL for its booking site. Change this property's code to publish it."
+    );
+    assert_eq!(draft.status, StatusCode::OK, "{:?}", draft.body);
+    assert_eq!(released.status, StatusCode::OK, "{:?}", released.body);
+    assert_eq!(now_free.status, StatusCode::OK, "{:?}", now_free.body);
 }

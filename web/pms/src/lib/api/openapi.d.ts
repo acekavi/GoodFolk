@@ -4214,7 +4214,10 @@ export interface components {
             contact_email?: string | null;
             /** @description 1 to 50 characters. */
             contact_phone?: string | null;
-            /** @description A lowercase domain name of 3 to 253 letters, digits, `.` and `-`, unique across all tenants. */
+            /**
+             * @description A lowercase host name of at least two labels (each 1 to 63 letters, digits and inner hyphens), at most 253
+             *     characters, unique across all tenants.
+             */
             custom_host?: string | null;
             /** @description At most 500 characters. */
             description?: string;

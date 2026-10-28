@@ -12024,7 +12024,7 @@
               "string",
               "null"
             ],
-            "description": "A lowercase domain name of 3 to 253 letters, digits, `.` and `-`, unique across all tenants."
+            "description": "A lowercase host name of at least two labels (each 1 to 63 letters, digits and inner hyphens), at most 253\ncharacters, unique across all tenants."
           },
           "description": {
             "type": "string",

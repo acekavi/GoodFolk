@@ -66,6 +66,9 @@ pub enum PropertyError {
     /// A business rule, such as accepted currencies that leave out the base currency.
     #[error("{0}")]
     Invalid(String),
+    /// Another enabled booking site already answers to the code (`CodeInUse` carries the message).
+    #[error("{0}")]
+    CodeInUse(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }

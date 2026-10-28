@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { ACCENT_TOO_PALE, accentProblem, contrastWithWhite, previewUrl } from './ibe';
+import {
+	ACCENT_TOO_PALE,
+	accentProblem,
+	bookingHost,
+	contrastWithWhite,
+	HOST_PATTERN,
+	previewUrl
+} from './ibe';
 
 describe('contrastWithWhite', () => {
 	it('follows WCAG relative luminance', () => {
@@ -38,5 +45,28 @@ describe('previewUrl', () => {
 
 	it('is absent when the build knows no origin', () => {
 		expect(previewUrl('GAL', '')).toBeNull();
+	});
+});
+
+describe('bookingHost', () => {
+	it('is the host of a URL, and empty for anything else', () => {
+		expect(bookingHost('https://book.example:8443')).toBe('book.example:8443');
+		expect(bookingHost('')).toBe('');
+		expect(bookingHost('not a url')).toBe('');
+	});
+});
+
+describe('HOST_PATTERN', () => {
+	const takes = (host: string) => new RegExp(`^(?:${HOST_PATTERN})$`, 'v').test(host);
+
+	it('takes real host names', () => {
+		expect(takes('book.galleforthotel.lk')).toBe(true);
+		expect(takes('a-b.example.com')).toBe(true);
+	});
+
+	it('refuses typos and single labels', () => {
+		for (const host of ['...', '-a-.com', 'localhost', 'a..b', 'a.b.', '.a.b', 'a.-b.com']) {
+			expect(takes(host), host).toBe(false);
+		}
 	});
 });
