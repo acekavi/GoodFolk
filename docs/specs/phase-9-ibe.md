@@ -143,6 +143,48 @@ This page needs a new permission, `IbeManage`, held by the owner and the manager
 - A new reservation from the site sends the property's front desk a live `reservations:<property>` event, as any new reservation does. There is no extra notification (**Builder's call**).
 - Revenue is counted under source `ibe` in the Phase 7d reports' breakdown by source. That needs no change.
 
+## Settled after the builder check
+
+All of these are **Builder's calls**.
+
+- **Plans on the site:** the `IBE` segment already exists on rate plans (migration 0006), and staff set it on the rate plan form. No rates change is needed. A property shows no plans on the site until a plan is given segment `IBE`, and the Booking site settings page says so.
+- **One booking is one reservation:**
+  - It has several rooms, with one confirmation number, as at the front desk (`NewReservation` with up to the existing room limit; the site allows 4).
+  - Each room keeps its own plan's currency, so a booking can mix currencies. The summary shows a total per currency.
+  - The manage token belongs to the reservation, and the cancel rule applies to the whole reservation.
+- **Inventory and races:**
+  - `create_reservation` already takes the inventory counters inside its transaction for all rooms or none. The public booking reuses it.
+  - "Sold out" is that command's existing no-availability error, mapped to the "just booked" response.
+  - `Idempotency-Key` is scoped to (property, key), stored like the staff idempotency keys.
+- **Who made the booking:**
+  - `create_reservation` today takes a staff `UserId` and refuses sources other than front desk, phone and email.
+  - It gains a guest path: no actor (`created_by` null), source `ibe` allowed only from the public route, audit actor recorded as `ibe`.
+  - The booker's new guest profile takes the name, email, phone, country of residence and residency the form collects.
+  - Residency is on the guest, as today, and the rooms are priced for it.
+- **Prices:**
+  - The search runs the existing `rates::quote` per room type and plan.
+  - The tax preview is the same per-night tax computation the folio engine applies to a room and meal-plan line, using the property's rules for the stay dates. It is shared with folio, never a second implementation.
+  - Displayed totals include on-bill taxes and service charge, with a line per tax. Absorbed taxes are not shown.
+  - The cancellation policy's wording is generated from the policy's stored rules.
+- **Rate limits** are counted in Postgres:
+  - a small fixed-window table keyed (scope, IP, window), pruned by the jobs-svc daily cleanup;
+  - no Redis, since the owner deferred caching until there are real users.
+  - The client IP is `CF-Connecting-IP` only when `TRUST_CLOUDFLARE_IP=true` (production behind Cloudflare), otherwise the socket peer.
+- **Custom hosts:** the setting is stored and resolved, and CORS, SSR and the sitemap use it. TLS and DNS for a customer domain are manual setup (Cloudflare for SaaS custom hostnames), written up in the deployment notes and not automated in this phase.
+- **Dates:**
+  - A stay may start on the property's **business date**, so a same-night booking after midnight but before the night audit works, up to 18 months ahead.
+  - "Check-in is in the future" means check-in is after the business date.
+  - The manage token expires at the end of the 30th day after check-out, in the property's time zone.
+- **Guest cancellation:**
+  - It runs the existing cancellation command, which already applies the snapshotted terms' penalty deterministically, with a new reason "Cancelled by the guest online".
+  - It has no staff actor (audit actor `ibe`) and is never waived; a waiver stays a front desk decision.
+- **Media:** gallery renditions and tour videos are already in the public bucket with permanent URLs (6a and 6b). The `ibe_logo` purpose is public the same way.
+- **Accent contrast:** white text on the accent colour must reach 4.5:1.
+- **Mail:**
+  - Sent from `MAIL_FROM` with the property's name as the display name and the property's contact email as Reply-To.
+  - The terms are summarised in the email, with a link to the manage page.
+  - Mail is queued in the outbox after the booking commits, so a mail failure never fails the booking (as with invitations).
+
 ## The public API
 
 - **Prefix:** `/api/public/v1/ibe/{code}/…`, with no session and no cookies.
