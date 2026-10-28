@@ -205,6 +205,23 @@ async fn printed_figures_add_up(_: PgPoolOptions, opts: PgConnectOptions) {
     assert_eq!((form.rate_bp, form.tdl), (50, 900));
 }
 
+/// SLTDA deducts service charge up to 10% of the sales it is in: a 12% service charge stays in the sales line in full,
+/// and only 10% of the line's net plus service charge is deducted.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn service_charge_over_ten_percent_is_deducted_only_up_to_it(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let folio = hotel.folio().await;
+    let sc = ("SC", "service_charge", "on_bill", 120_000);
+    hotel.line(folio, date(2026, 5, 1), "meal_plan", "meal_plan", 1_000_000, &[sc], None).await;
+    hotel.set_business_date(date(2026, 7, 1)).await;
+
+    let form = tdl(&hotel, Q1).await;
+
+    // Rs 10,000 net and Rs 1,200 SC: Rs 11,200 of food sales, of which 10% (Rs 1,120) is deducted.
+    assert_eq!((form.food, form.total_turnover), (1_120_000, 1_120_000));
+    assert_eq!((form.service_charge, form.base), (112_000, 1_008_000));
+}
+
 /// A quarter not yet closed is flagged, its figures covering only the closed days.
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn quarter_with_open_days_is_flagged(_: PgPoolOptions, opts: PgConnectOptions) {

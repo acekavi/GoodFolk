@@ -82,7 +82,8 @@ pub struct TdlForm {
 }
 
 /// `property`'s TDL for `quarter`, from its closed days ([`revenue_lines`]). Each sales line is its net plus its
-/// service charge (`SC`) and VAT, passed on or absorbed; the TDL and SSCL passed on to guests are levies collected, not
+/// service charge (`SC`) and VAT, passed on or absorbed, and the service charge deducted is capped per line at 10%
+/// ([`deductible_service_charge`]); the TDL and SSCL passed on to guests are levies collected, not
 /// sales. The lines fall under:
 /// - **Room:** `room`;
 /// - **Food:** `meal_plan`, and the outlets whose report group on the line's date is food;
@@ -106,14 +107,16 @@ pub async fn tdl(tx: &mut Tx, property: Uuid, quarter: FiscalQuarter) -> Result<
     let groups = report_groups(tx, property, to).await?;
     for line in revenue_lines(tx, property, from, to).await? {
         let mut sales = line.net;
+        let mut line_service_charge = 0;
         for tax in &line.taxes {
             match tax.code.as_str() {
-                "SC" => service_charge += tax.amount,
+                "SC" => line_service_charge += tax.amount,
                 "VAT" => vat += tax.amount,
                 _ => continue,
             }
             sales += tax.amount;
         }
+        service_charge += deductible_service_charge(line.net, line_service_charge);
         let group = match (line.category.as_str(), line.outlet) {
             ("room", _) => {
                 room += sales;
@@ -155,6 +158,15 @@ pub async fn tdl(tx: &mut Tx, property: Uuid, quarter: FiscalQuarter) -> Result<
         credit_exceeds_sales,
         not_closed: to >= business_date,
     })
+}
+
+/// The part of a line's service charge `sc` that Form A deducts: SLTDA excludes service charge "up to 10%", and its
+/// worked example deducts Rs 23,797 from Food Sales of Rs 237,973, 10% of the sales with the service charge in. So at
+/// most 10% of the line's net plus its service charge (a reversal's negative amounts alike); any service charge above
+/// that stays in the sales line and is not deducted.
+fn deductible_service_charge(net: i64, sc: i64) -> i64 {
+    let cap = ratio(net + sc, 10);
+    if sc.abs() > cap.abs() { cap } else { sc }
 }
 
 /// Each outlet of `property`'s report-group changes in force by `to`, as `(effective from, group)` by date: read at
