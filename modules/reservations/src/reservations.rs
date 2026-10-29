@@ -15,6 +15,9 @@ use uuid::Uuid;
 /// Most rooms one reservation books.
 pub const MAX_ROOMS_PER_RESERVATION: usize = 10;
 
+/// The audit actor (`data.actor`) of a change the booking site made, with no staff member behind it.
+pub const SITE_ACTOR: &str = "ibe";
+
 db::text_enum!(
     /// Where a booking came from. Staff create `front_desk`, `phone` and `email` bookings; `ibe` and `channel`
     /// bookings arrive through the booking engine (Phase 9) and channels (Phase 8).
@@ -110,13 +113,42 @@ pub async fn create_reservation(
     tenant: TenantId,
     actor: UserId,
     property: Uuid,
+    input: NewReservation,
+) -> Result<CreatedReservation, ReservationsError> {
+    if !matches!(input.source, Source::FrontDesk | Source::Phone | Source::Email) {
+        return Err(invalid("bookings made here come from the front desk, phone or email".into()));
+    }
+    create(tx, tenant, Some(actor), property, input).await
+}
+
+/// Books `input`'s rooms for a guest on the property's booking site, as [`create_reservation`] does for staff, with
+/// no staff member behind it: `created_by` is null and the audit entry names the actor `ibe`. The source must be
+/// `ibe`, and the reservation is billed to no account.
+pub async fn create_reservation_from_site(
+    tx: &mut Tx,
+    tenant: TenantId,
+    property: Uuid,
+    input: NewReservation,
+) -> Result<CreatedReservation, ReservationsError> {
+    if input.source != Source::Ibe {
+        return Err(invalid("bookings made on the booking site come from the booking site".into()));
+    }
+    if input.account_id.is_some() {
+        return Err(invalid("a booking site reservation is billed to no account".into()));
+    }
+    create(tx, tenant, None, property, input).await
+}
+
+/// [`create_reservation`]'s body, for staff (`actor`) or the booking site (`None`).
+async fn create(
+    tx: &mut Tx,
+    tenant: TenantId,
+    actor: Option<UserId>,
+    property: Uuid,
     mut input: NewReservation,
 ) -> Result<CreatedReservation, ReservationsError> {
     if !(1..=MAX_ROOMS_PER_RESERVATION).contains(&input.rooms.len()) {
         return Err(invalid(format!("a reservation has 1 to {MAX_ROOMS_PER_RESERVATION} rooms")));
-    }
-    if !matches!(input.source, Source::FrontDesk | Source::Phone | Source::Email) {
-        return Err(invalid("bookings made here come from the front desk, phone or email".into()));
     }
     let notes = notes(std::mem::take(&mut input.notes))?;
     if input.rooms.iter().any(|room| room.check_out <= room.check_in) {
@@ -195,7 +227,7 @@ pub async fn create_reservation(
     .bind(input.source.as_str())
     .bind(input.booker_guest_id)
     .bind(notes)
-    .bind(actor.0)
+    .bind(actor.map(|actor| actor.0))
     .bind(input.account_id)
     .bind(today)
     .fetch_one(&mut **tx)
@@ -286,17 +318,20 @@ pub async fn create_reservation(
 
     if input.account_id.is_some() {
         let routed = folio::DEFAULT_ROUTING.map(String::from);
-        folio::set_routing(tx, tenant, Some(actor), property, id, &routed).await?;
+        folio::set_routing(tx, tenant, actor, property, id, &routed).await?;
     }
 
     let assigned: serde_json::Map<String, serde_json::Value> =
         created.iter().map(|room| (room.id.to_string(), serde_json::json!(room.room_id))).collect();
-    let data = serde_json::json!({
+    let mut data = serde_json::json!({
         "confirmation_no": confirmation_no,
         "rooms": created.iter().map(|room| room.id).collect::<Vec<_>>(),
         "assigned": assigned,
     });
-    audit(tx, tenant, Some(actor), "reservation.created", "reservation", id, data).await?;
+    if actor.is_none() {
+        data["actor"] = serde_json::json!(SITE_ACTOR);
+    }
+    audit(tx, tenant, actor, "reservation.created", "reservation", id, data).await?;
     let months: BTreeSet<String> =
         input.rooms.iter().flat_map(|room| rooms::month_keys(property, room.check_in, room.check_out)).collect();
     let tape: BTreeSet<String> =

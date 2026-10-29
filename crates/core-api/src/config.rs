@@ -43,6 +43,8 @@ pub struct Config {
 pub const LOCAL_IBE_PUBLIC_ORIGIN: &str = "http://localhost:5174";
 /// Cloudflare Turnstile's published test secret, which passes every token: the default outside production.
 pub const TURNSTILE_TEST_SECRET: &str = "1x0000000000000000000000000000000AA";
+/// Cloudflare Turnstile's server-side verification endpoint.
+pub const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 
 /// The public booking site's settings. `Debug` leaves out the Turnstile secret.
 #[derive(Clone)]
@@ -54,6 +56,9 @@ pub struct IbeConfig {
     pub trust_cloudflare_ip: bool,
     /// Verifies the booking form's Turnstile tokens.
     pub turnstile_secret: String,
+    /// Where tokens are verified: always [`TURNSTILE_VERIFY_URL`] when read from the environment; tests point it at a
+    /// stand-in.
+    pub turnstile_url: String,
 }
 
 impl std::fmt::Debug for IbeConfig {
@@ -61,6 +66,7 @@ impl std::fmt::Debug for IbeConfig {
         f.debug_struct("IbeConfig")
             .field("public_origin", &self.public_origin)
             .field("trust_cloudflare_ip", &self.trust_cloudflare_ip)
+            .field("turnstile_url", &self.turnstile_url)
             .finish_non_exhaustive()
     }
 }
@@ -73,6 +79,7 @@ impl IbeConfig {
             public_origin: LOCAL_IBE_PUBLIC_ORIGIN.to_owned(),
             trust_cloudflare_ip: false,
             turnstile_secret: TURNSTILE_TEST_SECRET.to_owned(),
+            turnstile_url: TURNSTILE_VERIFY_URL.to_owned(),
         }
     }
 
@@ -115,7 +122,12 @@ impl IbeConfig {
             None if production => bail!("TURNSTILE_SECRET is required in production"),
             None => TURNSTILE_TEST_SECRET.to_owned(),
         };
-        Ok(Self { public_origin, trust_cloudflare_ip, turnstile_secret })
+        Ok(Self {
+            public_origin,
+            trust_cloudflare_ip,
+            turnstile_secret,
+            turnstile_url: TURNSTILE_VERIFY_URL.to_owned(),
+        })
     }
 }
 

@@ -723,7 +723,7 @@ core-api no longer reads `FX_IMPORT`: the exchange-rate import moved to jobs-svc
 |---|---|
 | `DATABASE_URL` | Pooled connection string, as the `goodfolk_api` role (required). Like the API, it refuses a role that bypasses row-level security. |
 | `DATABASE_DIRECT_URL` | Direct, unpooled connection string for the jobs' session advisory locks (a transaction-mode pooler cannot hold one). Required when `APP_ENV=production`; otherwise defaults to `DATABASE_URL`. |
-| `APP_ENV` | `production` logs JSON, requires `DATABASE_DIRECT_URL`, the storage variables, `APP_BASE_URL` and the SES variables, turns the tick off by default, and refuses `SVC_AUTH=secret` and the dev mailer. |
+| `APP_ENV` | `production` logs JSON, requires `DATABASE_DIRECT_URL`, the storage variables, `APP_BASE_URL`, `IBE_PUBLIC_ORIGIN` and the SES variables, turns the tick off by default, and refuses `SVC_AUTH=secret` and the dev mailer. |
 | `PORT` | Listen port (default 8091). One port serves gRPC, `POST /tick`, `POST /mail` and `/healthz`. |
 | `SVC_AUTH`, `INTERNAL_SHARED_SECRET`, `ALLOWED_SERVICE_EMAILS` | Service auth, as for media-svc (below). With `SVC_AUTH=google`, `ALLOWED_SERVICE_EMAILS` lists core-api's runtime service account, the Cloud Scheduler job's service account and the `mail-send` push subscription's service account. |
 | `JOBS_SVC_AUDIENCE` | With `SVC_AUTH=google`: the audience jobs-svc requires on its gRPC calls, `POST /tick` and `POST /mail`; the Cloud Scheduler job's OIDC token and the `mail-send` subscription's use it too. |
@@ -731,6 +731,7 @@ core-api no longer reads `FX_IMPORT`: the exchange-rate import moved to jobs-svc
 | `FX_IMPORT` | `on` (default) or `off`: whether the tick imports the Central Bank's exchange rates (moved from core-api in Phase 7b). An operations switch, allowed in production too: with `off`, rates are set by hand (`PUT …/fx-rates/{date}/{currency}`). The end-to-end suite sets `off`. |
 | `S3_*`, `MEDIA_PUBLIC_BASE_URL` | Storage, for the media sweep, with the same dev defaults as core-api's (see Media engine). |
 | `APP_BASE_URL` | The web app's origin, for the links in emails (`<APP_BASE_URL>/invite/<token>`). Required and `https://` in production; dev default `http://localhost:5173`. |
+| `IBE_PUBLIC_ORIGIN` | The booking site's origin, the same as core-api's, for the manage link in a booking's confirmation email (`<IBE_PUBLIC_ORIGIN>/<CODE>/manage?token=<token>`). A scheme and a host, no path. Dev default `http://localhost:5174`; required, `https://` and without a port in production. |
 | `MAIL_FROM` | Production: the sender address, which SES must have verified. Required. |
 | `AWS_REGION` | Production: the SES region (for example `ap-southeast-1`). Required. |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Production: static keys for an IAM user allowed `ses:SendEmail`. Required: Cloud Run has no AWS instance role. `AWS_SESSION_TOKEN` is optional, for temporary keys. Never printed. |

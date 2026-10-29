@@ -428,7 +428,7 @@ impl Tenant {
             .map(|payload| serde_json::from_value::<MailJob>(payload).unwrap())
             .find_map(|job| match job {
                 MailJob::Invitation { invitation_id, token, .. } => (invitation_id == invitation).then_some(token),
-                MailJob::Report { .. } => None,
+                MailJob::Report { .. } | MailJob::IbeConfirmation { .. } => None,
             })
             .expect("the invitation was mailed")
     }

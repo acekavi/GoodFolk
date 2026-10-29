@@ -1,14 +1,22 @@
 //! The public booking site (IBE): what a property's site shows, and the rooms it offers for a stay, priced with the
 //! taxes on the bill.
 //!
-//! Every function takes a transaction scoped to the tenant of an enabled site (`db::ibe_resolve`), and only reads.
+//! Every function takes a transaction scoped to the tenant of an enabled site (`db::ibe_resolve`). Only [`book`]
+//! writes.
 
+mod booking;
+mod confirmation;
 mod search;
 mod site;
 
+pub use booking::{
+    BookRoom, Booked, Booker, BookingError, BookingRequest, MANAGE_DAYS_AFTER_CHECK_OUT, MAX_SPECIAL_REQUESTS, book,
+    new_token, token_hash,
+};
+pub use confirmation::{Confirmation, ConfirmedRoom, confirmation};
 pub use search::{
     MAX_NIGHTS, MAX_ROOMS, MONTHS_AHEAD, MealOffer, NEXT_AVAILABLE_DAYS, NightPrice, PlanOffer, RoomAsk,
-    RoomTypeResult, SearchRequest, SearchResult, TaxLine, cancellation_text, search,
+    RoomTypeResult, SearchRequest, SearchResult, TaxLine, cancellation_text, money_text, search,
 };
 pub use site::{Image, MediaKind, SiteMedia, SiteRoomType, SiteView, VideoSource, public_code, site};
 

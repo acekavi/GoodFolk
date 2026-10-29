@@ -6,6 +6,8 @@ use uuid::Uuid;
 fn message() -> Message {
     Message {
         to: "kamala@example.com".into(),
+        from_name: None,
+        reply_to: None,
         subject: "Nimal invited you to Lagoon on GoodFolk".into(),
         text: "Hello".into(),
         html: "<p>Hello</p>".into(),
@@ -116,6 +118,19 @@ fn report_mail_job_debug_has_no_secrets() {
         format!("{job:?}"),
         format!("Report {{ tenant_id: {tenant_id}, report_id: {report_id}, user_id: {user_id} }}")
     );
+    let json = serde_json::to_string(&job).unwrap();
+    assert_eq!(serde_json::from_str::<MailJob>(&json).unwrap(), job);
+}
+
+#[test]
+fn ibe_confirmation_mail_job_keeps_its_token_out_of_debug() {
+    let job = MailJob::IbeConfirmation {
+        tenant_id: Uuid::now_v7(),
+        reservation_id: Uuid::now_v7(),
+        token: "m4n4ge-token".into(),
+    };
+
+    assert!(!format!("{job:?}").contains("m4n4ge-token"));
     let json = serde_json::to_string(&job).unwrap();
     assert_eq!(serde_json::from_str::<MailJob>(&json).unwrap(), job);
 }

@@ -204,11 +204,36 @@ pub async fn create_guest(
     key: &GuestIdKey,
     input: NewGuest,
 ) -> Result<Guest, ReservationsError> {
+    insert_guest(tx, tenant, Some(actor), Some(key), input).await
+}
+
+/// A guest the booking site creates for a booking, with no staff member behind it: the audit entry names the actor
+/// `ibe`. The site takes no ID document (`Invalid`).
+pub async fn create_guest_from_site(
+    tx: &mut Tx,
+    tenant: TenantId,
+    input: NewGuest,
+) -> Result<Guest, ReservationsError> {
+    insert_guest(tx, tenant, None, None, input).await
+}
+
+/// [`create_guest`]'s body, for staff (`actor`, sealing an ID document with `key`) or the booking site (`None`).
+async fn insert_guest(
+    tx: &mut Tx,
+    tenant: TenantId,
+    actor: Option<UserId>,
+    key: Option<&GuestIdKey>,
+    input: NewGuest,
+) -> Result<Guest, ReservationsError> {
     let id = Uuid::now_v7();
     let (first_name, last_name) = (first_name(&input.first_name)?, last_name(&input.last_name)?);
     let (email, phone, country) = (email(input.email)?, phone(input.phone)?, country(input.country)?);
     let notes = notes(input.notes)?;
-    let id_doc = input.id_doc.map(|doc| IdDoc::seal(key, tenant, id, doc)).transpose()?;
+    let id_doc = match (input.id_doc, key) {
+        (None, _) => None,
+        (Some(doc), Some(key)) => Some(IdDoc::seal(key, tenant, id, doc)?),
+        (Some(_), None) => return Err(invalid("an ID document is recorded at the front desk")),
+    };
     let created: Guest = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "insert into guest (id, tenant_id, first_name, last_name, email, phone, country, residency, notes,
                             id_doc_type, id_doc_number_enc, id_doc_key_id, id_doc_last4)
@@ -230,16 +255,11 @@ pub async fn create_guest(
     .bind(id_doc.as_ref().map(|doc| &doc.last4))
     .fetch_one(&mut **tx)
     .await?;
-    audit(
-        tx,
-        tenant,
-        Some(actor),
-        "guest.created",
-        "guest",
-        id,
-        serde_json::json!({ "id_doc": IdDoc::audit(id_doc.as_ref()) }),
-    )
-    .await?;
+    let mut data = serde_json::json!({ "id_doc": IdDoc::audit(id_doc.as_ref()) });
+    if actor.is_none() {
+        data["actor"] = serde_json::json!(crate::SITE_ACTOR);
+    }
+    audit(tx, tenant, actor, "guest.created", "guest", id, data).await?;
     Ok(created)
 }
 

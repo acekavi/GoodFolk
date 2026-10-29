@@ -45,6 +45,7 @@ pub fn svc(pool: PgPool, lock: PgConnectOptions) -> JobsSvc {
         tracker: TaskTracker::new(),
         mailer: Arc::new(DevMailer { dir: outbox }),
         app_base_url: "http://app.test".to_owned(),
+        ibe_public_origin: "http://book.test".to_owned(),
     }
 }
 

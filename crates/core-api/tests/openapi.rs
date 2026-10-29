@@ -11,6 +11,7 @@ fn the_openapi_document_lists_every_rest_route() {
         paths,
         vec![
             "/api/public/v1/ibe/by-host/{host}",
+            "/api/public/v1/ibe/{code}/bookings",
             "/api/public/v1/ibe/{code}/search",
             "/api/public/v1/ibe/{code}/site",
             "/api/v1/auth/login",

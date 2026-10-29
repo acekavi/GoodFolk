@@ -33,6 +33,7 @@ property.workspace = true
 proto.workspace = true
 rates.workspace = true
 reports.workspace = true
+reqwest.workspace = true
 reservations.workspace = true
 rooms.workspace = true
 rust_decimal.workspace = true
@@ -62,7 +63,6 @@ flate2.workspace = true
 http-body-util.workspace = true
 jobs-svc.workspace = true
 media-svc.workspace = true
-reqwest.workspace = true
 tokio = { workspace = true, features = ["net"] }
 # TaskTracker, for the in-process jobs-svc.
 tokio-util = { workspace = true, features = ["rt"] }

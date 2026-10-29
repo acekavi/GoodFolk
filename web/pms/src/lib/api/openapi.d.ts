@@ -24,6 +24,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/public/v1/ibe/{code}/bookings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Books rooms on the site of the property coded `code`, paid at the hotel: a confirmed reservation from the booking
+         *     site, and its confirmation email with the manage link. Prices are always worked out again: a total per currency
+         *     other than `expected_totals` is `409` with `reason: price_changed` and the new `totals`, which the guest confirms;
+         *     a room no longer free is `409` with `reason: sold_out`. A booking the site does not sell is `422`.
+         * @description Checked in this order: 5 bookings a minute per IP (`429` with `Retry-After`); the hidden `website` field, which a
+         *     bot fills (it is answered as if booked, and nothing is kept); the Turnstile token (`400` when missing or refused,
+         *     `503` when it cannot be checked); the `Idempotency-Key` (required, scoped to the property: the same request again
+         *     gets the first answer, another request with the same key `409`).
+         */
+        post: operations["ibe_book"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/public/v1/ibe/{code}/search": {
         parameters: {
             query?: never;
@@ -2243,6 +2269,74 @@ export interface components {
             property_id: string;
             /** Format: int32 */
             version: number;
+        };
+        /** @description One room of a booking, as one of the search's offers. */
+        BookRoom: {
+            /** Format: int32 */
+            adults: number;
+            /** Format: int32 */
+            children: number;
+            meal_plan: string;
+            /** @description Who stays in the room; the booker when absent. */
+            occupant_name?: string | null;
+            /** Format: uuid */
+            rate_plan_id: string;
+            /** Format: uuid */
+            room_type_id: string;
+        };
+        /** @description The person booking, who gets the confirmation email. */
+        Booker: {
+            /**
+             * @description When the guest expects to arrive, `HH:MM`.
+             * @example 14:30
+             */
+            arrival_time?: string | null;
+            /** @description The country of residence, ISO 3166-1 alpha-2 such as `LK`. */
+            country: string;
+            email: string;
+            first_name: string;
+            last_name: string;
+            phone: string;
+        };
+        /** @description A booking from the site's form. */
+        BookingBody: components["schemas"]["BookingRequest"] & {
+            /** @description The Turnstile widget's token. */
+            turnstile_token?: string;
+            /** @description A field people never see, so never fill: a form that fills it is a bot's. */
+            website?: string;
+        };
+        /** @description A booking made. `manage_url` carries the booking's manage token, which is shown only here and in the email. */
+        BookingConfirmed: {
+            confirmation_no: string;
+            manage_url: string;
+        };
+        /** @description What a booking that cannot be made as sent answers: the new totals for a price that changed. */
+        BookingConflict: {
+            /** @description `price_changed` or `sold_out`. */
+            reason: string;
+            /** @description The totals now, per currency in minor units, when the price changed. */
+            totals?: {
+                [key: string]: number;
+            } | null;
+        };
+        /** @description A booking as the site's form sends it. Prices are never taken from it: `expected_totals` is what the guest saw. */
+        BookingRequest: {
+            /** @description The guest agreed to the hotel's booking terms and privacy notice. */
+            agreed: boolean;
+            booker: components["schemas"]["Booker"];
+            /** Format: date */
+            check_in: string;
+            /** Format: date */
+            check_out: string;
+            /** @description The total the guest agreed to per currency, in minor units, taxes included. */
+            expected_totals: {
+                [key: string]: number;
+            };
+            /** @description The guest's answer to "Are you a resident of Sri Lanka?"; the booker's residency, which every room is priced for. */
+            residency: components["schemas"]["Residency"];
+            rooms: components["schemas"]["BookRoom"][];
+            /** @description Up to 500 characters, kept as the reservation's notes. */
+            special_requests?: string;
         };
         /**
          * @description Changes a plan's prices on `[from, to)`. Left out, `weekdays` (ISO: 1 = Monday … 7 = Sunday),
@@ -4693,6 +4787,74 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ibe_book: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description 8 to 160 characters, new for each booking attempt */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description the property code, any case */
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BookingBody"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BookingConfirmed"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BookingConflict"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    "Retry-After"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

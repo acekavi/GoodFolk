@@ -1,4 +1,5 @@
-//! The booking site's public API: resolving a site by code or custom host, its limits, CORS and caching.
+//! The booking site's public API: resolving a site by code or custom host, its limits, CORS and caching, and booking:
+//! the bot checks, idempotency and what a booking writes.
 
 mod common;
 
@@ -24,6 +25,7 @@ struct Hotel {
     superuser: PgPool,
     path: String,
     business_date: Date,
+    deluxe: Uuid,
 }
 
 impl Hotel {
@@ -44,7 +46,7 @@ impl Hotel {
                             "max_children": 1, "max_occupancy": 3});
         let room_type = uuid(&post(app, &owner, &format!("{path}/room-types"), deluxe).await["id"]);
         post(app, &owner, &format!("{path}/rooms"), json!({"room_type_id": room_type, "number": "101"})).await;
-        let hotel = Self { owner, superuser, path, business_date };
+        let hotel = Self { owner, superuser, path, business_date, deluxe: room_type };
         hotel.save_site(app, 0, enabled).await;
         hotel
     }
@@ -72,6 +74,86 @@ impl Hotel {
             "/api/public/v1/ibe/{code}/search?check_in={check_in}&check_out={check_out}&residency=resident&rooms=2-0"
         )
     }
+
+    /// An `IBE` plan for anyone in LKR selling `DLX` room only at 10 000 a night for 30 days; its id.
+    async fn sell(&self, app: &TestApp) -> String {
+        let plan = json!({"code": "BAR", "name": "Best available", "kind": "standard", "segment": "IBE",
+                          "currency": "LKR", "allowed_meal_plans": ["RO"], "room_type_ids": [self.deluxe]});
+        let plan = uuid(&post(app, &self.owner, &format!("{}/rate-plans", self.path), plan).await["id"]).to_string();
+        let prices: Vec<Value> = (0..30)
+            .map(|day| {
+                json!({"room_type_id": self.deluxe, "date": self.business_date + Duration::days(day), "occupancy": 1,
+                       "amount": 10_000})
+            })
+            .collect();
+        let path = format!("{}/rate-plans/{plan}/prices", self.path);
+        let priced = app.send(Method::PUT, &path, Some(&self.owner), Some(json!({"prices": prices}))).await;
+        assert_eq!(priced.status, StatusCode::NO_CONTENT, "{:?}", priced.body);
+        plan
+    }
+
+    /// A booking of one `DLX` room on `plan` for two adults, residents, for 2 nights from D + 1, by `email`, at the
+    /// totals the search shows, with the Turnstile token `turnstile`.
+    async fn booking(&self, app: &TestApp, plan: &str, email: &str, turnstile: &str) -> Value {
+        let search = get(app, &self.search("GAL", 1)).await;
+        let total = &search.body["room_types"][0]["plans"][0]["meal_plans"][0]["total"];
+        assert!(total.is_i64(), "{:?}", search.body);
+        json!({
+            "turnstile_token": turnstile,
+            "residency": "resident",
+            "booker": {"first_name": "Kamala", "last_name": "Perera", "email": email, "phone": "+94 77 123 4567",
+                       "country": "LK", "arrival_time": "14:30"},
+            "rooms": [{"room_type_id": self.deluxe, "rate_plan_id": plan, "meal_plan": "RO", "adults": 2,
+                       "children": 0}],
+            "check_in": self.business_date + Duration::days(1),
+            "check_out": self.business_date + Duration::days(3),
+            "special_requests": "",
+            "expected_totals": {"LKR": total},
+            "agreed": true,
+        })
+    }
+
+    async fn reservations(&self) -> i64 {
+        sqlx::query_scalar("select count(*) from reservation").fetch_one(&self.superuser).await.unwrap()
+    }
+}
+
+/// The Turnstile token the stand-in accepts.
+const PASSING: &str = "a-passing-turnstile-token";
+
+/// A stand-in for Turnstile's verification endpoint that accepts [`PASSING`] only, and the app verifying against it.
+async fn with_turnstile(app: &TestApp) -> TestApp {
+    let verify = axum::routing::post(|axum::Json(body): axum::Json<Value>| async move {
+        axum::Json(json!({"success": body["response"] == PASSING && body["secret"].is_string()}))
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, axum::Router::new().route("/siteverify", verify)).await.unwrap() });
+    verifying_at(app, &format!("http://{addr}/siteverify"))
+}
+
+fn verifying_at(app: &TestApp, url: &str) -> TestApp {
+    let state = app.state.clone().with_ibe(IbeConfig { turnstile_url: url.to_owned(), ..IbeConfig::local() });
+    TestApp { router: router(state.clone()), state, pool: app.pool.clone() }
+}
+
+/// Posts `body` as a booking to the site `GAL` from `peer`, with the `Idempotency-Key` `key` when given.
+async fn book(app: &TestApp, body: &Value, key: Option<&str>, peer: &str) -> Answer {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri("/api/public/v1/ibe/GAL/bookings")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("origin", "http://localhost:5174");
+    if let Some(key) = key {
+        builder = builder.header("idempotency-key", key);
+    }
+    let mut request = builder.body(Body::from(body.to_string())).unwrap();
+    request.extensions_mut().insert(ConnectInfo(peer.parse::<SocketAddr>().unwrap()));
+    let response = app.router.clone().oneshot(request).await.unwrap();
+    let (status, headers) = (response.status(), response.headers().clone());
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap() };
+    Answer { status, headers, body }
 }
 
 async fn post(app: &TestApp, cookie: &str, path: &str, body: Value) -> Value {
@@ -278,4 +360,216 @@ async fn cf_connecting_ip_counts_only_when_trusted(_: PgPoolOptions, opts: PgCon
         .unwrap();
     ips.sort();
     assert_eq!(ips, ["192.0.2.20", "192.0.2.40", "203.0.113.9"]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_booking_is_201_and_writes_its_confirmation_mail_job(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let plan = hotel.sell(&app).await;
+    let app = with_turnstile(&app).await;
+    let body = hotel.booking(&app, &plan, "kamala@example.com", PASSING).await;
+
+    let booked = book(&app, &body, Some("booking-key-0001"), PEER).await;
+
+    assert_eq!(booked.status, StatusCode::CREATED, "{:?}", booked.body);
+    let confirmation_no = booked.body["confirmation_no"].as_str().unwrap();
+    assert!(confirmation_no.starts_with("GAL-"), "{confirmation_no}");
+    assert_eq!(booked.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "http://localhost:5174");
+    let manage_url = booked.body["manage_url"].as_str().unwrap();
+    let token =
+        manage_url.strip_prefix("http://localhost:5174/GAL/manage?token=").unwrap_or_else(|| panic!("{manage_url}"));
+    let (reservation, source, hash): (Uuid, String, Vec<u8>) = sqlx::query_as(
+        "select r.id, r.source, t.sha256 from reservation r
+         join reservation_access_token t on t.reservation_id = r.id where r.confirmation_no = $1",
+    )
+    .bind(confirmation_no)
+    .fetch_one(&hotel.superuser)
+    .await
+    .unwrap();
+    assert_eq!(source, "ibe");
+    assert_eq!(hash, ibe::token_hash(token));
+    let jobs: Vec<Value> = sqlx::query_scalar("select payload from outbox where topic = 'mail-send'")
+        .fetch_all(&hotel.superuser)
+        .await
+        .unwrap();
+    assert_eq!(jobs.len(), 1);
+    let job: mail::MailJob = serde_json::from_value(jobs[0].clone()).unwrap();
+    let tenant: Uuid = sqlx::query_scalar("select tenant_id from reservation where id = $1")
+        .bind(reservation)
+        .fetch_one(&hotel.superuser)
+        .await
+        .unwrap();
+    assert_eq!(
+        job,
+        mail::MailJob::IbeConfirmation { tenant_id: tenant, reservation_id: reservation, token: token.into() }
+    );
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_same_idempotency_key_and_body_book_once_and_replay_the_answer(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let plan = hotel.sell(&app).await;
+    let app = with_turnstile(&app).await;
+    let body = hotel.booking(&app, &plan, "kamala@example.com", PASSING).await;
+
+    let first = book(&app, &body, Some("booking-key-0001"), PEER).await;
+    let retry = book(&app, &body, Some("booking-key-0001"), PEER).await;
+
+    assert_eq!(first.status, StatusCode::CREATED, "{:?}", first.body);
+    assert_eq!((retry.status, &retry.body), (StatusCode::CREATED, &first.body));
+    assert_eq!(hotel.reservations().await, 1);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_same_idempotency_key_with_another_body_is_409(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let plan = hotel.sell(&app).await;
+    let app = with_turnstile(&app).await;
+    let body = hotel.booking(&app, &plan, "kamala@example.com", PASSING).await;
+    let mut other = body.clone();
+    other["special_requests"] = json!("A late check-in");
+
+    let first = book(&app, &body, Some("booking-key-0001"), PEER).await;
+    let reused = book(&app, &other, Some("booking-key-0001"), PEER).await;
+    let without_key = book(&app, &other, None, PEER).await;
+
+    assert_eq!(first.status, StatusCode::CREATED, "{:?}", first.body);
+    assert_eq!(reused.status, StatusCode::CONFLICT, "{:?}", reused.body);
+    assert_eq!(without_key.status, StatusCode::BAD_REQUEST, "{:?}", without_key.body);
+    assert_eq!(hotel.reservations().await, 1);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_missing_or_failed_turnstile_token_is_400(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let plan = hotel.sell(&app).await;
+    let app = with_turnstile(&app).await;
+    let failing = hotel.booking(&app, &plan, "kamala@example.com", "a-bot-token").await;
+    let mut missing = failing.clone();
+    missing.as_object_mut().unwrap().remove("turnstile_token");
+
+    let failed = book(&app, &failing, Some("booking-key-0001"), PEER).await;
+    let absent = book(&app, &missing, Some("booking-key-0002"), PEER).await;
+
+    for answer in [&failed, &absent] {
+        assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{:?}", answer.body);
+    }
+    assert_eq!(hotel.reservations().await, 0);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn turnstile_out_of_reach_is_503_never_a_pass(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let plan = hotel.sell(&app).await;
+    // A port nothing listens on.
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
+    let app = verifying_at(&app, &format!("http://{closed}/siteverify"));
+    let body = hotel.booking(&app, &plan, "kamala@example.com", PASSING).await;
+
+    let unreachable = book(&app, &body, Some("booking-key-0001"), PEER).await;
+
+    assert_eq!(unreachable.status, StatusCode::SERVICE_UNAVAILABLE, "{:?}", unreachable.body);
+    assert_eq!(hotel.reservations().await, 0);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_6th_booking_in_a_minute_from_one_ip_is_429(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let plan = hotel.sell(&app).await;
+    let app = with_turnstile(&app).await;
+    let body = hotel.booking(&app, &plan, "kamala@example.com", "a-bot-token").await;
+
+    for n in 1..=5 {
+        let answer = book(&app, &body, Some(&format!("booking-key-000{n}")), PEER).await;
+        assert_eq!(answer.status, StatusCode::BAD_REQUEST, "booking {n}: {:?}", answer.body);
+    }
+    let refused = book(&app, &body, Some("booking-key-0006"), PEER).await;
+    let elsewhere = book(&app, &body, Some("booking-key-0007"), "198.51.100.7:40000").await;
+
+    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", refused.body);
+    assert!(refused.headers.contains_key(header::RETRY_AFTER));
+    assert_eq!(elsewhere.status, StatusCode::BAD_REQUEST, "another address has its own count");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_honeypot_gets_a_decoy_201_and_nothing_is_kept(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let plan = hotel.sell(&app).await;
+    // Turnstile out of reach: the decoy never asks it.
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
+    let app = verifying_at(&app, &format!("http://{closed}/siteverify"));
+    let mut body = hotel.booking(&app, &plan, "bot@example.com", "a-bot-token").await;
+    body["website"] = json!("https://spam.example");
+
+    let decoy = book(&app, &body, Some("booking-key-0001"), PEER).await;
+
+    assert_eq!(decoy.status, StatusCode::CREATED, "{:?}", decoy.body);
+    let confirmation_no = decoy.body["confirmation_no"].as_str().unwrap();
+    let (code, number) = confirmation_no.split_once('-').unwrap();
+    assert_eq!(code, "GAL");
+    assert!(number.len() == 6 && number.bytes().all(|b| b.is_ascii_digit()), "{confirmation_no}");
+    let manage_url = decoy.body["manage_url"].as_str().unwrap();
+    let token =
+        manage_url.strip_prefix("http://localhost:5174/GAL/manage?token=").unwrap_or_else(|| panic!("{manage_url}"));
+    assert_eq!(token.len(), 43);
+    assert_eq!(hotel.reservations().await, 0);
+    let kept: (i64, i64, i64) = sqlx::query_as(
+        "select (select count(*) from guest), (select count(*) from outbox where topic = 'mail-send'),
+                (select count(*) from idempotency_key where key like '%/booking-key-0001')",
+    )
+    .fetch_one(&hotel.superuser)
+    .await
+    .unwrap();
+    assert_eq!(kept, (0, 0, 0));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_changed_price_and_a_sold_out_room_are_409_with_their_reason(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let plan = hotel.sell(&app).await;
+    let app = with_turnstile(&app).await;
+    let body = hotel.booking(&app, &plan, "kamala@example.com", PASSING).await;
+    let total = body["expected_totals"]["LKR"].as_i64().unwrap();
+    let mut cheaper = body.clone();
+    cheaper["expected_totals"]["LKR"] = json!(total - 100);
+
+    let changed = book(&app, &cheaper, Some("booking-key-0001"), PEER).await;
+    let booked = book(&app, &body, Some("booking-key-0002"), PEER).await;
+    let sold_out = book(&app, &body, Some("booking-key-0003"), PEER).await;
+
+    assert_eq!(changed.status, StatusCode::CONFLICT, "{:?}", changed.body);
+    assert_eq!((&changed.body["reason"], &changed.body["totals"]), (&json!("price_changed"), &json!({"LKR": total})));
+    assert_eq!(booked.status, StatusCode::CREATED, "{:?}", booked.body);
+    assert_eq!(sold_out.status, StatusCode::CONFLICT, "{:?}", sold_out.body);
+    assert_eq!(sold_out.body["reason"], "sold_out");
+    assert_eq!(sold_out.body["detail"], "That room was just booked; here is what is still available");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_foreign_origin_preflight_for_post_bookings_is_refused(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    Hotel::new(&app, opts, "GAL", true).await;
+    let preflight = async |origin: &str| {
+        let headers = [
+            ("origin", origin),
+            ("access-control-request-method", "POST"),
+            ("access-control-request-headers", "content-type,idempotency-key"),
+        ];
+        call(&app, Method::OPTIONS, "/api/public/v1/ibe/GAL/bookings", PEER, &headers).await
+    };
+
+    let foreign = preflight("https://evil.example").await;
+    let own = preflight("http://localhost:5174").await;
+
+    assert!(foreign.headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(), "{:?}", foreign.headers);
+    assert_eq!(own.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "http://localhost:5174");
+    assert!(own.headers.get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS).is_none());
 }

@@ -4,6 +4,7 @@
 
 pub(crate) mod ibe;
 pub(crate) mod limits;
+mod turnstile;
 
 use crate::config::IbeConfig;
 use crate::error::ApiError;
@@ -14,7 +15,7 @@ use axum::http::request::Parts;
 use axum::http::{HeaderName, HeaderValue, Method, header};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::Response;
-use axum::routing::get;
+use axum::routing::{get, post};
 use sqlx::PgPool;
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
@@ -23,7 +24,7 @@ use std::time::Duration;
 use tower::{Layer, ServiceExt};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
-pub use ibe::SiteCode;
+pub use ibe::{BookingBody, BookingConfirmed, BookingConflict, SiteCode};
 
 /// How long a browser may keep a preflight's answer.
 const PREFLIGHT_MAX_AGE: Duration = Duration::from_secs(600);
@@ -36,6 +37,7 @@ pub(crate) fn router(state: &AppState) -> Router<AppState> {
         .route("/api/public/v1/ibe/by-host/{host}", get(ibe::by_host))
         .route("/api/public/v1/ibe/{code}/site", get(ibe::site))
         .route("/api/public/v1/ibe/{code}/search", get(ibe::search))
+        .route("/api/public/v1/ibe/{code}/bookings", post(ibe::book))
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .layer(from_fn_with_state(policies, cors))
 }

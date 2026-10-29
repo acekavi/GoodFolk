@@ -41,6 +41,79 @@
         }
       }
     },
+    "/api/public/v1/ibe/{code}/bookings": {
+      "post": {
+        "tags": [
+          "crate::public::ibe"
+        ],
+        "summary": "Books rooms on the site of the property coded `code`, paid at the hotel: a confirmed reservation from the booking\nsite, and its confirmation email with the manage link. Prices are always worked out again: a total per currency\nother than `expected_totals` is `409` with `reason: price_changed` and the new `totals`, which the guest confirms;\na room no longer free is `409` with `reason: sold_out`. A booking the site does not sell is `422`.",
+        "description": "Checked in this order: 5 bookings a minute per IP (`429` with `Retry-After`); the hidden `website` field, which a\nbot fills (it is answered as if booked, and nothing is kept); the Turnstile token (`400` when missing or refused,\n`503` when it cannot be checked); the `Idempotency-Key` (required, scoped to the property: the same request again\ngets the first answer, another request with the same key `409`).",
+        "operationId": "ibe_book",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "description": "the property code, any case",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "8 to 160 characters, new for each booking attempt",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingConfirmed"
+                }
+              }
+            }
+          },
+          "400": {},
+          "404": {},
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingConflict"
+                }
+              }
+            }
+          },
+          "422": {},
+          "429": {
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {}
+        }
+      }
+    },
     "/api/public/v1/ibe/{code}/search": {
       "get": {
         "tags": [
@@ -6821,6 +6894,201 @@
           "version": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "BookRoom": {
+        "type": "object",
+        "description": "One room of a booking, as one of the search's offers.",
+        "required": [
+          "room_type_id",
+          "rate_plan_id",
+          "meal_plan",
+          "adults",
+          "children"
+        ],
+        "properties": {
+          "adults": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "children": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "meal_plan": {
+            "type": "string"
+          },
+          "occupant_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who stays in the room; the booker when absent."
+          },
+          "rate_plan_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "room_type_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "Booker": {
+        "type": "object",
+        "description": "The person booking, who gets the confirmation email.",
+        "required": [
+          "first_name",
+          "last_name",
+          "email",
+          "phone",
+          "country"
+        ],
+        "properties": {
+          "arrival_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the guest expects to arrive, `HH:MM`.",
+            "example": "14:30"
+          },
+          "country": {
+            "type": "string",
+            "description": "The country of residence, ISO 3166-1 alpha-2 such as `LK`."
+          },
+          "email": {
+            "type": "string"
+          },
+          "first_name": {
+            "type": "string"
+          },
+          "last_name": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          }
+        }
+      },
+      "BookingBody": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/BookingRequest"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "turnstile_token": {
+                "type": "string",
+                "description": "The Turnstile widget's token."
+              },
+              "website": {
+                "type": "string",
+                "description": "A field people never see, so never fill: a form that fills it is a bot's."
+              }
+            }
+          }
+        ],
+        "description": "A booking from the site's form."
+      },
+      "BookingConfirmed": {
+        "type": "object",
+        "description": "A booking made. `manage_url` carries the booking's manage token, which is shown only here and in the email.",
+        "required": [
+          "confirmation_no",
+          "manage_url"
+        ],
+        "properties": {
+          "confirmation_no": {
+            "type": "string"
+          },
+          "manage_url": {
+            "type": "string"
+          }
+        }
+      },
+      "BookingConflict": {
+        "type": "object",
+        "description": "What a booking that cannot be made as sent answers: the new totals for a price that changed.",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "`price_changed` or `sold_out`."
+          },
+          "totals": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The totals now, per currency in minor units, when the price changed.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "BookingRequest": {
+        "type": "object",
+        "description": "A booking as the site's form sends it. Prices are never taken from it: `expected_totals` is what the guest saw.",
+        "required": [
+          "residency",
+          "booker",
+          "rooms",
+          "check_in",
+          "check_out",
+          "expected_totals",
+          "agreed"
+        ],
+        "properties": {
+          "agreed": {
+            "type": "boolean",
+            "description": "The guest agreed to the hotel's booking terms and privacy notice."
+          },
+          "booker": {
+            "$ref": "#/components/schemas/Booker"
+          },
+          "check_in": {
+            "type": "string",
+            "format": "date"
+          },
+          "check_out": {
+            "type": "string",
+            "format": "date"
+          },
+          "expected_totals": {
+            "type": "object",
+            "description": "The total the guest agreed to per currency, in minor units, taxes included.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "residency": {
+            "$ref": "#/components/schemas/Residency",
+            "description": "The guest's answer to \"Are you a resident of Sri Lanka?\"; the booker's residency, which every room is priced for."
+          },
+          "rooms": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BookRoom"
+            }
+          },
+          "special_requests": {
+            "type": "string",
+            "description": "Up to 500 characters, kept as the reservation's notes."
           }
         }
       },

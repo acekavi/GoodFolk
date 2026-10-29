@@ -1,18 +1,21 @@
-//! The booking site's public routes: resolving a custom host, the site and the search.
+//! The booking site's public routes: resolving a custom host, the site, the search and booking.
 
 use crate::error::ApiError;
 use crate::extract::{ApiPath, ApiQuery};
-use crate::public::ClientIp;
-use crate::public::limits::{self, SEARCHES_PER_MINUTE};
+use crate::idempotency;
+use crate::public::limits::{self, BOOKINGS_PER_MINUTE, SEARCHES_PER_MINUTE};
+use crate::public::{ClientIp, turnstile};
 use crate::state::AppState;
 use axum::Json;
+use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::header;
-use axum::response::IntoResponse;
+use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
+use axum::response::{IntoResponse, Response};
 use db::{Scope, TenantId};
-use ibe::{IbeError, RoomAsk, SearchRequest, SearchResult, SiteView};
+use ibe::{BookingError, BookingRequest, IbeError, RoomAsk, SearchRequest, SearchResult, SiteView};
 use rates::Residency;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use time::Date;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -26,6 +29,35 @@ const SEARCH_CACHE: &str = "public, s-maxage=30";
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SiteCode {
     pub code: String,
+}
+
+/// A booking from the site's form.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct BookingBody {
+    /// The Turnstile widget's token.
+    #[serde(default)]
+    pub turnstile_token: String,
+    /// A field people never see, so never fill: a form that fills it is a bot's.
+    #[serde(default)]
+    pub website: String,
+    #[serde(flatten)]
+    pub booking: BookingRequest,
+}
+
+/// A booking made. `manage_url` carries the booking's manage token, which is shown only here and in the email.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BookingConfirmed {
+    pub confirmation_no: String,
+    pub manage_url: String,
+}
+
+/// What a booking that cannot be made as sent answers: the new totals for a price that changed.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BookingConflict {
+    /// `price_changed` or `sold_out`.
+    pub reason: String,
+    /// The totals now, per currency in minor units, when the price changed.
+    pub totals: Option<BTreeMap<String, i64>>,
 }
 
 /// A stay to search.
@@ -51,6 +83,23 @@ pub(crate) fn ibe_error(err: IbeError) -> ApiError {
             ApiError::internal()
         }
         IbeError::Database(db_err) => db_err.into(),
+    }
+}
+
+/// What the guest is told when a room chosen is no longer offered.
+const SOLD_OUT: &str = "That room was just booked; here is what is still available";
+
+fn booking_error(err: BookingError) -> ApiError {
+    match err {
+        BookingError::Invalid(message) => ApiError::unprocessable(message),
+        BookingError::NotAgreed => ApiError::unprocessable(err.to_string()),
+        BookingError::PriceChanged { totals } => {
+            ApiError::conflict("The price has changed; confirm the new total to book")
+                .with("reason", "price_changed")
+                .with("totals", totals)
+        }
+        BookingError::SoldOut => ApiError::conflict(SOLD_OUT).with("reason", "sold_out"),
+        BookingError::Ibe(err) => ibe_error(err),
     }
 }
 
@@ -120,6 +169,79 @@ pub async fn search(
     let result = ibe::search(&mut tx, property, &request).await.map_err(ibe_error)?;
     tx.commit().await?;
     Ok(([(header::CACHE_CONTROL, SEARCH_CACHE)], Json(result)))
+}
+
+/// Books rooms on the site of the property coded `code`, paid at the hotel: a confirmed reservation from the booking
+/// site, and its confirmation email with the manage link. Prices are always worked out again: a total per currency
+/// other than `expected_totals` is `409` with `reason: price_changed` and the new `totals`, which the guest confirms;
+/// a room no longer free is `409` with `reason: sold_out`. A booking the site does not sell is `422`.
+///
+/// Checked in this order: 5 bookings a minute per IP (`429` with `Retry-After`); the hidden `website` field, which a
+/// bot fills (it is answered as if booked, and nothing is kept); the Turnstile token (`400` when missing or refused,
+/// `503` when it cannot be checked); the `Idempotency-Key` (required, scoped to the property: the same request again
+/// gets the first answer, another request with the same key `409`).
+#[utoipa::path(post, operation_id = "ibe_book", path = "/api/public/v1/ibe/{code}/bookings",
+    params(("code" = String, Path, description = "the property code, any case"),
+        ("Idempotency-Key" = String, Header, description = "8 to 160 characters, new for each booking attempt")),
+    request_body = BookingBody,
+    responses((status = 201, body = BookingConfirmed), (status = 400), (status = 404),
+        (status = 409, body = BookingConflict), (status = 422), (status = 429, headers(("Retry-After" = String))),
+        (status = 503)))]
+pub async fn book(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    ApiPath(code): ApiPath<String>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    limits::check(&state.pool, "booking", ip, BOOKINGS_PER_MINUTE).await?;
+    let (tenant, property) = resolve(&state, Some(&code), None).await?;
+    // Fixed messages: serde's would quote the guest's details back.
+    let request: BookingBody = serde_json::from_slice(&body).map_err(|err| match err.classify() {
+        serde_json::error::Category::Data => ApiError::unprocessable("the booking does not have the expected shape"),
+        _ => ApiError::bad_request("the booking is not valid JSON"),
+    })?;
+    if !request.website.is_empty() {
+        return Ok(decoy(&state, &code));
+    }
+    let key = idempotency::public_key(&headers)?;
+    turnstile::verify(&state.ibe, &request.turnstile_token, ip).await?;
+    let booking = async {
+        let booked = async {
+            let mut tx = db::begin(&state.pool, Scope::tenant(tenant)).await?;
+            let booked = ibe::book(&mut tx, tenant, property, &request.booking).await.map_err(booking_error)?;
+            let code = ibe::public_code(&mut tx, property).await.map_err(ibe_error)?;
+            tx.commit().await?;
+            Ok::<_, ApiError>(BookingConfirmed {
+                manage_url: manage_url(&state, &code, &booked.token),
+                confirmation_no: booked.confirmation_no,
+            })
+        };
+        match booked.await {
+            Ok(confirmed) => (StatusCode::CREATED, Json(confirmed)).into_response(),
+            Err(err) => err.into_response(),
+        }
+    };
+    idempotency::property_scoped(&state, tenant, property, &key, (&method, &uri, &body), booking).await
+}
+
+/// The manage page of the booking whose token is `token`, on the booking domain.
+fn manage_url(state: &AppState, code: &str, token: &str) -> String {
+    format!("{}/{code}/manage?token={token}", state.ibe.public_origin)
+}
+
+/// What a bot that filled the hidden field is told: a booking's answer in every way, for a booking that was never
+/// made.
+fn decoy(state: &AppState, code: &str) -> Response {
+    let number = Uuid::now_v7().as_u128() % 1_000_000;
+    let code = code.to_ascii_uppercase();
+    let confirmed = BookingConfirmed {
+        confirmation_no: format!("{code}-{number:06}"),
+        manage_url: manage_url(state, &code, &ibe::new_token()),
+    };
+    (StatusCode::CREATED, Json(confirmed)).into_response()
 }
 
 /// `2-0,2-1` as rooms; `400` unless every room is `adults-children` in digits and the list is short. The search

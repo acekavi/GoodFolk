@@ -4,7 +4,8 @@
 use crate::IbeError;
 use db::Tx;
 use rates::{
-    CancellationPolicy, MealPlan, Offer, OfferData, OfferRequest, PenaltyKind, Quote, RatePlan, Residency, Segment,
+    CancellationPolicy, CancellationRule, MealPlan, Offer, OfferData, OfferRequest, Penalty, PenaltyKind, Quote,
+    QuoteNight, RatePlan, Residency, Segment,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
@@ -103,22 +104,29 @@ pub struct TaxLine {
 /// the plan's). Without a policy cancelling is free. Each rule charges from its number of days before arrival on (as
 /// cancelling applies it), so the time before the furthest one is free.
 pub fn cancellation_text(policy: Option<&CancellationPolicy>, currency: &str) -> String {
-    let Some(policy) = policy else { return "Free cancellation.".into() };
-    let mut rules = policy.rules.clone();
+    match policy {
+        Some(policy) => terms_text(&policy.rules, policy.no_show, currency),
+        None => "Free cancellation.".into(),
+    }
+}
+
+/// [`cancellation_text`] for a policy's `rules` and `no_show` penalty, such as the terms a booking kept.
+pub(crate) fn terms_text(rules: &[CancellationRule], no_show: Penalty, currency: &str) -> String {
+    let mut rules = rules.to_vec();
     rules.sort_by_key(|rule| std::cmp::Reverse(rule.days_before_arrival));
     let when = |days: i32| match days {
         0 => "the day of arrival".to_owned(),
         1 => "1 day before arrival".to_owned(),
         days => format!("{days} days before arrival"),
     };
-    let cost = |penalty: rates::Penalty| match penalty.kind {
+    let cost = |penalty: Penalty| match penalty.kind {
         PenaltyKind::Nights if penalty.value == 1 => "one night".to_owned(),
         PenaltyKind::Nights => format!("{} nights", penalty.value),
         PenaltyKind::Percent if penalty.value >= 10_000 => "the whole stay".to_owned(),
         PenaltyKind::Percent => format!("{}% of the stay", decimal(penalty.value, 2)),
-        PenaltyKind::Amount => format!("{currency} {}", money(penalty.value, fx::exponent(currency))),
+        PenaltyKind::Amount => money_text(currency, penalty.value),
     };
-    let charged = |penalty: rates::Penalty| {
+    let charged = |penalty: Penalty| {
         let plural = penalty.kind == PenaltyKind::Nights && penalty.value > 1;
         format!("{} {} charged", cost(penalty), if plural { "are" } else { "is" })
     };
@@ -136,8 +144,13 @@ pub fn cancellation_text(policy: Option<&CancellationPolicy>, currency: &str) ->
             text
         }
     };
-    text.push_str(&format!("; a no-show is charged {}.", cost(policy.no_show)));
+    text.push_str(&format!("; a no-show is charged {}.", cost(no_show)));
     text
+}
+
+/// `amount` minor units of `currency` with its decimals, after its code: 12000 USD is `USD 120.00`.
+pub fn money_text(currency: &str, amount: i64) -> String {
+    format!("{currency} {}", money(amount, fx::exponent(currency)))
 }
 
 /// `value` with `places` implied decimals, without trailing zeros after the point: 1250 with 2 places is `12.5`.
@@ -259,7 +272,7 @@ pub async fn search(tx: &mut Tx, property: Uuid, request: &SearchRequest) -> Res
             let mut offers = Vec::new();
             for (meal_plan, quotes) in meal_plans {
                 for (ask, quote) in quotes {
-                    offers.push(pricing.meal_offer(meal_plan, room_indices(&request.rooms, ask), &quote)?);
+                    offers.push(pricing.meal_offer(meal_plan, room_indices(&request.rooms, ask), &quote.nights)?);
                 }
             }
             let policy = plan.cancellation_policy_id.and_then(|id| policies.get(&id));
@@ -400,21 +413,26 @@ fn room_indices(rooms: &[RoomAsk], ask: RoomAsk) -> Vec<u8> {
 
 /// How one plan's nights are taxed: as posting taxes them, with the property's rules for each night's date, the room
 /// and meal-plan categories, the plan's residency and currency, and its tax inclusion.
-struct Pricing<'a> {
-    rules: &'a [tax::Rule],
-    vat_registered: bool,
-    resident: Option<bool>,
-    currency: &'a str,
-    inclusive: bool,
+pub(crate) struct Pricing<'a> {
+    pub(crate) rules: &'a [tax::Rule],
+    pub(crate) vat_registered: bool,
+    pub(crate) resident: Option<bool>,
+    pub(crate) currency: &'a str,
+    pub(crate) inclusive: bool,
 }
 
 impl Pricing<'_> {
-    /// `quote`'s nights with their taxes: each night's room charge, and its meal-plan charge when above zero, taxed
+    /// `quoted` nights with their taxes: each night's room charge, and its meal-plan charge when above zero, taxed
     /// as a line of its own, as the night audit posts them.
-    fn meal_offer(&self, meal_plan: MealPlan, rooms: Vec<u8>, quote: &Quote) -> Result<MealOffer, IbeError> {
+    pub(crate) fn meal_offer(
+        &self,
+        meal_plan: MealPlan,
+        rooms: Vec<u8>,
+        quoted: &[QuoteNight],
+    ) -> Result<MealOffer, IbeError> {
         let mut taxes: Vec<TaxLine> = Vec::new();
-        let mut nights = Vec::with_capacity(quote.nights.len());
-        for night in &quote.nights {
+        let mut nights = Vec::with_capacity(quoted.len());
+        for night in quoted {
             let mut total = 0;
             let lines = [("room", night.room), ("meal_plan", night.meal)];
             for (category, amount) in lines.into_iter().filter(|(category, amount)| *category == "room" || *amount > 0)

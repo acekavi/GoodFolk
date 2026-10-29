@@ -37,7 +37,8 @@ pub use detail::{
     reservation_history,
 };
 pub use guests::{
-    Guest, GuestChanges, IdDocType, MAX_GUEST_SEARCH, NewGuest, create_guest, get_guest, search_guests, update_guest,
+    Guest, GuestChanges, IdDocType, MAX_GUEST_SEARCH, NewGuest, create_guest, create_guest_from_site, get_guest,
+    search_guests, update_guest,
 };
 pub use list::{
     ListFilter, ListRequest, MAX_PAGE_SIZE, ReservationRoomPage, ReservationRoomRow, Sort, SortDirection, SortField,
@@ -48,7 +49,8 @@ pub use no_show::{ChangedStay, NoShowRoom, delay_arrival, extend_stay, mark_no_s
 pub use occupants::{RemovedOccupant, RoomOccupant, add_occupant, remove_occupant};
 pub use reservations::{
     CreatedReservation, CreatedRoom, MAX_ROOMS_PER_RESERVATION, NewReservation, NewReservationRoom, ReservationChanges,
-    Source, Total, UpdatedReservation, create_reservation, update_reservation,
+    SITE_ACTOR, Source, Total, UpdatedReservation, create_reservation, create_reservation_from_site,
+    update_reservation,
 };
 pub use stay::{
     CheckInOverride, CheckedIn, CheckedOut, MAX_OVERRIDE_REASON, UndoneCheckIn, check_in, check_out, undo_check_in,

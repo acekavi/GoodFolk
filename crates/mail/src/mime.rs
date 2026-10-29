@@ -1,8 +1,7 @@
 //! A message as RFC 5322 raw MIME, for SES's `Content.Raw`: `multipart/mixed`, holding a `multipart/alternative` of
 //! the text and the HTML, then each attachment. Every body is base64 in lines of 76 characters, every line ends in
 //! CRLF, a subject or sender's name that is not ASCII is RFC 2047 encoded words, and an ASCII sender's name is a quoted
-//! string. The message carries its `Date`
-//! and a `Message-ID` in the sender's domain.
+//! string. The message carries its `Date`, a `Message-ID` in the sender's domain and, when it has one, its `Reply-To`.
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -23,25 +22,14 @@ const LINE_CHARS: usize = 76;
 /// hold `=_`). `Permanent` when `from`, the recipient or the subject holds a line break, which would start a header of
 /// its own.
 pub(crate) fn raw(from: &str, message: &Message, id: &str, now: OffsetDateTime) -> Result<String, MailError> {
-    for (name, value) in [("sender", from), ("recipient", &message.to), ("subject", &message.subject)] {
-        if value.contains(['\r', '\n']) {
-            return Err(MailError::Permanent(format!("the {name} holds a line break")));
-        }
-    }
+    check_headers(from, message)?;
     let (mixed, alternative) = (format!("=_mixed_{id}"), format!("=_alt_{id}"));
     let date = now.format(&Rfc2822).map_err(|error| MailError::Permanent(format!("dating the message: {error}")))?;
-    let (sender, address) = match from.trim().rsplit_once('<') {
-        Some((name, address)) => (unquote(name.trim()), address.trim().trim_end_matches('>').trim()),
-        None => (String::new(), from.trim()),
-    };
+    let (from, address) = sender(from, message.from_name.as_deref());
     let domain = address.rsplit_once('@').map_or("localhost", |(_, domain)| domain);
-    let from = match sender.as_str() {
-        "" => address.to_owned(),
-        name if name.is_ascii() => format!("{} <{address}>", quoted(name)),
-        name => format!("{} <{address}>", words(name)),
-    };
+    let reply_to = message.reply_to.as_ref().map(|reply_to| format!("Reply-To: {reply_to}\r\n")).unwrap_or_default();
     let mut mime = format!(
-        "From: {from}\r\nTo: {}\r\nSubject: {}\r\nDate: {date}\r\nMessage-ID: <{id}@{domain}>\r\n\
+        "From: {from}\r\nTo: {}\r\n{reply_to}Subject: {}\r\nDate: {date}\r\nMessage-ID: <{id}@{domain}>\r\n\
          MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"{mixed}\"\r\n\r\n",
         message.to,
         words(&message.subject)
@@ -65,6 +53,40 @@ pub(crate) fn raw(from: &str, message: &Message, id: &str, now: OffsetDateTime) 
     }
     mime.push_str(&format!("--{mixed}--\r\n"));
     Ok(mime)
+}
+
+/// `Permanent` when the sender `from`, or `message`'s sender name, recipient, reply-to address or subject holds a line
+/// break, which would start a header of its own.
+pub(crate) fn check_headers(from: &str, message: &Message) -> Result<(), MailError> {
+    let optional = |value: &Option<String>| value.clone().unwrap_or_default();
+    let headers = [
+        ("sender", from.to_owned()),
+        ("sender name", optional(&message.from_name)),
+        ("recipient", message.to.clone()),
+        ("reply-to address", optional(&message.reply_to)),
+        ("subject", message.subject.clone()),
+    ];
+    for (name, value) in headers {
+        if value.contains(['\r', '\n']) {
+            return Err(MailError::Permanent(format!("the {name} holds a line break")));
+        }
+    }
+    Ok(())
+}
+
+/// The `From` header for `from` (`MAIL_FROM`: an address, or a name and an address in `<>`), with `name` in place of
+/// its own name when given, and the address alone. An ASCII name is a quoted string, another encoded words.
+pub(crate) fn sender<'a>(from: &'a str, name: Option<&str>) -> (String, &'a str) {
+    let (own, address) = match from.trim().rsplit_once('<') {
+        Some((own, address)) => (unquote(own.trim()), address.trim().trim_end_matches('>').trim()),
+        None => (String::new(), from.trim()),
+    };
+    let header = match name.unwrap_or(&own) {
+        "" => address.to_owned(),
+        name if name.is_ascii() => format!("{} <{address}>", quoted(name)),
+        name => format!("{} <{address}>", words(name)),
+    };
+    (header, address)
 }
 
 /// `text` (a subject or a display name) as it is when it is ASCII, else as encoded words, each of whole characters,
