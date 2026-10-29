@@ -176,39 +176,71 @@ async fn the_61st_search_in_a_minute_from_one_ip_is_429_with_retry_after(_: PgPo
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
-async fn cors_allows_the_booking_domain_and_enabled_custom_hosts_only(_: PgPoolOptions, opts: PgConnectOptions) {
+async fn cached_reads_allow_any_origin_with_a_star(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts, "GAL", true).await;
-    let path = "/api/public/v1/ibe/GAL/site";
     let from = |origin: &'static str| [("origin", origin)];
     let allowed = |answer: &Answer| answer.headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).cloned();
 
-    let booking_domain = call(&app, Method::GET, path, PEER, &from("http://localhost:5174")).await;
-    let custom_host = call(&app, Method::GET, path, PEER, &from("https://stay.galle.example")).await;
-    let other = call(&app, Method::GET, path, PEER, &from("https://evil.example")).await;
-    let plain_http = call(&app, Method::GET, path, PEER, &from("http://stay.galle.example")).await;
+    let reads = [
+        call(&app, Method::GET, "/api/public/v1/ibe/GAL/site", PEER, &from("http://localhost:5174")).await,
+        call(&app, Method::GET, &hotel.search("GAL", 1), PEER, &from("https://evil.example")).await,
+        call(&app, Method::GET, "/api/public/v1/ibe/by-host/stay.galle.example", PEER, &from("https://x.example"))
+            .await,
+        call(&app, Method::GET, "/api/public/v1/ibe/XYZ/site", PEER, &from("https://evil.example")).await,
+    ];
     let preflight = call(
         &app,
         Method::OPTIONS,
         &hotel.search("GAL", 1),
         PEER,
-        &[("origin", "http://localhost:5174"), ("access-control-request-method", "GET")],
+        &[("origin", "https://evil.example"), ("access-control-request-method", "GET")],
     )
     .await;
-    hotel.save_site(&app, 1, false).await;
-    let disabled_host =
-        call(&app, Method::GET, "/api/public/v1/ibe/by-host/x.example", PEER, &from("https://stay.galle.example"))
-            .await;
 
-    assert_eq!(allowed(&booking_domain).unwrap(), "http://localhost:5174");
-    assert_eq!(allowed(&custom_host).unwrap(), "https://stay.galle.example");
-    assert!(allowed(&other).is_none());
-    assert!(allowed(&plain_http).is_none());
-    assert!(allowed(&disabled_host).is_none());
+    for answer in reads.iter().chain([&preflight]) {
+        assert_eq!(allowed(answer).unwrap(), "*", "{:?}", answer.body);
+        assert!(answer.headers.get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS).is_none());
+        assert!(answer.headers.get(header::SET_COOKIE).is_none());
+    }
     assert_eq!(preflight.status, StatusCode::OK);
-    assert_eq!(allowed(&preflight).unwrap(), "http://localhost:5174");
-    assert!(preflight.headers.get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS).is_none());
-    assert!(booking_domain.headers.get(header::SET_COOKIE).is_none());
+    assert_eq!(reads[3].status, StatusCode::NOT_FOUND, "an error is readable too");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn commands_allow_the_booking_domain_and_enabled_custom_hosts_only(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let path = hotel.search("GAL", 1);
+    let preflight = async |origin: &str| {
+        let headers = [
+            ("origin", origin),
+            ("access-control-request-method", "POST"),
+            ("access-control-request-headers", "content-type,idempotency-key"),
+        ];
+        call(&app, Method::OPTIONS, &path, PEER, &headers).await
+    };
+    let allowed = |answer: &Answer| answer.headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).cloned();
+
+    let booking_domain = preflight("http://localhost:5174").await;
+    let custom_host = preflight("https://stay.galle.example").await;
+    let other = preflight("https://evil.example").await;
+    let plain_http = preflight("http://stay.galle.example").await;
+    hotel.save_site(&app, 1, false).await;
+    let disabled_host = preflight("https://stay.galle.example").await;
+
+    assert_eq!(booking_domain.status, StatusCode::OK);
+    assert_eq!(allowed(&booking_domain).unwrap(), "http://localhost:5174");
+    assert!(
+        booking_domain.headers[header::ACCESS_CONTROL_ALLOW_METHODS].to_str().unwrap().contains("POST"),
+        "{:?}",
+        booking_domain.headers
+    );
+    assert_eq!(allowed(&custom_host).unwrap(), "https://stay.galle.example");
+    for refused in [&other, &plain_http, &disabled_host] {
+        assert!(allowed(refused).is_none(), "{:?}", refused.headers);
+    }
+    assert!(booking_domain.headers.get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS).is_none());
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

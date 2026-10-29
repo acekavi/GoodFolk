@@ -224,6 +224,30 @@ async fn cleanup_deletes_exactly_the_expired_rows(_: PgPoolOptions, opts: PgConn
     assert_eq!(left, ["key-aged-6-days"]);
 }
 
+/// Cleanup deletes the booking site's per-IP counters whose one-minute window ended more than a day ago.
+#[sqlx::test(migrations = "../../migrations")]
+async fn cleanup_deletes_rate_hits_a_day_after_their_window(_: PgPoolOptions, opts: PgConnectOptions) {
+    let owner = PgPool::connect_with(opts.clone()).await.unwrap();
+    let hotel = Hotel::new(opts.clone()).await;
+    let svc = svc(hotel.pool.clone(), opts);
+    for (ip, age) in [("192.0.2.1", "2 days"), ("192.0.2.2", "1 day 2 minutes"), ("192.0.2.3", "23 hours")] {
+        sqlx::query(
+            "insert into ibe_rate_hit (scope, ip, window_start, hits)
+             values ('search', $1::inet, date_trunc('minute', now() - $2::interval), 5)",
+        )
+        .bind(ip)
+        .bind(age)
+        .execute(&owner)
+        .await
+        .unwrap();
+    }
+
+    assert!(daily(&svc, at(&hotel, 0, 12, 0)).await.contains(&ran("cleanup", "")));
+
+    let left: Vec<String> = sqlx::query_scalar("select host(ip) from ibe_rate_hit").fetch_all(&owner).await.unwrap();
+    assert_eq!(left, ["192.0.2.3"]);
+}
+
 /// Cleanup deletes the reports rendered on demand once they are 30 days old, with their PDFs; the close's reports and
 /// younger ones stay.
 #[sqlx::test(migrations = "../../migrations")]

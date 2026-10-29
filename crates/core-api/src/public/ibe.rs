@@ -46,6 +46,10 @@ pub(crate) fn ibe_error(err: IbeError) -> ApiError {
             tracing::error!(%error, "a booking site price could not be taxed");
             ApiError::internal()
         }
+        IbeError::Media(error) => {
+            tracing::error!(%error, "a booking site image could not be read");
+            ApiError::internal()
+        }
         IbeError::Database(db_err) => db_err.into(),
     }
 }
@@ -137,8 +141,9 @@ fn parse_rooms(rooms: &str) -> Result<Vec<RoomAsk>, ApiError> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_rooms;
-    use ibe::RoomAsk;
+    use super::{ibe_error, parse_rooms};
+    use axum::http::StatusCode;
+    use ibe::{IbeError, RoomAsk};
 
     #[test]
     fn rooms_are_adults_and_children_pairs() {
@@ -149,5 +154,11 @@ mod tests {
         for bad in ["", "2", "2-", "-1", "2-0,", "a-b", "2-0;1-0", "1000-0"] {
             assert!(parse_rooms(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn an_unreadable_image_is_a_server_error_and_a_missing_one_not_found() {
+        assert_eq!(ibe_error(IbeError::Media("bad renditions".into())).status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(ibe_error(media::MediaError::NotFound("asset").into()).status(), StatusCode::NOT_FOUND);
     }
 }

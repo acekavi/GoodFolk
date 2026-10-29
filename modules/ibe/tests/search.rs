@@ -438,9 +438,45 @@ async fn inclusive_plan_back_calculates(_: PgPoolOptions, opts: PgConnectOptions
     assert_eq!(one_night.taxes.iter().map(|line| (line.name.clone(), line.amount)).collect::<BTreeMap<_, _>>(), taxes);
 }
 
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_meal_line_is_taxed_as_a_meal_plan_not_a_room(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let plan = hotel.plan("BAR", Segment::Ibe, None, "LKR").await;
+    hotel.breakfast("LKR").await;
+    let room_tax = tax::Rule {
+        code: "ROOMTAX".into(),
+        name: "Room tax".into(),
+        kind: tax::Kind::Tax,
+        rate_bp: 1_000,
+        applies_to: vec!["room".into()],
+        base: vec!["net".into()],
+        sequence: 10,
+        presentation: tax::Presentation::OnBill,
+        condition: tax::Condition::Always,
+        effective_from: hotel.day(1),
+        effective_to: None,
+    };
+    let mut tx = hotel.tx().await;
+    folio::create_tax_rule(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, room_tax).await.unwrap();
+    tx.commit().await.unwrap();
+    let stay = booked_and_posted(&hotel, &plan).await;
+
+    let result = hotel.search(Residency::Resident, 1, 2, &[(2, 0)]).await;
+
+    let offers = &hotel.room_type(&result, &hotel.deluxe).plans[0].meal_plans;
+    let breakfast = offers.iter().find(|offer| offer.meal_plan == MealPlan::Bb).unwrap();
+    // The property's own levies apply to both lines; the room tax only to the room's 11000, not the breakfast's 3000.
+    let room_tax = breakfast.taxes.iter().find(|line| line.name == "Room tax").unwrap();
+    assert_eq!(room_tax.amount, 1_100);
+    let (total, posted) = posted(&hotel, stay, hotel.day(1)).await;
+    assert_eq!(posted["Room tax"], 1_100);
+    assert_eq!(breakfast.total, total);
+    assert_eq!(breakfast.taxes.iter().map(|line| (line.name.clone(), line.amount)).collect::<BTreeMap<_, _>>(), posted);
+}
+
 #[test]
 fn cancellation_text_wording() {
-    let policy = |rules: Vec<(i32, PenaltyKind, i64)>| CancellationPolicy {
+    let policy = |rules: Vec<(i32, PenaltyKind, i64)>, no_show: (PenaltyKind, i64)| CancellationPolicy {
         id: Uuid::nil(),
         property_id: Uuid::nil(),
         name: "Policy".into(),
@@ -448,27 +484,34 @@ fn cancellation_text_wording() {
             .into_iter()
             .map(|(days, kind, value)| CancellationRule { days_before_arrival: days, penalty: Penalty { kind, value } })
             .collect(),
-        no_show: Penalty { kind: PenaltyKind::Percent, value: 10_000 },
+        no_show: Penalty { kind: no_show.0, value: no_show.1 },
         version: 1,
     };
-    let text = |rules| ibe::cancellation_text(Some(&policy(rules)), "USD");
+    let text = |rules, no_show| ibe::cancellation_text(Some(&policy(rules, no_show)), "USD");
 
     assert_eq!(
-        text(vec![(3, PenaltyKind::Nights, 1)]),
-        "Free cancellation until 3 days before arrival; after that, one night is charged."
+        text(vec![(3, PenaltyKind::Nights, 1)], (PenaltyKind::Nights, 1)),
+        "Free cancellation until 3 days before arrival; after that, one night is charged; a no-show is charged one \
+         night."
     );
     assert_eq!(
-        text(vec![(1, PenaltyKind::Percent, 10_000), (14, PenaltyKind::Percent, 1_250), (7, PenaltyKind::Nights, 2)]),
+        text(
+            vec![(1, PenaltyKind::Percent, 10_000), (14, PenaltyKind::Percent, 1_250), (7, PenaltyKind::Nights, 2)],
+            (PenaltyKind::Percent, 10_000)
+        ),
         "Free cancellation until 14 days before arrival; after that, 12.5% of the stay is charged; from 7 days before \
-         arrival, 2 nights are charged; from 1 day before arrival, the whole stay is charged."
+         arrival, 2 nights are charged; from 1 day before arrival, the whole stay is charged; a no-show is charged \
+         the whole stay."
     );
     assert_eq!(
-        text(vec![(0, PenaltyKind::Amount, 5_000)]),
-        "Free cancellation until the day of arrival; after that, USD 50.00 is charged."
+        text(vec![(0, PenaltyKind::Amount, 5_000)], (PenaltyKind::Nights, 2)),
+        "Free cancellation until the day of arrival; after that, USD 50.00 is charged; a no-show is charged 2 nights."
     );
-    assert!(ibe::cancellation_text(Some(&policy(vec![(2, PenaltyKind::Amount, 500)])), "JPY").contains("JPY 500 is"));
+    let yen =
+        ibe::cancellation_text(Some(&policy(vec![(2, PenaltyKind::Amount, 500)], (PenaltyKind::Amount, 900))), "JPY");
+    assert!(yen.contains("JPY 500 is charged") && yen.ends_with("a no-show is charged JPY 900."), "{yen}");
+    assert_eq!(text(vec![], (PenaltyKind::Percent, 5_000)), "Free cancellation; a no-show is charged 50% of the stay.");
     assert_eq!(ibe::cancellation_text(None, "USD"), "Free cancellation.");
-    assert_eq!(text(vec![]), "Free cancellation.");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

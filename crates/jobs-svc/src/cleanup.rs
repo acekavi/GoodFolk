@@ -1,6 +1,7 @@
 //! The daily cleanup: expired sessions, sign-in failures older than the throttle window, and idempotency keys older
-//! than a week, across tenants through `app.purge_expired`; and, when there is object storage, each property's
-//! reports rendered on demand once they are 30 days old, with their PDFs, in a transaction scoped to its tenant.
+//! than a week, across tenants through `app.purge_expired`; the booking site's per-IP counters a day after their
+//! window; and, when there is object storage, each property's reports rendered on demand once they are 30 days old,
+//! with their PDFs, in a transaction scoped to its tenant.
 
 use db::{Scope, TenantId};
 use sqlx::PgPool;
@@ -23,11 +24,18 @@ pub(crate) async fn run(pool: &PgPool, storage: Option<&Storage>) -> Result<(), 
             .fetch_one(pool)
             .await;
     let (sessions, login_failures, idempotency_keys) = purged.map_err(|error| error.to_string())?;
+    // `ibe_rate_hit` holds no tenant data and has no row-level security, so no definer is needed.
+    let rate_hits =
+        sqlx::query("delete from ibe_rate_hit where window_start + interval '1 minute' < now() - interval '1 day'")
+            .execute(pool)
+            .await
+            .map_err(|error| error.to_string())?
+            .rows_affected();
     let (reports, pdf_failures) = match storage {
         Some(storage) => purge_reports(pool, storage).await.map_err(|error| error.to_string())?,
         None => (0, 0),
     };
-    tracing::info!(sessions, login_failures, idempotency_keys, reports, pdf_failures, "cleanup done");
+    tracing::info!(sessions, login_failures, idempotency_keys, rate_hits, reports, pdf_failures, "cleanup done");
     Ok(())
 }
 

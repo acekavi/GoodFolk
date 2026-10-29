@@ -99,31 +99,44 @@ pub struct TaxLine {
     pub amount: i64,
 }
 
-/// What a stay costs to cancel, in plain words, from `policy`'s rules (amounts in `currency`, the plan's). Without a
-/// policy cancelling is free. Each rule charges from its number of days before arrival on (as cancelling applies it),
-/// so the time before the furthest one is free.
+/// What a stay costs to cancel, in plain words, from `policy`'s rules and its no-show penalty (amounts in `currency`,
+/// the plan's). Without a policy cancelling is free. Each rule charges from its number of days before arrival on (as
+/// cancelling applies it), so the time before the furthest one is free.
 pub fn cancellation_text(policy: Option<&CancellationPolicy>, currency: &str) -> String {
-    let mut rules: Vec<_> = policy.map(|policy| policy.rules.clone()).unwrap_or_default();
+    let Some(policy) = policy else { return "Free cancellation.".into() };
+    let mut rules = policy.rules.clone();
     rules.sort_by_key(|rule| std::cmp::Reverse(rule.days_before_arrival));
-    let Some((first, later)) = rules.split_first() else { return "Free cancellation.".into() };
     let when = |days: i32| match days {
         0 => "the day of arrival".to_owned(),
         1 => "1 day before arrival".to_owned(),
         days => format!("{days} days before arrival"),
     };
-    let charge = |penalty: rates::Penalty| match penalty.kind {
-        PenaltyKind::Nights if penalty.value == 1 => "one night is charged".to_owned(),
-        PenaltyKind::Nights => format!("{} nights are charged", penalty.value),
-        PenaltyKind::Percent if penalty.value >= 10_000 => "the whole stay is charged".to_owned(),
-        PenaltyKind::Percent => format!("{}% of the stay is charged", decimal(penalty.value, 2)),
-        PenaltyKind::Amount => format!("{currency} {} is charged", money(penalty.value, fx::exponent(currency))),
+    let cost = |penalty: rates::Penalty| match penalty.kind {
+        PenaltyKind::Nights if penalty.value == 1 => "one night".to_owned(),
+        PenaltyKind::Nights => format!("{} nights", penalty.value),
+        PenaltyKind::Percent if penalty.value >= 10_000 => "the whole stay".to_owned(),
+        PenaltyKind::Percent => format!("{}% of the stay", decimal(penalty.value, 2)),
+        PenaltyKind::Amount => format!("{currency} {}", money(penalty.value, fx::exponent(currency))),
     };
-    let mut text =
-        format!("Free cancellation until {}; after that, {}", when(first.days_before_arrival), charge(first.penalty));
-    for rule in later {
-        text.push_str(&format!("; from {}, {}", when(rule.days_before_arrival), charge(rule.penalty)));
-    }
-    text.push('.');
+    let charged = |penalty: rates::Penalty| {
+        let plural = penalty.kind == PenaltyKind::Nights && penalty.value > 1;
+        format!("{} {} charged", cost(penalty), if plural { "are" } else { "is" })
+    };
+    let mut text = match rules.split_first() {
+        None => "Free cancellation".to_owned(),
+        Some((first, later)) => {
+            let mut text = format!(
+                "Free cancellation until {}; after that, {}",
+                when(first.days_before_arrival),
+                charged(first.penalty)
+            );
+            for rule in later {
+                text.push_str(&format!("; from {}, {}", when(rule.days_before_arrival), charged(rule.penalty)));
+            }
+            text
+        }
+    };
+    text.push_str(&format!("; a no-show is charged {}.", cost(policy.no_show)));
     text
 }
 

@@ -23,6 +23,9 @@ pub enum IbeError {
     /// The property's tax rules cannot price a night (a broken rule set or an amount too large).
     #[error("the prices cannot be taxed: {0}")]
     Tax(#[from] tax::TaxError),
+    /// A stored asset the site shows could not be read: never the visitor's doing.
+    #[error("a booking site image could not be read: {0}")]
+    Media(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
@@ -40,8 +43,9 @@ impl From<rates::RatesError> for IbeError {
 impl From<media::MediaError> for IbeError {
     fn from(err: media::MediaError) -> Self {
         match err {
+            media::MediaError::NotFound(what) => Self::NotFound(what),
             media::MediaError::Database(err) => Self::Database(err),
-            other => Self::Invalid(other.to_string()),
+            other => Self::Media(other.to_string()),
         }
     }
 }
