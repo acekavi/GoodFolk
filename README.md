@@ -709,6 +709,9 @@ The API (`core-api serve`) reads:
 | `APP_ENV` | `production` sets `Secure` cookies, disables GraphQL introspection and requires `DATABASE_LISTEN_URL`. |
 | `JOBS_SVC_URL` | jobs-svc's address for gRPC (**Close the day** and **Retry**). Dev default `http://localhost:8091`; required and `https://` in production. |
 | `JOBS_SVC_AUDIENCE` | With `SVC_AUTH=google`: the audience of the ID tokens core-api puts on its calls to jobs-svc. |
+| `IBE_PUBLIC_ORIGIN` | The booking site's origin, e.g. `https://book.example.lk`: a scheme and a host, no path. The public API (`/api/public/v1`) allows it in CORS, beside the custom host of each enabled site, and a site's custom host may not be its host. Dev default `http://localhost:5174`; required, `https://` and without a port in production. |
+| `TRUST_CLOUDFLARE_IP` | `true` takes the public API's client IP (for its per-IP limits) from `CF-Connecting-IP`: set it only behind Cloudflare. Default `false`: the socket peer. |
+| `TURNSTILE_SECRET` | Cloudflare Turnstile's secret key, which verifies the booking form. Dev default Turnstile's published test secret (`1x0000000000000000000000000000000AA`); required in production, and not that one. |
 
 core-api no longer reads `FX_IMPORT`: the exchange-rate import moved to jobs-svc (below).
 

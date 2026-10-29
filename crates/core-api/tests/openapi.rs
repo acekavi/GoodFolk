@@ -10,6 +10,9 @@ fn the_openapi_document_lists_every_rest_route() {
     assert_eq!(
         paths,
         vec![
+            "/api/public/v1/ibe/by-host/{host}",
+            "/api/public/v1/ibe/{code}/search",
+            "/api/public/v1/ibe/{code}/site",
             "/api/v1/auth/login",
             "/api/v1/auth/logout",
             "/api/v1/auth/signup",

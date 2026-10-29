@@ -205,7 +205,8 @@ pub async fn get_ibe_site(
 
 /// Replaces the property's booking site settings. Needs `IbeManage`; send the version as `If-Match` (0 for the first
 /// save). The accent must give white text a contrast of 4.5 or more, the logo must be a completed `ibe_logo` upload and
-/// the hero a finished room type gallery photo of this property, and the custom host must be unused (each 422).
+/// the hero a finished room type gallery photo of this property, and the custom host must be unused and not the booking
+/// domain's own host (each 422).
 /// Audited as `ibe_site.updated` with the values before and after.
 #[utoipa::path(put, operation_id = "update_ibe_site", path = "/api/v1/properties/{property}/ibe-site", request_body = UpdateIbeSiteRequest,
     params(("property" = Uuid, Path), ("If-Match" = String, Header, description = "the version edited, e.g. \"3\"; 0 for the first save")),
@@ -220,6 +221,11 @@ pub async fn update_ibe_site(
 ) -> Result<Versioned<IbeSiteView>, ApiError> {
     ctx.require(Permission::IbeManage, Some(property))?;
     validate(&body)?;
+    if body.custom_host.as_deref() == Some(state.ibe.public_host().as_str()) {
+        return Err(
+            ApiError::unprocessable("The custom host cannot be the booking domain itself").with("field", "custom_host")
+        );
+    }
     let changes = IbeSiteChanges {
         enabled: body.enabled,
         custom_host: body.custom_host,

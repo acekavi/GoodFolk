@@ -225,6 +225,9 @@ pub fn router(state: AppState) -> Router {
         .route("/internal/events", post(internal::events))
         .route_layer(svc_auth::layer(state.internal_auth.clone()));
 
+    // Anonymous and cookie-free, so outside the CSRF check: the booking site's API.
+    let public = crate::public::router(&state).layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)));
+
     Router::new()
         .merge(requests)
         .merge(streams)
@@ -235,6 +238,9 @@ pub fn router(state: AppState) -> Router {
         // Set last, so they cover every route above.
         .fallback(|| async { ApiError::not_found("no such route") })
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
+        // After the fallbacks: the public routes bring their own, inside their CORS layer, so a preflight (an
+        // `OPTIONS` no route has) reaches CORS rather than a bare 405.
+        .merge(public)
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(PropagateRequestIdLayer::x_request_id())

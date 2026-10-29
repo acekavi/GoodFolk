@@ -11,6 +11,8 @@ pub struct ApiError {
     detail: Option<String>,
     /// Extension members, such as the blocks in the way of a new one.
     extensions: serde_json::Map<String, serde_json::Value>,
+    /// Sent as `Retry-After`, in seconds.
+    retry_after: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -27,13 +29,19 @@ struct Problem<'a> {
 
 impl ApiError {
     fn new(status: StatusCode, title: &'static str, detail: Option<String>) -> Self {
-        Self { status, title, detail, extensions: serde_json::Map::new() }
+        Self { status, title, detail, extensions: serde_json::Map::new(), retry_after: None }
     }
 
     /// Adds an extension member to the problem, e.g. `conflicts: [...]`.
     pub fn with(mut self, name: &str, value: impl Serialize) -> Self {
         let value = serde_json::to_value(value).expect("extension members serialize");
         self.extensions.insert(name.to_owned(), value);
+        self
+    }
+
+    /// Sends `Retry-After: <seconds>` with the problem.
+    pub fn retry_after(mut self, seconds: u64) -> Self {
+        self.retry_after = Some(seconds);
         self
     }
 
@@ -175,6 +183,9 @@ impl IntoResponse for ApiError {
         response
             .headers_mut()
             .insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/problem+json"));
+        if let Some(seconds) = self.retry_after {
+            response.headers_mut().insert(header::RETRY_AFTER, header::HeaderValue::from(seconds));
+        }
         response
     }
 }

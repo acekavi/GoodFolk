@@ -315,3 +315,25 @@ async fn two_hotels_cannot_both_publish_under_the_same_code(_: PgPoolOptions, op
     assert_eq!(released.status, StatusCode::OK, "{:?}", released.body);
     assert_eq!(now_free.status, StatusCode::OK, "{:?}", now_free.body);
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_custom_host_cannot_be_the_booking_domain(_: PgPoolOptions, opts: PgConnectOptions) {
+    let mut app = TestApp::new(opts.clone()).await;
+    let ibe = core_api::config::IbeConfig {
+        public_origin: "https://book.example.lk".into(),
+        ..core_api::config::IbeConfig::local()
+    };
+    app.state = app.state.clone().with_ibe(ibe);
+    app.router = core_api::router(app.state.clone());
+    let hotel = Hotel::new(&app, opts, "owner@example.com", "GAL").await;
+    let path = format!("{}/ibe-site", hotel.path);
+
+    let own = json!({"enabled": false, "custom_host": "book.example.lk"});
+    let refused = versioned(&app, Method::PUT, &hotel.owner, &path, 0, Some(own)).await;
+    let other = json!({"enabled": false, "custom_host": "stay.book.example.lk"});
+    let fine = versioned(&app, Method::PUT, &hotel.owner, &path, 0, Some(other)).await;
+
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", refused.body);
+    assert_eq!(refused.body["field"], "custom_host");
+    assert_eq!(fine.status, StatusCode::OK, "{:?}", fine.body);
+}

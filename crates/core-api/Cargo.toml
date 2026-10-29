@@ -22,6 +22,7 @@ futures.workspace = true
 fx.workspace = true
 garde.workspace = true
 housekeeping.workspace = true
+ibe.workspace = true
 identity.workspace = true
 laundry.workspace = true
 mail.workspace = true

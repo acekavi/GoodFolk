@@ -72,7 +72,7 @@ pub use invoices::{
     INVOICE_RENDER_TOPIC, InvoiceRow, InvoiceSummary, credit_note, invoice_link_key, invoice_summaries, issue_invoice,
     set_invoice_pdf,
 };
-pub use lines::{LineRow, NewCharge, business_date, post_charge, reverse, transfer};
+pub use lines::{LineRow, NewCharge, business_date, charge_taxes, post_charge, reverse, transfer};
 pub use payments::{
     FeeKind, Method, move_deposit, post_cancellation_fee, post_no_show_fee, post_stay_fee, refund, take_payment,
     undo_deposit_move,

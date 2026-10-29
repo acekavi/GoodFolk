@@ -77,6 +77,16 @@ impl Format {
             Self::Pdf => "application/pdf",
         }
     }
+    /// The `type` of a `<source>` for a video rendition: the container with its codecs. The codec strings are what the
+    /// encoders write (SVT-AV1: Main profile, level 4.0, 10-bit; OpenH264: High profile, level 4.0 at 1080p, which
+    /// also covers 720p) beside the audio they are paired with (Opus; AAC-LC). `None` for an image or a PDF.
+    pub fn video_source_type(self) -> Option<&'static str> {
+        match self {
+            Self::Av1 => Some(r#"video/mp4; codecs="av01.0.08M.10, opus""#),
+            Self::H264 => Some(r#"video/mp4; codecs="avc1.640028, mp4a.40.2""#),
+            Self::Avif | Self::Webp | Self::Pdf => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

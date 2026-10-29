@@ -1,3 +1,4 @@
+use crate::public::SiteCode;
 use crate::routes::{
     AcceptInvitationRequest, CreateInvitationRequest, InvitationPreview, InvitationTokenRequest, PreviewGrant,
     SetGrantsRequest,
@@ -34,6 +35,9 @@ use utoipa::OpenApi;
 #[openapi(
     info(title = "GoodFolk PMS API", version = "1"),
     paths(
+        crate::public::ibe::by_host,
+        crate::public::ibe::site,
+        crate::public::ibe::search,
         crate::routes::auth::signup,
         crate::routes::auth::login,
         crate::routes::auth::logout,
@@ -154,6 +158,7 @@ use utoipa::OpenApi;
         UpdatePropertyRequest,
         UpdateIbeSiteRequest,
         IbeSiteView,
+        SiteCode,
         BedRequest,
         CreateRoomTypeRequest,
         UpdateRoomTypeRequest,

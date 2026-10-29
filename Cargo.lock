@@ -1217,6 +1217,7 @@ dependencies = [
  "garde",
  "housekeeping",
  "http-body-util",
+ "ibe",
  "identity",
  "jobs-svc",
  "laundry",
@@ -2586,6 +2587,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "ibe"
+version = "0.1.0"
+dependencies = [
+ "db",
+ "folio",
+ "fx",
+ "media",
+ "media-types",
+ "property",
+ "rates",
+ "reservations",
+ "rooms",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tax",
+ "thiserror",
+ "time",
+ "tokio",
+ "utoipa",
+ "uuid",
 ]
 
 [[package]]
