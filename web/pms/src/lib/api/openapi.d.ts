@@ -39,9 +39,10 @@ export interface paths {
          *     other than `expected_totals` is `409` with `reason: price_changed` and the new `totals`, which the guest confirms;
          *     a room no longer free is `409` with `reason: sold_out`. A booking the site does not sell is `422`.
          * @description Checked in this order: 5 bookings a minute per IP (`429` with `Retry-After`); the hidden `website` field, which a
-         *     bot fills (it is answered as if booked, and nothing is kept); the Turnstile token (`400` when missing or refused,
-         *     `503` when it cannot be checked); the `Idempotency-Key` (required, scoped to the property: the same request again
-         *     gets the first answer, another request with the same key `409`).
+         *     bot fills (it is answered as if booked, and nothing is kept); the `Idempotency-Key` (required, scoped to the
+         *     property: the same request again gets the first answer, without asking Turnstile again, but with no `manage_url`,
+         *     since the manage token is never stored; another request with the same key is `409`); then, for a new key only,
+         *     the Turnstile token (`400` when missing or refused, `503` when it cannot be checked).
          */
         post: operations["ibe_book"];
         delete?: never;
@@ -2305,10 +2306,15 @@ export interface components {
             /** @description A field people never see, so never fill: a form that fills it is a bot's. */
             website?: string;
         };
-        /** @description A booking made. `manage_url` carries the booking's manage token, which is shown only here and in the email. */
+        /** @description A booking made. */
         BookingConfirmed: {
             confirmation_no: string;
-            manage_url: string;
+            /**
+             * @description The manage page's link, with the booking's manage token: in the first answer only. The token is never stored
+             *     for a replay, so a retry with the same `Idempotency-Key` answers without it; the link is in the confirmation
+             *     email.
+             */
+            manage_url?: string | null;
         };
         /** @description What a booking that cannot be made as sent answers: the new totals for a price that changed. */
         BookingConflict: {

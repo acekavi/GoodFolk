@@ -118,13 +118,19 @@ impl Hotel {
     }
 }
 
-/// The Turnstile token the stand-in accepts.
-const PASSING: &str = "a-passing-turnstile-token";
+/// A new token the Turnstile stand-in accepts once.
+fn passing() -> String {
+    format!("pass-{}", Uuid::now_v7())
+}
 
-/// A stand-in for Turnstile's verification endpoint that accepts [`PASSING`] only, and the app verifying against it.
+/// A stand-in for Turnstile's verification endpoint that accepts each [`passing`] token once, as Turnstile spends a
+/// token on its first check, and the app verifying against it.
 async fn with_turnstile(app: &TestApp) -> TestApp {
-    let verify = axum::routing::post(|axum::Json(body): axum::Json<Value>| async move {
-        axum::Json(json!({"success": body["response"] == PASSING && body["secret"].is_string()}))
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    let verify = axum::routing::post(move |axum::Json(body): axum::Json<Value>| async move {
+        let token = body["response"].as_str().unwrap_or_default().to_owned();
+        let fresh = seen.lock().unwrap().insert(token.clone());
+        axum::Json(json!({"success": fresh && token.starts_with("pass-") && body["secret"].is_string()}))
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -368,7 +374,7 @@ async fn a_booking_is_201_and_writes_its_confirmation_mail_job(_: PgPoolOptions,
     let hotel = Hotel::new(&app, opts, "GAL", true).await;
     let plan = hotel.sell(&app).await;
     let app = with_turnstile(&app).await;
-    let body = hotel.booking(&app, &plan, "kamala@example.com", PASSING).await;
+    let body = hotel.booking(&app, &plan, "kamala@example.com", &passing()).await;
 
     let booked = book(&app, &body, Some("booking-key-0001"), PEER).await;
 
@@ -407,19 +413,55 @@ async fn a_booking_is_201_and_writes_its_confirmation_mail_job(_: PgPoolOptions,
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
-async fn the_same_idempotency_key_and_body_book_once_and_replay_the_answer(_: PgPoolOptions, opts: PgConnectOptions) {
+async fn a_retry_with_the_spent_turnstile_token_replays_the_201_without_the_manage_link(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts, "GAL", true).await;
     let plan = hotel.sell(&app).await;
     let app = with_turnstile(&app).await;
-    let body = hotel.booking(&app, &plan, "kamala@example.com", PASSING).await;
+    let body = hotel.booking(&app, &plan, "kamala@example.com", &passing()).await;
 
     let first = book(&app, &body, Some("booking-key-0001"), PEER).await;
     let retry = book(&app, &body, Some("booking-key-0001"), PEER).await;
+    let new_key = book(&app, &body, Some("booking-key-0002"), PEER).await;
 
     assert_eq!(first.status, StatusCode::CREATED, "{:?}", first.body);
-    assert_eq!((retry.status, &retry.body), (StatusCode::CREATED, &first.body));
+    assert!(first.body["manage_url"].is_string(), "{:?}", first.body);
+    assert_eq!(retry.status, StatusCode::CREATED, "{:?}", retry.body);
+    assert_eq!(retry.body, json!({"confirmation_no": first.body["confirmation_no"]}), "the link is in the email");
+    assert_eq!(new_key.status, StatusCode::BAD_REQUEST, "the stand-in refuses a spent token: {:?}", new_key.body);
     assert_eq!(hotel.reservations().await, 1);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_stored_booking_answer_keeps_no_manage_token(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let plan = hotel.sell(&app).await;
+    let app = with_turnstile(&app).await;
+    let body = hotel.booking(&app, &plan, "kamala@example.com", &passing()).await;
+
+    let first = book(&app, &body, Some("booking-key-0001"), PEER).await;
+
+    assert_eq!(first.status, StatusCode::CREATED, "{:?}", first.body);
+    let manage_url = first.body["manage_url"].as_str().unwrap();
+    let token = manage_url.rsplit_once("token=").unwrap().1;
+    let stored: Vec<u8> =
+        sqlx::query_scalar("select response_body from idempotency_key where key like '%/booking-key-0001'")
+            .fetch_one(&hotel.superuser)
+            .await
+            .unwrap();
+    let stored: Value = serde_json::from_slice(&stored).unwrap();
+    assert_eq!(stored, json!({"confirmation_no": first.body["confirmation_no"]}));
+    let rows: i64 =
+        sqlx::query_scalar("select count(*) from idempotency_key where response_body::text like '%' || $1 || '%'")
+            .bind(token)
+            .fetch_one(&hotel.superuser)
+            .await
+            .unwrap();
+    assert_eq!(rows, 0);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -428,11 +470,12 @@ async fn the_same_idempotency_key_with_another_body_is_409(_: PgPoolOptions, opt
     let hotel = Hotel::new(&app, opts, "GAL", true).await;
     let plan = hotel.sell(&app).await;
     let app = with_turnstile(&app).await;
-    let body = hotel.booking(&app, &plan, "kamala@example.com", PASSING).await;
+    let body = hotel.booking(&app, &plan, "kamala@example.com", &passing()).await;
     let mut other = body.clone();
     other["special_requests"] = json!("A late check-in");
 
     let first = book(&app, &body, Some("booking-key-0001"), PEER).await;
+    // Its token is spent: a 409 here means Turnstile was not asked.
     let reused = book(&app, &other, Some("booking-key-0001"), PEER).await;
     let without_key = book(&app, &other, None, PEER).await;
 
@@ -469,7 +512,7 @@ async fn turnstile_out_of_reach_is_503_never_a_pass(_: PgPoolOptions, opts: PgCo
     // A port nothing listens on.
     let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
     let app = verifying_at(&app, &format!("http://{closed}/siteverify"));
-    let body = hotel.booking(&app, &plan, "kamala@example.com", PASSING).await;
+    let body = hotel.booking(&app, &plan, "kamala@example.com", &passing()).await;
 
     let unreachable = book(&app, &body, Some("booking-key-0001"), PEER).await;
 
@@ -536,14 +579,19 @@ async fn a_changed_price_and_a_sold_out_room_are_409_with_their_reason(_: PgPool
     let hotel = Hotel::new(&app, opts, "GAL", true).await;
     let plan = hotel.sell(&app).await;
     let app = with_turnstile(&app).await;
-    let body = hotel.booking(&app, &plan, "kamala@example.com", PASSING).await;
+    let body = hotel.booking(&app, &plan, "kamala@example.com", &passing()).await;
     let total = body["expected_totals"]["LKR"].as_i64().unwrap();
     let mut cheaper = body.clone();
     cheaper["expected_totals"]["LKR"] = json!(total - 100);
 
-    let changed = book(&app, &cheaper, Some("booking-key-0001"), PEER).await;
-    let booked = book(&app, &body, Some("booking-key-0002"), PEER).await;
-    let sold_out = book(&app, &body, Some("booking-key-0003"), PEER).await;
+    let fresh = |mut body: Value| {
+        body["turnstile_token"] = json!(passing());
+        body
+    };
+
+    let changed = book(&app, &fresh(cheaper), Some("booking-key-0001"), PEER).await;
+    let booked = book(&app, &fresh(body.clone()), Some("booking-key-0002"), PEER).await;
+    let sold_out = book(&app, &fresh(body), Some("booking-key-0003"), PEER).await;
 
     assert_eq!(changed.status, StatusCode::CONFLICT, "{:?}", changed.body);
     assert_eq!((&changed.body["reason"], &changed.body["totals"]), (&json!("price_changed"), &json!({"LKR": total})));

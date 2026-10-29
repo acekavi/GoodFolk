@@ -44,11 +44,15 @@ pub struct BookingBody {
     pub booking: BookingRequest,
 }
 
-/// A booking made. `manage_url` carries the booking's manage token, which is shown only here and in the email.
+/// A booking made.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BookingConfirmed {
     pub confirmation_no: String,
-    pub manage_url: String,
+    /// The manage page's link, with the booking's manage token: in the first answer only. The token is never stored
+    /// for a replay, so a retry with the same `Idempotency-Key` answers without it; the link is in the confirmation
+    /// email.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manage_url: Option<String>,
 }
 
 /// What a booking that cannot be made as sent answers: the new totals for a price that changed.
@@ -177,9 +181,10 @@ pub async fn search(
 /// a room no longer free is `409` with `reason: sold_out`. A booking the site does not sell is `422`.
 ///
 /// Checked in this order: 5 bookings a minute per IP (`429` with `Retry-After`); the hidden `website` field, which a
-/// bot fills (it is answered as if booked, and nothing is kept); the Turnstile token (`400` when missing or refused,
-/// `503` when it cannot be checked); the `Idempotency-Key` (required, scoped to the property: the same request again
-/// gets the first answer, another request with the same key `409`).
+/// bot fills (it is answered as if booked, and nothing is kept); the `Idempotency-Key` (required, scoped to the
+/// property: the same request again gets the first answer, without asking Turnstile again, but with no `manage_url`,
+/// since the manage token is never stored; another request with the same key is `409`); then, for a new key only,
+/// the Turnstile token (`400` when missing or refused, `503` when it cannot be checked).
 #[utoipa::path(post, operation_id = "ibe_book", path = "/api/public/v1/ibe/{code}/bookings",
     params(("code" = String, Path, description = "the property code, any case"),
         ("Idempotency-Key" = String, Header, description = "8 to 160 characters, new for each booking attempt")),
@@ -207,20 +212,25 @@ pub async fn book(
         return Ok(decoy(&state, &code));
     }
     let key = idempotency::public_key(&headers)?;
-    turnstile::verify(&state.ibe, &request.turnstile_token, ip).await?;
+    // Turnstile spends a token once, so a retry carrying the same one is answered from the store before this runs.
     let booking = async {
         let booked = async {
+            turnstile::verify(&state.ibe, &request.turnstile_token, ip).await?;
             let mut tx = db::begin(&state.pool, Scope::tenant(tenant)).await?;
             let booked = ibe::book(&mut tx, tenant, property, &request.booking).await.map_err(booking_error)?;
             let code = ibe::public_code(&mut tx, property).await.map_err(ibe_error)?;
             tx.commit().await?;
-            Ok::<_, ApiError>(BookingConfirmed {
-                manage_url: manage_url(&state, &code, &booked.token),
-                confirmation_no: booked.confirmation_no,
-            })
+            Ok::<_, ApiError>((manage_url(&state, &code, &booked.token), booked.confirmation_no))
         };
         match booked.await {
-            Ok(confirmed) => (StatusCode::CREATED, Json(confirmed)).into_response(),
+            Ok((manage_url, confirmation_no)) => {
+                let kept = BookingConfirmed { confirmation_no: confirmation_no.clone(), manage_url: None };
+                let kept = serde_json::to_vec(&kept).expect("a confirmation serializes");
+                let confirmed = BookingConfirmed { confirmation_no, manage_url: Some(manage_url) };
+                let mut response = (StatusCode::CREATED, Json(confirmed)).into_response();
+                response.extensions_mut().insert(idempotency::ReplayBody(kept.into()));
+                response
+            }
             Err(err) => err.into_response(),
         }
     };
@@ -239,7 +249,7 @@ fn decoy(state: &AppState, code: &str) -> Response {
     let code = code.to_ascii_uppercase();
     let confirmed = BookingConfirmed {
         confirmation_no: format!("{code}-{number:06}"),
-        manage_url: manage_url(state, &code, &ibe::new_token()),
+        manage_url: Some(manage_url(state, &code, &ibe::new_token())),
     };
     (StatusCode::CREATED, Json(confirmed)).into_response()
 }

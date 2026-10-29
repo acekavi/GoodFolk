@@ -2,7 +2,7 @@ use crate::auth::TenantContext;
 use crate::error::ApiError;
 use crate::routes::ABANDONED_CLAIM_AFTER;
 use crate::state::AppState;
-use axum::body::{Body, HttpBody, to_bytes};
+use axum::body::{Body, Bytes, HttpBody, to_bytes};
 use axum::extract::{FromRequestParts, Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::middleware::Next;
@@ -54,6 +54,11 @@ pub async fn idempotent(State(state): State<AppState>, request: Request, next: N
         .await
 }
 
+/// What a response stores for replay in place of its own body, set as a response extension by a command whose body
+/// carries something that must not be kept, such as a booking's manage token.
+#[derive(Clone)]
+pub struct ReplayBody(pub Bytes);
+
 /// A public route's `Idempotency-Key` (8 to 160 characters), required. Read it before the work that comes ahead of
 /// [`property_scoped`], so a request without one is refused before that work is done.
 pub fn public_key(headers: &HeaderMap) -> Result<String, ApiError> {
@@ -62,7 +67,8 @@ pub fn public_key(headers: &HeaderMap) -> Result<String, ApiError> {
 
 /// [`idempotent`] for a public route, with no session: the key (from [`public_key`]) is scoped to the property
 /// rather than to a user, and stored in its tenant. The first response is stored and replayed for the same request;
-/// the same key with a different request is `409`. `run` is the command.
+/// the same key with a different request is `409`. `run` is the command, and runs only for a key not used before: a
+/// replay or a refusal answers without it.
 pub async fn property_scoped(
     state: &AppState,
     tenant: TenantId,
@@ -136,8 +142,9 @@ async fn once(
         release(state, tenant, key, claimed_at).await;
         return Ok(response);
     }
-    let (response_parts, body) = response.into_parts();
+    let (mut response_parts, body) = response.into_parts();
     let body = to_bytes(body, MAX_BODY_BYTES).await.map_err(|_| ApiError::internal())?;
+    let kept = response_parts.extensions.remove::<ReplayBody>().map_or_else(|| body.clone(), |ReplayBody(kept)| kept);
 
     let stored = async {
         let mut tx = db::begin(&state.pool, Scope::tenant(tenant)).await?;
@@ -151,7 +158,7 @@ async fn once(
         .bind(i16::try_from(response_parts.status.as_u16()).expect("HTTP status codes fit in i16"))
         .bind(response_parts.headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()))
         .bind(response_parts.headers.get(header::ETAG).and_then(|v| v.to_str().ok()))
-        .bind(body.to_vec())
+        .bind(kept.to_vec())
         .execute(&mut *tx)
         .await?;
         tx.commit().await
