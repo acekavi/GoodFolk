@@ -22,6 +22,7 @@ Multi-tenant, cloud-hosted hotel property management system.
 | `modules/*` | Domain modules (`identity`, `property`, `rooms`, `rates`, `reservations`, `housekeeping`, `folio`, `tax`, `fx`, `audit`, …) |
 | `migrations/` | SQL migrations, applied by `core-api migrate` |
 | `web/pms` | SvelteKit staff app (single-page), and the installable housekeeper app under `/hk` |
+| `web/ibe` | The guest booking site: SvelteKit, server-rendered on Node (`Dockerfile.ibe`), one site per property at `/<CODE>` or its custom host |
 
 ## Development
 
@@ -41,7 +42,10 @@ cargo run -p core-api -- migrate   # as the schema owner
 cargo run -p core-api              # API on http://localhost:8080, as the goodfolk_api role
 
 cd web/pms && bun install && bun run dev   # app on http://localhost:5173
+cd web/ibe && bun install && bun run dev   # booking site on http://localhost:5174/<CODE>
 ```
+
+The booking site shows a property once its **Settings → Booking site** is enabled and a rate plan has segment `IBE`. Port 5174 is core-api's development `IBE_PUBLIC_ORIGIN`, so its CORS admits the site's bookings; the site's own settings are under [Booking site](#booking-site-webibe).
 
 ### Media services
 
@@ -140,6 +144,10 @@ cargo fmt --all --check
 
 cd web/pms
 bun run api:schemas && bun run codegen   # after any API change; commit the result
+bun run lint && bun run check && bun run test && bun run build
+
+cd ../ibe
+bun run api:schemas && bun run codegen   # after a public API change; commit the result
 bun run lint && bun run check && bun run test && bun run build
 ```
 
@@ -736,6 +744,24 @@ core-api no longer reads `FX_IMPORT`: the exchange-rate import moved to jobs-svc
 | `AWS_REGION` | Production: the SES region (for example `ap-southeast-1`). Required. |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Production: static keys for an IAM user allowed `ses:SendEmail`. Required: Cloud Run has no AWS instance role. `AWS_SESSION_TOKEN` is optional, for temporary keys. Never printed. |
 | `MAIL_OUTBOX_DIR` | Outside production: the directory the dev mailer writes each message to as JSON. Default `target/mail-outbox`. Ignored in production. |
+
+#### Booking site (web/ibe)
+
+The site renders each page on its server and calls the public API (`/api/public/v1`) from two places: its server
+for the first render, and the guest's browser for everything after (a changed search, the booking, the cancel), so
+core-api's per-IP limits count the guest. It reads, at runtime:
+
+| Variable | Meaning |
+|---|---|
+| `PUBLIC_API_ORIGIN` | Where browsers reach the API, e.g. `https://api.example.lk`. Dev default `http://localhost:8080`. |
+| `IBE_API_ORIGIN` | Where the site's server reaches the API: a private address in production, e.g. core-api's Cloud Run URL, not through Cloudflare. Default `PUBLIC_API_ORIGIN`. The server passes on the guest's `CF-Connecting-IP`, so with core-api's `TRUST_CLOUDFLARE_IP=true` a first render counts against the guest's limits, not the site's. Through Cloudflare, Cloudflare would replace it with the site's own address, and every guest's first search would share one limit. |
+| `PUBLIC_IBE_ORIGIN` | The booking domain, the same as core-api's `IBE_PUBLIC_ORIGIN`: on it a site is `/<CODE>`, and any other host is looked up as a site's custom host (`by-host`, kept for 60 s) and served at its root. Dev default `http://localhost:5174`. |
+| `PUBLIC_TURNSTILE_SITEKEY` | Cloudflare Turnstile's site key, the pair of core-api's `TURNSTILE_SECRET`. Dev default Turnstile's test key `1x00000000000000000000AA`, which always passes. The widget's script loads on the book page only. |
+| `PORT`, `HOST` | adapter-node's listen address (default `0.0.0.0:3000`; the image sets `PORT=8080`). Leave `ORIGIN` unset in production: custom hosts share the image, and Cloud Run's TLS makes adapter-node's default `https` right. To run `node build` over plain HTTP locally, set `ORIGIN=http://localhost:5174`. |
+
+The site sets no cookies and loads no analytics or other third-party script. The manage page is sent with
+`Cache-Control: no-store` and `Referrer-Policy: no-referrer`, takes the token out of the address once loaded, and the
+server logs errors by route, never by address.
 
 #### Exchange rates
 
