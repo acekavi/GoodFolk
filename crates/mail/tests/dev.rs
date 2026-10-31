@@ -134,3 +134,12 @@ fn ibe_confirmation_mail_job_keeps_its_token_out_of_debug() {
     let json = serde_json::to_string(&job).unwrap();
     assert_eq!(serde_json::from_str::<MailJob>(&json).unwrap(), job);
 }
+
+#[test]
+fn ibe_cancellation_mail_job_round_trips_and_carries_no_token() {
+    let job = MailJob::IbeCancellation { tenant_id: Uuid::now_v7(), reservation_id: Uuid::now_v7() };
+
+    let json = serde_json::to_string(&job).unwrap();
+    assert!(!json.contains("token"));
+    assert_eq!(serde_json::from_str::<MailJob>(&json).unwrap(), job);
+}

@@ -1,4 +1,4 @@
-use crate::public::{BookingBody, BookingConfirmed, BookingConflict, SiteCode};
+use crate::public::{BookingBody, BookingConfirmed, BookingConflict, CancelBody, CancelConflict, SiteCode};
 use crate::routes::{
     AcceptInvitationRequest, CreateInvitationRequest, InvitationPreview, InvitationTokenRequest, PreviewGrant,
     SetGrantsRequest,
@@ -39,6 +39,8 @@ use utoipa::OpenApi;
         crate::public::ibe::site,
         crate::public::ibe::search,
         crate::public::ibe::book,
+        crate::public::ibe::manage,
+        crate::public::ibe::cancel,
         crate::routes::auth::signup,
         crate::routes::auth::login,
         crate::routes::auth::logout,
@@ -163,6 +165,8 @@ use utoipa::OpenApi;
         BookingBody,
         BookingConfirmed,
         BookingConflict,
+        CancelBody,
+        CancelConflict,
         BedRequest,
         CreateRoomTypeRequest,
         UpdateRoomTypeRequest,

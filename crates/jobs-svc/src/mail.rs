@@ -13,6 +13,10 @@
 //!   replies going to the hotel's contact email. There is nothing to send when the reservation is gone or its manage
 //!   token is no longer the job's.
 //!
+//! - A booking site reservation's cancellation is rendered from the booking as it is now, read by `ibe::cancellation`:
+//!   the stay, and what cancelling cost. It carries no link. There is nothing to send when the reservation is gone or
+//!   a room of it is not cancelled.
+//!
 //! The answer is 204 once the email is sent, also when there is nothing to send or the provider refused it for good,
 //! which is logged as an error: delivering the job again cannot help. It is 503 when the send may succeed later, so the
 //! bus delivers the job again, and 400 for a body that is not a job. An invitation's and a booking's job carry a
@@ -57,6 +61,9 @@ pub(crate) async fn mail(State(svc): State<JobsSvc>, body: Bytes) -> StatusCode 
         }
         MailJob::IbeConfirmation { tenant_id, reservation_id, token } => {
             confirmation_message(&svc, TenantId(*tenant_id), *reservation_id, token).await
+        }
+        MailJob::IbeCancellation { tenant_id, reservation_id } => {
+            cancellation_message(&svc, TenantId(*tenant_id), *reservation_id).await
         }
     };
     let message = match message {
@@ -437,6 +444,73 @@ fn render_confirmation(booking: &ibe::Confirmation, link: &str) -> Message {
     if !contact.is_empty() {
         html.push_str(&format!(
             "<p>To change your booking, contact {}: {}.</p>\n",
+            escape(&booking.property_name),
+            escape(&contact.join(", "))
+        ));
+    }
+    Message {
+        to: booking.booker_email.clone(),
+        from_name: Some(property),
+        reply_to: booking.contact_email.clone(),
+        subject,
+        text,
+        html,
+        attachments: vec![],
+    }
+}
+
+/// Site booking `reservation`'s cancellation, or `None` when it is not `tenant`'s, a room of it is not cancelled, or
+/// its booker has no email.
+async fn cancellation_message(svc: &JobsSvc, tenant: TenantId, reservation: Uuid) -> Result<Option<Message>, String> {
+    let mut tx = db::begin(&svc.pool, Scope::tenant(tenant)).await.map_err(|e| e.to_string())?;
+    let cancellation = ibe::cancellation(&mut tx, reservation).await.map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    let Some(cancellation) = cancellation else {
+        tracing::warn!(%reservation, "no cancelled site booking; nothing sent");
+        return Ok(None);
+    };
+    Ok(Some(render_cancellation(&cancellation)))
+}
+
+fn render_cancellation(booking: &ibe::Cancellation) -> Message {
+    let property: String = booking.property_name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let subject = format!("Your booking at {property} is cancelled: {}", booking.confirmation_no);
+    let day = |date: Date| {
+        date.format(format_description!("[weekday], [day padding:none] [month repr:long] [year]"))
+            .unwrap_or_else(|_| date.to_string())
+    };
+    let fee = if booking.penalty.is_empty() {
+        "There is no cancellation charge.".to_owned()
+    } else {
+        let amounts: Vec<String> =
+            booking.penalty.iter().map(|(currency, amount)| ibe::money_text(currency, *amount)).collect();
+        format!("The cancellation charge under your booking terms is {}, payable to the hotel.", amounts.join(" and "))
+    };
+    let contact: Vec<&str> =
+        [booking.contact_phone.as_deref(), booking.contact_email.as_deref()].into_iter().flatten().collect();
+
+    let mut text = format!(
+        "Dear {},\n\nYour booking with {} is cancelled.\n\nConfirmation number: {}\nCheck-in: {}\nCheck-out: {}\n\n{fee}\n",
+        booking.booker_name,
+        booking.property_name,
+        booking.confirmation_no,
+        day(booking.check_in),
+        day(booking.check_out)
+    );
+    let mut html = format!(
+        "<p>Dear {},</p>\n<p>Your booking with {} is cancelled.</p>\n\
+         <p>Confirmation number: <strong>{}</strong><br>\nCheck-in: {}<br>\nCheck-out: {}</p>\n<p>{}</p>\n",
+        escape(&booking.booker_name),
+        escape(&booking.property_name),
+        escape(&booking.confirmation_no),
+        day(booking.check_in),
+        day(booking.check_out),
+        escape(&fee)
+    );
+    if !contact.is_empty() {
+        text.push_str(&format!("\nFor any question, contact {}: {}.\n", booking.property_name, contact.join(", ")));
+        html.push_str(&format!(
+            "<p>For any question, contact {}: {}.</p>\n",
             escape(&booking.property_name),
             escape(&contact.join(", "))
         ));

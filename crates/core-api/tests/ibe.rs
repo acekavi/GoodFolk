@@ -13,8 +13,10 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex, OnceLock};
 use time::{Date, Duration};
 use tower::ServiceExt;
+use tracing_subscriber::fmt::MakeWriter;
 use uuid::Uuid;
 
 /// The socket peer of every request unless a test names another.
@@ -24,13 +26,15 @@ struct Hotel {
     owner: String,
     superuser: PgPool,
     path: String,
+    /// The site's custom host: `stay.galle.example` for `GAL`, `stay.<code>.example` for any other code.
+    host: String,
     business_date: Date,
     deluxe: Uuid,
 }
 
 impl Hotel {
     /// A property coded `code` with a `DLX` room type and one room, and its booking site saved as `enabled` with the
-    /// custom host `stay.galle.example`.
+    /// custom host (see `host`).
     async fn new(app: &TestApp, opts: PgConnectOptions, code: &str, enabled: bool) -> Self {
         let superuser = PgPool::connect_with(opts).await.unwrap();
         let owner = app.signup_owner(&format!("owner@{}.example", code.to_lowercase()), code).await;
@@ -46,13 +50,18 @@ impl Hotel {
                             "max_children": 1, "max_occupancy": 3});
         let room_type = uuid(&post(app, &owner, &format!("{path}/room-types"), deluxe).await["id"]);
         post(app, &owner, &format!("{path}/rooms"), json!({"room_type_id": room_type, "number": "101"})).await;
-        let hotel = Self { owner, superuser, path, business_date, deluxe: room_type };
+        let host = if code == "GAL" {
+            "stay.galle.example".to_owned()
+        } else {
+            format!("stay.{}.example", code.to_lowercase())
+        };
+        let hotel = Self { owner, superuser, path, host, business_date, deluxe: room_type };
         hotel.save_site(app, 0, enabled).await;
         hotel
     }
 
     async fn save_site(&self, app: &TestApp, version: i64, enabled: bool) {
-        let site = json!({"enabled": enabled, "custom_host": "stay.galle.example", "description": "By the sea"});
+        let site = json!({"enabled": enabled, "custom_host": self.host, "description": "By the sea"});
         let if_match = format!("\"{version}\"");
         let saved = app
             .send_with(
@@ -644,4 +653,188 @@ async fn a_foreign_origin_preflight_for_post_bookings_is_refused(_: PgPoolOption
     assert!(foreign.headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(), "{:?}", foreign.headers);
     assert_eq!(own.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "http://localhost:5174");
     assert!(own.headers.get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS).is_none());
+}
+
+/// Posts the JSON `body` to `path` from `peer` as the booking site's server would: no cookie and no CSRF header.
+async fn post_public(app: &TestApp, path: &str, peer: &str, body: &str) -> Answer {
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("origin", "http://localhost:5174")
+        .body(Body::from(body.to_owned()))
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(peer.parse::<SocketAddr>().unwrap()));
+    let response = app.router.clone().oneshot(request).await.unwrap();
+    let (status, headers) = (response.status(), response.headers().clone());
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap() };
+    Answer { status, headers, body }
+}
+
+/// Books one room on the site `GAL` through the API (`app` verifies Turnstile); the manage link's token.
+async fn booked_token(app: &TestApp, hotel: &Hotel, plan: &str) -> String {
+    let body = hotel.booking(app, plan, "kamala@example.com", &passing()).await;
+    let booked = book(app, &body, Some(&format!("booking-{}", Uuid::now_v7())), PEER).await;
+    assert_eq!(booked.status, StatusCode::CREATED, "{:?}", booked.body);
+    let url = booked.body["manage_url"].as_str().unwrap();
+    url.split_once("?token=").unwrap().1.to_owned()
+}
+
+fn manage_path(code: &str, token: &str) -> String {
+    format!("/api/public/v1/ibe/{code}/bookings/manage?token={token}")
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_manage_page_is_never_cached_and_every_bad_token_is_the_same_410(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts.clone(), "GAL", true).await;
+    Hotel::new(&app, opts, "COL", true).await;
+    let plan = hotel.sell(&app).await;
+    let app = with_turnstile(&app).await;
+    let token = booked_token(&app, &hotel, &plan).await;
+    let from = [("origin", "https://reader.example")];
+
+    let page = call(&app, Method::GET, &manage_path("GAL", &token), PEER, &from).await;
+    let wrong = call(&app, Method::GET, &manage_path("GAL", "not-a-token"), "192.0.2.11:1", &from).await;
+    let elsewhere = call(&app, Method::GET, &manage_path("COL", &token), "192.0.2.11:1", &from).await;
+    let none = call(&app, Method::GET, "/api/public/v1/ibe/GAL/bookings/manage", "192.0.2.11:1", &from).await;
+    sqlx::query("update reservation_access_token set expires_at = now() - interval '1 second' where sha256 = $1")
+        .bind(ibe::token_hash(&token))
+        .execute(&hotel.superuser)
+        .await
+        .unwrap();
+    let late = call(&app, Method::GET, &manage_path("GAL", &token), "192.0.2.11:1", &from).await;
+
+    assert_eq!(page.status, StatusCode::OK, "{:?}", page.body);
+    assert_eq!(page.body["status"], "confirmed");
+    assert_eq!(page.body["cancellable"], true);
+    assert_eq!(page.body["property_name"], "GAL");
+    for internal in ["notes", "created_by", "guest_id", "booker", "token"] {
+        assert!(page.body.get(internal).is_none(), "{internal}: {:?}", page.body);
+    }
+    for answer in [&page, &wrong, &late, &elsewhere, &none] {
+        assert_eq!(answer.headers[header::CACHE_CONTROL], "no-store", "{:?}", answer.body);
+        assert_eq!(answer.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+    }
+    for answer in [&wrong, &late, &elsewhere, &none] {
+        assert_eq!(answer.status, StatusCode::GONE, "{:?}", answer.body);
+        assert_eq!(answer.body, wrong.body, "one body for every bad token");
+    }
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_guest_cancels_online_once(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let plan = hotel.sell(&app).await;
+    let app = with_turnstile(&app).await;
+    let token = booked_token(&app, &hotel, &plan).await;
+    let path = "/api/public/v1/ibe/GAL/bookings/manage/cancel";
+
+    let wrong = post_public(&app, path, PEER, r#"{"token":"not-a-token"}"#).await;
+    let malformed = post_public(&app, path, PEER, "{").await;
+    let shapeless = post_public(&app, path, PEER, r#"{"token":5}"#).await;
+    let cancelled = post_public(&app, path, PEER, &json!({"token": token}).to_string()).await;
+    let again = post_public(&app, path, PEER, &json!({"token": token}).to_string()).await;
+    let page = call(&app, Method::GET, &manage_path("GAL", &token), "192.0.2.12:1", &[]).await;
+
+    assert_eq!(wrong.status, StatusCode::GONE);
+    assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
+    assert_eq!(shapeless.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(cancelled.status, StatusCode::OK, "{:?}", cancelled.body);
+    assert_eq!(cancelled.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "http://localhost:5174");
+    assert_eq!(
+        (cancelled.body["status"].as_str(), cancelled.body["cancellable"].as_bool()),
+        (Some("cancelled"), Some(false))
+    );
+    assert_eq!(again.status, StatusCode::CONFLICT);
+    assert_eq!(again.body["reason"], "already_cancelled");
+    assert_eq!(page.body["status"], "cancelled", "the page still shows it");
+    let jobs: Vec<Value> = sqlx::query_scalar("select payload from outbox where topic = 'mail-send' order by id")
+        .fetch_all(&hotel.superuser)
+        .await
+        .unwrap();
+    assert_eq!(jobs.len(), 2, "the confirmation and one cancellation");
+    assert!(jobs[1].get("IbeCancellation").is_some(), "{:?}", jobs[1]);
+    assert!(!jobs[1].to_string().contains(&token));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_6th_manage_request_in_a_minute_from_one_ip_is_429(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    Hotel::new(&app, opts, "GAL", true).await;
+
+    for n in 1..=5 {
+        let answer = call(&app, Method::GET, &manage_path("GAL", "x"), PEER, &[]).await;
+        assert_eq!(answer.status, StatusCode::GONE, "request {n}");
+    }
+    let refused = call(&app, Method::GET, &manage_path("GAL", "x"), PEER, &[]).await;
+    let cancel = post_public(&app, "/api/public/v1/ibe/GAL/bookings/manage/cancel", PEER, r#"{"token":"x"}"#).await;
+    let elsewhere = call(&app, Method::GET, &manage_path("GAL", "x"), "198.51.100.7:40000", &[]).await;
+
+    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(refused.headers.contains_key(header::RETRY_AFTER));
+    assert_eq!(refused.headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(cancel.status, StatusCode::TOO_MANY_REQUESTS, "views and cancels share the count");
+    assert_eq!(elsewhere.status, StatusCode::GONE, "another address has its own count");
+}
+
+#[derive(Clone, Default)]
+struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
+
+impl CapturedLogs {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+impl std::io::Write for CapturedLogs {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for CapturedLogs {
+    type Writer = CapturedLogs;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Installs, once, a global subscriber at `DEBUG`, where the request tracing layer logs each request's URI, recording
+/// every test's logs in this binary. A per-test subscriber is unreliable here: tests run in parallel.
+fn captured_logs() -> &'static CapturedLogs {
+    static LOGS: OnceLock<CapturedLogs> = OnceLock::new();
+    LOGS.get_or_init(|| {
+        let logs = CapturedLogs::default();
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).with_writer(logs.clone()).finish(),
+        )
+        .expect("no other global subscriber in this test binary");
+        logs
+    })
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_manage_token_in_the_query_stays_out_of_the_logs(_: PgPoolOptions, opts: PgConnectOptions) {
+    let logs = captured_logs();
+    let app = TestApp::new(opts.clone()).await;
+    Hotel::new(&app, opts, "GAL", true).await;
+    let (token, marker) = ("s3cr3t-manage-token-9f2c", "marker-query-7d41");
+
+    let manage = call(&app, Method::GET, &manage_path("GAL", token), PEER, &[]).await;
+    let control = call(&app, Method::GET, &format!("/api/public/v1/ibe/GAL/site?x={marker}"), PEER, &[]).await;
+
+    assert_eq!((manage.status, control.status), (StatusCode::GONE, StatusCode::OK));
+    let text = logs.text();
+    assert!(text.contains(marker), "the control query is logged, so requests are: {text}");
+    assert!(text.contains("/bookings/manage"), "the manage request is logged, by its path: {text}");
+    assert!(!text.contains(token), "the token is in a log line: {text}");
 }

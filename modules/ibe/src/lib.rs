@@ -2,10 +2,11 @@
 //! taxes on the bill.
 //!
 //! Every function takes a transaction scoped to the tenant of an enabled site (`db::ibe_resolve`). Only [`book`]
-//! writes.
+//! writes, and [`cancel`].
 
 mod booking;
 mod confirmation;
+mod manage;
 mod search;
 mod site;
 
@@ -14,6 +15,7 @@ pub use booking::{
     token_hash,
 };
 pub use confirmation::{Confirmation, ConfirmedRoom, confirmation};
+pub use manage::{CANCEL_REASON, Cancellation, ManageError, ManageView, ManagedRoom, cancel, cancellation, manage};
 pub use search::{
     MAX_NIGHTS, MAX_ROOMS, MONTHS_AHEAD, MealOffer, NEXT_AVAILABLE_DAYS, NightPrice, PlanOffer, RoomAsk,
     RoomTypeResult, SearchRequest, SearchResult, TaxLine, cancellation_text, money_text, search,

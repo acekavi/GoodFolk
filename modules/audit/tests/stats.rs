@@ -134,7 +134,7 @@ async fn seed_golden(hotel: &Hotel) {
     let (folio, line) = hotel.keyed_line(&format!("meal_plan:{}:{}", a.id, hotel.day(0))).await;
     folio::transfer(&mut tx, hotel.tenant, user, p, folio, line, account_folio, "Company pays meals").await.unwrap();
     reservations::mark_no_show(&mut tx, hotel.tenant, user, p, g.id, 1).await.unwrap();
-    reservations::cancel_room(&mut tx, hotel.tenant, user, p, h.id, 1).await.unwrap();
+    reservations::cancel_room(&mut tx, hotel.tenant, user, p, h.id, 1, None).await.unwrap();
     tx.commit().await.unwrap();
     hotel.pay(p, a.guest_folio, Method::Account, 5_000, "LKR", None).await;
 

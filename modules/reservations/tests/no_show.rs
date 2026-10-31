@@ -376,9 +376,17 @@ async fn no_extension_into_a_room_taken_or_blocked_tonight(_: PgPoolOptions, opt
     assert_eq!(taken, format!("room 101 is taken by {} on those nights", next.confirmation_no));
 
     let mut tx = hotel.tx().await;
-    reservations::cancel_room(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, next_room.id, assigned.version)
-        .await
-        .unwrap();
+    reservations::cancel_room(
+        &mut tx,
+        hotel.tenant,
+        Some(hotel.user),
+        hotel.property,
+        next_room.id,
+        assigned.version,
+        None,
+    )
+    .await
+    .unwrap();
     let leak =
         rooms::NewBlockReason { code: "LEAK".into(), label: "Leak".into(), default_kind: rooms::BlockKind::OutOfOrder };
     let reason = rooms::create_block_reason(&mut tx, hotel.tenant, hotel.user, hotel.property, leak).await.unwrap();
@@ -427,7 +435,7 @@ async fn bookings_and_cancellations_keep_the_business_date_they_happened_on(_: P
     hotel.move_business_date(1).await;
     let second = hotel.stay(&booker, &plans.rack, 2, 4).await;
     let mut tx = hotel.tx().await;
-    reservations::cancel_room(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, first.rooms[0].id, 1)
+    reservations::cancel_room(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, first.rooms[0].id, 1, None)
         .await
         .unwrap();
     tx.commit().await.unwrap();

@@ -55,6 +55,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/public/v1/ibe/{code}/bookings/manage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The booking whose manage link carries `token`, for the manage page: what the guest needs to see and whether they can
+         *     still cancel it (every room tentative or confirmed, check-in after the business date), with what cancelling would
+         *     cost now. Never cached, since it is one guest's data. `410` for a token that is wrong, expired (after the end of the
+         *     30th day after check-out, in the property's time zone) or another property's, always with the same answer.
+         *     5 requests a minute per IP, with the cancel (`429` with `Retry-After`).
+         */
+        get: operations["ibe_manage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/public/v1/ibe/{code}/bookings/manage/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancels the whole booking whose manage link carries `token`, as the guest: the existing cancellation under the
+         *     terms the booking kept, with the reason "Cancelled by the guest online", the penalty never waived, and a
+         *     cancellation email. All rooms or none. Answers the booking as it is now. `409` with `reason: not_cancellable` once a
+         *     room is checked in, cancelled or due to arrive today or earlier, and with `reason: already_cancelled` for a booking
+         *     cancelled already (also for the second of two cancels at once); `410` as the manage page has it. Shares the manage
+         *     page's 5 requests a minute per IP.
+         */
+        post: operations["ibe_cancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/public/v1/ibe/{code}/search": {
         parameters: {
             query?: never;
@@ -2369,6 +2416,14 @@ export interface components {
              */
             changed: number;
         };
+        /** @description A guest's request to cancel the booking whose manage link carries `token`. */
+        CancelBody: {
+            token: string;
+        };
+        /** @description What a cancellation that cannot be made answers: `not_cancellable` or `already_cancelled`. */
+        CancelConflict: {
+            reason: string;
+        };
         /** @description What cancelling or not arriving costs. Reservations (Phase 3) apply it; rate plans name one. */
         CancellationPolicy: {
             /** Format: uuid */
@@ -3134,6 +3189,50 @@ export interface components {
         LoginRequest: {
             email: string;
             password: string;
+        };
+        /** @description A booking as its manage page shows it. Amounts are in minor units of their currency, with the taxes on the bill. */
+        ManageView: {
+            /** @description Whether the guest can cancel online: every room tentative or confirmed, and check-in after the business date. */
+            cancellable: boolean;
+            /** @description Each distinct wording of the rooms' booked cancellation terms, in room order. */
+            cancellation: string[];
+            /** @description What cancelling cost per currency, for the rooms cancelled. */
+            cancellation_penalty: {
+                [key: string]: number;
+            };
+            /** Format: date */
+            check_in: string;
+            /** Format: date */
+            check_out: string;
+            confirmation_no: string;
+            /** @description To change the booking, the guest contacts the hotel. */
+            contact_email?: string | null;
+            contact_phone?: string | null;
+            /** @description What cancelling now costs per currency, while the booking is cancellable. */
+            penalty_if_cancelled: {
+                [key: string]: number;
+            };
+            property_name: string;
+            rooms: components["schemas"]["ManagedRoom"][];
+            /** @description The reservation's status: `tentative`, `confirmed`, `checked_in`, `checked_out`, `cancelled` or `no_show`. */
+            status: string;
+            totals: {
+                [key: string]: number;
+            };
+        };
+        /** @description One booked room as the guest sees it. */
+        ManagedRoom: {
+            /** Format: int32 */
+            adults: number;
+            /** Format: int32 */
+            children: number;
+            currency: string;
+            meal_plan: string;
+            plan: string;
+            room_type: string;
+            status: string;
+            /** Format: int64 */
+            total: number;
         };
         /** @description The price of one meal plan for the rooms asked with one occupancy. */
         MealOffer: {
@@ -4866,6 +4965,116 @@ export interface operations {
             };
             503: {
                 headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ibe_manage: {
+        parameters: {
+            query: {
+                /** @description the manage link's token */
+                token: string;
+            };
+            header?: never;
+            path: {
+                /** @description the property code, any case */
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManageView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    "Retry-After"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ibe_cancel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description the property code, any case */
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManageView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CancelConflict"];
+                };
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    "Retry-After"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;

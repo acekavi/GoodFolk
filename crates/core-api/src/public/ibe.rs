@@ -3,7 +3,7 @@
 use crate::error::ApiError;
 use crate::extract::{ApiPath, ApiQuery};
 use crate::idempotency;
-use crate::public::limits::{self, BOOKINGS_PER_MINUTE, SEARCHES_PER_MINUTE};
+use crate::public::limits::{self, BOOKINGS_PER_MINUTE, MANAGES_PER_MINUTE, SEARCHES_PER_MINUTE};
 use crate::public::{ClientIp, turnstile};
 use crate::state::AppState;
 use axum::Json;
@@ -14,7 +14,9 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use db::{Scope, TenantId};
-use ibe::{BookingError, BookingRequest, IbeError, RoomAsk, SearchRequest, SearchResult, SiteView};
+use ibe::{
+    BookingError, BookingRequest, IbeError, ManageError, ManageView, RoomAsk, SearchRequest, SearchResult, SiteView,
+};
 use rates::Residency;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -27,6 +29,9 @@ use uuid::Uuid;
 const SITE_CACHE: &str = "public, s-maxage=300";
 /// The edge keeps a search, per full query string, this long.
 const SEARCH_CACHE: &str = "public, s-maxage=30";
+
+/// A manage page is one guest's private data: no cache keeps it, whatever a `GET` is otherwise answered with.
+const PRIVATE_CACHE: &str = "no-store";
 
 /// The code a custom host's site is addressed by.
 #[derive(Debug, Serialize, ToSchema)]
@@ -78,6 +83,40 @@ pub struct BookingConflict {
     pub totals: Option<BTreeMap<String, i64>>,
 }
 
+/// The manage link's token, as the manage page sends it.
+#[derive(Deserialize)]
+pub struct ManageQuery {
+    /// Absent is as wrong as any other token.
+    #[serde(default)]
+    pub token: String,
+}
+
+/// The token stays out of logs.
+impl std::fmt::Debug for ManageQuery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManageQuery").field("token", &"<redacted>").finish()
+    }
+}
+
+/// A guest's request to cancel the booking whose manage link carries `token`.
+#[derive(Deserialize, ToSchema)]
+pub struct CancelBody {
+    pub token: String,
+}
+
+/// The token stays out of logs.
+impl std::fmt::Debug for CancelBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CancelBody").field("token", &"<redacted>").finish()
+    }
+}
+
+/// What a cancellation that cannot be made answers: `not_cancellable` or `already_cancelled`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CancelConflict {
+    pub reason: String,
+}
+
 /// A stay to search.
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
@@ -101,6 +140,15 @@ pub(crate) fn ibe_error(err: IbeError) -> ApiError {
             ApiError::internal()
         }
         IbeError::Database(db_err) => db_err.into(),
+    }
+}
+
+fn manage_error(err: ManageError) -> ApiError {
+    match err {
+        ManageError::Gone => ApiError::gone(err.to_string()),
+        ManageError::NotCancellable(message) => ApiError::conflict(message).with("reason", "not_cancellable"),
+        ManageError::AlreadyCancelled => ApiError::conflict(err.to_string()).with("reason", "already_cancelled"),
+        ManageError::Ibe(err) => ibe_error(err),
     }
 }
 
@@ -258,6 +306,75 @@ pub async fn book(
         }
     };
     idempotency::property_scoped(&state, tenant, property, &key, (&method, &uri, &body), booking).await
+}
+
+/// The booking whose manage link carries `token`, for the manage page: what the guest needs to see and whether they can
+/// still cancel it (every room tentative or confirmed, check-in after the business date), with what cancelling would
+/// cost now. Never cached, since it is one guest's data. `410` for a token that is wrong, expired (after the end of the
+/// 30th day after check-out, in the property's time zone) or another property's, always with the same answer.
+/// 5 requests a minute per IP, with the cancel (`429` with `Retry-After`).
+#[utoipa::path(get, operation_id = "ibe_manage", path = "/api/public/v1/ibe/{code}/bookings/manage",
+    params(("code" = String, Path, description = "the property code, any case"),
+        ("token" = String, Query, description = "the manage link's token")),
+    responses((status = 200, body = ManageView, headers(("Cache-Control" = String))), (status = 404), (status = 410),
+        (status = 429, headers(("Retry-After" = String)))))]
+pub async fn manage(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    ApiPath(code): ApiPath<String>,
+    ApiQuery(query): ApiQuery<ManageQuery>,
+) -> Response {
+    let viewed = async {
+        limits::check(&state.pool, "manage", ip, MANAGES_PER_MINUTE).await?;
+        let (tenant, property) = resolve(&state, Some(&code), None).await?;
+        let mut tx = db::begin(&state.pool, Scope::tenant(tenant)).await?;
+        let view = ibe::manage(&mut tx, property, &query.token).await.map_err(manage_error)?;
+        tx.commit().await?;
+        Ok::<_, ApiError>(Json(view))
+    };
+    private(viewed.await)
+}
+
+/// Cancels the whole booking whose manage link carries `token`, as the guest: the existing cancellation under the
+/// terms the booking kept, with the reason "Cancelled by the guest online", the penalty never waived, and a
+/// cancellation email. All rooms or none. Answers the booking as it is now. `409` with `reason: not_cancellable` once a
+/// room is checked in, cancelled or due to arrive today or earlier, and with `reason: already_cancelled` for a booking
+/// cancelled already (also for the second of two cancels at once); `410` as the manage page has it. Shares the manage
+/// page's 5 requests a minute per IP.
+#[utoipa::path(post, operation_id = "ibe_cancel", path = "/api/public/v1/ibe/{code}/bookings/manage/cancel",
+    params(("code" = String, Path, description = "the property code, any case")),
+    request_body = CancelBody,
+    responses((status = 200, body = ManageView), (status = 400), (status = 404), (status = 409, body = CancelConflict),
+        (status = 410), (status = 422), (status = 429, headers(("Retry-After" = String)))))]
+pub async fn cancel(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    ApiPath(code): ApiPath<String>,
+    body: Bytes,
+) -> Response {
+    let cancelled = async {
+        limits::check(&state.pool, "manage", ip, MANAGES_PER_MINUTE).await?;
+        let (tenant, property) = resolve(&state, Some(&code), None).await?;
+        // Fixed messages: serde's could quote the token back.
+        let request: CancelBody = serde_json::from_slice(&body).map_err(|err| match err.classify() {
+            serde_json::error::Category::Data => {
+                ApiError::unprocessable("the request does not have the expected shape")
+            }
+            _ => ApiError::bad_request("the request is not valid JSON"),
+        })?;
+        let mut tx = db::begin(&state.pool, Scope::tenant(tenant)).await?;
+        let view = ibe::cancel(&mut tx, tenant, property, &request.token).await.map_err(manage_error)?;
+        tx.commit().await?;
+        Ok::<_, ApiError>(Json(view))
+    };
+    private(cancelled.await)
+}
+
+/// `answer` marked [`PRIVATE_CACHE`], the error answers too.
+fn private<T: IntoResponse>(answer: Result<T, ApiError>) -> Response {
+    let mut response = answer.into_response();
+    response.headers_mut().insert(header::CACHE_CONTROL, header::HeaderValue::from_static(PRIVATE_CACHE));
+    response
 }
 
 /// The manage page of the booking whose token is `token`, on the booking domain.

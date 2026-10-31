@@ -63,19 +63,22 @@ struct BookingRow {
 }
 
 #[derive(sqlx::FromRow)]
-struct RoomRow {
-    id: Uuid,
-    room_type: String,
-    plan: String,
-    residency: Option<String>,
-    prices_include_tax: bool,
-    meal_plan: String,
-    adults: i32,
-    children: i32,
-    currency: String,
-    check_in: Date,
-    check_out: Date,
-    cancellation_terms: Option<Json<CancellationTerms>>,
+pub(crate) struct RoomRow {
+    pub(crate) id: Uuid,
+    pub(crate) room_type: String,
+    pub(crate) plan: String,
+    pub(crate) residency: Option<String>,
+    pub(crate) prices_include_tax: bool,
+    pub(crate) meal_plan: String,
+    pub(crate) adults: i32,
+    pub(crate) children: i32,
+    pub(crate) currency: String,
+    pub(crate) check_in: Date,
+    pub(crate) check_out: Date,
+    pub(crate) cancellation_terms: Option<Json<CancellationTerms>>,
+    pub(crate) status: String,
+    /// What cancelling cost, once the room is cancelled.
+    pub(crate) cancellation_penalty: Option<i64>,
 }
 
 /// The confirmation of site booking `reservation`, or `None` when the tenant has no such reservation from the site,
@@ -147,7 +150,7 @@ pub async fn confirmation(tx: &mut Tx, reservation: Uuid, token: &str) -> Result
 
 /// The rooms of `reservation` in `property` (`vat_registered` as the property is), each with its meal plan and its
 /// booked nights' total with the taxes on the bill, priced as the search prices a stay.
-async fn booked_rooms(
+pub(crate) async fn booked_rooms(
     tx: &mut Tx,
     property: Uuid,
     vat_registered: bool,
@@ -156,7 +159,7 @@ async fn booked_rooms(
     let rooms: Vec<RoomRow> = sqlx::query_as(
         "select rr.id, rt.name as room_type, rp.name as plan, rp.residency, rp.prices_include_tax, rr.meal_plan,
                 rr.adults, rr.children, rr.currency::text as currency, lower(rr.stay) as check_in,
-                upper(rr.stay) as check_out, rr.cancellation_terms
+                upper(rr.stay) as check_out, rr.cancellation_terms, rr.status, rr.cancellation_penalty
          from reservation_room rr
          join room_type rt on rt.id = rr.room_type_id
          join rate_plan rp on rp.id = rr.rate_plan_id

@@ -403,7 +403,7 @@ async fn a_cancellation_racing_the_roll_counts_on_exactly_one_day(_: PgPoolOptio
     let (pool, version) = (hotel.pool.clone(), 1);
     let cancel = tokio::spawn(async move {
         let mut tx = db::begin(&pool, db::Scope::tenant(tenant)).await.unwrap();
-        reservations::cancel_room(&mut tx, tenant, None, p, stay.id, version).await.unwrap();
+        reservations::cancel_room(&mut tx, tenant, None, p, stay.id, version, None).await.unwrap();
         tx.commit().await.unwrap();
     });
     // The cancellation waits on the roll's lock on the property.

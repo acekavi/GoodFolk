@@ -24,7 +24,7 @@ use std::time::Duration;
 use tower::{Layer, ServiceExt};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
-pub use ibe::{BookingBody, BookingConfirmed, BookingConflict, SiteCode};
+pub use ibe::{BookingBody, BookingConfirmed, BookingConflict, CancelBody, CancelConflict, SiteCode};
 
 /// How long a browser may keep a preflight's answer.
 const PREFLIGHT_MAX_AGE: Duration = Duration::from_secs(600);
@@ -38,8 +38,19 @@ pub(crate) fn router(state: &AppState) -> Router<AppState> {
         .route("/api/public/v1/ibe/{code}/site", get(ibe::site))
         .route("/api/public/v1/ibe/{code}/search", get(ibe::search))
         .route("/api/public/v1/ibe/{code}/bookings", post(ibe::book))
+        .route("/api/public/v1/ibe/{code}/bookings/manage", get(ibe::manage))
+        .route("/api/public/v1/ibe/{code}/bookings/manage/cancel", post(ibe::cancel))
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .layer(from_fn_with_state(policies, cors))
+}
+
+/// The span a request is logged under: tower-http's own (`method`, `uri` and `version`), except that the manage page's
+/// URI is logged without its query, whose `token` opens a guest's booking.
+pub(crate) fn request_span<B>(request: &axum::http::Request<B>) -> tracing::Span {
+    let uri = request.uri();
+    let path = uri.path();
+    let uri = if path.ends_with("/bookings/manage") { path.to_owned() } else { uri.to_string() };
+    tracing::debug_span!("request", method = %request.method(), uri = %uri, version = ?request.version())
 }
 
 /// The public API's two CORS policies, chosen per request by [`cors`].

@@ -9,6 +9,8 @@ use std::net::{IpAddr, Ipv6Addr};
 pub const SEARCHES_PER_MINUTE: u32 = 60;
 /// Bookings one IP may send a minute.
 pub const BOOKINGS_PER_MINUTE: u32 = 5;
+/// Manage page views and cancellations one IP may send a minute, together.
+pub const MANAGES_PER_MINUTE: u32 = 5;
 
 /// What a client is counted under: an IPv4 address on its own, an IPv6 one by its /64 (one subscriber's network, whose
 /// addresses a client can rotate through freely), as `inet` text. An IPv4-mapped IPv6 address counts as the IPv4 one.

@@ -518,3 +518,50 @@ async fn an_ibe_confirmation_is_sent_in_the_hotels_name_with_the_manage_link(_: 
     assert!(!logs.text().contains(token), "a log line carries the token");
     std::fs::remove_dir_all(outbox).unwrap();
 }
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn an_ibe_cancellation_names_the_charge_and_carries_no_link(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts.clone()).await;
+    let (svc, outbox) = mailing(&hotel, opts);
+    let addr = serve(JobsSvc { ibe_public_origin: "https://book.example.lk".into(), ..svc }).await;
+    let token = "bWFuYWdlLXRva2VuLXRoYXQtbXVzdC1uZXZlci1iZS1sb2dnZWQ";
+    let reservation = site_booking(&hotel, token).await;
+    let job = MailJob::IbeCancellation { tenant_id: hotel.tenant.0, reservation_id: reservation };
+
+    assert_eq!(post_mail(addr, push(&job), Some(SECRET)).await, 204);
+    assert!(sent(&outbox).is_empty(), "a booking that is not cancelled has no cancellation to send");
+
+    let mut tx = hotel.tx().await;
+    sqlx::query(
+        "update reservation_room set status = 'cancelled', cancelled_at = now(), cancellation_penalty = 10000,
+                cancelled_business_date = $2
+         where reservation_id = $1",
+    )
+    .bind(reservation)
+    .bind(hotel.day(0))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(post_mail(addr, push(&job), Some(SECRET)).await, 204);
+
+    let messages = sent(&outbox);
+    assert_eq!(messages.len(), 1);
+    let message = &messages[0];
+    let confirmation_no: String = sqlx::query_scalar("select confirmation_no from reservation where id = $1")
+        .bind(reservation)
+        .fetch_one(&mut *hotel.tx().await)
+        .await
+        .unwrap();
+    assert_eq!(message.to, "kamala@example.com");
+    assert_eq!(message.subject, format!("Your booking at Hotel GAL is cancelled: {confirmation_no}"));
+    assert_eq!(message.from_name.as_deref(), Some("Hotel GAL"));
+    assert_eq!(message.reply_to.as_deref(), Some("desk@gallefort.example"));
+    for body in [&message.text, &message.html] {
+        assert!(body.contains("Kamala Perera") && body.contains(&confirmation_no), "{body}");
+        assert!(body.contains("The cancellation charge under your booking terms is LKR 100.00"), "{body}");
+        assert!(body.contains("+94 91 222 3333") && body.contains("desk@gallefort.example"), "{body}");
+        assert!(!body.contains(token) && !body.contains("manage"), "no link: {body}");
+    }
+    std::fs::remove_dir_all(outbox).unwrap();
+}

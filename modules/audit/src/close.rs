@@ -655,7 +655,7 @@ impl Close<'_> {
                     }
                     "tentative" => {
                         cancelled += 1;
-                        reservations::cancel_room(&mut tx, tenant, None, property, stay.id, stay.version)
+                        reservations::cancel_room(&mut tx, tenant, None, property, stay.id, stay.version, None)
                             .await
                             .map(drop)
                     }

@@ -242,7 +242,7 @@ pub fn router(state: AppState) -> Router {
         // `OPTIONS` no route has) reaches CORS rather than a bare 405.
         .merge(public)
         .layer(CompressionLayer::new())
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(crate::public::request_span))
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .with_state(state)

@@ -114,6 +114,127 @@
         }
       }
     },
+    "/api/public/v1/ibe/{code}/bookings/manage": {
+      "get": {
+        "tags": [
+          "crate::public::ibe"
+        ],
+        "summary": "The booking whose manage link carries `token`, for the manage page: what the guest needs to see and whether they can\nstill cancel it (every room tentative or confirmed, check-in after the business date), with what cancelling would\ncost now. Never cached, since it is one guest's data. `410` for a token that is wrong, expired (after the end of the\n30th day after check-out, in the property's time zone) or another property's, always with the same answer.\n5 requests a minute per IP, with the cancel (`429` with `Retry-After`).",
+        "operationId": "ibe_manage",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "description": "the property code, any case",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "description": "the manage link's token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageView"
+                }
+              }
+            }
+          },
+          "404": {},
+          "410": {},
+          "429": {
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/public/v1/ibe/{code}/bookings/manage/cancel": {
+      "post": {
+        "tags": [
+          "crate::public::ibe"
+        ],
+        "summary": "Cancels the whole booking whose manage link carries `token`, as the guest: the existing cancellation under the\nterms the booking kept, with the reason \"Cancelled by the guest online\", the penalty never waived, and a\ncancellation email. All rooms or none. Answers the booking as it is now. `409` with `reason: not_cancellable` once a\nroom is checked in, cancelled or due to arrive today or earlier, and with `reason: already_cancelled` for a booking\ncancelled already (also for the second of two cancels at once); `410` as the manage page has it. Shares the manage\npage's 5 requests a minute per IP.",
+        "operationId": "ibe_cancel",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "description": "the property code, any case",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageView"
+                }
+              }
+            }
+          },
+          "400": {},
+          "404": {},
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelConflict"
+                }
+              }
+            }
+          },
+          "410": {},
+          "422": {},
+          "429": {
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/public/v1/ibe/{code}/search": {
       "get": {
         "tags": [
@@ -7153,6 +7274,30 @@
           }
         }
       },
+      "CancelBody": {
+        "type": "object",
+        "description": "A guest's request to cancel the booking whose manage link carries `token`.",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        }
+      },
+      "CancelConflict": {
+        "type": "object",
+        "description": "What a cancellation that cannot be made answers: `not_cancellable` or `already_cancelled`.",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
       "CancellationPolicy": {
         "type": "object",
         "description": "What cancelling or not arriving costs. Reservations (Phase 3) apply it; rate plans name one.",
@@ -9110,6 +9255,148 @@
           },
           "password": {
             "type": "string"
+          }
+        }
+      },
+      "ManageView": {
+        "type": "object",
+        "description": "A booking as its manage page shows it. Amounts are in minor units of their currency, with the taxes on the bill.",
+        "required": [
+          "property_name",
+          "confirmation_no",
+          "check_in",
+          "check_out",
+          "status",
+          "rooms",
+          "totals",
+          "cancellation",
+          "cancellable",
+          "penalty_if_cancelled",
+          "cancellation_penalty"
+        ],
+        "properties": {
+          "cancellable": {
+            "type": "boolean",
+            "description": "Whether the guest can cancel online: every room tentative or confirmed, and check-in after the business date."
+          },
+          "cancellation": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Each distinct wording of the rooms' booked cancellation terms, in room order."
+          },
+          "cancellation_penalty": {
+            "type": "object",
+            "description": "What cancelling cost per currency, for the rooms cancelled.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "check_in": {
+            "type": "string",
+            "format": "date"
+          },
+          "check_out": {
+            "type": "string",
+            "format": "date"
+          },
+          "confirmation_no": {
+            "type": "string"
+          },
+          "contact_email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "To change the booking, the guest contacts the hotel."
+          },
+          "contact_phone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "penalty_if_cancelled": {
+            "type": "object",
+            "description": "What cancelling now costs per currency, while the booking is cancellable.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "property_name": {
+            "type": "string"
+          },
+          "rooms": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManagedRoom"
+            }
+          },
+          "status": {
+            "type": "string",
+            "description": "The reservation's status: `tentative`, `confirmed`, `checked_in`, `checked_out`, `cancelled` or `no_show`."
+          },
+          "totals": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ManagedRoom": {
+        "type": "object",
+        "description": "One booked room as the guest sees it.",
+        "required": [
+          "room_type",
+          "plan",
+          "meal_plan",
+          "adults",
+          "children",
+          "status",
+          "currency",
+          "total"
+        ],
+        "properties": {
+          "adults": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "children": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "meal_plan": {
+            "type": "string"
+          },
+          "plan": {
+            "type": "string"
+          },
+          "room_type": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
