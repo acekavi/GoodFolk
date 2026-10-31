@@ -526,7 +526,12 @@ async fn an_ibe_cancellation_names_the_charge_and_carries_no_link(_: PgPoolOptio
     let addr = serve(JobsSvc { ibe_public_origin: "https://book.example.lk".into(), ..svc }).await;
     let token = "bWFuYWdlLXRva2VuLXRoYXQtbXVzdC1uZXZlci1iZS1sb2dnZWQ";
     let reservation = site_booking(&hotel, token).await;
-    let job = MailJob::IbeCancellation { tenant_id: hotel.tenant.0, reservation_id: reservation };
+    let rooms: Vec<Uuid> = sqlx::query_scalar("select id from reservation_room where reservation_id = $1")
+        .bind(reservation)
+        .fetch_all(&mut *hotel.tx().await)
+        .await
+        .unwrap();
+    let job = MailJob::IbeCancellation { tenant_id: hotel.tenant.0, reservation_id: reservation, rooms };
 
     assert_eq!(post_mail(addr, push(&job), Some(SECRET)).await, 204);
     assert!(sent(&outbox).is_empty(), "a booking that is not cancelled has no cancellation to send");

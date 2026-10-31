@@ -253,22 +253,42 @@ async fn a_search_outside_the_limits_is_422_and_a_malformed_one_400(_: PgPoolOpt
     assert_eq!(no_residency.status, StatusCode::BAD_REQUEST, "no price before the residency answer");
 }
 
+/// Sets `ip`'s count under `scope` to `hits` in the current minute's window and the next two, so the count stands
+/// whichever minute the next request lands in: a test of a limit does not race the clock.
+async fn seed_hits(pool: &PgPool, scope: &str, ip: &str, hits: i32) {
+    for minutes in 0..3 {
+        sqlx::query(
+            "insert into ibe_rate_hit (scope, ip, window_start, hits)
+             values ($1, $2::inet, date_trunc('minute', now()) + make_interval(mins => $3), $4)",
+        )
+        .bind(scope)
+        .bind(ip)
+        .bind(minutes)
+        .bind(hits)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn the_61st_search_in_a_minute_from_one_ip_is_429_with_retry_after(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts, "GAL", true).await;
     let path = hotel.search("GAL", 1);
+    seed_hits(&hotel.superuser, "search", "192.0.2.10", 60).await;
+    seed_hits(&hotel.superuser, "search", "198.51.100.8", 59).await;
 
-    for n in 1..=60 {
-        let answer = get(&app, &path).await;
-        assert_eq!(answer.status, StatusCode::OK, "search {n}: {:?}", answer.body);
-    }
     let refused = get(&app, &path).await;
+    let sixtieth = call(&app, Method::GET, &path, "198.51.100.8:40000", &[]).await;
+    let sixty_first = call(&app, Method::GET, &path, "198.51.100.8:40000", &[]).await;
     let elsewhere = call(&app, Method::GET, &path, "198.51.100.7:40000", &[]).await;
 
     assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", refused.body);
     let retry_after: u64 = refused.headers[header::RETRY_AFTER].to_str().unwrap().parse().unwrap();
     assert!((1..=60).contains(&retry_after), "{retry_after}");
+    assert_eq!(sixtieth.status, StatusCode::OK, "the 60th search is allowed: {:?}", sixtieth.body);
+    assert_eq!(sixty_first.status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(elsewhere.status, StatusCode::OK, "another address has its own count");
 }
 
@@ -555,15 +575,18 @@ async fn the_6th_booking_in_a_minute_from_one_ip_is_429(_: PgPoolOptions, opts: 
     let app = with_turnstile(&app).await;
     let body = hotel.booking(&app, &plan, "kamala@example.com", "a-bot-token").await;
 
-    for n in 1..=5 {
-        let answer = book(&app, &body, Some(&format!("booking-key-000{n}")), PEER).await;
-        assert_eq!(answer.status, StatusCode::BAD_REQUEST, "booking {n}: {:?}", answer.body);
-    }
+    seed_hits(&hotel.superuser, "booking", "192.0.2.10", 5).await;
+    seed_hits(&hotel.superuser, "booking", "198.51.100.8", 4).await;
+
     let refused = book(&app, &body, Some("booking-key-0006"), PEER).await;
-    let elsewhere = book(&app, &body, Some("booking-key-0007"), "198.51.100.7:40000").await;
+    let fifth = book(&app, &body, Some("booking-key-0007"), "198.51.100.8:40000").await;
+    let sixth = book(&app, &body, Some("booking-key-0008"), "198.51.100.8:40000").await;
+    let elsewhere = book(&app, &body, Some("booking-key-0009"), "198.51.100.7:40000").await;
 
     assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", refused.body);
     assert!(refused.headers.contains_key(header::RETRY_AFTER));
+    assert_eq!(fifth.status, StatusCode::BAD_REQUEST, "the 5th booking is allowed (and refused by Turnstile)");
+    assert_eq!(sixth.status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(elsewhere.status, StatusCode::BAD_REQUEST, "another address has its own count");
 }
 
@@ -763,20 +786,23 @@ async fn a_guest_cancels_online_once(_: PgPoolOptions, opts: PgConnectOptions) {
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn the_6th_manage_request_in_a_minute_from_one_ip_is_429(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
-    Hotel::new(&app, opts, "GAL", true).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
 
-    for n in 1..=5 {
-        let answer = call(&app, Method::GET, &manage_path("GAL", "x"), PEER, &[]).await;
-        assert_eq!(answer.status, StatusCode::GONE, "request {n}");
-    }
+    seed_hits(&hotel.superuser, "manage", "192.0.2.10", 5).await;
+    seed_hits(&hotel.superuser, "manage", "198.51.100.8", 4).await;
+
     let refused = call(&app, Method::GET, &manage_path("GAL", "x"), PEER, &[]).await;
     let cancel = post_public(&app, "/api/public/v1/ibe/GAL/bookings/manage/cancel", PEER, r#"{"token":"x"}"#).await;
+    let fifth = call(&app, Method::GET, &manage_path("GAL", "x"), "198.51.100.8:40000", &[]).await;
+    let sixth = call(&app, Method::GET, &manage_path("GAL", "x"), "198.51.100.8:40000", &[]).await;
     let elsewhere = call(&app, Method::GET, &manage_path("GAL", "x"), "198.51.100.7:40000", &[]).await;
 
     assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
     assert!(refused.headers.contains_key(header::RETRY_AFTER));
     assert_eq!(refused.headers[header::CACHE_CONTROL], "no-store");
     assert_eq!(cancel.status, StatusCode::TOO_MANY_REQUESTS, "views and cancels share the count");
+    assert_eq!(fifth.status, StatusCode::GONE, "the 5th request is allowed");
+    assert_eq!(sixth.status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(elsewhere.status, StatusCode::GONE, "another address has its own count");
 }
 
@@ -830,9 +856,18 @@ async fn the_manage_token_in_the_query_stays_out_of_the_logs(_: PgPoolOptions, o
     let (token, marker) = ("s3cr3t-manage-token-9f2c", "marker-query-7d41");
 
     let manage = call(&app, Method::GET, &manage_path("GAL", token), PEER, &[]).await;
+    let slash =
+        call(&app, Method::GET, &format!("/api/public/v1/ibe/GAL/bookings/manage/?token={token}"), PEER, &[]).await;
+    let cased =
+        call(&app, Method::GET, &format!("/api/public/v1/ibe/GAL/Bookings/Manage?Token={token}"), PEER, &[]).await;
+    let encoded =
+        call(&app, Method::GET, &format!("/api/public/v1/ibe/GAL/bookings/manage?t%6Fken={token}"), PEER, &[]).await;
     let control = call(&app, Method::GET, &format!("/api/public/v1/ibe/GAL/site?x={marker}"), PEER, &[]).await;
 
     assert_eq!((manage.status, control.status), (StatusCode::GONE, StatusCode::OK));
+    assert_eq!(slash.status, StatusCode::NOT_FOUND, "a path no route has");
+    assert_eq!(cased.status, StatusCode::NOT_FOUND, "a path no route has");
+    assert_eq!(encoded.status, StatusCode::GONE, "a percent-encoded name still reaches the route");
     let text = logs.text();
     assert!(text.contains(marker), "the control query is logged, so requests are: {text}");
     assert!(text.contains("/bookings/manage"), "the manage request is logged, by its path: {text}");

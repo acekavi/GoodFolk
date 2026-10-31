@@ -90,7 +90,9 @@ pub(crate) fn penalty_amount(penalty: Penalty, nights: &[(Date, i64, i64)]) -> i
 /// ([`folio::post_cancellation_fee`]), tax-inclusive when its rate plan's prices are: that needs a rate for a foreign
 /// currency on the business date and an open deposit folio (`Conflict` otherwise).
 ///
-/// `audit_reason`, when given, is kept in the audit row as the reason for cancelling, such as a guest's own request.
+/// `audit_reason`, when given, is kept in the audit row as the reason for cancelling, and with no `actor` it means the
+/// guest cancelled on the booking site: the row then names the site as the actor and its mode is `online`, not the
+/// automatic close's `auto`.
 pub async fn cancel_room(
     tx: &mut Tx,
     tenant: TenantId,
@@ -135,6 +137,10 @@ pub async fn cancel_room(
     });
     if let Some(reason) = audit_reason {
         data["reason"] = serde_json::json!(reason);
+        if actor.is_none() {
+            data["actor"] = serde_json::json!(crate::SITE_ACTOR);
+            data["mode"] = serde_json::json!("online");
+        }
     }
     audit(tx, tenant, actor, "reservation_room.cancelled", "reservation_room", id, data).await?;
     notify(tx, tenant, property, closed_keys(property, &stay, from)).await?;

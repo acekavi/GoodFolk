@@ -44,13 +44,23 @@ pub(crate) fn router(state: &AppState) -> Router<AppState> {
         .layer(from_fn_with_state(policies, cors))
 }
 
-/// The span a request is logged under: tower-http's own (`method`, `uri` and `version`), except that the manage page's
-/// URI is logged without its query, whose `token` opens a guest's booking.
+/// The span a request is logged under: tower-http's own (`method`, `uri` and `version`), except that a URI whose query
+/// has a `token` parameter, as a manage link's has, is logged by its path alone, whatever the path is and even when it
+/// matches no route.
 pub(crate) fn request_span<B>(request: &axum::http::Request<B>) -> tracing::Span {
-    let uri = request.uri();
-    let path = uri.path();
-    let uri = if path.ends_with("/bookings/manage") { path.to_owned() } else { uri.to_string() };
+    let uri = loggable_uri(request.uri());
     tracing::debug_span!("request", method = %request.method(), uri = %uri, version = ?request.version())
+}
+
+/// `uri` as it may be logged: without its query when that carries a `token` (or a name that may be one percent-encoded).
+fn loggable_uri(uri: &axum::http::Uri) -> String {
+    let secret = uri.query().is_some_and(|query| {
+        query.split('&').any(|pair| {
+            let name = pair.split_once('=').map_or(pair, |(name, _)| name);
+            name.contains('%') || name.eq_ignore_ascii_case("token")
+        })
+    });
+    if secret { uri.path().to_owned() } else { uri.to_string() }
 }
 
 /// The public API's two CORS policies, chosen per request by [`cors`].

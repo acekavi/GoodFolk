@@ -33,6 +33,7 @@ import {
 	formatStay,
 	freeRoomsKey,
 	groupOffers,
+	historyActor,
 	historyLabel,
 	idDocText,
 	offerLabel,
@@ -405,6 +406,18 @@ describe('historyLabel', () => {
 		expect(
 			historyLabel({ action: 'reservation_room.cancelled', data: { penalty: 0, currency: 'USD' } })
 		).toBe('Room cancelled at no cost');
+		expect(
+			historyLabel({
+				action: 'reservation_room.cancelled',
+				data: { penalty: 10_000, currency: 'USD', actor: 'ibe', mode: 'online' }
+			})
+		).toBe('Cancelled by the guest online, costing USD 100.00');
+	});
+
+	it('names who did a history entry: the staff member, the guest online, or a deleted user', () => {
+		expect(historyActor({ actorName: 'Nimal', data: {} })).toBe('Nimal');
+		expect(historyActor({ actorName: null, data: { actor: 'ibe' } })).toBe('The guest, online');
+		expect(historyActor({ actorName: null, data: {} })).toBe('A deleted user');
 	});
 
 	it('shows an action it does not know as it is', () => {

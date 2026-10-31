@@ -62,8 +62,8 @@ pub(crate) async fn mail(State(svc): State<JobsSvc>, body: Bytes) -> StatusCode 
         MailJob::IbeConfirmation { tenant_id, reservation_id, token } => {
             confirmation_message(&svc, TenantId(*tenant_id), *reservation_id, token).await
         }
-        MailJob::IbeCancellation { tenant_id, reservation_id } => {
-            cancellation_message(&svc, TenantId(*tenant_id), *reservation_id).await
+        MailJob::IbeCancellation { tenant_id, reservation_id, rooms } => {
+            cancellation_message(&svc, TenantId(*tenant_id), *reservation_id, rooms).await
         }
     };
     let message = match message {
@@ -459,11 +459,16 @@ fn render_confirmation(booking: &ibe::Confirmation, link: &str) -> Message {
     }
 }
 
-/// Site booking `reservation`'s cancellation, or `None` when it is not `tenant`'s, a room of it is not cancelled, or
-/// its booker has no email.
-async fn cancellation_message(svc: &JobsSvc, tenant: TenantId, reservation: Uuid) -> Result<Option<Message>, String> {
+/// Site booking `reservation`'s cancellation, charging the `rooms` it closed, or `None` when it is not `tenant`'s, a
+/// room of it is not cancelled, or its booker has no email.
+async fn cancellation_message(
+    svc: &JobsSvc,
+    tenant: TenantId,
+    reservation: Uuid,
+    rooms: &[Uuid],
+) -> Result<Option<Message>, String> {
     let mut tx = db::begin(&svc.pool, Scope::tenant(tenant)).await.map_err(|e| e.to_string())?;
-    let cancellation = ibe::cancellation(&mut tx, reservation).await.map_err(|e| e.to_string())?;
+    let cancellation = ibe::cancellation(&mut tx, reservation, rooms).await.map_err(|e| e.to_string())?;
     tx.commit().await.map_err(|e| e.to_string())?;
     let Some(cancellation) = cancellation else {
         tracing::warn!(%reservation, "no cancelled site booking; nothing sent");

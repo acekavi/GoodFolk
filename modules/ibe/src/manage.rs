@@ -151,17 +151,36 @@ pub async fn cancel(tx: &mut Tx, tenant: TenantId, property: Uuid, token: &str) 
         .bind(property)
         .fetch_one(&mut **tx)
         .await?;
-    if rooms.iter().all(|(_, status, ..)| status == RoomStatus::Cancelled.as_str()) {
-        return Err(ManageError::AlreadyCancelled);
+    let mut open = Vec::with_capacity(rooms.len());
+    let mut stays = Vec::with_capacity(rooms.len());
+    for (id, status, version, check_in) in &rooms {
+        let status = RoomStatus::parse(status).ok_or_else(|| room_status_error(status))?;
+        stays.push((status, *check_in));
+        if status != RoomStatus::Cancelled {
+            open.push((*id, *version));
+        }
     }
-    let open = |status: &str| status == RoomStatus::Tentative.as_str() || status == RoomStatus::Confirmed.as_str();
-    if rooms.iter().any(|(_, status, _, check_in)| !open(status) || *check_in <= today) {
-        return Err(ManageError::NotCancellable(CONTACT_HOTEL.into()));
+    match closing(stays, today) {
+        Closing::Done => return Err(ManageError::AlreadyCancelled),
+        Closing::Blocked => return Err(ManageError::NotCancellable(CONTACT_HOTEL.into())),
+        Closing::Open => {}
     }
-    for (id, _, version, _) in &rooms {
-        reservations::cancel_room(tx, tenant, None, property, *id, *version, Some(CANCEL_REASON)).await?;
+    for &(id, version) in &open {
+        reservations::cancel_room(tx, tenant, None, property, id, version, Some(CANCEL_REASON)).await.inspect_err(
+            |err| {
+                if let ReservationsError::Conflict(message) = err {
+                    tracing::warn!(reservation = %found.reservation_id, room = %id, conflict = %message,
+                        "a guest's online cancellation was refused; the hotel has to settle it");
+                }
+            },
+        )?;
     }
-    let job = mail::MailJob::IbeCancellation { tenant_id: tenant.0, reservation_id: found.reservation_id };
+    let closed: Vec<Uuid> = open.iter().map(|&(id, _)| id).collect();
+    let job = mail::MailJob::IbeCancellation {
+        tenant_id: tenant.0,
+        reservation_id: found.reservation_id,
+        rooms: closed.clone(),
+    };
     let payload = serde_json::to_value(&job).expect("a mail job always serializes");
     events::enqueue(tx, mail::SEND_TOPIC, &payload).await.map_err(IbeError::from)?;
     sqlx::query(
@@ -171,10 +190,41 @@ pub async fn cancel(tx: &mut Tx, tenant: TenantId, property: Uuid, token: &str) 
     .bind(Uuid::now_v7())
     .bind(tenant.0)
     .bind(found.reservation_id)
-    .bind(serde_json::json!({ "actor": SITE_ACTOR, "rooms": rooms.len(), "reason": CANCEL_REASON }))
+    .bind(serde_json::json!({ "actor": SITE_ACTOR, "rooms": closed.len(), "reason": CANCEL_REASON }))
     .execute(&mut **tx)
     .await?;
     Ok(view(tx, property, &found).await?)
+}
+
+/// What a guest's cancel does to a booking.
+#[derive(Debug, PartialEq, Eq)]
+enum Closing {
+    /// Every room is cancelled already.
+    Done,
+    /// A room is checked in, checked out or a no-show, or is due to arrive on the business date or before: the hotel's
+    /// to settle.
+    Blocked,
+    /// The rooms not cancelled yet can be cancelled online.
+    Open,
+}
+
+/// How a guest's cancel treats rooms of the given status and check-in on the business date `today`. Rooms already
+/// cancelled are left as they are; the rest must all be tentative or confirmed with check-in after `today`. The one
+/// rule both the page and the cancel go by.
+fn closing(rooms: impl IntoIterator<Item = (RoomStatus, Date)>, today: Date) -> Closing {
+    let mut open = false;
+    for (status, check_in) in rooms {
+        match status {
+            RoomStatus::Cancelled => {}
+            RoomStatus::Tentative | RoomStatus::Confirmed if check_in > today => open = true,
+            _ => return Closing::Blocked,
+        }
+    }
+    if open { Closing::Open } else { Closing::Done }
+}
+
+fn room_status_error(value: &str) -> sqlx::Error {
+    sqlx::Error::ColumnDecode { index: "status".into(), source: format!("unknown value {value:?}").into() }
 }
 
 /// `found`'s booking as the manage page shows it.
@@ -188,10 +238,6 @@ async fn view(tx: &mut Tx, property: Uuid, found: &Found) -> Result<ManageView, 
     .bind(&ids)
     .fetch_all(&mut **tx)
     .await?;
-    let decode = |value: &str| sqlx::Error::ColumnDecode {
-        index: "status".into(),
-        source: format!("unknown value {value:?}").into(),
-    };
     let mut statuses = Vec::with_capacity(rooms.len());
     let mut managed = Vec::with_capacity(rooms.len());
     let mut totals: BTreeMap<String, i64> = BTreeMap::new();
@@ -199,7 +245,7 @@ async fn view(tx: &mut Tx, property: Uuid, found: &Found) -> Result<ManageView, 
     let mut penalty_if_cancelled: BTreeMap<String, i64> = BTreeMap::new();
     let mut cancellation_fees: BTreeMap<String, i64> = BTreeMap::new();
     for (room, meal_plan, total) in &rooms {
-        let status = RoomStatus::parse(&room.status).ok_or_else(|| decode(&room.status))?;
+        let status = RoomStatus::parse(&room.status).ok_or_else(|| room_status_error(&room.status))?;
         statuses.push(status);
         *totals.entry(room.currency.clone()).or_default() += total;
         let terms = room.cancellation_terms.as_ref().map(|Json(terms): &Json<CancellationTerms>| terms);
@@ -212,10 +258,11 @@ async fn view(tx: &mut Tx, property: Uuid, found: &Found) -> Result<ManageView, 
         }
         let booked: Vec<(Date, i64, i64)> =
             nights.iter().filter(|(id, ..)| *id == room.id).map(|&(_, date, room, meal)| (date, room, meal)).collect();
-        let now = cancellation_penalty(terms, &booked, room.check_in, found.business_date);
-        *penalty_if_cancelled.entry(room.currency.clone()).or_default() += now;
         if status == RoomStatus::Cancelled {
             *cancellation_fees.entry(room.currency.clone()).or_default() += room.cancellation_penalty.unwrap_or(0);
+        } else {
+            let now = cancellation_penalty(terms, &booked, room.check_in, found.business_date);
+            *penalty_if_cancelled.entry(room.currency.clone()).or_default() += now;
         }
         managed.push(ManagedRoom {
             room_type: room.room_type.clone(),
@@ -228,9 +275,9 @@ async fn view(tx: &mut Tx, property: Uuid, found: &Found) -> Result<ManageView, 
             total: *total,
         });
     }
-    let cancellable = rooms.iter().zip(&statuses).all(|((room, ..), status)| {
-        matches!(status, RoomStatus::Tentative | RoomStatus::Confirmed) && room.check_in > found.business_date
-    });
+    let cancellable =
+        closing(rooms.iter().zip(&statuses).map(|((room, ..), status)| (*status, room.check_in)), found.business_date)
+            == Closing::Open;
     if !cancellable {
         penalty_if_cancelled.clear();
     }
@@ -282,9 +329,10 @@ struct CancelledRow {
     email: Option<String>,
 }
 
-/// The cancellation of site booking `reservation`, or `None` when the tenant has no such reservation from the site,
-/// a room of it is not cancelled, or the booker has no email.
-pub async fn cancellation(tx: &mut Tx, reservation: Uuid) -> Result<Option<Cancellation>, IbeError> {
+/// The cancellation of site booking `reservation`, charging only the `closed` rooms (those the guest's cancel closed,
+/// not any the hotel cancelled before), or `None` when the tenant has no such reservation from the site, a room of it
+/// is not cancelled, or the booker has no email.
+pub async fn cancellation(tx: &mut Tx, reservation: Uuid, closed: &[Uuid]) -> Result<Option<Cancellation>, IbeError> {
     let row: Option<CancelledRow> = sqlx::query_as(
         "select p.name as property_name, s.contact_email, s.contact_phone, r.confirmation_no, g.first_name,
                 g.last_name, g.email
@@ -309,8 +357,8 @@ pub async fn cancellation(tx: &mut Tx, reservation: Uuid) -> Result<Option<Cance
     else {
         return Ok(None);
     };
-    let rooms: Vec<(String, String, Option<i64>, Date, Date)> = sqlx::query_as(
-        "select status, currency::text, cancellation_penalty, lower(stay), upper(stay) from reservation_room
+    let rooms: Vec<(String, String, Option<i64>, Date, Date, Uuid)> = sqlx::query_as(
+        "select status, currency::text, cancellation_penalty, lower(stay), upper(stay), id from reservation_room
          where reservation_id = $1",
     )
     .bind(reservation)
@@ -321,8 +369,10 @@ pub async fn cancellation(tx: &mut Tx, reservation: Uuid) -> Result<Option<Cance
         return Ok(None);
     };
     let mut penalty: BTreeMap<String, i64> = BTreeMap::new();
-    for (_, currency, fee, ..) in &rooms {
-        *penalty.entry(currency.clone()).or_default() += fee.unwrap_or(0);
+    for (_, currency, fee, _, _, id) in &rooms {
+        if closed.contains(id) {
+            *penalty.entry(currency.clone()).or_default() += fee.unwrap_or(0);
+        }
     }
     penalty.retain(|_, fee| *fee > 0);
     Ok(Some(Cancellation {
@@ -336,4 +386,22 @@ pub async fn cancellation(tx: &mut Tx, reservation: Uuid) -> Result<Option<Cance
         check_out: rooms.iter().map(|room| room.4).max().expect("at least one room"),
         penalty,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Closing, closing};
+    use domain::RoomStatus::{Cancelled, CheckedIn, Confirmed, NoShow, Tentative};
+    use time::macros::date;
+
+    #[test]
+    fn rooms_cancelled_already_are_skipped_and_the_rest_must_be_open_and_in_the_future() {
+        let (today, later) = (date!(2026 - 10 - 31), date!(2026 - 11 - 1));
+        assert_eq!(closing([(Confirmed, later), (Tentative, later)], today), Closing::Open);
+        assert_eq!(closing([(Cancelled, today), (Confirmed, later)], today), Closing::Open);
+        assert_eq!(closing([(Cancelled, later), (Cancelled, today)], today), Closing::Done);
+        assert_eq!(closing([(Confirmed, today)], today), Closing::Blocked, "arriving today");
+        assert_eq!(closing([(Cancelled, later), (CheckedIn, later)], today), Closing::Blocked);
+        assert_eq!(closing([(Confirmed, later), (NoShow, later)], today), Closing::Blocked);
+    }
 }

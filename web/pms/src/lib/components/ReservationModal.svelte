@@ -24,6 +24,7 @@
 		fetchReservation,
 		fetchReservationDeposit,
 		formatStay,
+		historyActor,
 		historyLabel,
 		idDocText,
 		reservationDepositKey,
@@ -284,7 +285,7 @@
 							<tr>
 								<td>{historyLabel(entry)}</td>
 								<td>{when(entry.at)}</td>
-								<td>{entry.actorName ?? 'A deleted user'}</td>
+								<td>{historyActor(entry)}</td>
 							</tr>
 						{/each}
 					</tbody>

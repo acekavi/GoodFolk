@@ -196,6 +196,11 @@ async fn cancel_applies_snapshotted_penalty(_: PgPoolOptions, opts: PgConnectOpt
     .fetch_all(&mut *tx)
     .await
     .unwrap();
+    let rooms_audit: Vec<_> = audits.iter().filter(|audit| audit.1 == "reservation_room.cancelled").collect();
+    assert_eq!(rooms_audit.len(), 2);
+    for audit in &rooms_audit {
+        assert_eq!((&audit.2["actor"], &audit.2["mode"]), (&"ibe".into(), &"online".into()), "{:?}", audit.2);
+    }
     assert_eq!(audits.len(), 3);
     assert_eq!(audits[0].1, "ibe.booking_cancelled");
     assert_eq!(audits[0].2, serde_json::json!({"actor": "ibe", "rooms": 2, "reason": "Cancelled by the guest online"}));
@@ -227,37 +232,65 @@ async fn checked_in_booking_not_cancellable(_: PgPoolOptions, opts: PgConnectOpt
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
-async fn a_stay_arriving_today_or_partly_cancelled_is_not_cancellable_and_nothing_changes(
-    _: PgPoolOptions,
-    opts: PgConnectOptions,
-) {
+async fn a_stay_arriving_today_is_not_cancellable_and_nothing_changes(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts, 3).await;
     let mut today = hotel.request(&hotel.bar, Residency::Resident, &[(2, 0)], "kamala@example.com").await;
     today.check_in = hotel.day(0);
     today.expected_totals = hotel.totals(&today).await;
     let today = hotel.book(&today).await.unwrap();
+    let mail_before = hotel.mail().await.len();
+
+    let view = hotel.manage(&today.token).await.unwrap();
+    let arriving = hotel.cancel(&today.token).await;
+
+    assert!(!view.cancellable, "the page offers no cancel either");
+    assert!(matches!(arriving, Err(ManageError::NotCancellable(_))), "{arriving:?}");
+    assert_eq!(hotel.statuses(today.reservation_id).await, ["confirmed"]);
+    assert_eq!(hotel.mail().await.len(), mail_before);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_partly_cancelled_booking_cancels_the_rest_and_charges_only_those_rooms(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let hotel = Hotel::new(opts, 3).await;
     let two = hotel.booked(&[(2, 0), (2, 0)]).await;
     let mut tx = hotel.tx().await;
-    let first: (Uuid, i32) =
-        sqlx::query_as("select id, version from reservation_room where reservation_id = $1 order by id limit 1")
+    let rooms: Vec<(Uuid, i32)> =
+        sqlx::query_as("select id, version from reservation_room where reservation_id = $1 order by id")
             .bind(two.reservation_id)
-            .fetch_one(&mut *tx)
+            .fetch_all(&mut *tx)
             .await
             .unwrap();
-    reservations::cancel_room(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, first.0, first.1, None)
+    reservations::cancel_room(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, rooms[0].0, rooms[0].1, None)
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    let mail_before = hotel.mail().await.len();
 
-    let arriving = hotel.cancel(&today.token).await;
-    let partly = hotel.cancel(&two.token).await;
+    let before = hotel.manage(&two.token).await.unwrap();
+    let view = hotel.cancel(&two.token).await.unwrap();
 
-    assert!(matches!(arriving, Err(ManageError::NotCancellable(_))), "{arriving:?}");
-    assert!(matches!(partly, Err(ManageError::NotCancellable(_))), "{partly:?}");
-    assert_eq!(hotel.statuses(today.reservation_id).await, ["confirmed"]);
-    assert_eq!(hotel.statuses(two.reservation_id).await.iter().filter(|status| *status == "confirmed").count(), 1);
-    assert_eq!(hotel.mail().await.len(), mail_before);
+    assert!(before.cancellable, "the page offers the cancel for the room left");
+    assert_eq!(before.penalty_if_cancelled, BTreeMap::from([("LKR".to_owned(), 11_000)]), "that room only");
+    assert_eq!(hotel.statuses(two.reservation_id).await, ["cancelled", "cancelled"]);
+    assert_eq!(view.status, "cancelled");
+    let jobs = hotel.mail().await;
+    let job: mail::MailJob = serde_json::from_value(jobs[1].clone()).unwrap();
+    assert_eq!(
+        job,
+        mail::MailJob::IbeCancellation {
+            tenant_id: hotel.tenant.0,
+            reservation_id: two.reservation_id,
+            rooms: vec![rooms[1].0]
+        },
+        "only the room this cancel closed"
+    );
+    let mail::MailJob::IbeCancellation { rooms: closed, .. } = job else { unreachable!() };
+    let notice = ibe::cancellation(&mut hotel.tx().await, two.reservation_id, &closed).await.unwrap().unwrap();
+    assert_eq!(notice.penalty, BTreeMap::from([("LKR".to_owned(), 11_000)]), "the second room's, not both");
+    let again = hotel.cancel(&two.token).await;
+    assert!(matches!(again, Err(ManageError::AlreadyCancelled)), "{again:?}");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -278,7 +311,20 @@ async fn two_simultaneous_cancels_give_one_success_and_one_already_cancelled(_: 
     let hotel = Hotel::new(opts, 3).await;
     let booked = hotel.booked(&[(2, 0), (2, 1)]).await;
 
-    let (first, second) = tokio::join!(hotel.cancel(&booked.token), hotel.cancel(&booked.token));
+    // A transaction holds the booking's rooms while both cancels start, so both queue at the room lock before either
+    // goes on.
+    let mut holder = hotel.tx().await;
+    sqlx::query("select id from reservation_room where reservation_id = $1 for update")
+        .bind(booked.reservation_id)
+        .fetch_all(&mut *holder)
+        .await
+        .unwrap();
+    let release = async {
+        hotel.wait_for_lock_waiters(2).await;
+        holder.commit().await.unwrap();
+    };
+
+    let (first, second, ()) = tokio::join!(hotel.cancel(&booked.token), hotel.cancel(&booked.token), release);
 
     let outcomes = [first, second];
     assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1, "{outcomes:?}");
@@ -304,19 +350,28 @@ async fn cancellation_email_sent(_: PgPoolOptions, opts: PgConnectOptions) {
 
     let jobs = hotel.mail().await;
     assert_eq!(jobs.len(), 2);
+    let closed: Vec<Uuid> = sqlx::query_scalar("select id from reservation_room where reservation_id = $1")
+        .bind(booked.reservation_id)
+        .fetch_all(&mut *hotel.tx().await)
+        .await
+        .unwrap();
     let job: mail::MailJob = serde_json::from_value(jobs[1].clone()).unwrap();
     assert_eq!(
         job,
-        mail::MailJob::IbeCancellation { tenant_id: hotel.tenant.0, reservation_id: booked.reservation_id }
+        mail::MailJob::IbeCancellation {
+            tenant_id: hotel.tenant.0,
+            reservation_id: booked.reservation_id,
+            rooms: closed.clone()
+        }
     );
     assert!(!jobs[1].to_string().contains(&booked.token), "the cancellation carries no token");
-    let notice = ibe::cancellation(&mut hotel.tx().await, booked.reservation_id).await.unwrap().unwrap();
+    let notice = ibe::cancellation(&mut hotel.tx().await, booked.reservation_id, &closed).await.unwrap().unwrap();
     assert_eq!(notice.booker_email, "kamala@example.com");
     assert_eq!(notice.confirmation_no, booked.confirmation_no);
     assert_eq!(notice.penalty, BTreeMap::from([("LKR".to_owned(), 11_000)]));
     let live = hotel.booked(&[(2, 0)]).await;
     assert!(
-        ibe::cancellation(&mut hotel.tx().await, live.reservation_id).await.unwrap().is_none(),
+        ibe::cancellation(&mut hotel.tx().await, live.reservation_id, &[]).await.unwrap().is_none(),
         "a booking not cancelled has no cancellation to tell"
     );
 }

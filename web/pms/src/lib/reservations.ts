@@ -601,6 +601,13 @@ export function describeTerms(
 	].join('; ');
 }
 
+/** Who a history entry's action is shown as done by: the staff member, the guest on the booking site, or a deleted user. */
+export function historyActor(entry: Pick<HistoryEntry, 'actorName' | 'data'>): string {
+	const data = (entry.data ?? {}) as Record<string, unknown>;
+	if (entry.actorName) return entry.actorName;
+	return data.actor === 'ibe' ? 'The guest, online' : 'A deleted user';
+}
+
 /** One history entry's action in words, with the room or the penalty its audit data recorded. */
 export function historyLabel(entry: Pick<HistoryEntry, 'action' | 'data'>): string {
 	const data = (entry.data ?? {}) as Record<string, unknown>;
@@ -616,9 +623,10 @@ export function historyLabel(entry: Pick<HistoryEntry, 'action' | 'data'>): stri
 		case 'reservation_room.cancelled': {
 			const penalty = Number(data.penalty ?? 0);
 			const currency = String(data.currency ?? '');
+			const what = data.actor === 'ibe' ? 'Cancelled by the guest online' : 'Room cancelled';
 			return penalty > 0
-				? `Room cancelled, costing ${currency} ${formatMoney(penalty, currency)}`
-				: 'Room cancelled at no cost';
+				? `${what}, costing ${currency} ${formatMoney(penalty, currency)}`
+				: `${what} at no cost`;
 		}
 		default:
 			return entry.action;

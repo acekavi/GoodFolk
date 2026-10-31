@@ -101,8 +101,9 @@ pub enum MailJob {
     /// Send the booker of booking-site reservation `reservation_id` its confirmation; `token` is what its manage link
     /// carries.
     IbeConfirmation { tenant_id: Uuid, reservation_id: Uuid, token: String },
-    /// Tell the booker of booking-site reservation `reservation_id` it is cancelled. The email carries no link.
-    IbeCancellation { tenant_id: Uuid, reservation_id: Uuid },
+    /// Tell the booker of booking-site reservation `reservation_id` it is cancelled, with the charge of the `rooms` the
+    /// guest's cancellation closed (not those cancelled before). The email carries no link.
+    IbeCancellation { tenant_id: Uuid, reservation_id: Uuid, rooms: Vec<Uuid> },
 }
 
 impl std::fmt::Debug for MailJob {
@@ -126,10 +127,11 @@ impl std::fmt::Debug for MailJob {
                 .field("reservation_id", reservation_id)
                 .field("token", &"<redacted>")
                 .finish(),
-            Self::IbeCancellation { tenant_id, reservation_id } => f
+            Self::IbeCancellation { tenant_id, reservation_id, rooms } => f
                 .debug_struct("IbeCancellation")
                 .field("tenant_id", tenant_id)
                 .field("reservation_id", reservation_id)
+                .field("rooms", rooms)
                 .finish(),
         }
     }
