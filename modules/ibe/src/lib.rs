@@ -11,7 +11,7 @@ mod site;
 
 pub use booking::{
     BookRoom, Booked, Booker, BookingError, BookingRequest, MANAGE_DAYS_AFTER_CHECK_OUT, MAX_SPECIAL_REQUESTS, book,
-    new_token, token_hash,
+    token_hash,
 };
 pub use confirmation::{Confirmation, ConfirmedRoom, confirmation};
 pub use search::{

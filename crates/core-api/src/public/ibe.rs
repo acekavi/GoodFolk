@@ -11,10 +11,13 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use db::{Scope, TenantId};
 use ibe::{BookingError, BookingRequest, IbeError, RoomAsk, SearchRequest, SearchResult, SiteView};
 use rates::Residency;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use time::Date;
 use utoipa::ToSchema;
@@ -32,7 +35,7 @@ pub struct SiteCode {
 }
 
 /// A booking from the site's form.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Deserialize, ToSchema)]
 pub struct BookingBody {
     /// The Turnstile widget's token.
     #[serde(default)]
@@ -42,6 +45,17 @@ pub struct BookingBody {
     pub website: String,
     #[serde(flatten)]
     pub booking: BookingRequest,
+}
+
+/// The Turnstile token stays out of logs; the booking redacts its guests' details itself.
+impl std::fmt::Debug for BookingBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BookingBody")
+            .field("turnstile_token", &"<redacted>")
+            .field("website", &self.website)
+            .field("booking", &self.booking)
+            .finish()
+    }
 }
 
 /// A booking made.
@@ -180,11 +194,15 @@ pub async fn search(
 /// other than `expected_totals` is `409` with `reason: price_changed` and the new `totals`, which the guest confirms;
 /// a room no longer free is `409` with `reason: sold_out`. A booking the site does not sell is `422`.
 ///
-/// Checked in this order: 5 bookings a minute per IP (`429` with `Retry-After`); the hidden `website` field, which a
-/// bot fills (it is answered as if booked, and nothing is kept); the `Idempotency-Key` (required, scoped to the
-/// property: the same request again gets the first answer, without asking Turnstile again, but with no `manage_url`,
-/// since the manage token is never stored; another request with the same key is `409`); then, for a new key only,
-/// the Turnstile token (`400` when missing or refused, `503` when it cannot be checked).
+/// Checked in this order: 5 bookings a minute per IP (`429` with `Retry-After`); the `Idempotency-Key` (required);
+/// the hidden `website` field, which a bot fills (it is answered as if booked, the same way for the same key, and
+/// nothing is kept); the key's stored answer (scoped to the property: the same request again gets the first answer,
+/// without asking Turnstile again, but with no `manage_url`, since the manage token is never stored; another request
+/// with the same key is `409`); then, for a new key only, the Turnstile token (`400` when missing or refused, `503`
+/// when it cannot be checked; neither keeps anything under the key).
+///
+/// Send a new `Idempotency-Key` with each new attempt, and treat any `4xx` as the end of its key: a changed price is
+/// confirmed with a new key, since its body differs.
 #[utoipa::path(post, operation_id = "ibe_book", path = "/api/public/v1/ibe/{code}/bookings",
     params(("code" = String, Path, description = "the property code, any case"),
         ("Idempotency-Key" = String, Header, description = "8 to 160 characters, new for each booking attempt")),
@@ -208,14 +226,19 @@ pub async fn book(
         serde_json::error::Category::Data => ApiError::unprocessable("the booking does not have the expected shape"),
         _ => ApiError::bad_request("the booking is not valid JSON"),
     })?;
-    if !request.website.is_empty() {
-        return Ok(decoy(&state, &code));
-    }
     let key = idempotency::public_key(&headers)?;
+    if !request.website.is_empty() {
+        return Ok(decoy(&state, property, &code, &key));
+    }
     // Turnstile spends a token once, so a retry carrying the same one is answered from the store before this runs.
     let booking = async {
+        if let Err(refused) = turnstile::verify(&state.ibe, &request.turnstile_token, ip).await {
+            // A bot check that did not pass booked nothing: the key stays free for a retry with a new token.
+            let mut response = refused.into_response();
+            response.extensions_mut().insert(idempotency::ReleaseClaim);
+            return response;
+        }
         let booked = async {
-            turnstile::verify(&state.ibe, &request.turnstile_token, ip).await?;
             let mut tx = db::begin(&state.pool, Scope::tenant(tenant)).await?;
             let booked = ibe::book(&mut tx, tenant, property, &request.booking).await.map_err(booking_error)?;
             let code = ibe::public_code(&mut tx, property).await.map_err(ibe_error)?;
@@ -243,13 +266,20 @@ fn manage_url(state: &AppState, code: &str, token: &str) -> String {
 }
 
 /// What a bot that filled the hidden field is told: a booking's answer in every way, for a booking that was never
-/// made.
-fn decoy(state: &AppState, code: &str) -> Response {
-    let number = Uuid::now_v7().as_u128() % 1_000_000;
+/// made. Its confirmation number and manage token are derived from the key with the server's Turnstile secret, so the
+/// same key gets the same answer again with nothing stored.
+fn decoy(state: &AppState, property: Uuid, code: &str, key: &str) -> Response {
+    let mut hasher = Sha256::new();
+    for part in [state.ibe.turnstile_secret.as_bytes(), property.as_bytes(), key.as_bytes()] {
+        hasher.update(part);
+        hasher.update([0]);
+    }
+    let seed = hasher.finalize();
+    let number = u64::from_be_bytes(Sha256::digest(seed)[..8].try_into().expect("8 bytes")) % 1_000_000;
     let code = code.to_ascii_uppercase();
     let confirmed = BookingConfirmed {
         confirmation_no: format!("{code}-{number:06}"),
-        manage_url: Some(manage_url(state, &code, &ibe::new_token())),
+        manage_url: Some(manage_url(state, &code, &URL_SAFE_NO_PAD.encode(seed))),
     };
     (StatusCode::CREATED, Json(confirmed)).into_response()
 }
@@ -285,6 +315,28 @@ mod tests {
         );
         for bad in ["", "2", "2-", "-1", "2-0,", "a-b", "2-0;1-0", "1000-0"] {
             assert!(parse_rooms(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_booking_body_debug_hides_the_turnstile_token_and_the_guests_details() {
+        let body: super::BookingBody = serde_json::from_value(serde_json::json!({
+            "turnstile_token": "s3cr3t-turnstile",
+            "residency": "resident",
+            "booker": {"first_name": "Kamala", "last_name": "Perera", "email": "kamala@example.com",
+                       "phone": "+94 77 123 4567", "country": "LK"},
+            "rooms": [{"room_type_id": uuid::Uuid::nil(), "rate_plan_id": uuid::Uuid::nil(), "meal_plan": "RO",
+                       "adults": 2, "children": 0, "occupant_name": "Nimal Silva"}],
+            "check_in": "2026-11-01",
+            "check_out": "2026-11-03",
+            "expected_totals": {"LKR": 20000},
+            "agreed": true,
+        }))
+        .unwrap();
+
+        let debug = format!("{body:?}");
+        for secret in ["s3cr3t-turnstile", "Kamala", "Perera", "kamala@example.com", "123 4567", "Nimal"] {
+            assert!(!debug.contains(secret), "{secret} in {debug}");
         }
     }
 

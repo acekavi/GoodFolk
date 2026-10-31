@@ -1,6 +1,7 @@
 //! Booking on the site: a guest's confirmed, pay-at-the-hotel reservation, priced again on the server, with a manage
 //! link whose token is returned once and stored only as its SHA-256, and the confirmation email queued with it.
 
+use crate::confirmation::booked_totals;
 use crate::search::{MAX_ROOMS, SearchRequest, search};
 use crate::{IbeError, RoomAsk};
 use base64::Engine;
@@ -64,7 +65,7 @@ impl std::fmt::Debug for Booker {
 }
 
 /// One room of a booking, as one of the search's offers.
-#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[derive(Clone, Deserialize, ToSchema)]
 pub struct BookRoom {
     pub room_type_id: Uuid,
     pub rate_plan_id: Uuid,
@@ -75,6 +76,20 @@ pub struct BookRoom {
     /// Who stays in the room; the booker when absent.
     #[serde(default)]
     pub occupant_name: Option<String>,
+}
+
+/// The occupant's name stays out of logs.
+impl std::fmt::Debug for BookRoom {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BookRoom")
+            .field("room_type_id", &self.room_type_id)
+            .field("rate_plan_id", &self.rate_plan_id)
+            .field("meal_plan", &self.meal_plan)
+            .field("adults", &self.adults)
+            .field("children", &self.children)
+            .field("occupant_name", &self.occupant_name.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// A booking made. `token` is the manage link's, given out only here.
@@ -134,7 +149,7 @@ impl From<ReservationsError> for BookingError {
 }
 
 /// A new manage-link token: 32 bytes from the OS random number generator, base64url without padding.
-pub fn new_token() -> String {
+fn new_token() -> String {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).expect("OS random number generator available");
     URL_SAFE_NO_PAD.encode(bytes)
@@ -157,7 +172,9 @@ pub fn token_hash(token: &str) -> Vec<u8> {
 ///
 /// Then the booker becomes a new guest (never matched to another by email), each named occupant a guest with just a
 /// name, and the reservation is made by [`reservations::create_reservation_from_site`]; a night with no room left is
-/// `SoldOut`. The manage token is stored as its SHA-256, valid to the end of the 30th day after check-out in the
+/// `SoldOut`. That command prices the nights again under the inventory lock, so their totals with the taxes on the
+/// bill are compared with `expected_totals` once more: a rate changed since the search is `PriceChanged` too, and the
+/// caller's rollback undoes everything written. The manage token is stored as its SHA-256, valid to the end of the 30th day after check-out in the
 /// property's time zone; the confirmation email is queued; and `ibe.booking_created` is audited with the room count,
 /// never the email or phone. The arrival time, when given, heads the notes, as front desk reads them.
 pub async fn book(
@@ -261,6 +278,12 @@ pub async fn book(
     };
     let input = NewReservation { booker_guest_id: booker_id, source: Source::Ibe, notes, account_id: None, rooms };
     let created = reservations::create_reservation_from_site(tx, tenant, property, input).await?;
+    // The nights were priced again under the inventory lock: a rate changed since the search above is seen here, and
+    // the error rolls the booking back.
+    let booked = booked_totals(tx, property, created.id).await?;
+    if booked != request.expected_totals {
+        return Err(BookingError::PriceChanged { totals: booked });
+    }
 
     let token = new_token();
     sqlx::query(

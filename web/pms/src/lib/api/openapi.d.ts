@@ -38,11 +38,15 @@ export interface paths {
          *     site, and its confirmation email with the manage link. Prices are always worked out again: a total per currency
          *     other than `expected_totals` is `409` with `reason: price_changed` and the new `totals`, which the guest confirms;
          *     a room no longer free is `409` with `reason: sold_out`. A booking the site does not sell is `422`.
-         * @description Checked in this order: 5 bookings a minute per IP (`429` with `Retry-After`); the hidden `website` field, which a
-         *     bot fills (it is answered as if booked, and nothing is kept); the `Idempotency-Key` (required, scoped to the
-         *     property: the same request again gets the first answer, without asking Turnstile again, but with no `manage_url`,
-         *     since the manage token is never stored; another request with the same key is `409`); then, for a new key only,
-         *     the Turnstile token (`400` when missing or refused, `503` when it cannot be checked).
+         * @description Checked in this order: 5 bookings a minute per IP (`429` with `Retry-After`); the `Idempotency-Key` (required);
+         *     the hidden `website` field, which a bot fills (it is answered as if booked, the same way for the same key, and
+         *     nothing is kept); the key's stored answer (scoped to the property: the same request again gets the first answer,
+         *     without asking Turnstile again, but with no `manage_url`, since the manage token is never stored; another request
+         *     with the same key is `409`); then, for a new key only, the Turnstile token (`400` when missing or refused, `503`
+         *     when it cannot be checked; neither keeps anything under the key).
+         *
+         *     Send a new `Idempotency-Key` with each new attempt, and treat any `4xx` as the end of its key: a changed price is
+         *     confirmed with a new key, since its body differs.
          */
         post: operations["ibe_book"];
         delete?: never;

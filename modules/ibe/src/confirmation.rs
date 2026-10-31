@@ -97,6 +97,62 @@ pub async fn confirmation(tx: &mut Tx, reservation: Uuid, token: &str) -> Result
     .await?;
     let Some(row) = row.filter(|row| row.sha256 == token_hash(token)) else { return Ok(None) };
     let (Some(code), Some(booker_email)) = (row.code, row.email) else { return Ok(None) };
+    let rooms = booked_rooms(tx, row.property_id, row.vat_registered, reservation).await?;
+    let mut confirmed = Vec::with_capacity(rooms.len());
+    let mut totals: BTreeMap<String, i64> = BTreeMap::new();
+    let mut cancellation: Vec<String> = Vec::new();
+    for (room, meal_plan, total) in &rooms {
+        *totals.entry(room.currency.clone()).or_default() += total;
+        let terms = room.cancellation_terms.as_ref().map_or_else(
+            || "Free cancellation.".to_owned(),
+            |Json(terms)| terms_text(&terms.rules, terms.no_show, &room.currency),
+        );
+        if !cancellation.contains(&terms) {
+            cancellation.push(terms);
+        }
+        confirmed.push(ConfirmedRoom {
+            room_type: room.room_type.clone(),
+            plan: room.plan.clone(),
+            meal_plan: *meal_plan,
+            adults: room.adults,
+            children: room.children,
+            currency: room.currency.clone(),
+            total: *total,
+        });
+    }
+    let deposits = reservations::deposit_due(tx, reservation).await.map_err(|err| match err {
+        reservations::ReservationsError::Database(err) => IbeError::Database(err),
+        other => IbeError::Invalid(other.to_string()),
+    })?;
+    let (check_in, check_out) = (
+        rooms.iter().map(|(room, ..)| room.check_in).min().ok_or(IbeError::NotFound("reservation room"))?,
+        rooms.iter().map(|(room, ..)| room.check_out).max().ok_or(IbeError::NotFound("reservation room"))?,
+    );
+    Ok(Some(Confirmation {
+        property_name: row.property_name,
+        code,
+        contact_email: row.contact_email,
+        contact_phone: row.contact_phone,
+        confirmation_no: row.confirmation_no,
+        booker_name: format!("{} {}", row.first_name, row.last_name).trim().to_owned(),
+        booker_email,
+        check_in,
+        check_out,
+        rooms: confirmed,
+        totals,
+        cancellation,
+        deposits,
+    }))
+}
+
+/// The rooms of `reservation` in `property` (`vat_registered` as the property is), each with its meal plan and its
+/// booked nights' total with the taxes on the bill, priced as the search prices a stay.
+async fn booked_rooms(
+    tx: &mut Tx,
+    property: Uuid,
+    vat_registered: bool,
+    reservation: Uuid,
+) -> Result<Vec<(RoomRow, MealPlan, i64)>, IbeError> {
     let rooms: Vec<RoomRow> = sqlx::query_as(
         "select rr.id, rt.name as room_type, rp.name as plan, rp.residency, rp.prices_include_tax, rr.meal_plan,
                 rr.adults, rr.children, rr.currency::text as currency, lower(rr.stay) as check_in,
@@ -118,12 +174,9 @@ pub async fn confirmation(tx: &mut Tx, reservation: Uuid, token: &str) -> Result
     .bind(&ids)
     .fetch_all(&mut **tx)
     .await?;
-    let rules = folio::load_rules(tx, row.property_id).await?;
-
-    let mut confirmed = Vec::with_capacity(rooms.len());
-    let mut totals: BTreeMap<String, i64> = BTreeMap::new();
-    let mut cancellation: Vec<String> = Vec::new();
-    for room in &rooms {
+    let rules = folio::load_rules(tx, property).await?;
+    let mut priced = Vec::with_capacity(rooms.len());
+    for room in rooms {
         let decode = |column: &str, value: &str| sqlx::Error::ColumnDecode {
             index: column.into(),
             source: format!("unknown value {value:?}").into(),
@@ -136,7 +189,7 @@ pub async fn confirmation(tx: &mut Tx, reservation: Uuid, token: &str) -> Result
             .transpose()?;
         let pricing = Pricing {
             rules: &rules,
-            vat_registered: row.vat_registered,
+            vat_registered,
             resident: residency.map(|residency| residency == Residency::Resident),
             currency: &room.currency,
             inclusive: room.prices_include_tax,
@@ -147,45 +200,24 @@ pub async fn confirmation(tx: &mut Tx, reservation: Uuid, token: &str) -> Result
             .map(|&(_, date, room, meal)| QuoteNight { date, room, meal })
             .collect();
         let total = pricing.meal_offer(meal_plan, Vec::new(), &booked)?.total;
-        *totals.entry(room.currency.clone()).or_default() += total;
-        let terms = room.cancellation_terms.as_ref().map_or_else(
-            || "Free cancellation.".to_owned(),
-            |Json(terms)| terms_text(&terms.rules, terms.no_show, &room.currency),
-        );
-        if !cancellation.contains(&terms) {
-            cancellation.push(terms);
-        }
-        confirmed.push(ConfirmedRoom {
-            room_type: room.room_type.clone(),
-            plan: room.plan.clone(),
-            meal_plan,
-            adults: room.adults,
-            children: room.children,
-            currency: room.currency.clone(),
-            total,
-        });
+        priced.push((room, meal_plan, total));
     }
-    let deposits = reservations::deposit_due(tx, reservation).await.map_err(|err| match err {
-        reservations::ReservationsError::Database(err) => IbeError::Database(err),
-        other => IbeError::Invalid(other.to_string()),
-    })?;
-    let (check_in, check_out) = (
-        rooms.iter().map(|room| room.check_in).min().ok_or(IbeError::NotFound("reservation room"))?,
-        rooms.iter().map(|room| room.check_out).max().ok_or(IbeError::NotFound("reservation room"))?,
-    );
-    Ok(Some(Confirmation {
-        property_name: row.property_name,
-        code,
-        contact_email: row.contact_email,
-        contact_phone: row.contact_phone,
-        confirmation_no: row.confirmation_no,
-        booker_name: format!("{} {}", row.first_name, row.last_name).trim().to_owned(),
-        booker_email,
-        check_in,
-        check_out,
-        rooms: confirmed,
-        totals,
-        cancellation,
-        deposits,
-    }))
+    Ok(priced)
+}
+
+/// What `reservation` in `property` costs per currency with the taxes on the bill, from its booked nights.
+pub(crate) async fn booked_totals(
+    tx: &mut Tx,
+    property: Uuid,
+    reservation: Uuid,
+) -> Result<BTreeMap<String, i64>, IbeError> {
+    let vat_registered: bool = sqlx::query_scalar("select vat_registered from property where id = $1")
+        .bind(property)
+        .fetch_one(&mut **tx)
+        .await?;
+    let mut totals: BTreeMap<String, i64> = BTreeMap::new();
+    for (room, _, total) in booked_rooms(tx, property, vat_registered, reservation).await? {
+        *totals.entry(room.currency).or_default() += total;
+    }
+    Ok(totals)
 }

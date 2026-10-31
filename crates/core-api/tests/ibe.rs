@@ -505,6 +505,24 @@ async fn a_missing_or_failed_turnstile_token_is_400(_: PgPoolOptions, opts: PgCo
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_refused_turnstile_token_keeps_nothing_under_the_key(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let plan = hotel.sell(&app).await;
+    let app = with_turnstile(&app).await;
+    let refused = hotel.booking(&app, &plan, "kamala@example.com", "a-bot-token").await;
+    let mut fresh = refused.clone();
+    fresh["turnstile_token"] = json!(passing());
+
+    let first = book(&app, &refused, Some("booking-key-0001"), PEER).await;
+    let retry = book(&app, &fresh, Some("booking-key-0001"), PEER).await;
+
+    assert_eq!(first.status, StatusCode::BAD_REQUEST, "{:?}", first.body);
+    assert_eq!(retry.status, StatusCode::CREATED, "the key was released: {:?}", retry.body);
+    assert_eq!(hotel.reservations().await, 1);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn turnstile_out_of_reach_is_503_never_a_pass(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts, "GAL", true).await;
@@ -552,8 +570,14 @@ async fn the_honeypot_gets_a_decoy_201_and_nothing_is_kept(_: PgPoolOptions, opt
     body["website"] = json!("https://spam.example");
 
     let decoy = book(&app, &body, Some("booking-key-0001"), PEER).await;
+    let again = book(&app, &body, Some("booking-key-0001"), PEER).await;
+    let other_key = book(&app, &body, Some("booking-key-0002"), PEER).await;
+    let without_key = book(&app, &body, None, PEER).await;
 
     assert_eq!(decoy.status, StatusCode::CREATED, "{:?}", decoy.body);
+    assert_eq!((again.status, &again.body), (StatusCode::CREATED, &decoy.body), "the same key, the same answer");
+    assert_ne!(other_key.body["confirmation_no"], decoy.body["confirmation_no"]);
+    assert_eq!(without_key.status, StatusCode::BAD_REQUEST, "as a real booking without a key: {:?}", without_key.body);
     let confirmation_no = decoy.body["confirmation_no"].as_str().unwrap();
     let (code, number) = confirmation_no.split_once('-').unwrap();
     assert_eq!(code, "GAL");

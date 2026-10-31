@@ -59,6 +59,11 @@ pub async fn idempotent(State(state): State<AppState>, request: Request, next: N
 #[derive(Clone)]
 pub struct ReplayBody(pub Bytes);
 
+/// Set as a response extension by a command whose answer changed nothing and should not end its key, such as a
+/// refused bot check: the claim is released, as for a server error, so the key can be sent again.
+#[derive(Clone, Copy)]
+pub struct ReleaseClaim;
+
 /// A public route's `Idempotency-Key` (8 to 160 characters), required. Read it before the work that comes ahead of
 /// [`property_scoped`], so a request without one is refused before that work is done.
 pub fn public_key(headers: &HeaderMap) -> Result<String, ApiError> {
@@ -138,7 +143,7 @@ async fn once(
 
     let response = run.await;
     let fits = response.body().size_hint().upper().is_some_and(|size| size <= MAX_BODY_BYTES as u64);
-    if response.status().is_server_error() || !fits {
+    if response.status().is_server_error() || !fits || response.extensions().get::<ReleaseClaim>().is_some() {
         release(state, tenant, key, claimed_at).await;
         return Ok(response);
     }
