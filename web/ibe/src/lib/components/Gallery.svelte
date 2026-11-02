@@ -6,6 +6,10 @@
 	 * A room type's photos and tour videos, one at a time: swiped, or moved with the buttons. A video shows its poster
 	 * until it is tapped, then plays with sound, so nothing loads or plays before the guest asks. With `priority`, the
 	 * first slide loads at once: the page's largest paint, as the first result is on the results page.
+	 *
+	 * Only the slides up to `reached` have their images: the next one is added as the guest reaches for the gallery
+	 * (a pointer over it, a touch, focus, a swipe or a button). Otherwise every slide inside the browser's lazy-loading
+	 * margin, several per gallery, would download with the page and slow its largest paint on a phone's connection.
 	 */
 	let {
 		media,
@@ -16,16 +20,23 @@
 	let track: HTMLUListElement | undefined = $state();
 	let current = $state(0);
 	let playing: number | null = $state(null);
+	let reached = $state(0);
+
+	function reach(index: number) {
+		reached = Math.max(reached, Math.min(media.length - 1, index));
+	}
 
 	function show(index: number) {
 		if (!track) return;
 		const target = Math.max(0, Math.min(media.length - 1, index));
+		reach(target + 1);
 		track.scrollTo({ left: target * track.clientWidth, behavior: 'smooth' });
 	}
 
 	function scrolled() {
 		if (!track) return;
 		current = Math.round(track.scrollLeft / Math.max(1, track.clientWidth));
+		reach(current + 1);
 		if (playing !== null && playing !== current) playing = null;
 	}
 
@@ -37,7 +48,14 @@
 
 {#if media.length}
 	<div class="gallery" role="region" aria-roledescription="carousel" aria-label="Photos of {name}">
-		<ul class="track" bind:this={track} onscroll={scrolled}>
+		<ul
+			class="track"
+			bind:this={track}
+			onscroll={scrolled}
+			onpointerenter={() => reach(current + 1)}
+			ontouchstart={() => reach(current + 1)}
+			onfocusin={() => reach(current + 1)}
+		>
 			{#each media as item, index (index)}
 				<li class="slide" aria-roledescription="slide" aria-label="{index + 1} of {media.length}">
 					{#if item.kind === 'video' && playing === index}
@@ -46,7 +64,7 @@
 								<source src={source.url} type={source.mime} />
 							{/each}
 						</video>
-					{:else}
+					{:else if index <= reached}
 						<Picture
 							images={item.images}
 							alt={item.kind === 'video' ? '' : label(item, index)}
