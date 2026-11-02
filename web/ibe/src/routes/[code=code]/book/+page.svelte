@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { NETWORK_TROUBLE, publicApi, TOO_MANY_TRIES } from '$lib/api';
 	import {
@@ -9,6 +9,7 @@
 		handOver,
 		depositLines,
 		depositText,
+		pricesAgree,
 		totalsOf,
 		type Details
 	} from '$lib/booking';
@@ -39,7 +40,6 @@
 	}
 
 	const terms = $derived([...new Set(rooms.map((room) => room.plan.cancellation))]);
-	const deposit = $derived(depositText(depositLines(rooms)));
 
 	// svelte-ignore state_referenced_locally
 	let details: Details = $state({
@@ -59,6 +59,9 @@
 	/** What the guest agrees to pay: the search's totals, or the new ones once a changed price is shown. */
 	let changedTotals: Record<string, number> | null = $state(null);
 	const expected = $derived(changedTotals ?? totalsOf(rooms));
+	/** The rooms' own prices and deposit, while they add up to the totals the guest is agreeing to. */
+	const pricesCurrent = $derived(pricesAgree(rooms, expected));
+	const deposit = $derived(pricesCurrent ? depositText(depositLines(rooms)) : null);
 
 	let token = $state('');
 	let widget: string | null = null;
@@ -101,7 +104,10 @@
 		};
 	});
 
-	/** A token is spent once the API has answered: the next attempt needs a new one. */
+	/**
+	 * A token may be spent once the API has seen it, so every attempt after the first takes a new one. A retry of the
+	 * same booking keeps its key all the same: core-api leaves the token out of what it compares.
+	 */
 	function newCheck() {
 		token = '';
 		if (widget) window.turnstile?.reset(widget);
@@ -135,14 +141,15 @@
 			answer = confirmed ?? error;
 			retryAfter = response.headers.get('retry-after');
 		} catch {
-			// The same key and body may be sent again: if this one got through, the retry gets its answer.
+			// The same booking goes again with the same key: if this one got through, the retry gets its answer.
+			newCheck();
 			busy = false;
 			message = NETWORK_TROUBLE;
 			return;
 		}
 		keys.answered(status);
 		const outcome = bookingOutcome(status, answer, retryAfter);
-		if (outcome.kind !== 'failed' && outcome.kind !== 'booked') newCheck();
+		if (outcome.kind !== 'booked') newCheck();
 		busy = false;
 		switch (outcome.kind) {
 			case 'booked':
@@ -164,6 +171,8 @@
 				return;
 			case 'price_changed':
 				changedTotals = outcome.totals;
+				// Search again, for the rooms' new prices and deposit, not just the new totals.
+				await invalidateAll();
 				return;
 			case 'sold_out':
 				await goto(`${resultsHref}&sold_out=1`);
@@ -190,7 +199,7 @@
 </svelte:head>
 
 <main class="wrap book">
-	<p><a href={resultsHref}>Back to the rooms</a></p>
+	<p><a href={resultsHref} data-sveltekit-preload-data="off">Back to the rooms</a></p>
 	<h1>Your details</h1>
 
 	<div class="layout">
@@ -210,7 +219,7 @@
 								stay.rooms[index].children
 							)}
 						</p>
-						<p>{money(room.offer.total, room.plan.currency)}</p>
+						{#if pricesCurrent}<p>{money(room.offer.total, room.plan.currency)}</p>{/if}
 					</li>
 				{/each}
 			</ol>
@@ -261,7 +270,7 @@
 					{RESIDENCY_QUESTION}
 					<strong>{stay.residency === 'resident' ? 'Yes' : 'No'}</strong>
 					<span class="muted">(from your search; the prices depend on it.)</span>
-					<a href="{data.base}/rooms?{stayQuery(stay)}">Change</a>
+					<a href="{data.base}/rooms?{stayQuery(stay)}" data-sveltekit-preload-data="off">Change</a>
 				</p>
 				<label>
 					Arrival time <span class="muted">(optional)</span>

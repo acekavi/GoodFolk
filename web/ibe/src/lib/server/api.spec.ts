@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { toApi } from './api';
+import { describe, expect, it, vi } from 'vitest';
+import { clientAddress, startupProblem, toApi } from './api';
 
 const PUBLIC = 'https://api.example.lk';
 const PRIVATE = 'https://core-api.internal';
@@ -41,5 +41,43 @@ describe('a server render’s API call', () => {
 
 		expect(sent).toBe(elsewhere);
 		expect(sent.headers.has('x-ibe-ssr-secret')).toBe(false);
+	});
+});
+
+describe('the guest’s address', () => {
+	it('is left out, with one warning, when adapter-node cannot tell it', () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const ip = clientAddress(() => {
+			throw new Error(
+				'Address header was specified with ADDRESS_HEADER=CF-Connecting-IP but is absent'
+			);
+		});
+
+		expect(ip).toBeNull();
+		expect(warn).toHaveBeenCalledOnce();
+		const sent = toApi(
+			new Request(`${PUBLIC}/api/public/v1/ibe/GAL/site`),
+			PUBLIC,
+			PRIVATE,
+			ip,
+			SECRET
+		);
+		expect(sent.url).toBe(`${PRIVATE}/api/public/v1/ibe/GAL/site`);
+		expect(sent.headers.has('x-ibe-client-ip')).toBe(false);
+		expect(sent.headers.has('x-ibe-ssr-secret')).toBe(false);
+		warn.mockRestore();
+	});
+
+	it('is the one adapter-node tells', () => {
+		expect(clientAddress(() => '203.0.113.7')).toBe('203.0.113.7');
+	});
+});
+
+describe('starting the server', () => {
+	it('refuses production without the SSR secret', () => {
+		expect(startupProblem('production', undefined)).toContain('IBE_SSR_SECRET');
+		expect(startupProblem('production', SECRET)).toBeNull();
+		expect(startupProblem('development', undefined)).toBeNull();
+		expect(startupProblem(undefined, undefined)).toBeNull();
 	});
 });

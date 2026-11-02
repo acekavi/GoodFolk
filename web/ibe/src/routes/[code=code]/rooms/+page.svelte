@@ -142,8 +142,10 @@
 				{#if searched.result.next_available}
 					{@const moved = movedTo(stay, searched.result.next_available)}
 					<p>
-						<a class="button" href="{data.base}/rooms?{stayQuery(moved)}"
-							>Try {dateText(searched.result.next_available)}</a
+						<a
+							class="button"
+							href="{data.base}/rooms?{stayQuery(moved)}"
+							data-sveltekit-preload-data="off">Try {dateText(searched.result.next_available)}</a
 						>
 					</p>
 				{:else}
@@ -166,9 +168,9 @@
 					<p class="muted">Prices are for the whole stay, with taxes and service charge.</p>
 
 					<ul class="types">
-						{#each results as { type, result } (type.id)}
+						{#each results as { type, result }, index (type.id)}
 							<li class="type">
-								<Gallery media={type.media} name={type.name} />
+								<Gallery media={type.media} name={type.name} priority={index === 0} />
 								<div class="type-text">
 									<h2>{type.name}</h2>
 									{#if type.description}<p>{type.description}</p>{/if}
@@ -272,8 +274,10 @@
 						</ol>
 						{#if chosen}
 							<p class="total">Total {totalsText(totalsOf(chosen))}</p>
-							<a class="button" href={bookHref(data.base, stay, picks as Pick[])}
-								>Continue to your details</a
+							<a
+								class="button"
+								href={bookHref(data.base, stay, picks as Pick[])}
+								data-sveltekit-preload-data="off">Continue to your details</a
 							>
 						{:else if picks.every((pick) => pick !== null)}
 							<p class="notice error" role="alert">

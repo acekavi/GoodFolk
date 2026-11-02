@@ -1,7 +1,7 @@
-import type { Handle, HandleFetch, HandleServerError } from '@sveltejs/kit';
+import type { Handle, HandleFetch, HandleServerError, ServerInit } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { apiOrigin } from '$lib/config';
-import { toApi } from '$lib/server/api';
+import { clientAddress, isApiCall, startupProblem, toApi } from '$lib/server/api';
 
 /** Where this server reaches the API (`IBE_API_ORIGIN`): a private address in production, the public one by default. */
 function serverApiOrigin(): string {
@@ -12,17 +12,24 @@ function serverApiOrigin(): string {
 export const handle: Handle = ({ event, resolve }) =>
 	resolve(event, { filterSerializedResponseHeaders: (name) => name === 'content-length' });
 
-/** A server render's API calls go to `IBE_API_ORIGIN`, on behalf of the guest (see `toApi`). */
-export const handleFetch: HandleFetch = async ({ event, request, fetch }) =>
-	fetch(
-		toApi(
-			request,
-			apiOrigin(),
-			serverApiOrigin(),
-			event.getClientAddress(),
-			env.IBE_SSR_SECRET || undefined
-		)
-	);
+/** Fails fast: a production server without the SSR secret would count every guest's render against itself. */
+export const init: ServerInit = () => {
+	const problem = startupProblem(process.env.NODE_ENV, env.IBE_SSR_SECRET || undefined);
+	if (problem) throw new Error(problem);
+};
+
+/**
+ * A server render's API calls go to `IBE_API_ORIGIN`, on behalf of the guest (see `toApi`). The guest's address is
+ * looked up only for those, and only with the secret to prove it.
+ */
+export const handleFetch: HandleFetch = async ({ event, request, fetch }) => {
+	const secret = env.IBE_SSR_SECRET || undefined;
+	const guest =
+		secret && isApiCall(request, apiOrigin())
+			? clientAddress(() => event.getClientAddress())
+			: null;
+	return fetch(toApi(request, apiOrigin(), serverApiOrigin(), guest, secret));
+};
 
 /** Logged by route, never by address: a manage link's address carries its token. */
 export const handleError: HandleServerError = ({ error, event, status }) => {

@@ -1,4 +1,4 @@
-import type { Image } from './api';
+import type { Image, SiteView } from './api';
 
 /** A `srcset` of one format's renditions, narrowest first; the square thumbnail only when there is nothing else. */
 export function srcset(images: readonly Image[], format: 'avif' | 'webp'): string {
@@ -16,4 +16,13 @@ export function fallback(images: readonly Image[], width: number): Image | null 
 		.filter((image) => image.format === 'webp' && image.size !== 'thumb')
 		.sort((a, b) => a.width - b.width);
 	return webp.find((image) => image.width >= width) ?? webp.at(-1) ?? images[0] ?? null;
+}
+
+/** The origin the site's images are served from (the media CDN), from its first image; `null` with none. */
+export function mediaOrigin(site: SiteView): string | null {
+	const first =
+		site.hero?.images[0] ??
+		site.logo[0] ??
+		site.room_types.flatMap((type) => type.media.flatMap((item) => item.images))[0];
+	return first ? new URL(first.url).origin : null;
 }

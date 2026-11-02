@@ -293,6 +293,25 @@ async fn the_61st_search_in_a_minute_from_one_ip_is_429_with_retry_after(_: PgPo
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_61st_host_lookup_in_a_minute_from_one_ip_is_429(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let path = format!("/api/public/v1/ibe/by-host/{}", hotel.host);
+    seed_hits(&hotel.superuser, "by_host", "198.51.100.8", 59).await;
+
+    let sixtieth = call(&app, Method::GET, &path, "198.51.100.8:40000", &[]).await;
+    let sixty_first =
+        call(&app, Method::GET, "/api/public/v1/ibe/by-host/unknown.example", "198.51.100.8:40000", &[]).await;
+    let elsewhere = call(&app, Method::GET, &path, "198.51.100.7:40000", &[]).await;
+
+    assert_eq!(sixtieth.status, StatusCode::OK, "the 60th lookup is allowed: {:?}", sixtieth.body);
+    assert_eq!(sixtieth.body, json!({"code": "GAL"}));
+    assert_eq!(sixty_first.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", sixty_first.body);
+    assert!(sixty_first.headers.contains_key(header::RETRY_AFTER));
+    assert_eq!(elsewhere.status, StatusCode::OK, "another address has its own count");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn cached_reads_allow_any_origin_with_a_star(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts, "GAL", true).await;
@@ -535,6 +554,29 @@ async fn the_stored_booking_answer_keeps_no_manage_token(_: PgPoolOptions, opts:
             .await
             .unwrap();
     assert_eq!(rows, 0);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_retry_of_the_same_booking_with_a_fresh_turnstile_token_replays_the_first_answer(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let plan = hotel.sell(&app).await;
+    let app = with_turnstile(&app).await;
+    let body = hotel.booking(&app, &plan, "kamala@example.com", &passing()).await;
+    let mut renewed = body.clone();
+    renewed["turnstile_token"] = json!(passing());
+
+    let first = book(&app, &body, Some("booking-key-0001"), PEER).await;
+    // The answer was lost and the token expired meanwhile: the guest's browser sends the booking again with a new one.
+    let retry = book(&app, &renewed, Some("booking-key-0001"), PEER).await;
+
+    assert_eq!(first.status, StatusCode::CREATED, "{:?}", first.body);
+    assert_eq!(retry.status, StatusCode::CREATED, "{:?}", retry.body);
+    assert_eq!(retry.body, json!({"confirmation_no": first.body["confirmation_no"]}), "a replay, not a new booking");
+    assert_eq!(hotel.reservations().await, 1);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

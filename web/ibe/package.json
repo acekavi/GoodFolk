@@ -15,7 +15,7 @@
 		"format": "prettier --write .",
 		"test:unit": "vitest",
 		"test": "bun run test:unit -- --run",
-		"api:schemas": "cd ../.. && cargo run -q -p core-api --bin export-schemas -- target/ibe-schemas && cp target/ibe-schemas/openapi.json web/ibe/src/lib/api/openapi.json",
+		"api:schemas": "cd ../.. && cargo run -q -p core-api --bin export-schemas -- target/ibe-schemas && cd web/ibe && bun scripts/public-openapi.ts ../../target/ibe-schemas/openapi.json src/lib/api/openapi.json",
 		"codegen": "openapi-typescript src/lib/api/openapi.json -o src/lib/api/openapi.d.ts"
 	},
 	"devDependencies": {

@@ -1,17 +1,27 @@
 <script lang="ts">
 	import { navigating } from '$app/state';
 	import Picture from '$lib/components/Picture.svelte';
+	import { apiOrigin } from '$lib/config';
+	import { mediaOrigin } from '$lib/media';
 
 	let { data, children } = $props();
 
 	/** What the guest is told while the next page loads. */
 	const loading = $derived.by(() => {
 		const route = navigating.to?.route.id;
-		if (route === '/[code]/rooms') return 'Finding rooms for your dates…';
-		if (route === '/[code]/book') return 'Checking the prices…';
+		if (route === '/[code=code]/rooms') return 'Finding rooms for your dates…';
+		if (route === '/[code=code]/book') return 'Checking the prices…';
 		return navigating.to ? 'Loading…' : null;
 	});
+
+	const media = $derived(mediaOrigin(data.site));
 </script>
+
+<svelte:head>
+	<!-- The photos and the API's answers come from their own origins: connect early, before the page asks. -->
+	{#if media}<link rel="preconnect" href={media} />{/if}
+	<link rel="preconnect" href={apiOrigin()} crossorigin="anonymous" />
+</svelte:head>
 
 <div class="site" style:--accent={data.site.accent ?? undefined}>
 	<header class="wrap top">

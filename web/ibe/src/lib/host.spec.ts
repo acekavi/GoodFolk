@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { codeForHost, customRoute, HOST_CACHE_MS, onBookingDomain } from './host';
+import {
+	cachedHosts,
+	codeForHost,
+	customRoute,
+	HOST_CACHE_MS,
+	HOST_CACHE_SIZE,
+	MISS_CACHE_MS,
+	onBookingDomain
+} from './host';
 
 describe('custom hosts', () => {
 	it('are any host but the booking domain’s', () => {
@@ -34,5 +42,51 @@ describe('custom hosts', () => {
 		const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response('', { status: 404 }));
 
 		expect(await codeForHost(fetch, 'unknown.example.com', 0)).toBeNull();
+	});
+
+	it('remember a host with no site only briefly', async () => {
+		const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response('', { status: 404 }));
+
+		await codeForHost(fetch, 'soon.example.com', 0);
+		await codeForHost(fetch, 'soon.example.com', MISS_CACHE_MS - 1);
+		expect(fetch).toHaveBeenCalledOnce();
+		await codeForHost(fetch, 'soon.example.com', MISS_CACHE_MS);
+		expect(fetch).toHaveBeenCalledTimes(2);
+	});
+
+	it('that cannot be a site’s custom host are never looked up', async () => {
+		const fetch = vi.fn<typeof globalThis.fetch>();
+
+		for (const host of [
+			'localhost',
+			'GAL.example/x',
+			'a..b.example',
+			'-bad.example',
+			`${'a'.repeat(64)}.example`
+		]) {
+			expect(await codeForHost(fetch, host, 0)).toBeNull();
+		}
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
+	it('are kept up to a bound, the least recently used dropped first', async () => {
+		const fetch = vi.fn<typeof globalThis.fetch>(
+			async () => new Response(JSON.stringify({ code: 'GAL' }), { status: 200 })
+		);
+		const now = 10 * HOST_CACHE_MS;
+		await codeForHost(fetch, 'first.example.com', now);
+
+		for (let n = 0; n < HOST_CACHE_SIZE + 50; n++) {
+			await codeForHost(fetch, `host-${n}.example.com`, now);
+			// The first host stays in use, so it is never the least recently used.
+			await codeForHost(fetch, 'first.example.com', now);
+			expect(cachedHosts()).toBeLessThanOrEqual(HOST_CACHE_SIZE);
+		}
+
+		expect(cachedHosts()).toBe(HOST_CACHE_SIZE);
+		const asked = fetch.mock.calls.length;
+		await codeForHost(fetch, 'first.example.com', now);
+		await codeForHost(fetch, 'host-0.example.com', now);
+		expect(fetch.mock.calls.length).toBe(asked + 1);
 	});
 });

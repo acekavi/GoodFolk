@@ -13,7 +13,7 @@ export interface paths {
         };
         /**
          * The code of the enabled site at the custom host `host`, for the booking site's server to address it by. `404` when
-         *     no enabled site has that host.
+         *     no enabled site has that host. 60 lookups a minute per IP (`429` with `Retry-After`): each one asks the database.
          */
         get: operations["ibe_by_host"];
         put?: never;
@@ -40,13 +40,14 @@ export interface paths {
          *     a room no longer free is `409` with `reason: sold_out`. A booking the site does not sell is `422`.
          * @description Checked in this order: 5 bookings a minute per IP (`429` with `Retry-After`); the `Idempotency-Key` (required);
          *     the hidden `website` field, which a bot fills (it is answered as if booked, the same way for the same key, and
-         *     nothing is kept); the key's stored answer (scoped to the property: the same request again gets the first answer,
-         *     without asking Turnstile again, but with no `manage_url`, since the manage token is never stored; another request
+         *     nothing is kept); the key's stored answer (scoped to the property: the same booking again gets the first answer,
+         *     without asking Turnstile again, but with no `manage_url`, since the manage token is never stored; another booking
          *     with the same key is `409`); then, for a new key only, the Turnstile token (`400` when missing or refused, `503`
-         *     when it cannot be checked; neither keeps anything under the key).
+         *     when it cannot be checked; neither keeps anything under the key). The Turnstile token is not part of what makes
+         *     two requests the same booking: a retry after a lost answer may carry a fresh one and still gets the first answer.
          *
-         *     Send a new `Idempotency-Key` with each new attempt, and treat any `4xx` as the end of its key: a changed price is
-         *     confirmed with a new key, since its body differs.
+         *     Keep the `Idempotency-Key` while retrying the same booking, and treat any `4xx` as the end of its key: a changed
+         *     price is confirmed with a new key.
          */
         post: operations["ibe_book"];
         delete?: never;
@@ -4909,6 +4910,13 @@ export interface operations {
             };
             404: {
                 headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    "Retry-After"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;

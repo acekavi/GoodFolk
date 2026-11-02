@@ -3,7 +3,9 @@
 use crate::error::ApiError;
 use crate::extract::{ApiPath, ApiQuery};
 use crate::idempotency;
-use crate::public::limits::{self, BOOKINGS_PER_MINUTE, MANAGES_PER_MINUTE, SEARCHES_PER_MINUTE};
+use crate::public::limits::{
+    self, BOOKINGS_PER_MINUTE, HOST_LOOKUPS_PER_MINUTE, MANAGES_PER_MINUTE, SEARCHES_PER_MINUTE,
+};
 use crate::public::{ClientIp, turnstile};
 use crate::state::AppState;
 use axum::Json;
@@ -175,14 +177,16 @@ async fn resolve(state: &AppState, code: Option<&str>, host: Option<&str>) -> Re
 }
 
 /// The code of the enabled site at the custom host `host`, for the booking site's server to address it by. `404` when
-/// no enabled site has that host.
+/// no enabled site has that host. 60 lookups a minute per IP (`429` with `Retry-After`): each one asks the database.
 #[utoipa::path(get, operation_id = "ibe_by_host", path = "/api/public/v1/ibe/by-host/{host}",
     params(("host" = String, Path, description = "a custom host, e.g. `book.galleforthotel.lk`")),
-    responses((status = 200, body = SiteCode), (status = 404)))]
+    responses((status = 200, body = SiteCode), (status = 404), (status = 429, headers(("Retry-After" = String)))))]
 pub async fn by_host(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     ApiPath(host): ApiPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    limits::check(&state.pool, "by_host", ip, HOST_LOOKUPS_PER_MINUTE).await?;
     let (tenant, property) = resolve(&state, None, Some(&host)).await?;
     let mut tx = db::begin(&state.pool, Scope::tenant(tenant)).await?;
     let code = ibe::public_code(&mut tx, property).await.map_err(ibe_error)?;
@@ -244,13 +248,14 @@ pub async fn search(
 ///
 /// Checked in this order: 5 bookings a minute per IP (`429` with `Retry-After`); the `Idempotency-Key` (required);
 /// the hidden `website` field, which a bot fills (it is answered as if booked, the same way for the same key, and
-/// nothing is kept); the key's stored answer (scoped to the property: the same request again gets the first answer,
-/// without asking Turnstile again, but with no `manage_url`, since the manage token is never stored; another request
+/// nothing is kept); the key's stored answer (scoped to the property: the same booking again gets the first answer,
+/// without asking Turnstile again, but with no `manage_url`, since the manage token is never stored; another booking
 /// with the same key is `409`); then, for a new key only, the Turnstile token (`400` when missing or refused, `503`
-/// when it cannot be checked; neither keeps anything under the key).
+/// when it cannot be checked; neither keeps anything under the key). The Turnstile token is not part of what makes
+/// two requests the same booking: a retry after a lost answer may carry a fresh one and still gets the first answer.
 ///
-/// Send a new `Idempotency-Key` with each new attempt, and treat any `4xx` as the end of its key: a changed price is
-/// confirmed with a new key, since its body differs.
+/// Keep the `Idempotency-Key` while retrying the same booking, and treat any `4xx` as the end of its key: a changed
+/// price is confirmed with a new key.
 #[utoipa::path(post, operation_id = "ibe_book", path = "/api/public/v1/ibe/{code}/bookings",
     params(("code" = String, Path, description = "the property code, any case"),
         ("Idempotency-Key" = String, Header, description = "8 to 160 characters, new for each booking attempt")),
@@ -305,7 +310,18 @@ pub async fn book(
             Err(err) => err.into_response(),
         }
     };
-    idempotency::property_scoped(&state, tenant, property, &key, (&method, &uri, &body), booking).await
+    let same_booking = without_turnstile_token(&body);
+    idempotency::property_scoped(&state, tenant, property, &key, (&method, &uri, &same_booking), booking).await
+}
+
+/// A booking body as its `Idempotency-Key` compares it: without the Turnstile token, which a retry renews, so the same
+/// booking with a fresh token is still the same request. `body` has parsed as a booking already, so it is JSON.
+fn without_turnstile_token(body: &[u8]) -> Vec<u8> {
+    let mut value: serde_json::Value = serde_json::from_slice(body).expect("a booking body is JSON");
+    if let Some(fields) = value.as_object_mut() {
+        fields.remove("turnstile_token");
+    }
+    serde_json::to_vec(&value).expect("JSON serializes")
 }
 
 /// The booking whose manage link carries `token`, for the manage page: what the guest needs to see and whether they can

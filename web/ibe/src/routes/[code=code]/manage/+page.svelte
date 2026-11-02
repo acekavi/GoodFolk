@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { replaceState } from '$app/navigation';
 	import { page } from '$app/state';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { NETWORK_TROUBLE, publicApi, TOO_MANY_TRIES } from '$lib/api';
 	import Contact from '$lib/components/Contact.svelte';
 	import {
@@ -26,6 +26,18 @@
 	let busy = $state(false);
 	let message: string | null = $state(null);
 	let justCancelled = $state(false);
+	let cancelButton: HTMLButtonElement | undefined = $state();
+
+	/** Moves focus to what the guest's last action brought up, so it is not lost with the button that went. */
+	function focusNow(node: HTMLElement) {
+		node.focus();
+	}
+
+	async function keep() {
+		confirming = false;
+		await tick();
+		cancelButton?.focus();
+	}
 
 	onMount(() => {
 		// The token leaves the address bar and the history entry: the page has what it needs.
@@ -93,7 +105,7 @@
 		{@const view = managed.view}
 		<h1>Your booking</h1>
 		{#if justCancelled}
-			<p class="notice" role="status">
+			<p class="notice" role="status" tabindex="-1" use:focusNow>
 				Your booking is cancelled. We have sent you an email to confirm it.
 			</p>
 		{/if}
@@ -151,19 +163,27 @@
 					<div class="confirm" role="group" aria-label="Confirm the cancellation">
 						<p><strong>Cancel the whole booking, every room?</strong></p>
 						<div class="actions">
-							<button type="button" class="button danger" disabled={busy} onclick={cancel}>
-								{busy ? 'Cancelling…' : 'Yes, cancel the booking'}
-							</button>
 							<button
 								type="button"
-								class="button quiet"
+								class="button danger"
 								disabled={busy}
-								onclick={() => (confirming = false)}>Keep the booking</button
+								onclick={cancel}
+								use:focusNow
+							>
+								{busy ? 'Cancelling…' : 'Yes, cancel the booking'}
+							</button>
+							<button type="button" class="button quiet" disabled={busy} onclick={keep}
+								>Keep the booking</button
 							>
 						</div>
 					</div>
 				{:else}
-					<button type="button" class="button quiet" onclick={() => (confirming = true)}>
+					<button
+						type="button"
+						class="button quiet"
+						bind:this={cancelButton}
+						onclick={() => (confirming = true)}
+					>
 						Cancel booking
 					</button>
 				{/if}
@@ -172,9 +192,11 @@
 			<p class="muted">This booking can no longer be cancelled online.</p>
 		{/if}
 
-		{#if message}
-			<p class="notice error" role="alert">{message}</p>
-		{/if}
+		{#key message}
+			{#if message}
+				<p class="notice error" role="alert" tabindex="-1" use:focusNow>{message}</p>
+			{/if}
+		{/key}
 
 		<Contact
 			lead="To change your booking, contact the hotel."

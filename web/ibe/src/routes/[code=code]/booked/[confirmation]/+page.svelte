@@ -48,7 +48,15 @@
 		</section>
 		{#if booked.manageUrl}
 			<p>
-				<a class="button" href={booked.manageUrl} rel="noreferrer">View or cancel your booking</a>
+				<!-- A full page load: the manage page, with the token in its address, never runs the book page's scripts
+				(Turnstile's among them), and nothing reads the manage link before it is followed. -->
+				<a
+					class="button"
+					href={booked.manageUrl}
+					rel="noreferrer"
+					data-sveltekit-reload
+					data-sveltekit-preload-data="off">View or cancel your booking</a
+				>
 			</p>
 			<p class="muted">The same link is in your confirmation email.</p>
 		{:else}

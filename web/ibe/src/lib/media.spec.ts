@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { Image } from './api';
-import { fallback, srcset } from './media';
+import type { Image, SiteView } from './api';
+import { fallback, mediaOrigin, srcset } from './media';
 
 const image = (size: string, format: string, width: number): Image => ({
 	size,
@@ -31,5 +31,31 @@ describe('srcset', () => {
 		expect(fallback(images, 800)?.url).toBe('https://cdn/lg.webp');
 		expect(fallback(images, 2000)?.url).toBe('https://cdn/lg.webp');
 		expect(fallback(images, 500)?.url).toBe('https://cdn/sm.webp');
+	});
+});
+
+describe('mediaOrigin', () => {
+	const site = (patch: Partial<SiteView>): SiteView => ({
+		code: 'GAL',
+		name: 'Galle Fort Hotel',
+		timezone: 'Asia/Colombo',
+		business_date: '2026-11-01',
+		check_in_time: '14:00',
+		check_out_time: '11:00',
+		description: '',
+		logo: [],
+		terms: '',
+		privacy: '',
+		room_types: [],
+		...patch
+	});
+
+	it('is where the site’s photos come from, for the page to connect to early', () => {
+		const room = { id: 'r', name: 'Room', description: '', beds: [], amenities: [], max_adults: 2 };
+		const gallery = { ...room, max_children: 0, max_occupancy: 2 };
+		const photo = { kind: 'image' as const, images, sources: [] };
+
+		expect(mediaOrigin(site({ room_types: [{ ...gallery, media: [photo] }] }))).toBe('https://cdn');
+		expect(mediaOrigin(site({}))).toBeNull();
 	});
 });

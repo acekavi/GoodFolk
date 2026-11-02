@@ -9,6 +9,7 @@ import {
 	depositText,
 	handOver,
 	pickParam,
+	pricesAgree,
 	picksFromUrl,
 	pricePicks,
 	takeBooked,
@@ -230,6 +231,20 @@ describe('the advisory deposit', () => {
 	});
 });
 
+describe('after a price change', () => {
+	it('shows the per-room prices and the deposit only once a new search adds up to the new totals', () => {
+		const searched = pricePicks(result, picks)!;
+		const changed = { USD: 37_000, LKR: 4_500_000 };
+		const refreshed = structuredClone(result);
+		refreshed.room_types[0].plans[0].meal_plans[1].total = 37_000;
+
+		expect(pricesAgree(searched, totalsOf(searched))).toBe(true);
+		expect(pricesAgree(searched, changed)).toBe(false);
+		expect(pricesAgree(pricePicks(refreshed, picks)!, changed)).toBe(true);
+		expect(pricesAgree(searched, { USD: 36_000 })).toBe(false);
+	});
+});
+
 describe('the booking answer', () => {
 	it('is a booking with its manage link, or without one on a replay', () => {
 		expect(bookingOutcome(201, { confirmation_no: 'GAL-000001', manage_url: 'm' }, null)).toEqual({
@@ -270,16 +285,56 @@ describe('the booking answer', () => {
 });
 
 describe('the idempotency key', () => {
-	it('is kept for a retry of the same body and ended by any answer below 500', () => {
+	const rooms = () => pricePicks(result, picks)!;
+	const attempt = (token: string, change: Partial<Details> = {}) =>
+		bookingPayload(stay, rooms(), { ...details, ...change }, totalsOf(rooms()), token, '');
+
+	it('is kept for a retry of the same booking after a network failure, even with a fresh token', () => {
 		let next = 0;
 		const keys = attemptKeys(() => `k${++next}`);
 
-		expect(keys.keyFor({ a: 1 })).toBe('k1');
+		expect(keys.keyFor(attempt('token-1'))).toBe('k1');
+		// No answer came back: the guest tries again, with the token the widget renewed.
+		expect(keys.keyFor(attempt('token-2'))).toBe('k1');
+	});
+
+	it('is kept after a 5xx and ended by any answer below 500', () => {
+		let next = 0;
+		const keys = attemptKeys(() => `k${++next}`);
+
+		expect(keys.keyFor(attempt('t'))).toBe('k1');
 		keys.answered(503);
-		expect(keys.keyFor({ a: 1 })).toBe('k1');
+		expect(keys.keyFor(attempt('t'))).toBe('k1');
 		keys.answered(409);
-		expect(keys.keyFor({ a: 1 })).toBe('k2');
-		expect(keys.keyFor({ a: 2 })).toBe('k3');
+		expect(keys.keyFor(attempt('t2'))).toBe('k2');
+		keys.answered(201);
+		expect(keys.keyFor(attempt('t3'))).toBe('k3');
+	});
+
+	it('is new for a booking with other details', () => {
+		let next = 0;
+		const keys = attemptKeys(() => `k${++next}`);
+
+		expect(keys.keyFor(attempt('t'))).toBe('k1');
+		expect(keys.keyFor(attempt('t', { specialRequests: 'A late arrival' }))).toBe('k2');
+	});
+
+	it('is new for the re-confirmed price after a price change', () => {
+		let next = 0;
+		const keys = attemptKeys(() => `k${++next}`);
+		keys.keyFor(attempt('t'));
+		keys.answered(409);
+
+		const confirmed = bookingPayload(
+			stay,
+			rooms(),
+			details,
+			{ USD: 37_000, LKR: 4_500_000 },
+			't2',
+			''
+		);
+
+		expect(keys.keyFor(confirmed)).toBe('k2');
 	});
 });
 

@@ -4,9 +4,14 @@
 
 	/**
 	 * A room type's photos and tour videos, one at a time: swiped, or moved with the buttons. A video shows its poster
-	 * until it is tapped, then plays with sound, so nothing loads or plays before the guest asks.
+	 * until it is tapped, then plays with sound, so nothing loads or plays before the guest asks. With `priority`, the
+	 * first slide loads at once: the page's largest paint, as the first result is on the results page.
 	 */
-	let { media, name }: { media: readonly SiteMedia[]; name: string } = $props();
+	let {
+		media,
+		name,
+		priority = false
+	}: { media: readonly SiteMedia[]; name: string; priority?: boolean } = $props();
 
 	let track: HTMLUListElement | undefined = $state();
 	let current = $state(0);
@@ -47,6 +52,7 @@
 							alt={item.kind === 'video' ? '' : label(item, index)}
 							sizes="(min-width: 60rem) 34rem, 100vw"
 							shownWidth={1024}
+							priority={priority && index === 0}
 						/>
 						{#if item.kind === 'video'}
 							<button type="button" class="play" onclick={() => (playing = index)}>

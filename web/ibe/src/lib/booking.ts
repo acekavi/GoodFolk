@@ -73,6 +73,20 @@ export function totalsOf(rooms: readonly PricedRoom[]): Record<string, number> {
 	return totals;
 }
 
+/**
+ * Whether `rooms`' prices add up to `expected`, the totals the guest is agreeing to. After a price change the page
+ * searches again; until that search shows the new prices (or if it shows yet others), its per-room lines and deposit
+ * are not the agreed ones, and only the totals are shown.
+ */
+export function pricesAgree(
+	rooms: readonly PricedRoom[],
+	expected: Record<string, number>
+): boolean {
+	const totals = totalsOf(rooms);
+	const currencies = new Set([...Object.keys(totals), ...Object.keys(expected)]);
+	return [...currencies].every((currency) => totals[currency] === expected[currency]);
+}
+
 /** An advisory deposit in one currency, in minor units. */
 export interface DepositLine {
 	currency: string;
@@ -214,18 +228,19 @@ export function bookingOutcome(status: number, body: unknown, retryAfter: string
 }
 
 /**
- * The `Idempotency-Key` of booking attempts. One attempt keeps its key while its body is resent unchanged (a retry
- * after a network failure or a `5xx`, which the server answers from its store if the first got through); a new
- * body is a new attempt with a new key, and any `4xx` ends the key, so the next attempt starts fresh.
+ * The `Idempotency-Key` of booking attempts. One booking keeps its key until the API answers it below `500`: a retry
+ * after a network failure or a `5xx` sends the same booking with the same key, even with a fresh Turnstile token,
+ * which core-api leaves out of what it compares, so a first attempt that got through is replayed, never booked twice.
+ * A `4xx` (a changed price among them) ends the key, and a booking with other details gets a new one.
  */
 export function attemptKeys(newKey: () => string = () => crypto.randomUUID()) {
 	let key: string | null = null;
-	let body = '';
+	let booking = '';
 	return {
-		keyFor(payload: unknown): string {
-			const serialized = JSON.stringify(payload);
-			if (key === null || serialized !== body) key = newKey();
-			body = serialized;
+		keyFor(payload: BookingBody): string {
+			const serialized = JSON.stringify({ ...payload, turnstile_token: undefined });
+			if (key === null || serialized !== booking) key = newKey();
+			booking = serialized;
 			return key;
 		},
 		answered(status: number) {
