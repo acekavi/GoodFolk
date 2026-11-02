@@ -7,6 +7,8 @@
 		bookingOutcome,
 		bookingPayload,
 		handOver,
+		depositLines,
+		depositText,
 		totalsOf,
 		type Details
 	} from '$lib/booking';
@@ -37,6 +39,7 @@
 	}
 
 	const terms = $derived([...new Set(rooms.map((room) => room.plan.cancellation))]);
+	const deposit = $derived(depositText(depositLines(rooms)));
 
 	// svelte-ignore state_referenced_locally
 	let details: Details = $state({
@@ -219,6 +222,7 @@
 			{/if}
 			<p class="total">Total {totalsText(expected)}</p>
 			<p class="muted">Taxes and service charge included. You pay at the hotel.</p>
+			{#if deposit}<p>{deposit}</p>{/if}
 			<h3>Cancellation</h3>
 			{#each terms as text (text)}<p class="muted">{text}</p>{/each}
 		</section>

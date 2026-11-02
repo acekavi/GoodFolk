@@ -9411,6 +9411,17 @@
           "taxes"
         ],
         "properties": {
+          "deposit": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/OfferDeposit",
+                "description": "What the plan's advisory deposit rule would ask for one of those rooms, booked today; `null` without a rule."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "meal_plan": {
             "type": "string"
           },
@@ -9884,6 +9895,24 @@
           "version": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "OfferDeposit": {
+        "type": "object",
+        "description": "An advisory deposit for one room, in minor units of the plan's currency: priced and dated as\n[`reservations::room_deposit`] prices and dates the booked room's, and as its confirmation email shows it. Never\nenforced.",
+        "required": [
+          "amount",
+          "due_date"
+        ],
+        "properties": {
+          "amount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "due_date": {
+            "type": "string",
+            "format": "date"
           }
         }
       },

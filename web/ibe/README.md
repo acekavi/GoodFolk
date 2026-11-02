@@ -16,12 +16,14 @@ change.
 ## Where the API is called from
 
 - **The first render** runs on this server: the `load` functions call the API at `IBE_API_ORIGIN` (`handleFetch` in
-  `src/hooks.server.ts` sends them there, with the guest's `CF-Connecting-IP`).
+  `src/hooks.server.ts` sends them there). With `IBE_SSR_SECRET` set, each call names the guest (from
+  `getClientAddress()`) in `X-IBE-Client-IP`, proved by `X-IBE-SSR-Secret`, so core-api counts it against the guest.
 - **Everything after** runs in the browser, against `PUBLIC_API_ORIGIN`: a changed search (the results page's load is
   universal), the booking and the cancel. core-api's per-IP limits then see the guest, and its CORS admits the
   booking domain and each enabled custom host.
 
-The variables (`PUBLIC_API_ORIGIN`, `IBE_API_ORIGIN`, `PUBLIC_IBE_ORIGIN`, `PUBLIC_TURNSTILE_SITEKEY`) are described
+The variables (`PUBLIC_API_ORIGIN`, `IBE_API_ORIGIN`, `IBE_SSR_SECRET`, `PUBLIC_IBE_ORIGIN`, `PUBLIC_TURNSTILE_SITEKEY`,
+`ADDRESS_HEADER`, `XFF_DEPTH`) are described
 in the root README under Configuration, Booking site.
 
 ## Pages

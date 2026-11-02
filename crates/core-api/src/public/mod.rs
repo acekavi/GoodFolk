@@ -21,6 +21,7 @@ use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
+use subtle::ConstantTimeEq;
 use tower::{Layer, ServiceExt};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
@@ -133,20 +134,42 @@ async fn enabled_custom_host(pool: &PgPool, origin: &HeaderValue) -> bool {
     }
 }
 
-/// The client's IP: `CF-Connecting-IP` when `TRUST_CLOUDFLARE_IP=true` (Cloudflare sets it and strips a client's own),
-/// otherwise the socket peer. The server must be served with connect info.
+/// The header the booking site's server names the guest's IP in, for a page it renders.
+const SSR_CLIENT_IP: &str = "x-ibe-client-ip";
+/// The header that proves a request is the booking site's server's: `IBE_SSR_SECRET`.
+const SSR_SECRET: &str = "x-ibe-ssr-secret";
+
+/// The client's IP, in this order:
+/// - `X-IBE-Client-IP`, when `IBE_SSR_SECRET` is set and the request carries it in `X-IBE-SSR-Secret` (compared in
+///   constant time): the guest the booking site's server is rendering a page for;
+/// - `CF-Connecting-IP` when `TRUST_CLOUDFLARE_IP=true` (Cloudflare sets it and strips a client's own);
+/// - otherwise the socket peer. The server must be served with connect info.
+///
+/// A client IP header without the right secret is ignored, never refused: the request is counted as if it had none.
 pub struct ClientIp(pub IpAddr);
+
+/// `name`'s value in `parts` as an IP, if it is one.
+fn header_ip(parts: &Parts, name: &str) -> Option<IpAddr> {
+    parts.headers.get(name).and_then(|value| value.to_str().ok()).and_then(|value| value.trim().parse().ok())
+}
+
+/// Whether `parts` carries `secret` in [`SSR_SECRET`].
+fn from_the_site(parts: &Parts, secret: &str) -> bool {
+    parts.headers.get(SSR_SECRET).is_some_and(|sent| bool::from(sent.as_bytes().ct_eq(secret.as_bytes())))
+}
 
 impl FromRequestParts<AppState> for ClientIp {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        if let Some(secret) = &state.ibe.ssr_secret
+            && from_the_site(parts, secret)
+            && let Some(ip) = header_ip(parts, SSR_CLIENT_IP)
+        {
+            return Ok(Self(ip));
+        }
         if state.ibe.trust_cloudflare_ip
-            && let Some(ip) = parts
-                .headers
-                .get("cf-connecting-ip")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.trim().parse().ok())
+            && let Some(ip) = header_ip(parts, "cf-connecting-ip")
         {
             return Ok(Self(ip));
         }

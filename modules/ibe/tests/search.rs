@@ -515,6 +515,64 @@ fn cancellation_text_wording() {
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_plans_deposit_rule_prices_each_offer_as_the_booked_room(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    hotel.breakfast("LKR").await;
+    let rule = rates::DepositRule {
+        kind: rates::DepositKind::Percent,
+        value: 5_000,
+        due: rates::DepositDue::DaysBeforeArrival { days: 7 },
+    };
+    let plan = hotel.plan_with(NewRatePlan { deposit_rule: Some(rule), ..hotel.new_plan("DEP") }, 10_000).await;
+    hotel.plan("BAR", Segment::Ibe, None, "LKR").await;
+
+    let result = hotel.search(Residency::Resident, 10, 13, &[(2, 0)]).await;
+
+    let plans = &hotel.room_type(&result, &hotel.deluxe).plans;
+    let offered = |name: &str| plans.iter().find(|offered| offered.name == name).unwrap();
+    assert!(offered("Plan BAR").meal_plans.iter().all(|offer| offer.deposit.is_none()));
+    let breakfast = offered("Plan DEP").meal_plans.iter().find(|offer| offer.meal_plan == MealPlan::Bb).unwrap();
+    let deposit = breakfast.deposit.clone().expect("the plan has a deposit rule");
+    let mut tx = hotel.tx().await;
+    let guest = NewGuest {
+        first_name: "Ada".into(),
+        last_name: "Silva".into(),
+        email: None,
+        phone: None,
+        country: None,
+        residency: Residency::Resident,
+        notes: String::new(),
+        id_doc: None,
+    };
+    let guest = reservations::create_guest(&mut tx, hotel.tenant, hotel.user, &guest_id_key(), guest).await.unwrap();
+    let room = NewReservationRoom {
+        room_type_id: hotel.deluxe.id,
+        rate_plan_id: plan.id,
+        meal_plan: MealPlan::Bb,
+        check_in: hotel.day(10),
+        check_out: hotel.day(13),
+        adults: 2,
+        children: 0,
+        primary_guest_id: None,
+    };
+    let input = NewReservation {
+        booker_guest_id: guest.id,
+        source: Source::Phone,
+        notes: String::new(),
+        account_id: None,
+        rooms: vec![room],
+    };
+    let booked =
+        reservations::create_reservation(&mut tx, hotel.tenant, hotel.user, hotel.property, input).await.unwrap();
+    let due = reservations::deposit_due(&mut tx, booked.id).await.unwrap();
+
+    // Half the stay before taxes, due a week before arrival: what the booked room's confirmation email shows.
+    let before_taxes: i64 = breakfast.nights.iter().map(|night| night.room + night.meal).sum();
+    assert_eq!(deposit, ibe::OfferDeposit { amount: before_taxes / 2, due_date: hotel.day(3) });
+    assert_eq!((due.len(), due[0].amount, due[0].due_date), (1, deposit.amount, deposit.due_date));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn next_available_within_14_days(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;
     let bar = hotel.plan("BAR", Segment::Ibe, None, "LKR").await;

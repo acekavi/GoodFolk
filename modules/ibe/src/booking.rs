@@ -24,6 +24,16 @@ pub const MANAGE_DAYS_AFTER_CHECK_OUT: i64 = 30;
 
 time::serde::format_description!(hour_minute, Time, "[hour]:[minute]");
 
+/// An `HH:MM` time, for [`arrival_time`].
+#[derive(Deserialize)]
+struct HourMinute(#[serde(with = "hour_minute")] Time);
+
+/// An optional `HH:MM` time, `null` included. Through serde's own `Option`: a body read through `#[serde(flatten)]`
+/// (as the public route's is) hands a `null` on as a unit, which `hour_minute::option` refuses.
+fn arrival_time<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Time>, D::Error> {
+    Ok(Option::<HourMinute>::deserialize(deserializer)?.map(|HourMinute(time)| time))
+}
+
 /// A booking as the site's form sends it. Prices are never taken from it: `expected_totals` is what the guest saw.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct BookingRequest {
@@ -52,7 +62,7 @@ pub struct Booker {
     /// The country of residence, ISO 3166-1 alpha-2 such as `LK`.
     pub country: String,
     /// When the guest expects to arrive, `HH:MM`.
-    #[serde(default, with = "hour_minute::option")]
+    #[serde(default, deserialize_with = "arrival_time")]
     #[schema(value_type = Option<String>, example = "14:30")]
     pub arrival_time: Option<Time>,
 }

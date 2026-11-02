@@ -17,7 +17,7 @@ pub use booking::{
 pub use confirmation::{Confirmation, ConfirmedRoom, confirmation};
 pub use manage::{CANCEL_REASON, Cancellation, ManageError, ManageView, ManagedRoom, cancel, cancellation, manage};
 pub use search::{
-    MAX_NIGHTS, MAX_ROOMS, MONTHS_AHEAD, MealOffer, NEXT_AVAILABLE_DAYS, NightPrice, PlanOffer, RoomAsk,
+    MAX_NIGHTS, MAX_ROOMS, MONTHS_AHEAD, MealOffer, NEXT_AVAILABLE_DAYS, NightPrice, OfferDeposit, PlanOffer, RoomAsk,
     RoomTypeResult, SearchRequest, SearchResult, TaxLine, cancellation_text, money_text, search,
 };
 pub use site::{Image, MediaKind, SiteMedia, SiteRoomType, SiteView, VideoSource, public_code, site};

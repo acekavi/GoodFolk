@@ -398,6 +398,35 @@ async fn cf_connecting_ip_counts_only_when_trusted(_: PgPoolOptions, opts: PgCon
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_sites_server_names_the_guest_ip_only_with_the_ssr_secret(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let secret = "an-ssr-secret-of-at-least-32-characters";
+    let state = AppState::new(app.pool.clone(), false, db::testing::guest_id_keys())
+        .with_ibe(IbeConfig { ssr_secret: Some(secret.into()), ..IbeConfig::local() });
+    let with_secret = TestApp { router: router(state.clone()), state, pool: app.pool.clone() };
+    let path = hotel.search("GAL", 1);
+    let guest = ("x-ibe-client-ip", "203.0.113.7");
+
+    let rendered =
+        call(&with_secret, Method::GET, &path, "192.0.2.10:1000", &[guest, ("x-ibe-ssr-secret", secret)]).await;
+    let wrong =
+        call(&with_secret, Method::GET, &path, "192.0.2.20:1000", &[guest, ("x-ibe-ssr-secret", "guess")]).await;
+    let missing = call(&with_secret, Method::GET, &path, "192.0.2.30:1000", &[guest]).await;
+    let unset = call(&app, Method::GET, &path, "192.0.2.40:1000", &[guest, ("x-ibe-ssr-secret", secret)]).await;
+
+    for answer in [&rendered, &wrong, &missing, &unset] {
+        assert_eq!(answer.status, StatusCode::OK, "{:?}", answer.body);
+    }
+    let mut ips: Vec<String> = sqlx::query_scalar("select host(ip) from ibe_rate_hit where scope = 'search'")
+        .fetch_all(&hotel.superuser)
+        .await
+        .unwrap();
+    ips.sort();
+    assert_eq!(ips, ["192.0.2.20", "192.0.2.30", "192.0.2.40", "203.0.113.7"]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn a_booking_is_201_and_writes_its_confirmation_mail_job(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts, "GAL", true).await;
@@ -439,6 +468,21 @@ async fn a_booking_is_201_and_writes_its_confirmation_mail_job(_: PgPoolOptions,
         job,
         mail::MailJob::IbeConfirmation { tenant_id: tenant, reservation_id: reservation, token: token.into() }
     );
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_booking_takes_null_for_its_arrival_time_and_occupant_name(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let plan = hotel.sell(&app).await;
+    let app = with_turnstile(&app).await;
+    let mut body = hotel.booking(&app, &plan, "kamala@example.com", &passing()).await;
+    body["booker"]["arrival_time"] = Value::Null;
+    body["rooms"][0]["occupant_name"] = Value::Null;
+
+    let booked = book(&app, &body, Some("booking-key-nulls"), PEER).await;
+
+    assert_eq!(booked.status, StatusCode::CREATED, "{:?}", booked.body);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

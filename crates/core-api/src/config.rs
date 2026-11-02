@@ -46,7 +46,10 @@ pub const TURNSTILE_TEST_SECRET: &str = "1x0000000000000000000000000000000AA";
 /// Cloudflare Turnstile's server-side verification endpoint.
 pub const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 
-/// The public booking site's settings. `Debug` leaves out the Turnstile secret.
+/// The shortest `IBE_SSR_SECRET` production takes.
+pub const MIN_SSR_SECRET_LEN: usize = 32;
+
+/// The public booking site's settings. `Debug` leaves out the Turnstile and SSR secrets.
 #[derive(Clone)]
 pub struct IbeConfig {
     /// The booking domain, e.g. `https://book.example.lk`: a scheme and a host (and a port outside production), no
@@ -56,6 +59,9 @@ pub struct IbeConfig {
     pub trust_cloudflare_ip: bool,
     /// Verifies the booking form's Turnstile tokens.
     pub turnstile_secret: String,
+    /// Shared with the booking site's server: a public request carrying it in `X-IBE-SSR-Secret` is counted against
+    /// the client IP in `X-IBE-Client-IP`, the guest the site is rendering a page for. Unset, those headers are ignored.
+    pub ssr_secret: Option<String>,
     /// Where tokens are verified: always [`TURNSTILE_VERIFY_URL`] when read from the environment; tests point it at a
     /// stand-in.
     pub turnstile_url: String,
@@ -80,6 +86,7 @@ impl IbeConfig {
             trust_cloudflare_ip: false,
             turnstile_secret: TURNSTILE_TEST_SECRET.to_owned(),
             turnstile_url: TURNSTILE_VERIFY_URL.to_owned(),
+            ssr_secret: None,
         }
     }
 
@@ -122,11 +129,24 @@ impl IbeConfig {
             None if production => bail!("TURNSTILE_SECRET is required in production"),
             None => TURNSTILE_TEST_SECRET.to_owned(),
         };
+        // Production always has its booking site (IBE_PUBLIC_ORIGIN), whose server renders pages for guests.
+        let ssr_secret = match var("IBE_SSR_SECRET") {
+            Some(secret) if production && secret.len() < MIN_SSR_SECRET_LEN => {
+                bail!("IBE_SSR_SECRET must be at least {MIN_SSR_SECRET_LEN} characters in production")
+            }
+            Some(secret) if secret.is_empty() => None,
+            Some(secret) => Some(secret),
+            None if production => {
+                bail!("IBE_SSR_SECRET (shared with the booking site's server) is required in production")
+            }
+            None => None,
+        };
         Ok(Self {
             public_origin,
             trust_cloudflare_ip,
             turnstile_secret,
             turnstile_url: TURNSTILE_VERIFY_URL.to_owned(),
+            ssr_secret,
         })
     }
 }
@@ -282,6 +302,7 @@ mod tests {
         ("ALLOWED_SERVICE_EMAILS", "media-results-push@example.iam.gserviceaccount.com"),
         ("IBE_PUBLIC_ORIGIN", "https://book.example.lk"),
         ("TURNSTILE_SECRET", "0x4AAAAAAAexampleexampleexample"),
+        ("IBE_SSR_SECRET", "an-ssr-secret-of-at-least-32-characters"),
     ];
 
     /// `pairs`, then the media variables of the environment `pairs` names (production or not).
@@ -680,6 +701,7 @@ mod tests {
         assert_eq!(config.ibe.public_host(), "localhost");
         assert!(!config.ibe.trust_cloudflare_ip);
         assert_eq!(config.ibe.turnstile_secret, super::TURNSTILE_TEST_SECRET);
+        assert_eq!(config.ibe.ssr_secret, None);
     }
 
     #[test]
@@ -700,7 +722,7 @@ mod tests {
 
     #[test]
     fn production_requires_the_booking_site_variables_and_a_real_turnstile_secret() {
-        for missing in ["IBE_PUBLIC_ORIGIN", "TURNSTILE_SECRET"] {
+        for missing in ["IBE_PUBLIC_ORIGIN", "TURNSTILE_SECRET", "IBE_SSR_SECRET"] {
             let pairs: Vec<_> = production_pairs().into_iter().filter(|(name, _)| *name != missing).collect();
             let err = Config::from_vars(|name| lookup(&pairs, name)).unwrap_err();
             assert!(format!("{err:#}").contains(missing), "{missing}: {err:#}");
@@ -732,5 +754,18 @@ mod tests {
         assert!(trusted.ibe.trust_cloudflare_ip);
         assert!(!format!("{trusted:?}").contains("a-turnstile-secret"));
         assert!(format!("{:#}", with("yes").unwrap_err()).contains("TRUST_CLOUDFLARE_IP"));
+    }
+
+    #[test]
+    fn the_ssr_secret_is_long_in_production_and_hidden_from_debug() {
+        let mut pairs = production_pairs();
+        pairs.retain(|(name, _)| *name != "IBE_SSR_SECRET");
+        pairs.push(("IBE_SSR_SECRET", "short"));
+        let err = Config::from_vars(|name| lookup(&pairs, name)).unwrap_err();
+        assert!(format!("{err:#}").contains("IBE_SSR_SECRET"), "{err:#}");
+
+        let config = Config::from_vars(|name| lookup(&production_pairs(), name)).unwrap();
+        assert_eq!(config.ibe.ssr_secret.as_deref(), Some("an-ssr-secret-of-at-least-32-characters"));
+        assert!(!format!("{config:?}").contains("an-ssr-secret"));
     }
 }

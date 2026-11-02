@@ -7,6 +7,7 @@ use rates::{
     CancellationPolicy, CancellationRule, MealPlan, Offer, OfferData, OfferRequest, Penalty, PenaltyKind, Quote,
     QuoteNight, RatePlan, Residency, Segment,
 };
+use reservations::DepositRoom;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use time::{Date, Duration, Month};
@@ -80,6 +81,17 @@ pub struct MealOffer {
     pub nights: Vec<NightPrice>,
     /// The taxes and service charge the bill shows over the stay, for one room, in the order they apply.
     pub taxes: Vec<TaxLine>,
+    /// What the plan's advisory deposit rule would ask for one of those rooms, booked today; `null` without a rule.
+    pub deposit: Option<OfferDeposit>,
+}
+
+/// An advisory deposit for one room, in minor units of the plan's currency: priced and dated as
+/// [`reservations::room_deposit`] prices and dates the booked room's, and as its confirmation email shows it. Never
+/// enforced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct OfferDeposit {
+    pub amount: i64,
+    pub due_date: Date,
 }
 
 /// One night's price, in minor units.
@@ -272,7 +284,18 @@ pub async fn search(tx: &mut Tx, property: Uuid, request: &SearchRequest) -> Res
             let mut offers = Vec::new();
             for (meal_plan, quotes) in meal_plans {
                 for (ask, quote) in quotes {
-                    offers.push(pricing.meal_offer(meal_plan, room_indices(&request.rooms, ask), &quote.nights)?);
+                    let mut offer = pricing.meal_offer(meal_plan, room_indices(&request.rooms, ask), &quote.nights)?;
+                    offer.deposit = plan.deposit_rule.clone().map(|rule| {
+                        let room = DepositRoom {
+                            currency: plan.currency.clone(),
+                            arrival: request.check_in,
+                            rule,
+                            nights: offer.nights.iter().map(|night| (night.date, night.room, night.meal)).collect(),
+                        };
+                        let (amount, due_date) = reservations::room_deposit(&room, row.business_date);
+                        OfferDeposit { amount, due_date }
+                    });
+                    offers.push(offer);
                 }
             }
             let policy = plan.cancellation_policy_id.and_then(|id| policies.get(&id));
@@ -455,6 +478,7 @@ impl Pricing<'_> {
             }
             nights.push(NightPrice { date: night.date, room: night.room, meal: night.meal, total });
         }
-        Ok(MealOffer { meal_plan, rooms, total: nights.iter().map(|night| night.total).sum(), nights, taxes })
+        let total = nights.iter().map(|night| night.total).sum();
+        Ok(MealOffer { meal_plan, rooms, total, nights, taxes, deposit: None })
     }
 }

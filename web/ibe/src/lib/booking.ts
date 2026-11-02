@@ -1,5 +1,6 @@
 import type { BookingBody, MealOffer, PlanOffer, RoomTypeResult, SearchResult } from './api';
 import { isProblem } from './api';
+import { dateText, money } from './format';
 import { stayQuery, type Stay } from './search';
 
 /** The guest's choice for one room asked: a room type, one of its plans and one of the plan's meal plans. */
@@ -70,6 +71,49 @@ export function totalsOf(rooms: readonly PricedRoom[]): Record<string, number> {
 		totals[room.plan.currency] = (totals[room.plan.currency] ?? 0) + room.offer.total;
 	}
 	return totals;
+}
+
+/** An advisory deposit in one currency, in minor units. */
+export interface DepositLine {
+	currency: string;
+	amount: number;
+	dueDate: string;
+}
+
+/**
+ * The booking's advisory deposit per currency, as the server adds up the booked rooms' (`deposit_lines`): each room's
+ * deposit summed in its plan's currency, in the order the rooms first use them, due on the earliest of their dates.
+ */
+export function depositLines(rooms: readonly PricedRoom[]): DepositLine[] {
+	const lines: DepositLine[] = [];
+	for (const room of rooms) {
+		const deposit = room.offer.deposit;
+		if (!deposit) continue;
+		const line = lines.find((each) => each.currency === room.plan.currency);
+		if (line) {
+			line.amount += deposit.amount;
+			if (deposit.due_date < line.dueDate) line.dueDate = deposit.due_date;
+		} else {
+			lines.push({
+				currency: room.plan.currency,
+				amount: deposit.amount,
+				dueDate: deposit.due_date
+			});
+		}
+	}
+	return lines;
+}
+
+/**
+ * The deposit as the confirmation email words it: `Deposit: US$ 120.00 by Mon, 2 Nov 2026. The hotel will contact you
+ * about the deposit.`; `null` without one.
+ */
+export function depositText(lines: readonly DepositLine[]): string | null {
+	if (!lines.length) return null;
+	const owed = lines.map(
+		(line) => `${money(line.amount, line.currency)} by ${dateText(line.dueDate)}`
+	);
+	return `Deposit: ${owed.join(' and ')}. The hotel will contact you about the deposit.`;
 }
 
 /** What the guest fills in on the book page. */

@@ -5,6 +5,8 @@ import {
 	bookHref,
 	bookingOutcome,
 	bookingPayload,
+	depositLines,
+	depositText,
 	handOver,
 	pickParam,
 	picksFromUrl,
@@ -180,6 +182,51 @@ describe('the booking payload', () => {
 
 		expect(body.expected_totals).toEqual({ USD: 37_000, LKR: 4_500_000 });
 		expect(body.website).toBe('x');
+	});
+});
+
+describe('the advisory deposit', () => {
+	const withDeposit = (amount: number, due_date: string) => ({
+		...meal('BB', [0, 1], 36_000),
+		deposit: { amount, due_date }
+	});
+	const deposits: SearchResult = {
+		next_available: null,
+		room_types: [
+			{
+				room_type_id: 'dlx',
+				available: 3,
+				plans: [
+					{ ...result.room_types[0].plans[0], meal_plans: [withDeposit(18_000, '2026-11-03')] },
+					{
+						...result.room_types[0].plans[0],
+						rate_plan_id: 'early-usd',
+						meal_plans: [withDeposit(12_000, '2026-11-01')]
+					}
+				]
+			}
+		]
+	};
+
+	it('is summed per currency and due on the earliest date, as the email says it', () => {
+		const rooms = pricePicks(deposits, [
+			{ roomTypeId: 'dlx', ratePlanId: 'bar-usd', mealPlan: 'BB' },
+			{ roomTypeId: 'dlx', ratePlanId: 'early-usd', mealPlan: 'BB' }
+		])!;
+
+		expect(depositLines(rooms)).toEqual([
+			{ currency: 'USD', amount: 30_000, dueDate: '2026-11-01' }
+		]);
+		expect(depositText(depositLines(rooms))).toBe(
+			'Deposit: US$ 300.00 by Sun, 1 Nov 2026. The hotel will contact you about the deposit.'
+		);
+	});
+
+	it('is not mentioned when no plan asks for one', () => {
+		const rooms = pricePicks(result, picks)!;
+
+		expect(depositLines(rooms)).toEqual([]);
+		expect(depositText([])).toBeNull();
 	});
 });
 

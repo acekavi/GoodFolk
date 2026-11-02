@@ -3236,6 +3236,7 @@ export interface components {
         };
         /** @description The price of one meal plan for the rooms asked with one occupancy. */
         MealOffer: {
+            deposit?: components["schemas"]["OfferDeposit"] | null;
             meal_plan: string;
             nights: components["schemas"]["NightPrice"][];
             /** @description The rooms asked (0-based, in the order asked) this price is for: those with the same adults and children. */
@@ -3430,6 +3431,17 @@ export interface components {
             reservation_id: string;
             /** Format: int32 */
             version: number;
+        };
+        /**
+         * @description An advisory deposit for one room, in minor units of the plan's currency: priced and dated as
+         *     [`reservations::room_deposit`] prices and dates the booked room's, and as its confirmation email shows it. Never
+         *     enforced.
+         */
+        OfferDeposit: {
+            /** Format: int64 */
+            amount: number;
+            /** Format: date */
+            due_date: string;
         };
         Order: {
             /** Format: date-time */
