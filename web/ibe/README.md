@@ -10,6 +10,11 @@ bun run lint && bun run check && bun run test && bun run build
 node build         # the production server (PORT, HOST; ORIGIN=http://localhost:5174 for plain HTTP locally)
 ```
 
+`bun run test:e2e` books, emails and cancels through the built site and the built staff app against a real API (it
+starts core-api, media-svc, jobs-svc and both web servers on ports apart from the staff app's own suite). It needs the
+environment of `web/pms/README.md` "End-to-end tests" and the internet: the always-pass Turnstile test keys still ask
+Cloudflare.
+
 `bun run api:schemas && bun run codegen` regenerates `src/lib/api/openapi.d.ts` from core-api after a public API
 change.
 

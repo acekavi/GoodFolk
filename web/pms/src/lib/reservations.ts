@@ -529,7 +529,7 @@ const SOURCE_LABELS: Record<Source, string> = {
 	FRONT_DESK: 'Front desk',
 	PHONE: 'Phone',
 	EMAIL: 'Email',
-	IBE: 'Booking engine',
+	IBE: 'Booking site',
 	CHANNEL: 'Channel'
 };
 

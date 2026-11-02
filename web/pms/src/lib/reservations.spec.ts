@@ -237,7 +237,7 @@ describe('sourceLabel', () => {
 			'Front desk',
 			'Phone',
 			'Email',
-			'Booking engine',
+			'Booking site',
 			'Channel'
 		]);
 	});
