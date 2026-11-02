@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
+import { SITE_PORT } from './tests/e2e/helpers';
 
 // End-to-end tests drive the built booking site and the built staff app against a real API and Postgres, all on
 // localhost. E2E_DATABASE_URL is a migrated database, as the API role, and E2E_OWNER_URL the same one as its schema
@@ -14,10 +15,9 @@ if (!database) throw new Error('set E2E_DATABASE_URL to a migrated database, as 
 const noSandbox = process.env.PLAYWRIGHT_NO_SANDBOX === '1';
 if (noSandbox && process.env.CI) throw new Error('PLAYWRIGHT_NO_SANDBOX is for local runs only');
 
-// Ports apart from the staff app's own suite (web/pms/playwright.config.ts), so that the two can run side by side.
-// The site's is core-api's development IBE_PUBLIC_ORIGIN, which its CORS admits.
+// Ports apart from the staff app's own suite (web/pms/playwright.config.ts), so that the servers do not collide. Both suites build the staff app into web/pms/build, so run them one after the other.
+// The site's port is in helpers.ts.
 const API_PORT = 18180;
-const SITE_PORT = 5174;
 const PMS_PORT = 4273;
 const MEDIA_PORT = 8190;
 const JOBS_PORT = 8191;
@@ -44,6 +44,7 @@ const TURNSTILE_SECRET = '1x0000000000000000000000000000000AA';
 
 export default defineConfig({
 	testDir: 'tests/e2e',
+	globalSetup: './tests/e2e/global-setup.ts',
 	fullyParallel: true,
 	forbidOnly: !!process.env.CI,
 	retries: process.env.CI ? 1 : 0,

@@ -5,11 +5,14 @@ import { join } from 'node:path';
 import { expect, type APIRequestContext, type Page } from '@playwright/test';
 
 /** The built staff app, which proxies `/api` and `/graphql` to the API (see playwright.config.ts). */
+/** The booking site's port: core-api's development IBE_PUBLIC_ORIGIN, which its CORS admits. */
+export const SITE_PORT = 5174;
+export const SITE_ORIGIN = `http://localhost:${SITE_PORT}`;
 export const PMS = 'http://localhost:4273';
 export const PASSWORD = 'a long enough password';
 
 /** Runs `script` with Bun as the schema owner (`E2E_OWNER_URL`, as `process.env.URL`) and returns what it prints. */
-function runAsOwner(script: string, env: Record<string, string> = {}): string {
+export function runAsOwner(script: string, env: Record<string, string> = {}): string {
 	const owner = process.env.E2E_OWNER_URL;
 	if (!owner) throw new Error('set E2E_OWNER_URL to the e2e database, as goodfolk_owner');
 	return execFileSync('bun', ['-e', script], {

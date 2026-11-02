@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
 	PMS,
+	SITE_ORIGIN,
 	addDays,
 	addFrontDesk,
 	mailTo,
@@ -60,7 +61,7 @@ test('a guest books two rooms, the front desk sees them, and the guest cancels f
 	const email = guestEmail();
 
 	await pickTwoRooms(page, hotel);
-	await expect(page.getByText('Total')).toBeVisible();
+	await expect(page.locator('.total')).toContainText('Total');
 	await fillDetails(page, email);
 	await page.getByRole('button', { name: 'Book now, pay at the hotel' }).click();
 
@@ -74,7 +75,7 @@ test('a guest books two rooms, the front desk sees them, and the guest cancels f
 	// The confirmation email, with the link the cancel step below follows.
 	const mail = await mailTo(email, 'Your booking at');
 	expect(mail.subject).toBe(`Your booking at ${hotel.name}: ${confirmation}`);
-	const manageLink = new RegExp(`http://localhost:5174/${hotel.code}/manage\\?token=[\\w-]+`).exec(
+	const manageLink = new RegExp(`${SITE_ORIGIN}/${hotel.code}/manage\\?token=[\\w-]+`).exec(
 		mail.text
 	)?.[0];
 	expect(manageLink, mail.text).toBeDefined();
@@ -131,10 +132,21 @@ test('double-clicking Book makes one reservation', async ({ page, browser }) => 
 
 	await pickTwoRooms(page, hotel);
 	await fillDetails(page, guestEmail());
+	const posts: string[] = [];
+	page.on('request', (request) => {
+		if (request.method() === 'POST' && request.url().endsWith('/bookings')) {
+			posts.push(request.url());
+		}
+	});
 	await page.getByRole('button', { name: 'Book now, pay at the hotel' }).dblclick();
 	await expect(page.getByRole('heading', { name: 'Your booking is confirmed' })).toBeVisible();
 
-	// One booking of two rooms: a reservation each time it were booked again.
+	// The button is disabled as the first click starts the booking, so the second click sends nothing: one request.
+	expect(posts).toHaveLength(1);
+	// One booking of two rooms is one reservation, and it stays one: a second booking still in flight would land
+	// within these seconds.
+	await expect.poll(() => reservationCount(hotel), { intervals: [500], timeout: 4000 }).toBe(1);
+	await page.waitForTimeout(3000);
 	expect(reservationCount(hotel)).toBe(1);
 });
 
