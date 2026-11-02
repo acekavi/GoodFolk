@@ -17,6 +17,7 @@
 		"test": "bun run test:unit -- --run",
 		"api:schemas": "cd ../.. && cargo run -q -p core-api --bin export-schemas -- target/ibe-schemas && cd web/ibe && bun scripts/public-openapi.ts ../../target/ibe-schemas/openapi.json src/lib/api/openapi.json",
 		"test:e2e": "playwright test",
+		"lighthouse": "bun scripts/lighthouse.ts",
 		"codegen": "openapi-typescript src/lib/api/openapi.json -o src/lib/api/openapi.d.ts"
 	},
 	"devDependencies": {

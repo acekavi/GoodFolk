@@ -635,14 +635,46 @@ Deviations from the first design, all decided during 6a:
 
 ---
 
-## 10. Internet Booking Engine (IBE) — to be designed
+## 10. Internet Booking Engine (IBE)
 
-The architecture reserves room for it; the detailed design waits on your input:
+Built in Phase 9 ([spec](specs/phase-9-ibe.md)): a guest books a room on the hotel's own site in at most three steps from the results (choose, details, book), paid at the hotel, and the booking is a normal reservation with source `ibe` that front desk sees at once. Online payment waits for Phase 7c (§10.1).
 
-- A separate SvelteKit **SSR** app per tenant or property, on a custom domain or subdomain, with branding from settings.
-- Public read endpoints (availability and price search) are served from `rate_day` + `inventory_day`, with a short edge cache (about 30 s) keyed by property, dates and occupancy. They are anonymous and rate-limited.
-- Booking goes through the same REST reservation command with a hold-then-confirm flow and payment tokenization.
-- Payments: see §10.1. **We never store card numbers**, only processor tokens.
+**The site (`web/ibe`).** SvelteKit with SSR on adapter-node, one deployment for every property, served by Cloud Run behind Cloudflare. A property is `/<CODE>` on the booking domain (`IBE_PUBLIC_ORIGIN`, e.g. `https://book.example.lk/GAL`), or the root of its own custom host. Pages: the landing and search form, the results (`/rooms`), details and review (`/book`), the confirmation (`/booked/<no>`, shown once) and the manage page (`/manage?token=…`), plus `sitemap.xml`, Open Graph tags and schema.org `Hotel` data. English only, prices in each rate plan's own currency (no conversion), branding as a theme (logo, one accent colour, a hero photo from a room type gallery, a short description). No cookies and no analytics, so no cookie banner. The site talks only to the public API: from its server for the first render, from the guest's browser for a changed search, the booking and the cancel.
+
+**Decisions taken while building it**, each recorded in the phase's ledger:
+
+- **One site per property, addressed by its code.** The code is `ibe_site.public_code`, globally unique among enabled sites (a database index), since property codes are only unique per tenant. A security-definer function resolves **either** a code **or** a custom host, never both (host XOR code), and only for an enabled site; everything after runs in that tenant's scope under RLS, as staff requests do. Unknown or disabled is `404`.
+- **Search** reuses the rates quote per room type and plan (`segment = 'IBE'`, the guest's residency or none, no restriction broken) and the folio engine's own per-night tax computation for the preview, so the displayed total is what the bill will show (on-bill taxes and service charge, a line per tax; absorbed taxes hidden). Residency is asked before any price. With no result, `next_available` is the nearest later check-in within 14 days, read with one more query for the whole window.
+- **Booking** re-quotes on the server, then calls the front desk's `create_reservation` through a guest path: `source = 'ibe'`, `created_by` null, `guarantee = 'none'`, a new guest profile per booking (never matched by email), audit actor `ibe`. A changed total is `409 price_changed` with the new totals, which the guest confirms with a new key; a room taken meanwhile is `409 sold_out` ("That room was just booked; here is what is still available"). One booking is one reservation of up to 4 rooms, which may mix currencies (a total per currency).
+- **Idempotency before Turnstile.** `Idempotency-Key` is required and scoped to (property, key). It is checked before the Turnstile token, since a genuine retry resends a token Turnstile has already spent. The body hash leaves the Turnstile token out, so a retry with a fresh token is the same booking and replays instead of booking twice. The stored answer holds no manage token: a replay returns the confirmation number without `manage_url` (the link is in the email), so no raw token sits at rest for the key's 7 days. A refused bot check releases the key.
+- **The honeypot** (`website`) is answered with a deterministic decoy `201` derived from the key and the server's Turnstile secret; nothing is stored.
+- **Advisory deposit.** A plan's deposit rule (Phase 8a) is priced per meal offer in the search (`deposit` on each meal plan's price), shown on the book page and in the email with "The hotel will contact you about the deposit", and never enforced. It is computed before taxes, like the staff screens (an open question for the owner, see ROADMAP Phase 9).
+- **Manage links.** 32 random bytes, only the SHA-256 stored (`reservation_access_token`), valid to the end of the 30th day after check-out in the property's time zone; a wrong, expired or other property's token is one uniform `410`. The manage page is `no-store`, `no-referrer`, drops the token from the address once loaded, and core-api logs a URI with a `token` parameter by its path alone.
+- **Cancelling online** runs the existing cancellation under the snapshotted terms (the penalty never waived), reason "Cancelled by the guest online", while every room is tentative or confirmed and check-in is after the business date. Rooms staff already cancelled are skipped, so a half-cancelled booking can still be finished; `already_cancelled` only when every room is. The audit rows carry actor `ibe` and mode `online`, so they read apart from the night audit's automatic cancellations.
+- **Mail.** Two `MailJob` variants (IBE confirmation and cancellation) queued in the outbox after the booking commits and sent by jobs-svc, from `MAIL_FROM` with the property's name as display name and its contact email as Reply-To; the token is redacted in `Debug`.
+
+**The public API** (`/api/public/v1/ibe`, outside the session, CSRF and staff idempotency layers; no cookies):
+
+| Endpoint | Purpose | Caching |
+|---|---|---|
+| `GET by-host/{host}` | The code of the enabled site at a custom host, for the site's server (it keeps the answer 60 s, bounded) | `public, s-maxage=300` |
+| `GET {code}/site` | Branding, contact, terms, the active room types with photos and tour videos | `public, s-maxage=300` |
+| `GET {code}/search?check_in&check_out&residency&rooms=2-0,2-1` | Room types free for every room asked, each open `IBE` plan with its meal plans priced and taxed, the cancellation policy in words, the advisory deposit | `public, s-maxage=30` per full query string |
+| `POST {code}/bookings` | Book (`Idempotency-Key`, Turnstile token, honeypot, `expected_totals`, `agreed`) | never |
+| `GET {code}/bookings/manage?token=` and `POST {code}/bookings/manage/cancel` | View and cancel | `no-store` |
+
+**CORS.** The cacheable reads (`by-host`, `site`, `search`) answer `Access-Control-Allow-Origin: *`: their data is public, they carry no credentials, and the edge serves one cached answer to every origin, so an answer naming one origin would break the others. The commands (`POST`s and their preflights) allow only `IBE_PUBLIC_ORIGIN` and the custom host of an enabled site, without credentials, so no CSRF token is needed.
+
+**Abuse limits**, counted in Postgres (`ibe_rate_hit`, a fixed one-minute window keyed by scope, IP and window; no Redis), `429` with `Retry-After`:
+
+- per IP and minute: 60 searches, 60 custom-host lookups, 5 bookings, 5 manage views and cancels together; a refused request counts too;
+- IPv4 per address, IPv6 per /64 (one subscriber's network);
+- the client IP is `X-IBE-Client-IP` when the request carries `IBE_SSR_SECRET` in `X-IBE-SSR-Secret` (compared in constant time: the site's server names the guest it renders for, so a first render counts against the guest, not the site), else `CF-Connecting-IP` when `TRUST_CLOUDFLARE_IP=true`, else the socket peer; a client IP header without the right secret is ignored, never refused;
+- Cloudflare Turnstile on every booking, verified on the server (missing or refused `400`, unreachable `503`, never a pass), plus the honeypot;
+- per booking at most 4 rooms and 30 nights; a stay from the business date up to 18 months ahead;
+- jobs-svc's daily cleanup deletes hits more than a day old.
+
+**Custom hosts** are stored (lowercase, unique across tenants, never the booking domain's host) and resolved by the site's `reroute` hook through `by-host`; CORS, SSR and the sitemap use them. TLS and DNS are **a manual deployment step** with **Cloudflare for SaaS**: add the hotel's domain as a custom hostname on the booking domain's zone (fallback origin: the site's Cloud Run service), have the hotel point a CNAME at the booking domain (the settings page shows it) and complete the hostname's validation, then save the host in **Settings → Booking site**. Nothing in this phase automates it.
 
 ### 10.1 Payments
 
@@ -715,6 +747,15 @@ How money is taken:
 - Every provider implements one `PaymentProvider` trait: `create_checkout`, `authorize`, `capture`, `charge_saved_card`, `refund`, `verify_webhook`. Terminal and cash payments are a `manual` provider, so every payment type goes through one folio path.
 - **Each property stores its own merchant credentials**, encrypted and kept in Secret Manager, because each hotel is its own merchant of record. Routing rules per property choose the provider by channel (online or at the desk), currency and guest residency.
 - Webhooks from every provider go to one ingestion endpoint. Signatures are verified, then the payment is upserted idempotently onto the folio.
+
+### 10.2 Deployment notes
+
+- **Lock the Cloud Run URLs to Cloudflare.** With `TRUST_CLOUDFLARE_IP=true`, core-api's own `*.run.app` URL bypasses Cloudflare, and through it anyone can send `CF-Connecting-IP` themselves to dodge the limits or spend another address's. Turn the URL off or restrict ingress (internal plus Cloudflare's load balancer, or Cloudflare's IP ranges) before setting it. The same holds for the site's service when it reads `ADDRESS_HEADER=CF-Connecting-IP`.
+- **`IBE_SSR_SECRET` on both sides**, the same value (at least 32 characters) in core-api and the site's server; both refuse to start in production without it. The site's server sends it only to `IBE_API_ORIGIN`, and the client bundle is checked for it at build.
+- **The guest's IP at the site's server**: behind Cloudflare `ADDRESS_HEADER=CF-Connecting-IP`; behind other proxies `ADDRESS_HEADER=X-Forwarded-For` with `XFF_DEPTH` the number of proxies in front. Unset, every guest is the proxy.
+- **Platform logs record the full manage URL.** core-api and the site keep the token out of their own logs, but Cloud Run's request logs (both services) and Cloudflare's logs (Logpush, if enabled) record the URL with its query, so `…/manage?token=…` is stored there. Consider a Cloud Logging exclusion or a log sink filter for the manage paths, short retention on those logs, and leaving the query string out of any Logpush job.
+- **Turnstile**: create a widget for the booking domain and each custom host, give its site key to the site (`PUBLIC_TURNSTILE_SITEKEY`) and its secret to core-api (`TURNSTILE_SECRET`); production refuses the test secret.
+- **Edge cache**: Cloudflare caches `site` and `search` by their `s-maxage`, keyed on the full query string; the API's own answers for the commands are never cached.
 
 ---
 
@@ -796,6 +837,7 @@ GoodFolk/
 | 27 | Staff and the POS role | Invitations by hashed single-use token (7 days, one `410` for every dead token), roles fixed with a new `pos` holding `PosPost` alone (plus its two reads), permission `StaffManage` for owners and managers, managers confined to junior grants at properties they manage, revocation deleting the membership and its sessions (§7.7) |
 | 28 | Mail | A `mail` crate with `Mailer` (`DevMailer` to a directory, `SesMailer` over SES v2 with `aws-sigv4` and `reqwest`, the official SDK costing 22 crates and seven advisories); sent by jobs-svc from the `mail-send` outbox topic so SES keys stay out of core-api; static AWS keys, as Cloud Run has no AWS role (§5.3, §8.5) |
 | 29 | Deposits and caching | An advisory deposit rule per rate plan, copied onto each booking and never blocking (§7.7); Redis is deferred until the system runs with real users |
+| 30 | Booking site | One site per property at `/<CODE>` or a custom host (Cloudflare for SaaS, set up by hand), pay at the hotel until Phase 7c, Turnstile plus a honeypot and per-IP limits counted in Postgres, a new guest profile per booking, cacheable reads open to any origin and commands to the booking domain and enabled custom hosts (§10) |
 
 ## 14. Open questions
 

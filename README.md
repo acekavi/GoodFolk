@@ -177,6 +177,9 @@ Run by hand, because shared CI machines make timings noisy, and one at a time (`
 # reportSummary for 31 days of the same 200 rooms: p95 under 100 ms
 # tdlReport and ssclReport for a quarter of its folios, SSCL reading a folio open since the quarter before: p95 under 300 ms each
 # the close that ends a month and a quarter queues its reports (render_reports) in under 5 s
+# the booking site's search (GET .../search) for 3 nights and 2 rooms on a 12-type property with 5 IBE plans: p95
+# under 100 ms, and the same when every room is sold and the 14 later check-ins are tried too
+# a 2-room booking (POST .../bookings, Turnstile answered by a local stand-in): p95 under 300 ms
 DATABASE_URL=$DATABASE_OWNER_URL cargo test --release -p core-api --test perf -- --ignored --nocapture --test-threads=1
 
 # a 30 s 1080p clip is ready (every rendition and the poster) in under 90 s, and a 60 s 4K HDR clip in under 5 min;
@@ -193,6 +196,14 @@ cargo test --release -p media-svc --test video_perf -- --nocapture --test-thread
 # 3G-class network, service worker included, takes under 2 s (p90 of five cold contexts)
 # a room type gallery of 50 photos paints in under 400 ms (p90 of ten cold loads); needs RustFS
 cd web/pms && E2E_PERF=1 E2E_DATABASE_URL=... bun run test:e2e --grep @perf
+
+# the booking site's landing and results pages reach LCP under 1.5 s on Lighthouse's mobile profile (simulated slow
+# 4G on a mid-range phone) for a property with a 10-photo gallery, every one of 3 runs. It builds and starts core-api
+# and media-svc (release) and the site's `vite preview` on ports of their own, seeds the hotel (the photos are the
+# renditions of a 12 MP JPEG, stored in RustFS) and runs `bunx @lhci/cli autorun` (needs the internet the first time)
+# with Playwright's Chromium; RustFS must be running. Reports land in web/ibe/.lighthouseci. Not met yet: about 2.4 s
+# (ROADMAP, Phase 9).
+cd web/ibe && E2E_DATABASE_URL=... E2E_OWNER_URL=... bun run lighthouse
 ```
 
 ### End-to-end tests
@@ -701,6 +712,53 @@ This script sets up its own small hotel, closes a week of it, and reads what the
 
 Not exercised here: a render that fails (the report is stored as `failed`, the owners and managers see the banner `Reports: …` and the next close queues it again; a report rendered on demand that fails shows its error on the page and raises no banner), a catch-up close after a long gap (it renders every older period and emails only the one that just ended), the SSCL exemption for foreign-currency card and bank-transfer payments with its earlier-month line (`modules/reports/tests/sscl.rs`), credit notes in Schedule 04 and purchaser TINs in Schedule 01 (`modules/reports/tests/vat.rs`), the 0.5% and 1% TDL boundary with SLTDA's worked example (`modules/reports/tests/tdl.rs`), and exactly-once mail (`crates/core-api/tests/reports.rs`, `crates/jobs-svc/tests`). The browser flows are in `web/pms/tests/e2e/reports.spec.ts`.
 
+### Trying the booking site by hand
+
+This walkthrough is for trying the guest booking site on your own computer, as a hotel owner would: you set the site up in the PMS, then book and cancel as a guest in another browser window. Nothing here needs a developer once the services are running (step 1). No payment is taken at any point: every booking is "pay at the hotel". D is today.
+
+1. **Start everything.** Each command in its own terminal, from the repository folder, with the exports from Development (including `PUSH_ENDPOINT_MAIL_SEND`, so that the emails are sent). Apply the migrations (through `0048`) first. media-svc and RustFS are needed only for photos (step 3); jobs-svc sends the emails to a folder on your disk instead of a real inbox (see [Email](#email)). The booking form's bot check uses Cloudflare Turnstile's test keys, which always pass but still call Cloudflare, so you need the internet.
+
+   ```sh
+   docker compose up -d postgres              # or your own Postgres on :5432
+   deploy/dev/rustfs.sh start
+   cargo run -p core-api -- migrate
+   cargo run -p core-api              # the API, http://localhost:8080
+   cargo run -p media-svc             # photos, http://localhost:8090
+   cargo run -p jobs-svc              # emails, http://localhost:8091
+   cd web/pms && bun run dev          # the PMS, http://localhost:5173
+   cd web/ibe && bun run dev          # the booking site, http://localhost:5174
+   ```
+
+2. **The hotel.** In the PMS (http://localhost:5173) sign up as the owner (`owner@example.com`, tenant `Lagoon Hotels`) and add a property coded `GAL`. On **Room types** add `DLX` (Deluxe, up to 2 adults and 1 child) and `STD` (Standard), and on **Rooms** add four rooms of each. On **Exchange rates** set a `USD` rate (for example `300`), since the plan below sells in dollars.
+3. **What guests see of each room.** On **Room types**, edit `DLX`: write a short **Description** (up to 1,000 characters), and add a few photos to its gallery (and a tour video if you like). The beds and amenities you set there are shown too. Do the same for `STD`.
+4. **A rate plan for the site.** The site sells only plans whose segment is **IBE**. On **Rate plans** add `WEB` (name `Best available`, standard, currency USD, segment `IBE`, rooms `DLX` and `STD`, meal plans `RO` and `BB`). Bulk-change it to `100.00` a night for the next two weeks, and on **Meal plans** add a `BB` supplement in USD (`15.00` an adult). Optionally give the plan a cancellation policy (**Cancellation policies**: for example free until 2 days before arrival, then one night) and a deposit rule (**Deposit**: 30% at booking). A plan with a residency (FIT-L for residents, FIT-F for visitors) is shown only to guests who answer the residency question that way; a plan with none is shown to everyone.
+5. **Turn the site on.** Open **Settings**, the property, **Booking site** (owners and managers only). Until step 4 is done the page says `No rate plans are sold on the booking site yet: give a plan the IBE segment.` Tick **Booking site is on**, write a **Short description** (up to 500 characters), the **Contact phone** and **Contact email** (shown on the site and in the emails), the **Booking terms** and **Privacy notice** (the guest agrees to both), and pick a **Hero image** from the gallery photos and an **Accent colour** (it must be dark enough for white text: `#1d4ed8` works, a pale yellow is refused). A **Logo** is optional. Leave **Custom host** empty: a hotel's own domain needs a DNS and Cloudflare step at deployment (ARCHITECTURE §10). **Save** (`Saved.`); **Preview** opens the site.
+6. **Search, as a guest.** In a private browser window open http://localhost:5174/GAL. You see the hero, the description and the rooms with their photos. Under **Find a room**, answer **Are you a resident of Sri Lanka?** first (no price is shown before it): choose `No, I am visiting`. Pick check-in D + 1 and check-out D + 4, add a second room with **Add a room**, and **Show rooms and prices**.
+7. **The results.** For each room you asked for (`Choose room 1 of 2`), every room type free for your dates lists its plans with the total for the stay, the price per night, each tax and the service charge (`Taxes and service charge included. You pay at the hotel.`), the cancellation policy in plain words, and a price per meal plan (room only, breakfast). Choose a Deluxe for room 1 and a Standard for room 2, then **Continue to your details**. That is the second of at most three steps.
+8. **Book.** Fill in your name, email (any address: nothing is really sent), phone, country and an optional arrival time; a name per room is optional. Read the summary: the total per currency, the cancellation terms and, with a deposit rule, the advisory deposit with "The hotel will contact you about the deposit" (it is never charged). Tick the agreement to the booking terms and privacy notice, wait a moment for the security check to tick itself, and **Book now, pay at the hotel**. The page says `Your booking is confirmed` with a confirmation number like `GAL-000123`. This page is shown once: keep the email.
+9. **The email.** jobs-svc wrote it to the dev outbox folder. To read the newest one:
+
+   ```sh
+   jq -r '.to, .subject, .text' "$(ls -t target/mail-outbox/*.json | head -1)"
+   ```
+
+   The subject is `Your booking at <hotel>: <confirmation number>`; it has the rooms, the totals, the terms in short, the hotel's contact details and a link `http://localhost:5174/GAL/manage?token=…` to view or cancel. Replies go to the contact email you set.
+10. **In the PMS.** Back in the owner's window open **Reservations**: the booking is there at once, both rooms `Confirmed`, source `Booking site`. Untick the **Booking site** source filter and they disappear; tick it again. Open it: the guest is a new profile (the site never matches guests by email), there is no card guarantee, and the arrival time and any special requests are in the notes.
+11. **Cancel, as the guest.** In the private window open the link from the email. `Your booking` shows the rooms and dates. **Cancel booking** shows what cancelling costs now under the terms the booking was made with (a penalty is charged exactly as at the front desk, never waived online), then **Yes, cancel the booking**: `Your booking is cancelled.`, and a cancellation email arrives in the outbox (run the `jq` line again). In the PMS the rooms read `Cancelled`, with the reason `Cancelled by the guest online`. A booking can be cancelled online only while no room is checked in and check-in is after today's business date; after that the page offers no cancel and says to contact the hotel. A wrong or old link (the link works until 30 days after check-out) answers `This link has expired or is not valid`.
+12. **More to try.**
+    - **A price change.** Search, choose and reach the details page, then in the PMS change the plan's price for one of the nights and book: the site says `The price has changed since you searched.`, shows the new total and books only once you confirm it.
+    - **Sold out.** Book the last free room of a type in the PMS while the guest is on the details page: booking then sends the guest back to the results with `That room was just booked; here is what is still available`. Dates with nothing free show `No rooms available for these dates` and, when there is one, the nearest check-in with rooms within 14 days.
+    - **Turning it off.** Untick **Booking site is on** and save: http://localhost:5174/GAL answers `Page not found`.
+13. **The audit log** (as the schema owner):
+
+    ```sh
+    bun -e 'const sql = new Bun.SQL(process.env.DATABASE_OWNER_URL); console.table(await sql`select at, action, actor_user_id, data from audit_log where action ~ ${"^(ibe|reservation)"} order by at desc limit 20`); await sql.close()'
+    ```
+
+    `ibe.booking_created` (actor `ibe`, no user, and no email or phone in the row) for the booking; `ibe.booking_cancelled` and a `reservation_room.cancelled` per room, with actor `ibe`, mode `online` and the reason, for the cancel; and your settings saves. The tables keep only the SHA-256 of the manage token.
+
+Not exercised here: the limits (60 searches and 5 bookings a minute from one address, then `429`), a refused bot check, a custom host, and two guests racing for the last room; they are covered by `crates/core-api/tests/ibe.rs` and `modules/ibe/tests`. The browser flow is `web/ibe/tests/e2e/booking.spec.ts`.
+
 ### Configuration
 
 The API (`core-api serve`) reads:
@@ -765,6 +823,26 @@ core-api's per-IP limits count the guest. It reads, at runtime:
 The site sets no cookies and loads no analytics or other third-party script. The manage page is sent with
 `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, takes the token out of the address once loaded, and the
 server logs errors by route, never by address.
+
+**Turnstile test keys.** Development and the end-to-end suite use [Cloudflare's published test keys](https://developers.cloudflare.com/turnstile/troubleshooting/testing/), the defaults above. Swap one side to try a refusal:
+
+| Key | Where | Behaviour |
+|---|---|---|
+| `1x00000000000000000000AA` | site key, `PUBLIC_TURNSTILE_SITEKEY` | the visible widget always passes (the default) |
+| `2x00000000000000000000AB` | site key | the visible widget always fails |
+| `3x00000000000000000000FF` | site key | forces an interactive challenge |
+| `1x0000000000000000000000000000000AA` | secret, `TURNSTILE_SECRET` | every token verifies (the default) |
+| `2x0000000000000000000000000000000AA` | secret | every token is refused: a booking answers `400` |
+| `3x0000000000000000000000000000000AA` | secret | refused as already spent (`timeout-or-duplicate`) |
+
+Even the always-pass keys call Cloudflare, so booking needs the internet. Production refuses the test secret.
+
+**Deploying the booking site** (details in [ARCHITECTURE.md §10.2](docs/ARCHITECTURE.md)):
+- With `TRUST_CLOUDFLARE_IP=true`, core-api's Cloud Run `*.run.app` URL must be off or its ingress limited to Cloudflare, or anyone can forge `CF-Connecting-IP`; likewise the site's service when it uses `ADDRESS_HEADER=CF-Connecting-IP`.
+- Set the same `IBE_SSR_SECRET` on core-api and the site's server; both refuse to start in production without it.
+- Set `ADDRESS_HEADER` (and `XFF_DEPTH` behind proxies other than Cloudflare) so the site's server sees the guest, not the proxy.
+- Cloud Run's request logs and Cloudflare's logs record the full manage URL, token included (the services' own logs leave it out): consider a log exclusion or short retention for the `…/manage` paths of both services, and keep query strings out of any Logpush job.
+- A hotel's own domain is a Cloudflare for SaaS custom hostname, set up by hand, before its host is saved in **Settings → Booking site**.
 
 #### Exchange rates
 

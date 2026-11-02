@@ -15,6 +15,10 @@ starts core-api, media-svc, jobs-svc and both web servers on ports apart from th
 environment of `web/pms/README.md` "End-to-end tests" and the internet: the always-pass Turnstile test keys still ask
 Cloudflare. It and the staff app's suite (`web/pms`) both build into `web/pms/build`: run them one after the other, never together.
 
+`bun run lighthouse` is the page-speed gate: the landing and results pages under 1.5 s Largest Contentful Paint on
+Lighthouse's mobile profile, for a hotel with a 10-photo gallery, against `vite preview` (see `scripts/lighthouse.ts`
+and the root README, Performance gates). It needs the e2e environment and RustFS.
+
 `bun run api:schemas && bun run codegen` regenerates `src/lib/api/openapi.d.ts` from core-api after a public API
 change.
 
