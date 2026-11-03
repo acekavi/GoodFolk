@@ -1,12 +1,13 @@
 <script lang="ts">
 	import type { Image } from '$lib/api';
-	import { fallback, srcset } from '$lib/media';
+	import { fallback, sources } from '$lib/media';
 
 	/**
 	 * A delivered image in AVIF, then WebP, at the width the layout shows it (`sizes`). Lazy unless it is the page's
 	 * largest paint (`priority`), which the browser fetches first: preloaded from the head, before the page's inlined
-	 * CSS, as AVIF only (`type` makes a browser without it skip the preload rather than fetch a second format), and
-	 * offering the small `phone` rendition, which a phone's screen picks.
+	 * CSS, as AVIF only (`type` makes a browser without it skip the preload rather than fetch a second format), one
+	 * preload per screen width its sources are for, so a phone preloads the small `phone` rendition (see `sources`) and a
+	 * wider screen never fetches it.
 	 */
 	let {
 		images,
@@ -25,27 +26,31 @@
 	} = $props();
 
 	const img = $derived(fallback(images, shownWidth));
-	const avif = $derived(srcset(images, 'avif', { phone: priority }));
-	const webp = $derived(srcset(images, 'webp', { phone: priority }));
+	const offered = $derived(sources(images, { largestPaint: priority }));
+	const preloads = $derived(
+		priority ? offered.filter((source) => source.type === 'image/avif' && source.srcset) : []
+	);
 </script>
 
 <svelte:head>
-	{#if priority && avif}
+	{#each preloads as preload (preload.media ?? '')}
 		<link
 			rel="preload"
 			as="image"
 			type="image/avif"
-			imagesrcset={avif}
+			imagesrcset={preload.srcset}
 			imagesizes={sizes}
+			media={preload.media}
 			fetchpriority="high"
 		/>
-	{/if}
+	{/each}
 </svelte:head>
 
 {#if img}
 	<picture class={className}>
-		<source type="image/avif" srcset={avif} {sizes} />
-		<source type="image/webp" srcset={webp} {sizes} />
+		{#each offered as source (`${source.media ?? ''} ${source.type}`)}
+			<source type={source.type} srcset={source.srcset} media={source.media} {sizes} />
+		{/each}
 		<img
 			src={img.url}
 			{alt}

@@ -152,6 +152,32 @@ test('double-clicking Book makes one reservation', async ({ page, browser }) => 
 	expect(reservationCount(hotel)).toBe(1);
 });
 
+test('Book waits for the page to hydrate, and the form never puts the details in its address', async ({
+	page,
+	browser
+}) => {
+	const owner = await browser.newContext({ baseURL: PMS });
+	const hotel = await seedHotel(owner.request);
+	await pickTwoRooms(page, hotel);
+	const book = page.url();
+
+	// Straight to the book page, with the app's scripts held back: the server-rendered form cannot book yet.
+	const direct = await browser.newPage();
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => (release = resolve));
+	await direct.route('**/_app/immutable/entry/**', async (route) => {
+		await held;
+		await route.continue();
+	});
+	await direct.goto(book);
+	const button = direct.getByRole('button', { name: 'Book now, pay at the hotel' });
+	await expect(button).toBeDisabled();
+	await expect(direct.locator('form.details')).toHaveAttribute('method', 'post');
+
+	release();
+	await expect(button).toBeEnabled();
+});
+
 test('/favicon.ico on the booking domain answers 404', async ({ request }) => {
 	expect((await request.get('/favicon.ico')).status()).toBe(404);
 });

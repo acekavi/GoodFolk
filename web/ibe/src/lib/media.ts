@@ -2,8 +2,7 @@ import type { Image, SiteView } from './api';
 
 /**
  * A `srcset` of one format's renditions, narrowest first; the square thumbnail only when there is nothing else. The
- * `phone` rendition (800 px at a lower quality, small enough to arrive quickly on a phone's connection) is offered
- * only with `phone`: for a page's largest paint. Elsewhere a gallery keeps its full-quality sizes.
+ * `phone` rendition (800 px at a lower quality) is left out unless `phone` is asked for: see [`sources`].
  */
 export function srcset(
 	images: readonly Image[],
@@ -18,6 +17,37 @@ export function srcset(
 		.sort((a, b) => a.width - b.width)
 		.map((image) => `${image.url} ${image.width}w`)
 		.join(', ');
+}
+
+/** The screens the `phone` rendition is offered to: a phone's, the hero's 4:3 breakpoint. */
+export const NARROW = '(width < 40rem)';
+/** Every other screen. */
+export const WIDE = '(width >= 40rem)';
+
+/** One `<source>` of a `<picture>`. */
+export interface Source {
+	type: 'image/avif' | 'image/webp';
+	srcset: string;
+	/** The screens it is for; every screen without. */
+	media?: string;
+}
+
+/**
+ * A `<picture>`'s sources, AVIF before WebP. For a page's largest paint (`largestPaint`) with a `phone` rendition, a
+ * narrow screen is offered it first (it arrives quickly on a phone's connection, slightly softer); a wider screen, and
+ * every other picture, gets the full-quality sizes only.
+ */
+export function sources(images: readonly Image[], { largestPaint = false } = {}): Source[] {
+	const full: Source[] = [
+		{ type: 'image/avif', srcset: srcset(images, 'avif') },
+		{ type: 'image/webp', srcset: srcset(images, 'webp') }
+	];
+	if (!largestPaint || !images.some((image) => image.size === 'phone')) return full;
+	return [
+		{ type: 'image/avif', srcset: srcset(images, 'avif', { phone: true }), media: NARROW },
+		{ type: 'image/webp', srcset: srcset(images, 'webp', { phone: true }), media: NARROW },
+		...full.map((source) => ({ ...source, media: WIDE }))
+	];
 }
 
 /** The image an `<img>` falls back to: the WebP nearest `width` wide without going under it, else the widest. */

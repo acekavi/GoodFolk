@@ -28,6 +28,8 @@ const JOBS_PORT = 8391;
 const API = `http://localhost:${API_PORT}`;
 const SITE_ORIGIN = `http://localhost:${SITE_PORT}`;
 const PHOTOS = 10;
+/** The project's limit on parallel builds: more links at once exhaust a development machine's memory. */
+const CARGO_JOBS = ['-j', process.env.CARGO_BUILD_JOBS ?? '3'];
 /** Pinned, so a run never resolves a newer Lighthouse CI (and a newer Lighthouse) than the gate was measured with. */
 const LHCI = '@lhci/cli@0.15.1';
 const PHOTO = join(ROOT, 'crates/imaging/tests/fixtures/photo-12mp.jpg');
@@ -91,6 +93,7 @@ function seedGallery(tenant: string, property: string, roomType: string, dir: st
 			'cargo',
 			'run',
 			'-q',
+			...CARGO_JOBS,
 			'--release',
 			'-p',
 			'imaging',
@@ -214,7 +217,10 @@ function lcps(): Map<string, number[]> {
 
 const renditions = mkdtempSync(join(tmpdir(), 'goodfolk-lhci-'));
 try {
-	run(['cargo', 'build', '-q', '--release', '-p', 'core-api', '-p', 'media-svc'], ROOT);
+	run(
+		['cargo', 'build', '-q', ...CARGO_JOBS, '--release', '-p', 'core-api', '-p', 'media-svc'],
+		ROOT
+	);
 	start([join(ROOT, 'target/release/core-api')], ROOT, {
 		PORT: String(API_PORT),
 		DATABASE_URL: database,

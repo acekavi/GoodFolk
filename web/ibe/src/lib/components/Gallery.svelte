@@ -12,7 +12,7 @@
 	 * (a pointer over it, a touch, focus, a swipe or a button). Otherwise every slide inside the browser's lazy-loading
 	 * margin, several per gallery, would download with the page and slow its largest paint on a phone's connection.
 	 * For the same reason a gallery without `priority` shows its first photo only once the page is hydrated, which is
-	 * after its first paint (`paintFirst` in `hooks.server.ts`).
+	 * after its first paint (`paintFirst` in `hooks.server.ts`). Its buttons wait for hydration too, so a tap is never lost.
 	 */
 	let {
 		media,
@@ -81,7 +81,12 @@
 							priority={priority && index === 0}
 						/>
 						{#if item.kind === 'video'}
-							<button type="button" class="play" onclick={() => (playing = index)}>
+							<button
+								type="button"
+								class="play"
+								disabled={!hydrated}
+								onclick={() => (playing = index)}
+							>
 								<span aria-hidden="true">▶</span> Play the tour video
 							</button>
 						{/if}
@@ -94,14 +99,14 @@
 				<button
 					type="button"
 					aria-label="Previous photo of {name}"
-					disabled={current === 0}
+					disabled={!hydrated || current === 0}
 					onclick={() => show(current - 1)}>‹</button
 				>
 				<span class="count" aria-live="polite">{current + 1} / {media.length}</span>
 				<button
 					type="button"
 					aria-label="Next photo of {name}"
-					disabled={current === media.length - 1}
+					disabled={!hydrated || current === media.length - 1}
 					onclick={() => show(current + 1)}>›</button
 				>
 			</div>

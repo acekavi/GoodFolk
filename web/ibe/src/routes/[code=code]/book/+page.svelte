@@ -72,7 +72,11 @@
 	let message: string | null = $state(null);
 	const keys = attemptKeys();
 
+	/** The page paints before it hydrates; until then **Book** waits, so nothing is sent but by the booking code. */
+	let hydrated = $state(false);
+
 	onMount(() => {
+		hydrated = true;
 		const render = () => {
 			if (!window.turnstile || !widgetElement) return;
 			widget = window.turnstile.render(widgetElement, {
@@ -236,7 +240,9 @@
 			{#each terms as text (text)}<p class="muted">{text}</p>{/each}
 		</section>
 
-		<form class="details" onsubmit={book}>
+		<!-- `post` with no action: should the form ever be submitted natively, the guest's details stay out of the address
+		     (and the logs). The booking itself is always `book`, once hydrated. -->
+		<form class="details" method="post" onsubmit={book}>
 			<fieldset>
 				<legend>Who is booking</legend>
 				<div class="pair">
@@ -333,7 +339,7 @@
 				<p class="notice error" role="alert">{message}</p>
 			{/if}
 
-			<button class="button submit" type="submit" disabled={busy}>
+			<button class="button submit" type="submit" disabled={busy || !hydrated}>
 				{#if busy}
 					Booking…
 				{:else if changedTotals}

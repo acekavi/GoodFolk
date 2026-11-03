@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Image, SiteView } from './api';
-import { fallback, mediaOrigin, srcset } from './media';
+import { NARROW, WIDE, fallback, mediaOrigin, sources, srcset } from './media';
 
 const image = (size: string, format: string, width: number): Image => ({
 	size,
@@ -23,13 +23,37 @@ describe('srcset', () => {
 		expect(srcset(images, 'webp')).toBe('https://cdn/sm.webp 640w, https://cdn/lg.webp 1600w');
 	});
 
-	it('offers the phone rendition only for a largest paint', () => {
+	it('lists the phone rendition only when asked', () => {
 		const withPhone = [...images, image('phone', 'avif', 800), image('phone', 'webp', 800)];
 		expect(srcset(withPhone, 'avif')).toBe('https://cdn/sm.avif 640w, https://cdn/lg.avif 1600w');
 		expect(srcset(withPhone, 'avif', { phone: true })).toBe(
 			'https://cdn/sm.avif 640w, https://cdn/phone.avif 800w, https://cdn/lg.avif 1600w'
 		);
 		expect(fallback(withPhone, 700)?.url).toBe('https://cdn/lg.webp');
+	});
+
+	it('offers the phone rendition to a narrow screen only, and only for a largest paint', () => {
+		const withPhone = [...images, image('phone', 'avif', 800), image('phone', 'webp', 800)];
+		const full = [
+			{ type: 'image/avif', srcset: 'https://cdn/sm.avif 640w, https://cdn/lg.avif 1600w' },
+			{ type: 'image/webp', srcset: 'https://cdn/sm.webp 640w, https://cdn/lg.webp 1600w' }
+		];
+
+		expect(sources(withPhone)).toEqual(full);
+		expect(sources(images, { largestPaint: true })).toEqual(full);
+		expect(sources(withPhone, { largestPaint: true })).toEqual([
+			{
+				type: 'image/avif',
+				srcset: 'https://cdn/sm.avif 640w, https://cdn/phone.avif 800w, https://cdn/lg.avif 1600w',
+				media: NARROW
+			},
+			{
+				type: 'image/webp',
+				srcset: 'https://cdn/sm.webp 640w, https://cdn/phone.webp 800w, https://cdn/lg.webp 1600w',
+				media: NARROW
+			},
+			...full.map((source) => ({ ...source, media: WIDE }))
+		]);
 	});
 
 	it('falls back to the thumbnail when a photo has nothing larger', () => {

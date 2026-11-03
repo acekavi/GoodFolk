@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
 	import type { SiteRoomType } from '$lib/api';
 	import { addDays, addMonths, guestsText } from '$lib/format';
 	import {
@@ -37,6 +38,11 @@
 	// svelte-ignore state_referenced_locally
 	let form: SearchForm = $state(structuredClone(initial));
 	let problem: string | null = $state(null);
+	/** The page paints before it hydrates: until then the room buttons would do nothing, so they wait. */
+	let hydrated = $state(false);
+	onMount(() => {
+		hydrated = true;
+	});
 
 	const lastCheckIn = $derived(addMonths(businessDate, MONTHS_AHEAD));
 	const firstCheckOut = $derived(addDays(form.checkIn || businessDate, 1));
@@ -126,7 +132,7 @@
 						type="button"
 						class="step"
 						aria-label="One adult fewer in room {index + 1}"
-						disabled={!steps.removeAdult}
+						disabled={!hydrated || !steps.removeAdult}
 						onclick={() => room.adults--}>−</button
 					>
 					<output aria-live="polite">{room.adults}</output>
@@ -134,7 +140,7 @@
 						type="button"
 						class="step"
 						aria-label="One adult more in room {index + 1}"
-						disabled={!steps.addAdult}
+						disabled={!hydrated || !steps.addAdult}
 						onclick={() => room.adults++}>+</button
 					>
 				</div>
@@ -144,7 +150,7 @@
 						type="button"
 						class="step"
 						aria-label="One child fewer in room {index + 1}"
-						disabled={!steps.removeChild}
+						disabled={!hydrated || !steps.removeChild}
 						onclick={() => room.children--}>−</button
 					>
 					<output aria-live="polite">{room.children}</output>
@@ -152,7 +158,7 @@
 						type="button"
 						class="step"
 						aria-label="One child more in room {index + 1}"
-						disabled={!steps.addChild}
+						disabled={!hydrated || !steps.addChild}
 						onclick={() => room.children++}>+</button
 					>
 				</div>
@@ -160,6 +166,7 @@
 					<button
 						type="button"
 						class="link"
+						disabled={!hydrated}
 						onclick={() => form.rooms.splice(index, 1)}
 						aria-label="Remove room {index + 1}">Remove</button
 					>
@@ -170,6 +177,7 @@
 			<button
 				type="button"
 				class="button quiet add"
+				disabled={!hydrated}
 				onclick={() => form.rooms.push({ adults: 1, children: 0 })}>Add a room</button
 			>
 		{/if}
