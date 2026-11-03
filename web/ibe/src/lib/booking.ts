@@ -119,7 +119,7 @@ export function depositLines(rooms: readonly PricedRoom[]): DepositLine[] {
 }
 
 /**
- * The deposit as the confirmation email words it: `Deposit: US$ 120.00 by Mon, 2 Nov 2026. The hotel will contact you
+ * The deposit as the confirmation email words it: `Deposit (before taxes): US$ 120.00 by Mon, 2 Nov 2026. The hotel will contact you
  * about the deposit.`; `null` without one.
  */
 export function depositText(lines: readonly DepositLine[]): string | null {
@@ -127,7 +127,7 @@ export function depositText(lines: readonly DepositLine[]): string | null {
 	const owed = lines.map(
 		(line) => `${money(line.amount, line.currency)} by ${dateText(line.dueDate)}`
 	);
-	return `Deposit: ${owed.join(' and ')}. The hotel will contact you about the deposit.`;
+	return `Deposit (before taxes): ${owed.join(' and ')}. The hotel will contact you about the deposit.`;
 }
 
 /** What the guest fills in on the book page. */

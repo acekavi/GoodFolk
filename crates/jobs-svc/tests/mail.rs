@@ -509,7 +509,10 @@ async fn an_ibe_confirmation_is_sent_in_the_hotels_name_with_the_manage_link(_: 
             body.contains("Free cancellation until 3 days before arrival; after that, one night is charged"),
             "{body}"
         );
-        assert!(body.contains("LKR 120.00 by ") && body.contains(&due), "the deposit and its due date: {body}");
+        assert!(
+            body.contains("Deposit (before taxes): LKR 120.00 by ") && body.contains(&due),
+            "the deposit and its due date: {body}"
+        );
         assert!(body.contains("The hotel will contact you about the deposit"), "{body}");
         assert!(body.contains("+94 91 222 3333") && body.contains("desk@gallefort.example"), "{body}");
         assert_eq!(body.matches(token).count(), 1, "the token is only in the link: {body}");

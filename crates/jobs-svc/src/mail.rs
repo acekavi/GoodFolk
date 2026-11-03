@@ -404,7 +404,7 @@ fn render_confirmation(booking: &ibe::Confirmation, link: &str) -> Message {
     ));
     if !deposits.is_empty() {
         text.push_str(&format!(
-            "\nDeposit: {}. The hotel will contact you about the deposit.\n",
+            "\nDeposit (before taxes): {}. The hotel will contact you about the deposit.\n",
             deposits.join(" and ")
         ));
     }
@@ -436,7 +436,7 @@ fn render_confirmation(booking: &ibe::Confirmation, link: &str) -> Message {
     ));
     if !deposits.is_empty() {
         html.push_str(&format!(
-            "<p>Deposit: {}. The hotel will contact you about the deposit.</p>\n",
+            "<p>Deposit (before taxes): {}. The hotel will contact you about the deposit.</p>\n",
             escape(&deposits.join(" and "))
         ));
     }

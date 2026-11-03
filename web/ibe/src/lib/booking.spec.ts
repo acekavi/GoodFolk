@@ -220,7 +220,7 @@ describe('the advisory deposit', () => {
 			{ currency: 'USD', amount: 30_000, dueDate: '2026-11-01' }
 		]);
 		expect(depositText(depositLines(rooms))).toBe(
-			'Deposit: US$ 300.00 by Sun, 1 Nov 2026. The hotel will contact you about the deposit.'
+			'Deposit (before taxes): US$ 300.00 by Sun, 1 Nov 2026. The hotel will contact you about the deposit.'
 		);
 	});
 

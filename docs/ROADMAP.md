@@ -453,7 +453,7 @@ The owner asked for the spec to be written from the outline and ARCHITECTURE §1
 - **Waits for Phase 7c** (online payment): the hold stage between details and confirmation (hold, pay, confirm on the webhook; `reservation.hold_expires_at` exists), card guarantees and enforced deposits. The three guest steps stay as they are.
 - **Waits for Phase 8b** (Channex): metasearch (Google Hotel Ads, free booking links) and channel-delivered bookings.
 - **Out of scope:** promo codes, member rates, packages and add-ons, chain search, other languages, guest accounts and modifications, custom layouts, analytics; custom-host TLS and DNS stay a manual Cloudflare for SaaS step.
-- **Open question for the owner:** the advisory deposit is shown before taxes, as on the staff screens. Should the site and the email say "before taxes", or show it with taxes included?
+- **The advisory deposit is labelled "before taxes"** on the book page and in the email (`Deposit (before taxes): …`): it keeps the one amount the staff screens, the night audit and the deposit folio use, priced like the cancellation penalty, rather than a second, tax-inclusive figure for guests.
 
 ## Cross-cutting, every phase
 
