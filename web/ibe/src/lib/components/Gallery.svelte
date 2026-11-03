@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import type { SiteMedia } from '$lib/api';
 	import Picture from './Picture.svelte';
 
@@ -10,6 +11,8 @@
 	 * Only the slides up to `reached` have their images: the next one is added as the guest reaches for the gallery
 	 * (a pointer over it, a touch, focus, a swipe or a button). Otherwise every slide inside the browser's lazy-loading
 	 * margin, several per gallery, would download with the page and slow its largest paint on a phone's connection.
+	 * For the same reason a gallery without `priority` shows its first photo only once the page is hydrated, which is
+	 * after its first paint (`paintFirst` in `hooks.server.ts`).
 	 */
 	let {
 		media,
@@ -21,6 +24,11 @@
 	let current = $state(0);
 	let playing: number | null = $state(null);
 	let reached = $state(0);
+	let hydrated = $state(false);
+
+	onMount(() => {
+		hydrated = true;
+	});
 
 	function reach(index: number) {
 		reached = Math.max(reached, Math.min(media.length - 1, index));
@@ -64,11 +72,11 @@
 								<source src={source.url} type={source.mime} />
 							{/each}
 						</video>
-					{:else if index <= reached}
+					{:else if index <= reached && (hydrated || (priority && index === 0))}
 						<Picture
 							images={item.images}
 							alt={item.kind === 'video' ? '' : label(item, index)}
-							sizes="(min-width: 60rem) 34rem, 100vw"
+							sizes="(min-width: 60rem) 34rem, calc(100vw - 2rem)"
 							shownWidth={1024}
 							priority={priority && index === 0}
 						/>

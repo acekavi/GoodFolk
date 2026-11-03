@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { onMount } from 'svelte';
 	import type { MealOffer, PlanOffer, RoomTypeResult } from '$lib/api';
 	import { bookHref, pricePicks, totalsOf, type Pick } from '$lib/booking';
 	import Gallery from '$lib/components/Gallery.svelte';
@@ -19,6 +20,12 @@
 	import { formFromUrl, movedTo, stayQuery, type Stay } from '$lib/search';
 
 	let { data } = $props();
+
+	/** The page paints before it hydrates: until then a tap on Choose would do nothing, so the buttons wait. */
+	let hydrated = $state(false);
+	onMount(() => {
+		hydrated = true;
+	});
 
 	const site = $derived(data.site);
 	const searched = $derived(data.searched);
@@ -226,7 +233,7 @@
 															type="button"
 															class="button"
 															class:quiet={!picked}
-															disabled={full(result)}
+															disabled={!hydrated || full(result)}
 															aria-pressed={picked}
 															aria-label="Choose {type.name}, {plan.name}, {mealPlanText(
 																offer.meal_plan

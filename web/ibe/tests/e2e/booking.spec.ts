@@ -103,6 +103,8 @@ test('a guest books two rooms, the front desk sees them, and the guest cancels f
 	const manage = await guest.newPage();
 	await manage.goto(manageLink!);
 	await expect(manage.getByRole('heading', { name: 'Your booking' })).toBeVisible();
+	// The token leaves the address once the page has it.
+	await expect(manage).not.toHaveURL(/token=/);
 	await manage.getByRole('button', { name: 'Cancel booking' }).click();
 	await manage.getByRole('button', { name: 'Yes, cancel the booking' }).click();
 	await expect(manage.getByText('Your booking is cancelled.')).toBeVisible();

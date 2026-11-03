@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { replaceState } from '$app/navigation';
+	import { afterNavigate, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onMount, tick } from 'svelte';
 	import { NETWORK_TROUBLE, publicApi, TOO_MANY_TRIES } from '$lib/api';
@@ -27,6 +27,8 @@
 	let message: string | null = $state(null);
 	let justCancelled = $state(false);
 	let cancelButton: HTMLButtonElement | undefined = $state();
+	/** The page paints before it hydrates: until then a tap on Cancel would do nothing, so the button waits. */
+	let hydrated = $state(false);
 
 	/** Moves focus to what the guest's last action brought up, so it is not lost with the button that went. */
 	function focusNow(node: HTMLElement) {
@@ -40,7 +42,12 @@
 	}
 
 	onMount(() => {
-		// The token leaves the address bar and the history entry: the page has what it needs.
+		hydrated = true;
+	});
+
+	// The token leaves the address bar and the history entry: the page has what it needs. After the router has
+	// started (`afterNavigate` runs once it has, also for the first load), as `replaceState` needs it.
+	afterNavigate(() => {
 		if (!page.url.searchParams.has('token')) return;
 		const clean = new URL(page.url);
 		clean.searchParams.delete('token');
@@ -182,6 +189,7 @@
 						type="button"
 						class="button quiet"
 						bind:this={cancelButton}
+						disabled={!hydrated}
 						onclick={() => (confirming = true)}
 					>
 						Cancel booking

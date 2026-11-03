@@ -106,6 +106,15 @@
 		min-height: 14rem;
 	}
 
+	/* On a phone the photo is shown whole, 4:3 across the screen, so the screen's width picks its rendition: a taller
+	   box would crop it to cover, and need an image about twice as wide as the screen. */
+	@media (width < 40rem) {
+		.hero:not(.bare) {
+			min-height: 0;
+			aspect-ratio: 4 / 3;
+		}
+	}
+
 	.hero :global(.hero-image) {
 		position: absolute;
 		inset: 0;

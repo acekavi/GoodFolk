@@ -4,7 +4,9 @@
 
 	/**
 	 * A delivered image in AVIF, then WebP, at the width the layout shows it (`sizes`). Lazy unless it is the page's
-	 * largest paint (`priority`), which the browser fetches first.
+	 * largest paint (`priority`), which the browser fetches first: preloaded from the head, before the page's inlined
+	 * CSS, as AVIF only (`type` makes a browser without it skip the preload rather than fetch a second format), and
+	 * offering the small `phone` rendition, which a phone's screen picks.
 	 */
 	let {
 		images,
@@ -23,12 +25,27 @@
 	} = $props();
 
 	const img = $derived(fallback(images, shownWidth));
+	const avif = $derived(srcset(images, 'avif', { phone: priority }));
+	const webp = $derived(srcset(images, 'webp', { phone: priority }));
 </script>
+
+<svelte:head>
+	{#if priority && avif}
+		<link
+			rel="preload"
+			as="image"
+			type="image/avif"
+			imagesrcset={avif}
+			imagesizes={sizes}
+			fetchpriority="high"
+		/>
+	{/if}
+</svelte:head>
 
 {#if img}
 	<picture class={className}>
-		<source type="image/avif" srcset={srcset(images, 'avif')} {sizes} />
-		<source type="image/webp" srcset={srcset(images, 'webp')} {sizes} />
+		<source type="image/avif" srcset={avif} {sizes} />
+		<source type="image/webp" srcset={webp} {sizes} />
 		<img
 			src={img.url}
 			{alt}
