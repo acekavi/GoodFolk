@@ -435,19 +435,20 @@ The owner asked for the spec to be written from the outline and ARCHITECTURE §1
   - **Rate hits are pruned daily** by jobs-svc; IPv6 is counted per /64.
   - **The advisory deposit is priced per meal offer** in the search and shared with the email (`reservations::room_deposit`).
   - The API accepts `null` arrival time and occupant name; the arrival time is kept in the notes.
-  - A gallery loads only its first slide's image with the page, and the next as the guest reaches for it (Task 7: the other slides inside the browser's lazy-loading margin had been downloading with the page and doubling LCP).
-- **Performance gates** (release builds, in process through the router; Lighthouse 3 runs a page, every run counted):
+  - **Page speed** (Task 7, to meet the LCP gate): a gallery loads only its first slide, and the next as the guest reaches for it; a gallery that is not the page's largest paint shows its photo once hydrated; the largest paint is preloaded; the app's scripts are not modulepreloaded and SvelteKit's boot waits for the first contentful frame (`paintFirst`); on a phone the hero is 4:3, shown whole. The results' **Choose** and the manage page's **Cancel booking** stay disabled until hydrated, and the manage page drops its token in `afterNavigate`.
+  - **A `phone` gallery rendition** (media engine, 800 px, SSIMULACRA2 ≥ 45 instead of 80; ARCHITECTURE §8.2), offered only to the largest paint: a phone's hero is softer on a detailed photo, every other size is unchanged. Photos uploaded before it fall back to the full-quality sizes; nothing is backfilled. Deploy core-api before media-svc.
+- **Performance gates: done** (release builds, in process through the router; Lighthouse 3 runs a page, `@lhci/cli` 0.15.1, every run counted):
 
   | Gate | Spec | Measured |
   |---|---|---|
   | `GET …/search`, 3 nights, 2 rooms, 12 room types, 5 `IBE` plans | p95 < 100 ms | p95 12.0 ms (p50 8.8 ms) |
   | the same, every room sold, the 14 later check-ins tried | p95 < 100 ms | p95 17.1 ms (p50 13.0 ms) |
   | `POST …/bookings`, 2 rooms | p95 < 300 ms | p95 34.5 ms (p50 28.4 ms) |
-  | landing page LCP, Lighthouse mobile, 10-photo gallery | < 1.5 s | **2.41 to 2.56 s: not met** |
-  | results page LCP | < 1.5 s | **2.41 s: not met** |
+  | landing page LCP, Lighthouse mobile, 10-photo gallery of a 12 MP photo | < 1.5 s | 1.21 s (1210, 1205, 1207 ms) |
+  | results page LCP | < 1.5 s | 1.21 s (1207, 1206, 1206 ms) |
   | steps from the results to a booking | ≤ 3 | 3 (choose, details, book) |
 
-  The no-result search's 14-day scan, flagged in review, costs about 5 ms more at p95: no change needed. The LCP gate first measured 4.4 and 5.0 s; loading only the first gallery slide brought it to about 2.4 s. What remains is the hero photo itself: the media engine's AVIF of the 12 MP fixture is 194 KB at 1024 px (larger than its WebP at 640 px), and under Lighthouse's simulated slow 4G the page's first paint alone takes about 1.2 s; a 105 KB photo still measures 1.96 s. Meeting the gate needs a smaller hero download on phones, which is a decision for the owner (the media engine's AVIF quality target, ARCHITECTURE §8 and decision 14, or a hero rendition for phones), not a gate change.
+  The no-result search's 14-day scan, flagged in review, costs about 5 ms more at p95: no change needed. The LCP gate first measured 4.4 s (landing) and 5.0 s (results). Off-screen gallery slides downloading with the page: 2.4 to 2.6 s once only the first loads. Preloading the photo changed nothing (it was found early already), nor did the phone's `sizes` and 4:3 hero alone (2.1 to 2.6 s: the 194 KB `md` AVIF is still the smallest that covers a phone). With the 46 KB `phone` rendition, scripts that start only after the first frame and below-the-fold galleries waiting for hydration, every run is about 1.21 s.
 - **Waits for Phase 7c** (online payment): the hold stage between details and confirmation (hold, pay, confirm on the webhook; `reservation.hold_expires_at` exists), card guarantees and enforced deposits. The three guest steps stay as they are.
 - **Waits for Phase 8b** (Channex): metasearch (Google Hotel Ads, free booking links) and channel-delivered bookings.
 - **Out of scope:** promo codes, member rates, packages and add-ons, chain search, other languages, guest accounts and modifications, custom layouts, analytics; custom-host TLS and DNS stay a manual Cloudflare for SaaS step.

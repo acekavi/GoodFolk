@@ -8,7 +8,7 @@
 // RustFS (`sh deploy/dev/rustfs.sh start`) and Playwright's Chromium (`bunx playwright install chromium`), whose
 // binary Lighthouse drives. It builds and starts core-api and media-svc (release) and the built site's `vite preview`,
 // seeds a hotel whose Deluxe gallery holds 10 photos (the renditions media-svc makes of a 12 MP photo, stored in
-// RustFS's public bucket) with the first one as the hero, runs `@lhci/cli autorun` with lighthouserc.json (3 runs a
+// RustFS's public bucket) with the first one as the hero, runs `@lhci/cli autorun` (pinned below) with lighthouserc.json (3 runs a
 // page, every one under the gate), prints each page's LCP and stops exactly the processes it started.
 // PLAYWRIGHT_NO_SANDBOX=1 runs Chromium without its sandbox, as for the e2e suite.
 
@@ -28,6 +28,8 @@ const JOBS_PORT = 8391;
 const API = `http://localhost:${API_PORT}`;
 const SITE_ORIGIN = `http://localhost:${SITE_PORT}`;
 const PHOTOS = 10;
+/** Pinned, so a run never resolves a newer Lighthouse CI (and a newer Lighthouse) than the gate was measured with. */
+const LHCI = '@lhci/cli@0.15.1';
 const PHOTO = join(ROOT, 'crates/imaging/tests/fixtures/photo-12mp.jpg');
 
 const SERVICE_AUTH = {
@@ -290,7 +292,7 @@ try {
 		[
 			process.execPath,
 			'x',
-			'@lhci/cli',
+			LHCI,
 			'autorun',
 			'--config=lighthouserc.json',
 			`--collect.url=${landing}`,
