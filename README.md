@@ -815,15 +815,16 @@ core-api's per-IP limits count the guest. It reads, at runtime:
 | `PUBLIC_API_ORIGIN` | Where browsers reach the API, e.g. `https://api.example.lk`. Dev default `http://localhost:8080`. |
 | `IBE_API_ORIGIN` | Where the site's server reaches the API, e.g. core-api's Cloud Run URL. Default `PUBLIC_API_ORIGIN`. |
 | `IBE_SSR_SECRET` | core-api's `IBE_SSR_SECRET`. With it, the server's API calls name the guest they render a page for (`X-IBE-Client-IP`, proved by `X-IBE-SSR-Secret`), so a first render counts against the guest's per-IP limits, not the site's. Server-only: never in the browser's bundle, which `bun run build` checks. Unset (the default), the calls name no one and count against the site's server. Required in production: with `NODE_ENV=production` (the image's), the server refuses to start without it. |
-| `ADDRESS_HEADER`, `XFF_DEPTH` | adapter-node's source of the guest's IP (`getClientAddress()`), which the server names to core-api. Behind Cloudflare, with the site reachable only through it (the same `*.run.app` caution as `TRUST_CLOUDFLARE_IP`), set `ADDRESS_HEADER=CF-Connecting-IP`; a request without the header then names no guest, with a warning in the log, and still renders. Behind other proxies, `ADDRESS_HEADER=X-Forwarded-For` with `XFF_DEPTH` the number of proxies in front. Unset, it is the socket peer, which behind a proxy is the proxy. |
+| `ADDRESS_HEADER`, `XFF_DEPTH` | adapter-node's source of the guest's IP (`getClientAddress()`), which the server names to core-api. Behind Cloudflare, with the site reachable only through it (the same `*.run.app` caution as `TRUST_CLOUDFLARE_IP`), set `ADDRESS_HEADER=CF-Connecting-IP`; a request without the header then names no guest, with a warning in the log, and still renders. Behind other proxies, `ADDRESS_HEADER=X-Forwarded-For` with `XFF_DEPTH` the number of proxies in front. Unset, it is the socket peer, which behind a proxy is the proxy: with `NODE_ENV=production` the server then logs a warning at startup, and still starts. |
 | `PUBLIC_IBE_ORIGIN` | The booking domain, the same as core-api's `IBE_PUBLIC_ORIGIN`: on it a site is `/<CODE>`, and any other host is looked up as a site's custom host (`by-host`, kept for 60 s) and served at its root. Dev default `http://localhost:5174`. |
 | `VITE_IBE_PUBLIC_ORIGIN` | Read by **web/pms** when it is built or started (`bun run dev`, `bun run build`): the booking domain, the same as core-api's `IBE_PUBLIC_ORIGIN`. **Settings → Booking site** uses it for the **Preview** link and the custom host's CNAME hint; unset, neither shows the domain. |
 | `PUBLIC_TURNSTILE_SITEKEY` | Cloudflare Turnstile's site key, the pair of core-api's `TURNSTILE_SECRET`. Dev default Turnstile's test key `1x00000000000000000000AA`, which always passes. The widget's script loads on the book page only. |
 | `PORT`, `HOST` | adapter-node's listen address (default `0.0.0.0:3000`; the image sets `PORT=8080`). Leave `ORIGIN` unset in production: custom hosts share the image, and Cloud Run's TLS makes adapter-node's default `https` right. To run `node build` over plain HTTP locally, set `ORIGIN=http://localhost:5174`. |
 
 The site sets no cookies and loads no analytics or other third-party script. The manage page is sent with
-`Cache-Control: no-store` and `Referrer-Policy: no-referrer`, takes the token out of the address once loaded, and the
-server logs errors by route, never by address.
+`Cache-Control: no-store` and `Referrer-Policy: no-referrer`, takes the token out of the address once loaded, reads
+the booking from core-api with the token in a `POST`'s body (never in a URL), and the server logs errors by route,
+never by address.
 
 **Turnstile test keys.** Development and the end-to-end suite use [Cloudflare's published test keys](https://developers.cloudflare.com/turnstile/troubleshooting/testing/), the defaults above. Swap one side to try a refusal:
 
@@ -836,14 +837,17 @@ server logs errors by route, never by address.
 | `2x0000000000000000000000000000000AA` | secret | every token is refused: a booking answers `400` |
 | `3x0000000000000000000000000000000AA` | secret | refused as already spent (`timeout-or-duplicate`) |
 
-Even the always-pass keys call Cloudflare, so booking needs the internet. Production refuses the test secret.
+Even the always-pass keys call Cloudflare, so booking needs the internet. Production refuses the test secret. With
+any other secret, core-api also requires a pass to come from the booking form's widget (`action` `booking`) on the
+booking domain or the site's own custom host; the test secret reports every token as solved on `example.com`, so with
+it only the pass itself is checked.
 
 **Deploying the booking site** (details in [ARCHITECTURE.md §10.2](docs/ARCHITECTURE.md)):
 - With `TRUST_CLOUDFLARE_IP=true`, core-api's Cloud Run `*.run.app` URL must be off or its ingress limited to Cloudflare, or anyone can forge `CF-Connecting-IP`; likewise the site's service when it uses `ADDRESS_HEADER=CF-Connecting-IP`.
 - Set the same `IBE_SSR_SECRET` on core-api and the site's server; both refuse to start in production without it.
 - Set `ADDRESS_HEADER` (and `XFF_DEPTH` behind proxies other than Cloudflare) so the site's server sees the guest, not the proxy.
-- Cloud Run's request logs and Cloudflare's logs record the full manage URL, token included (the services' own logs leave it out): consider a log exclusion or short retention for the `…/manage` paths of both services, and keep query strings out of any Logpush job.
-- A hotel's own domain is a Cloudflare for SaaS custom hostname, set up by hand, before its host is saved in **Settings → Booking site**.
+- The manage page's address carries its token, and the site's Cloud Run request log and Cloudflare's logs record it with its query (core-api is never sent the token in a URL, and the services' own logs leave it out). Add a Cloud Logging exclusion to the `_Default` sink for the site's service, filter `resource.type="cloud_run_revision" AND resource.labels.service_name="<the site's service>" AND httpRequest.requestUrl:"token="`, and leave `ClientRequestURI` (and any query-string field) out of every Cloudflare Logpush job, logging `ClientRequestPath` instead (ARCHITECTURE §10.2).
+- A hotel's own domain is a Cloudflare for SaaS custom hostname, set up by hand, before its host is saved in **Settings → Booking site**; before activating it, check that the site holding the host is that hotel's, and add the host to the Turnstile widget's hostnames.
 - Deploy core-api before media-svc for the Phase 9 release, and never roll core-api back past it once `phone` assets exist: older core-apis read rendition lists strictly. From this release, an unknown size is skipped with a warning, so later sizes need no deploy order (ARCHITECTURE §10.2).
 
 #### Exchange rates
