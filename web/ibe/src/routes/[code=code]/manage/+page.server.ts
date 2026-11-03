@@ -10,7 +10,8 @@ export type Managed =
 
 /**
  * The booking of the manage link's token, read on the server only, and never kept: no cache stores the page, and
- * no link on it sends its address (with the token) on as a referrer.
+ * no link on it sends its address (with the token) on as a referrer. The API is sent the token in a `POST`'s body,
+ * so it is in no URL of that call for a request log to record.
  */
 export const load: PageServerLoad = async ({ fetch, url, parent, setHeaders }) => {
 	setHeaders({ 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
@@ -24,9 +25,9 @@ async function managed(
 	token: string | null
 ): Promise<Managed> {
 	if (!token) return { kind: 'no_token' };
-	const { data, response } = await publicApi(fetch).GET(
+	const { data, response } = await publicApi(fetch).POST(
 		'/api/public/v1/ibe/{code}/bookings/manage',
-		{ params: { path: { code }, query: { token } } }
+		{ params: { path: { code } }, body: { token } }
 	);
 	if (data) return { kind: 'booking', view: data };
 	if (response.status === 410) return { kind: 'gone' };

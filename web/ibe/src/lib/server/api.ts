@@ -50,3 +50,17 @@ export function startupProblem(
 		? 'IBE_SSR_SECRET is required in production: without it every server render counts against the site’s own per-IP limits'
 		: null;
 }
+
+/**
+ * What to warn of at startup, though the server runs: in production, without `ADDRESS_HEADER` adapter-node takes the
+ * socket peer for the guest, which behind Cloud Run and Cloudflare is the proxy, so every guest shares one set of
+ * per-IP limits and is refused under modest traffic.
+ */
+export function startupWarning(
+	nodeEnv: string | undefined,
+	addressHeader: string | undefined
+): string | null {
+	return nodeEnv === 'production' && !addressHeader
+		? 'ADDRESS_HEADER is not set: every guest is counted as the proxy in front of this server, so all guests share one set of the API’s per-IP limits. Behind Cloudflare set ADDRESS_HEADER=CF-Connecting-IP'
+		: null;
+}

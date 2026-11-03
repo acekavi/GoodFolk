@@ -12,6 +12,7 @@ import {
 	pricesAgree,
 	picksFromUrl,
 	pricePicks,
+	sendBooking,
 	takeBooked,
 	totalsOf,
 	type Details,
@@ -265,6 +266,9 @@ describe('the booking answer', () => {
 		expect(bookingOutcome(409, problem(409, { reason: 'sold_out' }), null)).toEqual({
 			kind: 'sold_out'
 		});
+		expect(bookingOutcome(409, problem(409, { reason: 'in_progress' }), null)).toEqual({
+			kind: 'in_progress'
+		});
 		expect(bookingOutcome(429, problem(429, {}), '42')).toEqual({
 			kind: 'too_many',
 			retryAfter: 42
@@ -298,17 +302,19 @@ describe('the idempotency key', () => {
 		expect(keys.keyFor(attempt('token-2'))).toBe('k1');
 	});
 
-	it('is kept after a 5xx and ended by any answer below 500', () => {
+	it('is kept after a 5xx or a booking still in progress, and ended by any other answer', () => {
 		let next = 0;
 		const keys = attemptKeys(() => `k${++next}`);
 
 		expect(keys.keyFor(attempt('t'))).toBe('k1');
-		keys.answered(503);
+		keys.answered({ kind: 'failed' });
 		expect(keys.keyFor(attempt('t'))).toBe('k1');
-		keys.answered(409);
-		expect(keys.keyFor(attempt('t2'))).toBe('k2');
-		keys.answered(201);
-		expect(keys.keyFor(attempt('t3'))).toBe('k3');
+		keys.answered({ kind: 'in_progress' });
+		expect(keys.keyFor(attempt('t2'))).toBe('k1');
+		keys.answered({ kind: 'sold_out' });
+		expect(keys.keyFor(attempt('t3'))).toBe('k2');
+		keys.answered({ kind: 'booked', confirmationNo: 'GAL-000001', manageUrl: null });
+		expect(keys.keyFor(attempt('t4'))).toBe('k3');
 	});
 
 	it('is new for a booking with other details', () => {
@@ -323,7 +329,7 @@ describe('the idempotency key', () => {
 		let next = 0;
 		const keys = attemptKeys(() => `k${++next}`);
 		keys.keyFor(attempt('t'));
-		keys.answered(409);
+		keys.answered({ kind: 'price_changed', totals: { USD: 37_000, LKR: 4_500_000 } });
 
 		const confirmed = bookingPayload(
 			stay,
@@ -335,6 +341,83 @@ describe('the idempotency key', () => {
 		);
 
 		expect(keys.keyFor(confirmed)).toBe('k2');
+	});
+});
+
+describe('a booking still in progress', () => {
+	const answer = (status: number, body: unknown) => ({ status, body, retryAfter: null });
+	const inProgress = answer(409, {
+		title: 'Conflict',
+		status: 409,
+		detail: 'a request with this Idempotency-Key is still in progress; retry shortly',
+		reason: 'in_progress'
+	});
+
+	/** Sends with `answers` in turn, recording each key sent and each wait. */
+	function server(answers: ReturnType<typeof answer>[]) {
+		const sent: string[] = [];
+		const waited: number[] = [];
+		return {
+			sent,
+			waited,
+			send: async (key: string) => {
+				sent.push(key);
+				return answers.shift()!;
+			},
+			wait: async (ms: number) => {
+				waited.push(ms);
+			}
+		};
+	}
+
+	it('is asked again with the same key, after a pause, until the first attempt is answered', async () => {
+		const api = server([inProgress, inProgress, answer(201, { confirmation_no: 'GAL-000001' })]);
+
+		const outcome = await sendBooking('k1', api.send, [100, 200, 300], api.wait);
+
+		expect(outcome).toEqual({ kind: 'booked', confirmationNo: 'GAL-000001', manageUrl: null });
+		expect(api.sent).toEqual(['k1', 'k1', 'k1']);
+		expect(api.waited).toEqual([100, 200]);
+	});
+
+	it('stays in progress after the last retry, and keeps its key for the next tap', async () => {
+		let next = 0;
+		const keys = attemptKeys(() => `k${++next}`);
+		const payload = bookingPayload(stay, pricePicks(result, picks)!, details, {}, 't', '');
+		const api = server([inProgress, inProgress, inProgress]);
+
+		const outcome = await sendBooking(keys.keyFor(payload), api.send, [100, 200], api.wait);
+		keys.answered(outcome);
+
+		expect(outcome).toEqual({ kind: 'in_progress' });
+		expect(api.sent).toEqual(['k1', 'k1', 'k1']);
+		expect(keys.keyFor({ ...payload, turnstile_token: 't2' })).toBe('k1');
+	});
+
+	it('waits about 5 s in all by default', async () => {
+		const api = server(Array.from({ length: 10 }, () => inProgress));
+
+		await sendBooking('k1', api.send, undefined, api.wait);
+
+		const total = api.waited.reduce((sum, ms) => sum + ms, 0);
+		expect(api.sent.length).toBeLessThanOrEqual(6);
+		expect(total).toBeGreaterThanOrEqual(4_000);
+		expect(total).toBeLessThanOrEqual(6_000);
+	});
+
+	it('does not retry any other 4xx, which ends the key', async () => {
+		let next = 0;
+		const keys = attemptKeys(() => `k${++next}`);
+		const payload = bookingPayload(stay, pricePicks(result, picks)!, details, {}, 't', '');
+		const api = server([answer(409, { title: 'Conflict', status: 409, reason: 'sold_out' })]);
+
+		const outcome = await sendBooking(keys.keyFor(payload), api.send, [100, 200], api.wait);
+		keys.answered(outcome);
+
+		expect(outcome).toEqual({ kind: 'sold_out' });
+		expect(api.sent).toEqual(['k1']);
+		expect(api.waited).toEqual([]);
+		expect(keys.keyFor(payload)).toBe('k2');
 	});
 });
 

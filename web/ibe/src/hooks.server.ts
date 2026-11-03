@@ -1,7 +1,7 @@
 import type { Handle, HandleFetch, HandleServerError, ServerInit } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { apiOrigin } from '$lib/config';
-import { clientAddress, isApiCall, startupProblem, toApi } from '$lib/server/api';
+import { clientAddress, isApiCall, startupProblem, startupWarning, toApi } from '$lib/server/api';
 import { paintFirst } from '$lib/server/hydrate';
 
 /** Where this server reaches the API (`IBE_API_ORIGIN`): a private address in production, the public one by default. */
@@ -21,10 +21,15 @@ export const handle: Handle = ({ event, resolve }) =>
 		transformPageChunk: ({ html }) => paintFirst(html)
 	});
 
-/** Fails fast: a production server without the SSR secret would count every guest's render against itself. */
+/**
+ * Fails fast: a production server without the SSR secret would count every guest's render against itself. Warns of a
+ * production server that cannot tell its guests apart (`startupWarning`).
+ */
 export const init: ServerInit = () => {
 	const problem = startupProblem(process.env.NODE_ENV, env.IBE_SSR_SECRET || undefined);
 	if (problem) throw new Error(problem);
+	const warning = startupWarning(process.env.NODE_ENV, env.ADDRESS_HEADER || undefined);
+	if (warning) console.warn(warning);
 };
 
 /**

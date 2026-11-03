@@ -145,8 +145,18 @@ export type Searched =
 	| { kind: 'refused'; message: string };
 
 /**
+ * The results at `resultsHref` again after a room was just sold, marked `sold_out` with `nonce`, new for each time
+ * (the booking attempt's key, say): see `searchFromUrl`.
+ */
+export function soldOutHref(resultsHref: string, nonce: string): string {
+	return `${resultsHref}&sold_out=${encodeURIComponent(nonce)}`;
+}
+
+/**
  * Searches the stay a page's address carries. Without an answer to the residency question, or with a stay the site
- * cannot sell, nothing is sent: the guest is asked first.
+ * cannot sell, nothing is sent: the guest is asked first. After a room was just sold, the address's `sold_out` nonce
+ * goes to the API as `fresh`, so the query is new to the edge, whose cached answer of up to 30 s ago may still offer
+ * the room that sold; every other search shares the edge's cache.
  */
 export async function searchFromUrl(
 	fetch: typeof globalThis.fetch,
@@ -159,6 +169,7 @@ export async function searchFromUrl(
 	if (form.residency === null || !asked) return { kind: 'unanswered' };
 	const stay = stayOf(form, businessDate);
 	if (stay === null) return { kind: 'refused', message: stayProblem(form, businessDate) ?? '' };
+	const fresh = url.searchParams.get('sold_out');
 	const { data, error, response } = await publicApi(fetch).GET('/api/public/v1/ibe/{code}/search', {
 		params: {
 			path: { code },
@@ -166,7 +177,8 @@ export async function searchFromUrl(
 				check_in: stay.checkIn,
 				check_out: stay.checkOut,
 				residency: stay.residency,
-				rooms: roomsParam(stay.rooms)
+				rooms: roomsParam(stay.rooms),
+				...(fresh && { fresh })
 			}
 		}
 	});

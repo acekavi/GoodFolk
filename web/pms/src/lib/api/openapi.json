@@ -56,7 +56,7 @@
           "crate::public::ibe"
         ],
         "summary": "Books rooms on the site of the property coded `code`, paid at the hotel: a confirmed reservation from the booking\nsite, and its confirmation email with the manage link. Prices are always worked out again: a total per currency\nother than `expected_totals` is `409` with `reason: price_changed` and the new `totals`, which the guest confirms;\na room no longer free is `409` with `reason: sold_out`. A booking the site does not sell is `422`.",
-        "description": "Checked in this order: 5 bookings a minute per IP (`429` with `Retry-After`); the `Idempotency-Key` (required);\nthe hidden `website` field, which a bot fills (it is answered as if booked, the same way for the same key, and\nnothing is kept); the key's stored answer (scoped to the property: the same booking again gets the first answer,\nwithout asking Turnstile again, but with no `manage_url`, since the manage token is never stored; another booking\nwith the same key is `409`); then, for a new key only, the Turnstile token (`400` when missing or refused, `503`\nwhen it cannot be checked; neither keeps anything under the key). The Turnstile token is not part of what makes\ntwo requests the same booking: a retry after a lost answer may carry a fresh one and still gets the first answer.\n\nKeep the `Idempotency-Key` while retrying the same booking, and treat any `4xx` as the end of its key: a changed\nprice is confirmed with a new key.",
+        "description": "Checked in this order: 5 bookings a minute per IP (`429` with `Retry-After`); the `Idempotency-Key` (required);\nthe hidden `website` field, which a bot fills (it is answered as if booked, the same way for the same key, and\nnothing is kept); the key's stored answer (scoped to the property: the same booking again gets the first answer,\nwithout asking Turnstile again, but with no `manage_url`, since the manage token is never stored; another booking\nwith the same key is `409`, and so is the same booking while its first request is still running, with\n`reason: in_progress`); then, for a new key only, the Turnstile token (`400` when missing or refused, `503`\nwhen it cannot be checked; neither keeps anything under the key). The Turnstile token is not part of what makes\ntwo requests the same booking: a retry after a lost answer may carry a fresh one and still gets the first answer.\n\nKeep the `Idempotency-Key` while retrying the same booking, also after a `409` with `reason: in_progress` (retry\nshortly), and treat any other `4xx` as the end of its key: a changed price is confirmed with a new key.",
         "operationId": "ibe_book",
         "parameters": [
           {
@@ -124,11 +124,11 @@
       }
     },
     "/api/public/v1/ibe/{code}/bookings/manage": {
-      "get": {
+      "post": {
         "tags": [
           "crate::public::ibe"
         ],
-        "summary": "The booking whose manage link carries `token`, for the manage page: what the guest needs to see and whether they can\nstill cancel it (every room tentative or confirmed, check-in after the business date), with what cancelling would\ncost now. Never cached, since it is one guest's data. `410` for a token that is wrong, expired (after the end of the\n30th day after check-out, in the property's time zone) or another property's, always with the same answer.\n5 requests a minute per IP, with the cancel (`429` with `Retry-After`).",
+        "summary": "The booking whose manage link carries `token`, for the manage page's server: what the guest needs to see and whether\nthey can still cancel it (every room tentative or confirmed, check-in after the business date), with what\ncancelling would cost now. A `POST` with the token in the body, so it is in no URL a request log records; it reads\nonly, and only the site's server calls it, so it allows no other origin than the commands do. Never cached, since\nit is one guest's data. `410` for a token that is wrong, expired (after the end of the 30th day after check-out, in\nthe property's time zone) or another property's, always with the same answer. 5 requests a minute per IP, with the\ncancel (`429` with `Retry-After`).",
         "operationId": "ibe_manage",
         "parameters": [
           {
@@ -139,17 +139,18 @@
             "schema": {
               "type": "string"
             }
-          },
-          {
-            "name": "token",
-            "in": "query",
-            "description": "the manage link's token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManageBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "headers": {
@@ -167,8 +168,10 @@
               }
             }
           },
+          "400": {},
           "404": {},
           "410": {},
+          "422": {},
           "429": {
             "headers": {
               "Retry-After": {
@@ -293,6 +296,15 @@
             "in": "query",
             "description": "each room's adults and children, `adults-children`, comma-separated: `2-0,2-1`",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fresh",
+            "in": "query",
+            "description": "ignored by the search: a value new to the edge's cache, for a search that must not be answered from it, as after a room was just sold",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -7152,7 +7164,7 @@
         "properties": {
           "reason": {
             "type": "string",
-            "description": "`price_changed` or `sold_out`."
+            "description": "`price_changed`, `sold_out`, or `in_progress` while the same booking's first request is still running."
           },
           "totals": {
             "type": [
@@ -9263,6 +9275,18 @@
             "type": "string"
           },
           "password": {
+            "type": "string"
+          }
+        }
+      },
+      "ManageBody": {
+        "type": "object",
+        "description": "The manage link's token, as the manage page's server sends it: in the body, so it is in no URL that a platform's\nrequest log records.",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
             "type": "string"
           }
         }

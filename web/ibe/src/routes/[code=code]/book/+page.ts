@@ -1,6 +1,6 @@
 import { redirect } from '@sveltejs/kit';
 import { picksFromUrl, pricePicks } from '$lib/booking';
-import { searchFromUrl, stayQuery } from '$lib/search';
+import { searchFromUrl, soldOutHref, stayQuery } from '$lib/search';
 import type { PageLoad } from './$types';
 
 /**
@@ -14,6 +14,7 @@ export const load: PageLoad = async ({ fetch, url, parent }) => {
 	const picks = picksFromUrl(url, searched.stay.rooms.length);
 	if (!picks) redirect(303, `${base}/rooms?${stayQuery(searched.stay)}`);
 	const rooms = pricePicks(searched.result, picks);
-	if (!rooms) redirect(303, `${base}/rooms?${stayQuery(searched.stay)}&sold_out=1`);
+	if (!rooms)
+		redirect(303, soldOutHref(`${base}/rooms?${stayQuery(searched.stay)}`, crypto.randomUUID()));
 	return { stay: searched.stay, rooms };
 };

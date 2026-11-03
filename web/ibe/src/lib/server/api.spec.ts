@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { clientAddress, startupProblem, toApi } from './api';
+import { clientAddress, startupProblem, startupWarning, toApi } from './api';
 
 const PUBLIC = 'https://api.example.lk';
 const PRIVATE = 'https://core-api.internal';
@@ -79,5 +79,13 @@ describe('starting the server', () => {
 		expect(startupProblem('production', SECRET)).toBeNull();
 		expect(startupProblem('development', undefined)).toBeNull();
 		expect(startupProblem(undefined, undefined)).toBeNull();
+	});
+
+	it('warns in production when the guest’s address has no source', () => {
+		expect(startupWarning('production', undefined)).toContain('ADDRESS_HEADER');
+		expect(startupWarning('production', '')).toContain('ADDRESS_HEADER');
+		expect(startupWarning('production', 'CF-Connecting-IP')).toBeNull();
+		expect(startupWarning('development', undefined)).toBeNull();
+		expect(startupWarning(undefined, undefined)).toBeNull();
 	});
 });

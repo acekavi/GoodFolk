@@ -4,14 +4,15 @@
 	import { NETWORK_TROUBLE, publicApi, TOO_MANY_TRIES } from '$lib/api';
 	import {
 		attemptKeys,
-		bookingOutcome,
 		bookingPayload,
 		handOver,
 		depositLines,
 		depositText,
 		pricesAgree,
+		sendBooking,
 		totalsOf,
-		type Details
+		type Details,
+		type Outcome
 	} from '$lib/booking';
 	import { turnstileSiteKey } from '$lib/config';
 	import { COUNTRIES } from '$lib/countries';
@@ -24,7 +25,7 @@
 		plural,
 		totalsText
 	} from '$lib/format';
-	import { RESIDENCY_QUESTION, stayQuery } from '$lib/search';
+	import { RESIDENCY_QUESTION, soldOutHref, stayQuery } from '$lib/search';
 
 	const TURNSTILE_SCRIPT = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
 	const MAX_SPECIAL_REQUESTS = 500;
@@ -129,21 +130,23 @@
 		busy = true;
 		const body = bookingPayload(stay, rooms, details, expected, token, website);
 		const key = keys.keyFor(body);
-		let status: number;
-		let answer: unknown;
-		let retryAfter: string | null;
+		let outcome: Outcome;
 		try {
-			const {
-				data: confirmed,
-				error,
-				response
-			} = await publicApi().POST('/api/public/v1/ibe/{code}/bookings', {
-				params: { path: { code: site.code }, header: { 'Idempotency-Key': key } },
-				body
+			outcome = await sendBooking(key, async (sent) => {
+				const {
+					data: confirmed,
+					error,
+					response
+				} = await publicApi().POST('/api/public/v1/ibe/{code}/bookings', {
+					params: { path: { code: site.code }, header: { 'Idempotency-Key': sent } },
+					body
+				});
+				return {
+					status: response.status,
+					body: confirmed ?? error,
+					retryAfter: response.headers.get('retry-after')
+				};
 			});
-			status = response.status;
-			answer = confirmed ?? error;
-			retryAfter = response.headers.get('retry-after');
 		} catch {
 			// The same booking goes again with the same key: if this one got through, the retry gets its answer.
 			newCheck();
@@ -151,8 +154,7 @@
 			message = NETWORK_TROUBLE;
 			return;
 		}
-		keys.answered(status);
-		const outcome = bookingOutcome(status, answer, retryAfter);
+		keys.answered(outcome);
 		if (outcome.kind !== 'booked') newCheck();
 		busy = false;
 		switch (outcome.kind) {
@@ -179,7 +181,13 @@
 				await invalidateAll();
 				return;
 			case 'sold_out':
-				await goto(`${resultsHref}&sold_out=1`);
+				// The attempt's key makes the search new to the edge's cache, which may still offer the room.
+				await goto(soldOutHref(resultsHref, key));
+				return;
+			case 'in_progress':
+				// The key is kept: booking again asks after the same attempt, so it can never book twice.
+				message =
+					'Your booking is still being processed. Check your email for its confirmation before you book again.';
 				return;
 			case 'too_many':
 				message = TOO_MANY_TRIES;

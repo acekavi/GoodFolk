@@ -8,6 +8,7 @@ import {
 	parseRooms,
 	pickerSteps,
 	searchFromUrl,
+	soldOutHref,
 	stayOf,
 	stayProblem,
 	type SearchForm
@@ -158,6 +159,26 @@ describe('the residency gate', () => {
 			residency: 'resident',
 			rooms: '2-0,2-1'
 		});
+	});
+
+	it('after a room sold, searches past the edge cache with the sold-out nonce', async () => {
+		const fetch = vi.fn<typeof globalThis.fetch>(
+			async () =>
+				new Response(JSON.stringify({ room_types: [], next_available: null }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' }
+				})
+		);
+		const results =
+			'http://localhost:5174/GAL/rooms?check_in=2026-11-10&check_out=2026-11-13&rooms=2-0&residency=resident';
+		const url = new URL(soldOutHref(results, 'attempt key 1'));
+
+		await searchFromUrl(fetch, 'GAL', url, BUSINESS_DATE);
+
+		expect(url.searchParams.get('sold_out')).toBe('attempt key 1');
+		const sent = new URL((fetch.mock.calls[0][0] as Request).url);
+		expect(sent.searchParams.get('fresh')).toBe('attempt key 1');
+		expect(sent.searchParams.get('rooms')).toBe('2-0');
 	});
 
 	it('tells a guest who searched too often to wait', async () => {

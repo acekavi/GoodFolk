@@ -42,12 +42,13 @@ export interface paths {
          *     the hidden `website` field, which a bot fills (it is answered as if booked, the same way for the same key, and
          *     nothing is kept); the key's stored answer (scoped to the property: the same booking again gets the first answer,
          *     without asking Turnstile again, but with no `manage_url`, since the manage token is never stored; another booking
-         *     with the same key is `409`); then, for a new key only, the Turnstile token (`400` when missing or refused, `503`
+         *     with the same key is `409`, and so is the same booking while its first request is still running, with
+         *     `reason: in_progress`); then, for a new key only, the Turnstile token (`400` when missing or refused, `503`
          *     when it cannot be checked; neither keeps anything under the key). The Turnstile token is not part of what makes
          *     two requests the same booking: a retry after a lost answer may carry a fresh one and still gets the first answer.
          *
-         *     Keep the `Idempotency-Key` while retrying the same booking, and treat any `4xx` as the end of its key: a changed
-         *     price is confirmed with a new key.
+         *     Keep the `Idempotency-Key` while retrying the same booking, also after a `409` with `reason: in_progress` (retry
+         *     shortly), and treat any other `4xx` as the end of its key: a changed price is confirmed with a new key.
          */
         post: operations["ibe_book"];
         delete?: never;
@@ -63,16 +64,18 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * The booking whose manage link carries `token`, for the manage page: what the guest needs to see and whether they can
-         *     still cancel it (every room tentative or confirmed, check-in after the business date), with what cancelling would
-         *     cost now. Never cached, since it is one guest's data. `410` for a token that is wrong, expired (after the end of the
-         *     30th day after check-out, in the property's time zone) or another property's, always with the same answer.
-         *     5 requests a minute per IP, with the cancel (`429` with `Retry-After`).
-         */
-        get: operations["ibe_manage"];
+        get?: never;
         put?: never;
-        post?: never;
+        /**
+         * The booking whose manage link carries `token`, for the manage page's server: what the guest needs to see and whether
+         *     they can still cancel it (every room tentative or confirmed, check-in after the business date), with what
+         *     cancelling would cost now. A `POST` with the token in the body, so it is in no URL a request log records; it reads
+         *     only, and only the site's server calls it, so it allows no other origin than the commands do. Never cached, since
+         *     it is one guest's data. `410` for a token that is wrong, expired (after the end of the 30th day after check-out, in
+         *     the property's time zone) or another property's, always with the same answer. 5 requests a minute per IP, with the
+         *     cancel (`429` with `Retry-After`).
+         */
+        post: operations["ibe_manage"];
         delete?: never;
         options?: never;
         head?: never;
@@ -202,7 +205,7 @@ export interface components {
         };
         /** @description What a booking that cannot be made as sent answers: the new totals for a price that changed. */
         BookingConflict: {
-            /** @description `price_changed` or `sold_out`. */
+            /** @description `price_changed`, `sold_out`, or `in_progress` while the same booking's first request is still running. */
             reason: string;
             /** @description The totals now, per currency in minor units, when the price changed. */
             totals?: {
@@ -250,6 +253,13 @@ export interface components {
             url: string;
             /** Format: int32 */
             width: number;
+        };
+        /**
+         * @description The manage link's token, as the manage page's server sends it: in the body, so it is in no URL that a platform's
+         *     request log records.
+         */
+        ManageBody: {
+            token: string;
         };
         /** @description A booking as its manage page shows it. Amounts are in minor units of their currency, with the taxes on the bill. */
         ManageView: {
@@ -583,10 +593,7 @@ export interface operations {
     };
     ibe_manage: {
         parameters: {
-            query: {
-                /** @description the manage link's token */
-                token: string;
-            };
+            query?: never;
             header?: never;
             path: {
                 /** @description the property code, any case */
@@ -594,7 +601,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManageBody"];
+            };
+        };
         responses: {
             200: {
                 headers: {
@@ -605,6 +616,12 @@ export interface operations {
                     "application/json": components["schemas"]["ManageView"];
                 };
             };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -612,6 +629,12 @@ export interface operations {
                 content?: never;
             };
             410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -700,6 +723,8 @@ export interface operations {
                 residency: components["schemas"]["Residency"];
                 /** @description each room's adults and children, `adults-children`, comma-separated: `2-0,2-1` */
                 rooms: string;
+                /** @description ignored by the search: a value new to the edge's cache, for a search that must not be answered from it, as after a room was just sold */
+                fresh?: string;
             };
             header?: never;
             path: {
