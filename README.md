@@ -844,7 +844,7 @@ Even the always-pass keys call Cloudflare, so booking needs the internet. Produc
 - Set `ADDRESS_HEADER` (and `XFF_DEPTH` behind proxies other than Cloudflare) so the site's server sees the guest, not the proxy.
 - Cloud Run's request logs and Cloudflare's logs record the full manage URL, token included (the services' own logs leave it out): consider a log exclusion or short retention for the `…/manage` paths of both services, and keep query strings out of any Logpush job.
 - A hotel's own domain is a Cloudflare for SaaS custom hostname, set up by hand, before its host is saved in **Settings → Booking site**.
-- Deploy core-api before media-svc when a release adds a rendition size (Phase 9 adds `phone`): a core-api that does not know the size cannot read an asset that has it.
+- Deploy core-api before media-svc for the Phase 9 release, and never roll core-api back past it once `phone` assets exist: older core-apis read rendition lists strictly. From this release, an unknown size is skipped with a warning, so later sizes need no deploy order (ARCHITECTURE §10.2).
 
 #### Exchange rates
 
