@@ -106,7 +106,7 @@ async fn upload_flow_gallery_reaches_ready(_: PgPoolOptions, opts: PgConnectOpti
     };
     assert_eq!((media["width"].as_i64(), media["height"].as_i64()), (Some(2400), Some(1800)));
     let renditions = media["renditions"].as_array().unwrap();
-    assert_eq!(renditions.len(), 10, "{renditions:?}");
+    assert_eq!(renditions.len(), 12, "every gallery size, phone included, as AVIF and WebP: {renditions:?}");
     for rendition in renditions {
         let url = rendition["url"].as_str().unwrap();
         assert!(!url.contains("X-Amz-Signature"), "gallery URLs are permanent: {url}");
@@ -883,7 +883,7 @@ async fn gallery_video_upload_to_ready_lists_sources(_: PgPoolOptions, opts: PgC
     assert_eq!(sources[1]["mime"], r#"video/mp4; codecs="avc1.640028, mp4a.40.2""#);
     assert_eq!((sources[0]["width"].as_i64(), sources[0]["height"].as_i64()), (Some(1920), Some(1080)));
     let renditions = media["renditions"].as_array().unwrap();
-    assert_eq!(renditions.len(), 8, "the poster: thumb, sm, md and lg as AVIF and WebP: {renditions:?}");
+    assert_eq!(renditions.len(), 10, "the poster: thumb, sm, phone, md and lg as AVIF and WebP: {renditions:?}");
     for url in sources.iter().chain(renditions).map(|r| r["url"].as_str().unwrap()) {
         assert!(!url.contains("X-Amz-Signature"), "gallery URLs are permanent: {url}");
         let response = http().head(url).send().await.unwrap();

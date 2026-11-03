@@ -10,6 +10,9 @@ use uuid::Uuid;
 pub enum Size {
     Thumb,
     Sm,
+    /// A gallery photo for the first image a phone paints (the booking site's hero and first result): 800 px, at a
+    /// lower quality target than the other sizes, so it downloads quickly on a phone's connection.
+    Phone,
     Md,
     Lg,
     Xl,
@@ -25,6 +28,7 @@ impl Size {
         match self {
             Self::Thumb => 320,
             Self::Sm => 640,
+            Self::Phone => 800,
             Self::Md => 1024,
             Self::Lg => 1600,
             Self::Xl => 2400,
@@ -38,6 +42,7 @@ impl Size {
         match self {
             Self::Thumb => "thumb",
             Self::Sm => "sm",
+            Self::Phone => "phone",
             Self::Md => "md",
             Self::Lg => "lg",
             Self::Xl => "xl",
@@ -102,7 +107,7 @@ pub enum Profile {
 impl Profile {
     pub fn sizes(self) -> &'static [Size] {
         match self {
-            Self::Gallery => &[Size::Thumb, Size::Sm, Size::Md, Size::Lg, Size::Xl],
+            Self::Gallery => &[Size::Thumb, Size::Sm, Size::Phone, Size::Md, Size::Lg, Size::Xl],
             Self::IssuePhoto => &[Size::Thumb, Size::Sm, Size::Md, Size::Lg],
             Self::GuestDocument => &[Size::Thumb, Size::Md],
             Self::GalleryVideo => &[Size::V1080, Size::V720],
@@ -396,8 +401,8 @@ mod tests {
     #[test]
     fn sizes_are_named_and_ordered_by_long_edge() {
         let all = Profile::Gallery.sizes();
-        assert_eq!(all.iter().map(|s| s.as_str()).collect::<Vec<_>>(), ["thumb", "sm", "md", "lg", "xl"]);
-        assert_eq!(all.iter().map(|s| s.long_edge()).collect::<Vec<_>>(), [320, 640, 1024, 1600, 2400]);
+        assert_eq!(all.iter().map(|s| s.as_str()).collect::<Vec<_>>(), ["thumb", "sm", "phone", "md", "lg", "xl"]);
+        assert_eq!(all.iter().map(|s| s.long_edge()).collect::<Vec<_>>(), [320, 640, 800, 1024, 1600, 2400]);
         assert_eq!(Profile::GuestDocument.sizes(), [Size::Thumb, Size::Md]);
         assert_eq!(Profile::IssuePhoto.sizes().len(), 4);
         assert_eq!((Format::Avif.as_str(), Format::Webp.as_str()), ("avif", "webp"));

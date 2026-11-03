@@ -166,8 +166,8 @@ async fn video_job_publishes_ready() {
         let duration = video.duration_ms.expect("a video rendition has a duration");
         assert!(duration.abs_diff(10_000) < 100, "{} is {duration} ms", video.key);
     }
-    // The poster's own size is 1920 wide, so the Gallery ladder stops below xl.
-    assert_eq!(posters.len(), 8);
+    // The poster's own size is 1920 wide, so the Gallery ladder stops below xl: thumb, sm, phone, md and lg.
+    assert_eq!(posters.len(), 10);
     assert!(posters.iter().all(|r| matches!(r.format, Format::Avif | Format::Webp) && r.duration_ms.is_none()));
     assert!(!posters.iter().any(|r| r.size == Size::Xl));
 

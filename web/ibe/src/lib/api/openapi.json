@@ -633,7 +633,7 @@
           },
           "size": {
             "type": "string",
-            "description": "`thumb` (a 320 px square), or `sm` to `xl`: long edges of 640 to 2400 px."
+            "description": "`thumb` (a 320 px square), `sm` to `xl`: long edges of 640 to 2400 px, or `phone`: 800 px at a lower quality,\nfor the first image a phone paints."
           },
           "url": {
             "type": "string"

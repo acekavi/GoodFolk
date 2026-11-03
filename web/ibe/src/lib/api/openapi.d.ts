@@ -242,7 +242,10 @@ export interface components {
             format: string;
             /** Format: int32 */
             height: number;
-            /** @description `thumb` (a 320 px square), or `sm` to `xl`: long edges of 640 to 2400 px. */
+            /**
+             * @description `thumb` (a 320 px square), `sm` to `xl`: long edges of 640 to 2400 px, or `phone`: 800 px at a lower quality,
+             *     for the first image a phone paints.
+             */
             size: string;
             url: string;
             /** Format: int32 */

@@ -14,7 +14,7 @@ use crate::{
     archive::{archive_jpeg, lossless_pixels},
     decode::{decode, jpeg_is_complete},
     dimensions, pdf,
-    quality::{Encoded, climb, search},
+    quality::{Encoded, PHONE_QUALITY_TARGET, QUALITY_TARGET, climb, quality_target, search},
     ssim2::Reference,
 };
 
@@ -67,7 +67,8 @@ pub(crate) fn fit_long_edge(width: u32, height: u32, edge: u32) -> (u32, u32) {
 /// the one before it. The profile's smallest size other than the thumb is always made, at the source's
 /// own size when the source is smaller, so every image keeps one uncropped rendition; nothing is ever
 /// scaled up. The thumb is last: a centred square from the smallest level that still has the pixels for
-/// it, or from the source itself.
+/// it, or from the source itself. The phone size is cut like the others but is never the source of
+/// another, so adding it left every other size's pixels as they were.
 fn ladder(src: &RgbaImage, profile: Profile) -> Result<Vec<(Size, RgbaImage)>, ImagingError> {
     let (width, height) = src.dimensions();
     let long = width.max(height);
@@ -83,7 +84,7 @@ fn ladder(src: &RgbaImage, profile: Profile) -> Result<Vec<(Size, RgbaImage)>, I
             src.clone()
         } else {
             let (w, h) = fit_long_edge(width, height, size.long_edge());
-            let from = levels.last().map_or(src, |(_, img)| img);
+            let from = levels.iter().rev().find(|(size, _)| *size != Size::Phone).map_or(src, |(_, img)| img);
             resize(from, w, h, false, opaque)?
         };
         levels.push((size, level));
@@ -91,21 +92,28 @@ fn ladder(src: &RgbaImage, profile: Profile) -> Result<Vec<(Size, RgbaImage)>, I
 
     if profile.sizes().contains(&Size::Thumb) {
         let side = Size::Thumb.long_edge().min(width.min(height));
-        let from =
-            levels.iter().rev().map(|(_, img)| img).find(|img| img.width().min(img.height()) >= side).unwrap_or(src);
+        let from = levels
+            .iter()
+            .rev()
+            .filter(|(size, _)| *size != Size::Phone)
+            .map(|(_, img)| img)
+            .find(|img| img.width().min(img.height()) >= side)
+            .unwrap_or(src);
         levels.push((Size::Thumb, resize(from, side, side, true, opaque)?));
     }
     Ok(levels)
 }
 
-/// The level quality is searched on: `md`, or else the largest level below it.
+/// The level quality is searched on: `md`, or else the largest level below it, never the phone's (it has its own
+/// target and its own search).
 fn search_level(levels: &[(Size, RgbaImage)]) -> Option<usize> {
-    levels.iter().position(|(size, _)| size.long_edge() <= Size::Md.long_edge())
+    levels.iter().position(|(size, _)| *size != Size::Phone && size.long_edge() <= Size::Md.long_edge())
 }
 
 /// The whole job for one upload: decode once, archive the original, cut the size ladder and encode
 /// every size as AVIF and WebP at the lowest quality that still scores SSIMULACRA2 >= 80 (the
 /// quality is searched on `md` and used for every size, and a rendition that misses is bumped up).
+/// The phone size is searched on its own against [`PHONE_QUALITY_TARGET`] instead.
 /// Every rendition is scored exactly against its own reference, and `Rendition::score` says what it
 /// got. A rendition can come back below 80 only at the encoder's ceiling (an AVIF at quality 100; a
 /// WebP is stored lossless instead) or for dimensions the metric cannot score (a side under 8 pixels,
@@ -205,7 +213,22 @@ impl Level {
 /// Levels above this many pixels try the next quality step alongside the current one.
 const SPECULATE_PIXELS: u64 = 800_000;
 
-/// Picks one quality per format on the search level, then encodes every level in both formats.
+/// One quality per format for `level`, the lowest that scores `target`.
+fn choose(level: &Level, target: f64) -> Result<Vec<Chosen>, ImagingError> {
+    let (avif, webp) = rayon::join(
+        || search(&level.img, level.reference(), Format::Avif, target),
+        || search(&level.img, level.reference(), Format::Webp, target),
+    );
+    let mut chosen = Vec::new();
+    for (format, found) in [(Format::Avif, avif), (Format::Webp, webp)] {
+        let (quality, encoded) = found?;
+        chosen.push(Chosen { format, quality, encoded: Mutex::new(encoded) });
+    }
+    Ok(chosen)
+}
+
+/// Picks one quality per format on the search level (and on the phone level, against its own target), then encodes
+/// every level in both formats.
 fn render(levels: Vec<(Size, RgbaImage)>) -> Result<Vec<Rendition>, ImagingError> {
     let Some(at) = search_level(&levels) else {
         return Ok(Vec::new());
@@ -213,12 +236,13 @@ fn render(levels: Vec<(Size, RgbaImage)>) -> Result<Vec<Rendition>, ImagingError
     let levels: Vec<Level> =
         levels.into_iter().map(|(size, img)| Level { size, img, reference: OnceLock::new() }).collect();
     let search_on = &levels[at];
-    // The other levels' references are prepared while the search runs, largest first.
-    let (found, ()) = rayon::join(
+    let phone = levels.iter().position(|l| l.size == Size::Phone);
+    // The other levels' references are prepared while the searches run, largest first.
+    let ((chosen, phone_chosen), ()) = rayon::join(
         || {
             rayon::join(
-                || search(&search_on.img, search_on.reference(), Format::Avif),
-                || search(&search_on.img, search_on.reference(), Format::Webp),
+                || choose(search_on, QUALITY_TARGET),
+                || phone.map(|i| choose(&levels[i], PHONE_QUALITY_TARGET)).transpose(),
             )
         },
         || {
@@ -227,25 +251,24 @@ fn render(levels: Vec<(Size, RgbaImage)>) -> Result<Vec<Rendition>, ImagingError
             })
         },
     );
-    let (avif, webp) = found;
-    let mut chosen = Vec::new();
-    for (format, found) in [(Format::Avif, avif), (Format::Webp, webp)] {
-        let (quality, encoded) = found?;
-        chosen.push(Chosen { format, quality, encoded: Mutex::new(encoded) });
-    }
+    let (chosen, phone_chosen) = (chosen?, phone_chosen?.unwrap_or_default());
+    let chosen_for = |i: usize| if Some(i) == phone { &phone_chosen } else { &chosen };
 
     // Largest first, so the long jobs start early rather than last.
-    let mut jobs: Vec<(usize, &Chosen)> = (0..levels.len()).flat_map(|i| chosen.iter().map(move |c| (i, c))).collect();
+    let mut jobs: Vec<(usize, &Chosen)> =
+        (0..levels.len()).flat_map(|i| chosen_for(i).iter().map(move |c| (i, c))).collect();
     jobs.sort_by_key(|(i, _)| std::cmp::Reverse(levels[*i].size.long_edge()));
     let mut renditions = jobs
         .into_par_iter()
         .with_max_len(1)
         .map(|(i, chosen)| {
             let level = &levels[i];
-            let known = if i == at { chosen.encoded.lock().ok().and_then(|mut e| e.take()) } else { None };
+            let known =
+                if i == at || Some(i) == phone { chosen.encoded.lock().ok().and_then(|mut e| e.take()) } else { None };
             let big = u64::from(level.img.width()) * u64::from(level.img.height()) > SPECULATE_PIXELS
                 && chosen.format == Format::Avif;
-            let encoded = climb(&level.img, level.reference(), chosen.format, chosen.quality, known, big)?;
+            let target = quality_target(level.size);
+            let encoded = climb(&level.img, level.reference(), chosen.format, chosen.quality, known, big, target)?;
             Ok(Rendition {
                 size: level.size,
                 format: chosen.format,
@@ -258,4 +281,29 @@ fn render(levels: Vec<(Size, RgbaImage)>) -> Result<Vec<Rendition>, ImagingError
         .collect::<Result<Vec<_>, ImagingError>>()?;
     renditions.sort_by_key(|r| (r.size.long_edge(), r.format == Format::Webp));
     Ok(renditions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Profile, Size, ladder, resize, search_level};
+    use image::{Rgba, RgbaImage};
+
+    #[test]
+    fn the_phone_level_is_cut_but_never_the_source_of_another_or_the_search_level() {
+        let src =
+            RgbaImage::from_fn(1200, 900, |x, y| Rgba([(x % 251) as u8, (y % 241) as u8, ((x * y) % 239) as u8, 255]));
+
+        let levels = ladder(&src, Profile::Gallery).unwrap();
+
+        let sizes: Vec<(Size, u32, u32)> = levels.iter().map(|(s, img)| (*s, img.width(), img.height())).collect();
+        assert_eq!(
+            sizes,
+            [(Size::Md, 1024, 768), (Size::Phone, 800, 600), (Size::Sm, 640, 480), (Size::Thumb, 320, 320)]
+        );
+        let md = &levels[0].1;
+        assert_eq!(&levels[2].1, &resize(md, 640, 480, false, true).unwrap(), "sm is cut from md, not from the phone");
+        assert_eq!(search_level(&levels), Some(0));
+        let without_md = &levels[1..];
+        assert_eq!(without_md[search_level(without_md).unwrap()].0, Size::Sm);
+    }
 }

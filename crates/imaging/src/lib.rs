@@ -18,7 +18,7 @@ pub use archive::{archive, reconstruct_jpeg};
 pub use decode::{decode, dimensions};
 pub use encode::{encode_avif, encode_webp};
 pub use media_types::{Format, Profile, Size};
-pub use quality::{QUALITY_TARGET, score};
+pub use quality::{PHONE_QUALITY_TARGET, QUALITY_TARGET, quality_target, score};
 pub use renditions::{Processed, Rendition, finish_pdf, poster_renditions, process};
 pub use ssim2::Reference;
 

@@ -296,8 +296,9 @@ mirror_enum!(
 );
 mirror_enum!(
     /// A delivered file's size: `THUMB` is a 320 px square, `SM` to `XL` are image long edges of 640 to 2400 px,
+    /// `PHONE` is an 800 px gallery photo at a lower quality, for the booking site's first image on a phone,
     /// `V1080` and `V720` are videos that fit 1920×1080 and 1280×720, and `ORIGINAL` is a guest PDF's linearized copy.
-    RenditionSizeNode as "RenditionSize" from media_types::Size { Thumb, Sm, Md, Lg, Xl, V1080, V720, Original }
+    RenditionSizeNode as "RenditionSize" from media_types::Size { Thumb, Sm, Phone, Md, Lg, Xl, V1080, V720, Original }
 );
 mirror_enum!(ImageFormatNode as "ImageFormat" from media_types::Format { Avif, Webp, #[graphql(name = "AV1")] Av1, H264, Pdf });
 mirror_enum!(DocumentKindNode as "DocumentKind" from media::DocumentKind { Passport, Nic, DrivingLicence, Other });

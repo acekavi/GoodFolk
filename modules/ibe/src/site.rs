@@ -82,7 +82,8 @@ pub struct SiteMedia {
 /// One delivered image.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct Image {
-    /// `thumb` (a 320 px square), or `sm` to `xl`: long edges of 640 to 2400 px.
+    /// `thumb` (a 320 px square), `sm` to `xl`: long edges of 640 to 2400 px, or `phone`: 800 px at a lower quality,
+    /// for the first image a phone paints.
     #[schema(value_type = String)]
     pub size: Size,
     /// `avif` or `webp`.
