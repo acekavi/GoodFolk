@@ -25,7 +25,7 @@ use subtle::ConstantTimeEq;
 use tower::{Layer, ServiceExt};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
-pub use ibe::{BookingBody, BookingConfirmed, BookingConflict, CancelBody, CancelConflict, SiteCode};
+pub use ibe::{BookingBody, BookingConfirmed, BookingConflict, CancelBody, CancelConflict, ManageBody, SiteCode};
 
 /// How long a browser may keep a preflight's answer.
 const PREFLIGHT_MAX_AGE: Duration = Duration::from_secs(600);
@@ -39,7 +39,7 @@ pub(crate) fn router(state: &AppState) -> Router<AppState> {
         .route("/api/public/v1/ibe/{code}/site", get(ibe::site))
         .route("/api/public/v1/ibe/{code}/search", get(ibe::search))
         .route("/api/public/v1/ibe/{code}/bookings", post(ibe::book))
-        .route("/api/public/v1/ibe/{code}/bookings/manage", get(ibe::manage))
+        .route("/api/public/v1/ibe/{code}/bookings/manage", post(ibe::manage))
         .route("/api/public/v1/ibe/{code}/bookings/manage/cancel", post(ibe::cancel))
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .layer(from_fn_with_state(policies, cors))
@@ -47,7 +47,8 @@ pub(crate) fn router(state: &AppState) -> Router<AppState> {
 
 /// The span a request is logged under: tower-http's own (`method`, `uri` and `version`), except that a URI whose query
 /// has a `token` parameter, as a manage link's has, is logged by its path alone, whatever the path is and even when it
-/// matches no route.
+/// matches no route. No route takes a token in its query (the manage page's server posts it); this keeps one sent
+/// there anyway out of the logs.
 pub(crate) fn request_span<B>(request: &axum::http::Request<B>) -> tracing::Span {
     let uri = loggable_uri(request.uri());
     tracing::debug_span!("request", method = %request.method(), uri = %uri, version = ?request.version())
@@ -70,8 +71,9 @@ struct CorsPolicies {
     writes: CorsLayer,
 }
 
-/// Reads (`GET`, `HEAD` and their preflights) get [`reads_cors`]; everything else, the booking and manage commands,
-/// gets [`writes_cors`]. A route is covered by being in the public router: a write needs nothing more.
+/// Reads (`GET`, `HEAD` and their preflights) get [`reads_cors`]; everything else, the booking and manage commands and
+/// the manage page's read (a `POST`, as it carries a token), gets [`writes_cors`]. A route is covered by being in the
+/// public router: a write needs nothing more.
 async fn cors(State(policies): State<Arc<CorsPolicies>>, request: Request, next: Next) -> Response {
     let read = |method: &[u8]| matches!(method, b"GET" | b"HEAD");
     let is_read = match *request.method() {

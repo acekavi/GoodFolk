@@ -79,24 +79,23 @@ pub struct BookingConfirmed {
 /// What a booking that cannot be made as sent answers: the new totals for a price that changed.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BookingConflict {
-    /// `price_changed` or `sold_out`.
+    /// `price_changed`, `sold_out`, or `in_progress` while the same booking's first request is still running.
     pub reason: String,
     /// The totals now, per currency in minor units, when the price changed.
     pub totals: Option<BTreeMap<String, i64>>,
 }
 
-/// The manage link's token, as the manage page sends it.
-#[derive(Deserialize)]
-pub struct ManageQuery {
-    /// Absent is as wrong as any other token.
-    #[serde(default)]
+/// The manage link's token, as the manage page's server sends it: in the body, so it is in no URL that a platform's
+/// request log records.
+#[derive(Deserialize, ToSchema)]
+pub struct ManageBody {
     pub token: String,
 }
 
 /// The token stays out of logs.
-impl std::fmt::Debug for ManageQuery {
+impl std::fmt::Debug for ManageBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ManageQuery").field("token", &"<redacted>").finish()
+        f.debug_struct("ManageBody").field("token", &"<redacted>").finish()
     }
 }
 
@@ -218,7 +217,8 @@ pub async fn site(
     params(("code" = String, Path, description = "the property code, any case"),
         ("check_in" = Date, Query), ("check_out" = Date, Query),
         ("residency" = Residency, Query, description = "the guest's answer to \"Are you a resident of Sri Lanka?\""),
-        ("rooms" = String, Query, description = "each room's adults and children, `adults-children`, comma-separated: `2-0,2-1`")),
+        ("rooms" = String, Query, description = "each room's adults and children, `adults-children`, comma-separated: `2-0,2-1`"),
+        ("fresh" = Option<String>, Query, description = "ignored by the search: a value new to the edge's cache, for a search that must not be answered from it, as after a room was just sold")),
     responses((status = 200, body = SearchResult, headers(("Cache-Control" = String))), (status = 400), (status = 404),
         (status = 422), (status = 429, headers(("Retry-After" = String)))))]
 pub async fn search(
@@ -250,12 +250,13 @@ pub async fn search(
 /// the hidden `website` field, which a bot fills (it is answered as if booked, the same way for the same key, and
 /// nothing is kept); the key's stored answer (scoped to the property: the same booking again gets the first answer,
 /// without asking Turnstile again, but with no `manage_url`, since the manage token is never stored; another booking
-/// with the same key is `409`); then, for a new key only, the Turnstile token (`400` when missing or refused, `503`
+/// with the same key is `409`, and so is the same booking while its first request is still running, with
+/// `reason: in_progress`); then, for a new key only, the Turnstile token (`400` when missing or refused, `503`
 /// when it cannot be checked; neither keeps anything under the key). The Turnstile token is not part of what makes
 /// two requests the same booking: a retry after a lost answer may carry a fresh one and still gets the first answer.
 ///
-/// Keep the `Idempotency-Key` while retrying the same booking, and treat any `4xx` as the end of its key: a changed
-/// price is confirmed with a new key.
+/// Keep the `Idempotency-Key` while retrying the same booking, also after a `409` with `reason: in_progress` (retry
+/// shortly), and treat any other `4xx` as the end of its key: a changed price is confirmed with a new key.
 #[utoipa::path(post, operation_id = "ibe_book", path = "/api/public/v1/ibe/{code}/bookings",
     params(("code" = String, Path, description = "the property code, any case"),
         ("Idempotency-Key" = String, Header, description = "8 to 160 characters, new for each booking attempt")),
@@ -285,7 +286,8 @@ pub async fn book(
     }
     // Turnstile spends a token once, so a retry carrying the same one is answered from the store before this runs.
     let booking = async {
-        if let Err(refused) = turnstile::verify(&state.ibe, &request.turnstile_token, ip).await {
+        let site = (tenant, property);
+        if let Err(refused) = turnstile::verify(&state.ibe, &state.pool, site, &request.turnstile_token, ip).await {
             // A bot check that did not pass booked nothing: the key stays free for a retry with a new token.
             let mut response = refused.into_response();
             response.extensions_mut().insert(idempotency::ReleaseClaim);
@@ -324,27 +326,30 @@ fn without_turnstile_token(body: &[u8]) -> Vec<u8> {
     serde_json::to_vec(&value).expect("JSON serializes")
 }
 
-/// The booking whose manage link carries `token`, for the manage page: what the guest needs to see and whether they can
-/// still cancel it (every room tentative or confirmed, check-in after the business date), with what cancelling would
-/// cost now. Never cached, since it is one guest's data. `410` for a token that is wrong, expired (after the end of the
-/// 30th day after check-out, in the property's time zone) or another property's, always with the same answer.
-/// 5 requests a minute per IP, with the cancel (`429` with `Retry-After`).
-#[utoipa::path(get, operation_id = "ibe_manage", path = "/api/public/v1/ibe/{code}/bookings/manage",
-    params(("code" = String, Path, description = "the property code, any case"),
-        ("token" = String, Query, description = "the manage link's token")),
-    responses((status = 200, body = ManageView, headers(("Cache-Control" = String))), (status = 404), (status = 410),
-        (status = 429, headers(("Retry-After" = String)))))]
+/// The booking whose manage link carries `token`, for the manage page's server: what the guest needs to see and whether
+/// they can still cancel it (every room tentative or confirmed, check-in after the business date), with what
+/// cancelling would cost now. A `POST` with the token in the body, so it is in no URL a request log records; it reads
+/// only, and only the site's server calls it, so it allows no other origin than the commands do. Never cached, since
+/// it is one guest's data. `410` for a token that is wrong, expired (after the end of the 30th day after check-out, in
+/// the property's time zone) or another property's, always with the same answer. 5 requests a minute per IP, with the
+/// cancel (`429` with `Retry-After`).
+#[utoipa::path(post, operation_id = "ibe_manage", path = "/api/public/v1/ibe/{code}/bookings/manage",
+    params(("code" = String, Path, description = "the property code, any case")),
+    request_body = ManageBody,
+    responses((status = 200, body = ManageView, headers(("Cache-Control" = String))), (status = 400), (status = 404),
+        (status = 410), (status = 422), (status = 429, headers(("Retry-After" = String)))))]
 pub async fn manage(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     ApiPath(code): ApiPath<String>,
-    ApiQuery(query): ApiQuery<ManageQuery>,
+    body: Bytes,
 ) -> Response {
     let viewed = async {
         limits::check(&state.pool, "manage", ip, MANAGES_PER_MINUTE).await?;
         let (tenant, property) = resolve(&state, Some(&code), None).await?;
+        let request: ManageBody = token_body(&body)?;
         let mut tx = db::begin(&state.pool, Scope::tenant(tenant)).await?;
-        let view = ibe::manage(&mut tx, property, &query.token).await.map_err(manage_error)?;
+        let view = ibe::manage(&mut tx, property, &request.token).await.map_err(manage_error)?;
         tx.commit().await?;
         Ok::<_, ApiError>(Json(view))
     };
@@ -371,19 +376,22 @@ pub async fn cancel(
     let cancelled = async {
         limits::check(&state.pool, "manage", ip, MANAGES_PER_MINUTE).await?;
         let (tenant, property) = resolve(&state, Some(&code), None).await?;
-        // Fixed messages: serde's could quote the token back.
-        let request: CancelBody = serde_json::from_slice(&body).map_err(|err| match err.classify() {
-            serde_json::error::Category::Data => {
-                ApiError::unprocessable("the request does not have the expected shape")
-            }
-            _ => ApiError::bad_request("the request is not valid JSON"),
-        })?;
+        let request: CancelBody = token_body(&body)?;
         let mut tx = db::begin(&state.pool, Scope::tenant(tenant)).await?;
         let view = ibe::cancel(&mut tx, tenant, property, &request.token).await.map_err(manage_error)?;
         tx.commit().await?;
         Ok::<_, ApiError>(Json(view))
     };
     private(cancelled.await)
+}
+
+/// A manage request's JSON body, which carries a token: `400` when it is not JSON and `422` when it has another shape,
+/// with fixed messages, since serde's could quote the token back.
+fn token_body<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, ApiError> {
+    serde_json::from_slice(body).map_err(|err| match err.classify() {
+        serde_json::error::Category::Data => ApiError::unprocessable("the request does not have the expected shape"),
+        _ => ApiError::bad_request("the request is not valid JSON"),
+    })
 }
 
 /// `answer` marked [`PRIVATE_CACHE`], the error answers too.

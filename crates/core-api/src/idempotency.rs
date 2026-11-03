@@ -186,7 +186,11 @@ fn replay(
     request_hash: &[u8],
     mismatch: impl Fn() -> ApiError,
 ) -> Result<Response, ApiError> {
-    let in_progress = || ApiError::conflict("a request with this Idempotency-Key is still in progress; retry shortly");
+    // `reason` tells it from a conflict that ends the key: the client retries this one with the same key.
+    let in_progress = || {
+        ApiError::conflict("a request with this Idempotency-Key is still in progress; retry shortly")
+            .with("reason", "in_progress")
+    };
     // The claim vanished between the insert and the lookup: its request failed and released it.
     let Some((stored_hash, status, content_type, etag, body)) = stored else {
         return Err(in_progress());

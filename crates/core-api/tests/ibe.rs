@@ -6,7 +6,7 @@ mod common;
 use axum::body::{Body, to_bytes};
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
-use common::turnstile::{passing, verifying_at, with_turnstile};
+use common::turnstile::{passing, passing_on, stand_in, verifying_at, with_ibe, with_turnstile};
 use common::{TestApp, uuid};
 use core_api::config::IbeConfig;
 use core_api::{AppState, router};
@@ -362,9 +362,12 @@ async fn the_site_and_the_search_are_cached_at_the_edge(_: PgPoolOptions, opts: 
 
     let site = get(&app, "/api/public/v1/ibe/GAL/site").await;
     let search = get(&app, &hotel.search("GAL", 1)).await;
+    let fresh = get(&app, &format!("{}&fresh=attempt-key-1", hotel.search("GAL", 1))).await;
 
     assert_eq!(site.headers[header::CACHE_CONTROL], "public, s-maxage=300");
     assert_eq!(search.headers[header::CACHE_CONTROL], "public, s-maxage=30");
+    assert_eq!(fresh.status, StatusCode::OK, "`fresh` only makes the query new to the edge: {:?}", fresh.body);
+    assert_eq!(fresh.body, search.body);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -614,6 +617,48 @@ async fn a_refused_turnstile_token_keeps_nothing_under_the_key(_: PgPoolOptions,
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_turnstile_token_counts_only_from_the_booking_form_on_this_sites_pages(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts.clone(), "GAL", true).await;
+    Hotel::new(&app, opts, "COL", true).await;
+    let plan = hotel.sell(&app).await;
+    let app = with_turnstile(&app).await;
+    let attempt = async |token: String, key: &str| {
+        let body = hotel.booking(&app, &plan, "kamala@example.com", &token).await;
+        book(&app, &body, Some(key), PEER).await
+    };
+
+    let other_page = attempt(passing_on("forum.example", "booking"), "booking-key-0001").await;
+    let other_hotel = attempt(passing_on("stay.col.example", "booking"), "booking-key-0002").await;
+    let other_widget = attempt(passing_on("localhost", "newsletter"), "booking-key-0003").await;
+    let no_host = attempt(passing_on("", "booking"), "booking-key-0004").await;
+    let custom_host = attempt(passing_on("Stay.Galle.Example", "booking"), "booking-key-0005").await;
+
+    for refused in [&other_page, &other_hotel, &other_widget, &no_host] {
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.body);
+    }
+    assert_eq!(custom_host.status, StatusCode::CREATED, "the site's own custom host: {:?}", custom_host.body);
+    assert_eq!(hotel.reservations().await, 1);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn turnstiles_test_secret_takes_a_pass_from_any_page(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let plan = hotel.sell(&app).await;
+    // As Cloudflare's test secret answers: every token solved on `example.com`.
+    let app = with_ibe(&app, IbeConfig { turnstile_url: stand_in().await, ..IbeConfig::local() });
+    let body = hotel.booking(&app, &plan, "kamala@example.com", &passing_on("example.com", "")).await;
+
+    let booked = book(&app, &body, Some("booking-key-0001"), PEER).await;
+
+    assert_eq!(booked.status, StatusCode::CREATED, "{:?}", booked.body);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn turnstile_out_of_reach_is_503_never_a_pass(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts, "GAL", true).await;
@@ -742,11 +787,16 @@ async fn a_foreign_origin_preflight_for_post_bookings_is_refused(_: PgPoolOption
 
 /// Posts the JSON `body` to `path` from `peer` as the booking site's server would: no cookie and no CSRF header.
 async fn post_public(app: &TestApp, path: &str, peer: &str, body: &str) -> Answer {
+    post_from(app, path, peer, "http://localhost:5174", body).await
+}
+
+/// [`post_public`] from a page at `origin`.
+async fn post_from(app: &TestApp, path: &str, peer: &str, origin: &str, body: &str) -> Answer {
     let mut request = Request::builder()
         .method(Method::POST)
         .uri(path)
         .header(header::CONTENT_TYPE, "application/json")
-        .header("origin", "http://localhost:5174")
+        .header("origin", origin)
         .body(Body::from(body.to_owned()))
         .unwrap();
     request.extensions_mut().insert(ConnectInfo(peer.parse::<SocketAddr>().unwrap()));
@@ -766,8 +816,11 @@ async fn booked_token(app: &TestApp, hotel: &Hotel, plan: &str) -> String {
     url.split_once("?token=").unwrap().1.to_owned()
 }
 
-fn manage_path(code: &str, token: &str) -> String {
-    format!("/api/public/v1/ibe/{code}/bookings/manage?token={token}")
+/// Asks for the booking of `token` on the site coded `code` from `peer`, as the manage page's server does: a `POST`
+/// with the token in the body.
+async fn view(app: &TestApp, code: &str, token: &str, peer: &str) -> Answer {
+    let path = format!("/api/public/v1/ibe/{code}/bookings/manage");
+    post_public(app, &path, peer, &json!({"token": token}).to_string()).await
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -778,18 +831,22 @@ async fn the_manage_page_is_never_cached_and_every_bad_token_is_the_same_410(_: 
     let plan = hotel.sell(&app).await;
     let app = with_turnstile(&app).await;
     let token = booked_token(&app, &hotel, &plan).await;
-    let from = [("origin", "https://reader.example")];
+    let path = "/api/public/v1/ibe/GAL/bookings/manage";
 
-    let page = call(&app, Method::GET, &manage_path("GAL", &token), PEER, &from).await;
-    let wrong = call(&app, Method::GET, &manage_path("GAL", "not-a-token"), "192.0.2.11:1", &from).await;
-    let elsewhere = call(&app, Method::GET, &manage_path("COL", &token), "192.0.2.11:1", &from).await;
-    let none = call(&app, Method::GET, "/api/public/v1/ibe/GAL/bookings/manage", "192.0.2.11:1", &from).await;
+    let page = view(&app, "GAL", &token, PEER).await;
+    let wrong = view(&app, "GAL", "not-a-token", "192.0.2.11:1").await;
+    let elsewhere = view(&app, "COL", &token, "192.0.2.11:1").await;
+    let token_body = json!({"token": token}).to_string();
+    let foreign = post_from(&app, path, "192.0.2.12:1", "https://reader.example", &token_body).await;
+    let malformed = post_public(&app, path, "192.0.2.12:1", "{").await;
+    let none = post_public(&app, path, "192.0.2.12:1", "{}").await;
+    let in_the_query = call(&app, Method::GET, &format!("{path}?token={token}"), "192.0.2.13:1", &[]).await;
     sqlx::query("update reservation_access_token set expires_at = now() - interval '1 second' where sha256 = $1")
         .bind(ibe::token_hash(&token))
         .execute(&hotel.superuser)
         .await
         .unwrap();
-    let late = call(&app, Method::GET, &manage_path("GAL", &token), "192.0.2.11:1", &from).await;
+    let late = view(&app, "GAL", &token, "192.0.2.13:1").await;
 
     assert_eq!(page.status, StatusCode::OK, "{:?}", page.body);
     assert_eq!(page.body["status"], "confirmed");
@@ -798,14 +855,21 @@ async fn the_manage_page_is_never_cached_and_every_bad_token_is_the_same_410(_: 
     for internal in ["notes", "created_by", "guest_id", "booker", "token"] {
         assert!(page.body.get(internal).is_none(), "{internal}: {:?}", page.body);
     }
-    for answer in [&page, &wrong, &late, &elsewhere, &none] {
+    for answer in [&page, &wrong, &late, &elsewhere, &foreign, &malformed, &none] {
         assert_eq!(answer.headers[header::CACHE_CONTROL], "no-store", "{:?}", answer.body);
-        assert_eq!(answer.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
     }
-    for answer in [&wrong, &late, &elsewhere, &none] {
+    for answer in [&page, &wrong, &late, &elsewhere] {
+        assert_eq!(answer.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "http://localhost:5174", "not `*`");
+    }
+    assert_eq!(foreign.status, StatusCode::OK, "CORS binds browsers only; the site's server sends no allowed origin");
+    assert!(foreign.headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(), "{:?}", foreign.headers);
+    for answer in [&wrong, &late, &elsewhere] {
         assert_eq!(answer.status, StatusCode::GONE, "{:?}", answer.body);
         assert_eq!(answer.body, wrong.body, "one body for every bad token");
     }
+    assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
+    assert_eq!(none.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", none.body);
+    assert_eq!(in_the_query.status, StatusCode::METHOD_NOT_ALLOWED, "no route reads a token from the query");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -822,7 +886,7 @@ async fn a_guest_cancels_online_once(_: PgPoolOptions, opts: PgConnectOptions) {
     let shapeless = post_public(&app, path, PEER, r#"{"token":5}"#).await;
     let cancelled = post_public(&app, path, PEER, &json!({"token": token}).to_string()).await;
     let again = post_public(&app, path, PEER, &json!({"token": token}).to_string()).await;
-    let page = call(&app, Method::GET, &manage_path("GAL", &token), "192.0.2.12:1", &[]).await;
+    let page = view(&app, "GAL", &token, "192.0.2.12:1").await;
 
     assert_eq!(wrong.status, StatusCode::GONE);
     assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
@@ -853,11 +917,11 @@ async fn the_6th_manage_request_in_a_minute_from_one_ip_is_429(_: PgPoolOptions,
     seed_hits(&hotel.superuser, "manage", "192.0.2.10", 5).await;
     seed_hits(&hotel.superuser, "manage", "198.51.100.8", 4).await;
 
-    let refused = call(&app, Method::GET, &manage_path("GAL", "x"), PEER, &[]).await;
+    let refused = view(&app, "GAL", "x", PEER).await;
     let cancel = post_public(&app, "/api/public/v1/ibe/GAL/bookings/manage/cancel", PEER, r#"{"token":"x"}"#).await;
-    let fifth = call(&app, Method::GET, &manage_path("GAL", "x"), "198.51.100.8:40000", &[]).await;
-    let sixth = call(&app, Method::GET, &manage_path("GAL", "x"), "198.51.100.8:40000", &[]).await;
-    let elsewhere = call(&app, Method::GET, &manage_path("GAL", "x"), "198.51.100.7:40000", &[]).await;
+    let fifth = view(&app, "GAL", "x", "198.51.100.8:40000").await;
+    let sixth = view(&app, "GAL", "x", "198.51.100.8:40000").await;
+    let elsewhere = view(&app, "GAL", "x", "198.51.100.7:40000").await;
 
     assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
     assert!(refused.headers.contains_key(header::RETRY_AFTER));
@@ -917,7 +981,9 @@ async fn the_manage_token_in_the_query_stays_out_of_the_logs(_: PgPoolOptions, o
     Hotel::new(&app, opts, "GAL", true).await;
     let (token, marker) = ("s3cr3t-manage-token-9f2c", "marker-query-7d41");
 
-    let manage = call(&app, Method::GET, &manage_path("GAL", token), PEER, &[]).await;
+    let in_the_query = format!("/api/public/v1/ibe/GAL/bookings/manage?token={token}");
+    let manage = call(&app, Method::GET, &in_the_query, PEER, &[]).await;
+    let posted = view(&app, "GAL", token, PEER).await;
     let slash =
         call(&app, Method::GET, &format!("/api/public/v1/ibe/GAL/bookings/manage/?token={token}"), PEER, &[]).await;
     let cased =
@@ -926,10 +992,11 @@ async fn the_manage_token_in_the_query_stays_out_of_the_logs(_: PgPoolOptions, o
         call(&app, Method::GET, &format!("/api/public/v1/ibe/GAL/bookings/manage?t%6Fken={token}"), PEER, &[]).await;
     let control = call(&app, Method::GET, &format!("/api/public/v1/ibe/GAL/site?x={marker}"), PEER, &[]).await;
 
-    assert_eq!((manage.status, control.status), (StatusCode::GONE, StatusCode::OK));
+    assert_eq!((manage.status, control.status), (StatusCode::METHOD_NOT_ALLOWED, StatusCode::OK));
+    assert_eq!(posted.status, StatusCode::GONE);
     assert_eq!(slash.status, StatusCode::NOT_FOUND, "a path no route has");
     assert_eq!(cased.status, StatusCode::NOT_FOUND, "a path no route has");
-    assert_eq!(encoded.status, StatusCode::GONE, "a percent-encoded name still reaches the route");
+    assert_eq!(encoded.status, StatusCode::METHOD_NOT_ALLOWED);
     let text = logs.text();
     assert!(text.contains(marker), "the control query is logged, so requests are: {text}");
     assert!(text.contains("/bookings/manage"), "the manage request is logged, by its path: {text}");

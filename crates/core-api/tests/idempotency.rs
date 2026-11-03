@@ -55,6 +55,8 @@ async fn a_request_still_in_progress_answers_retries_with_409(_: PgPoolOptions, 
     let retry = create(&app, &cookie, "/api/v1/properties", "key-00000001", galle()).await;
 
     assert_eq!(retry.status, StatusCode::CONFLICT, "{:?}", retry.body);
+    assert_eq!(retry.body["reason"], "in_progress", "a client can tell it from a conflict that ends the key");
+    assert!(retry.body["detail"].as_str().unwrap().contains("in progress"), "{:?}", retry.body);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
