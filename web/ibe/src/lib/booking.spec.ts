@@ -302,7 +302,7 @@ describe('the idempotency key', () => {
 		expect(keys.keyFor(attempt('token-2'))).toBe('k1');
 	});
 
-	it('is kept after a 5xx or a booking still in progress, and ended by any other answer', () => {
+	it('is kept after a 5xx, a booking still in progress or a 429, and ended by any other answer', () => {
 		let next = 0;
 		const keys = attemptKeys(() => `k${++next}`);
 
@@ -311,6 +311,9 @@ describe('the idempotency key', () => {
 		expect(keys.keyFor(attempt('t'))).toBe('k1');
 		keys.answered({ kind: 'in_progress' });
 		expect(keys.keyFor(attempt('t2'))).toBe('k1');
+		// A 429 is answered before the key is looked up: the attempt it may follow could still commit.
+		keys.answered({ kind: 'too_many', retryAfter: 30 });
+		expect(keys.keyFor(attempt('t2b'))).toBe('k1');
 		keys.answered({ kind: 'sold_out' });
 		expect(keys.keyFor(attempt('t3'))).toBe('k2');
 		keys.answered({ kind: 'booked', confirmationNo: 'GAL-000001', manageUrl: null });

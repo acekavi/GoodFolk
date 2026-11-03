@@ -234,10 +234,10 @@ export function bookingOutcome(status: number, body: unknown, retryAfter: string
 
 /**
  * The `Idempotency-Key` of booking attempts. One booking keeps its key until the API has answered it: a retry after a
- * network failure, a `5xx` or a `409` still in progress sends the same booking with the same key, even with a fresh
- * Turnstile token, which core-api leaves out of what it compares, so a first attempt that got through is replayed,
- * never booked twice. Any other answer (a changed price among them) ends the key, and a booking with other details
- * gets a new one.
+ * network failure, a `5xx`, a `409` still in progress or a `429` (refused before the key is looked up, so nothing was
+ * booked under it) sends the same booking with the same key, even with a fresh Turnstile token, which core-api leaves
+ * out of what it compares, so a first attempt that got through is replayed, never booked twice. Any other answer (a
+ * changed price among them) ends the key, and a booking with other details gets a new one.
  */
 export function attemptKeys(newKey: () => string = () => crypto.randomUUID()) {
 	let key: string | null = null;
@@ -250,7 +250,12 @@ export function attemptKeys(newKey: () => string = () => crypto.randomUUID()) {
 			return key;
 		},
 		answered(outcome: Outcome) {
-			if (outcome.kind !== 'failed' && outcome.kind !== 'in_progress') key = null;
+			if (
+				outcome.kind !== 'failed' &&
+				outcome.kind !== 'in_progress' &&
+				outcome.kind !== 'too_many'
+			)
+				key = null;
 		}
 	};
 }
