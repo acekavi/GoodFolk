@@ -1,7 +1,7 @@
 //! The media job and result types shared by core-api, media-svc and the imaging worker, and the invoice and report
 //! data media-svc renders. This crate holds no codecs, so core-api can depend on it without linking any.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use time::Date;
 use uuid::Uuid;
 
@@ -137,6 +137,51 @@ pub struct RenditionOut {
     pub duration_ms: Option<u32>,
 }
 
+/// A rendition list as stored (`media_asset.renditions`) or reported, read leniently: an entry this build cannot read,
+/// such as a size or format a newer media-svc added, is skipped with a warning, so the rest of the asset still loads.
+/// A core-api rolled back behind a media-svc that adds a size keeps serving the assets it made.
+pub fn known_renditions<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<RenditionOut>, D::Error> {
+    let entries = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| match serde_json::from_value::<RenditionOut>(entry) {
+            Ok(rendition) => Some(rendition),
+            Err(error) => {
+                tracing::warn!(%error, "skipped a rendition this build cannot read");
+                None
+            }
+        })
+        .collect())
+}
+
+/// An asset's renditions as a database row holds them, read with [`known_renditions`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct Renditions(pub Vec<RenditionOut>);
+
+impl<'de> Deserialize<'de> for Renditions {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        known_renditions(deserializer).map(Self)
+    }
+}
+
+impl std::ops::Deref for Renditions {
+    type Target = Vec<RenditionOut>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl IntoIterator for Renditions {
+    type Item = RenditionOut;
+    type IntoIter = std::vec::IntoIter<RenditionOut>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MediaResult {
@@ -146,6 +191,7 @@ pub enum MediaResult {
         width: u32,
         height: u32,
         archive_key: String,
+        #[serde(deserialize_with = "known_renditions")]
         renditions: Vec<RenditionOut>,
     },
     Failed {
@@ -406,6 +452,24 @@ mod tests {
         assert_eq!(Profile::GuestDocument.sizes(), [Size::Thumb, Size::Md]);
         assert_eq!(Profile::IssuePhoto.sizes().len(), 4);
         assert_eq!((Format::Avif.as_str(), Format::Webp.as_str()), ("avif", "webp"));
+    }
+
+    #[test]
+    fn renditions_of_a_size_this_build_does_not_know_are_skipped() {
+        let stored = r#"[{"size":"future","format":"avif","width":1,"height":1,"bytes":1,"key":"a"},
+                         {"size":"sm","format":"webp","width":640,"height":480,"bytes":2,"key":"b"},
+                         {"size":"md","format":"jxl2","width":1,"height":1,"bytes":3,"key":"c"}]"#;
+        let read: Renditions = serde_json::from_str(stored).unwrap();
+        assert_eq!(read.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), ["b"]);
+
+        let event = format!(
+            r#"{{"type":"ready","tenant_id":"{nil}","asset_id":"{nil}","width":1,"height":1,"archive_key":"k",
+                "renditions":{stored}}}"#,
+            nil = Uuid::nil()
+        );
+        let MediaResult::Ready { renditions, .. } = serde_json::from_str(&event).unwrap() else { panic!("ready") };
+        assert_eq!(renditions.len(), 1);
+        assert!(serde_json::from_str::<Renditions>(r#"{"not":"a list"}"#).is_err(), "a list is still required");
     }
 
     #[test]

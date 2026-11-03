@@ -12,7 +12,7 @@ use crate::{
 /// The SSIMULACRA2 score every rendition must reach, but the phone's.
 pub const QUALITY_TARGET: f64 = 80.0;
 /// The SSIMULACRA2 score the phone rendition must reach: lower, so the first image a phone paints is small enough
-/// (about 40 KB of AVIF for a detailed 12 MP photo) to arrive quickly on a slow connection, slightly softer for it.
+/// (about 46 KB of AVIF for a detailed 12 MP photo) to arrive quickly on a slow connection, slightly softer for it.
 pub const PHONE_QUALITY_TARGET: f64 = 45.0;
 
 /// The SSIMULACRA2 score a rendition of `size` must reach.

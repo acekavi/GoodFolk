@@ -23,7 +23,7 @@ pub use links::{
 pub use sweep::{StaleUpload, SweepReport, sweep};
 
 use db::{Event, TenantId, Tx, UserId};
-use media_types::{Profile, RenditionOut};
+use media_types::{Profile, Renditions};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -167,7 +167,7 @@ pub struct AssetRow {
     pub height: Option<i32>,
     pub archive_key: Option<String>,
     #[sqlx(json)]
-    pub renditions: Vec<RenditionOut>,
+    pub renditions: Renditions,
     pub created_at: OffsetDateTime,
     pub ready_at: Option<OffsetDateTime>,
 }

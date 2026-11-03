@@ -2,7 +2,7 @@
 
 use crate::{MediaError, Purpose, audit, notify};
 use db::{Scope, TenantId, Tx};
-use media_types::RenditionOut;
+use media_types::Renditions;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -243,5 +243,5 @@ struct OrphanRow {
     purpose: Purpose,
     archive_key: Option<String>,
     #[sqlx(json)]
-    renditions: Vec<RenditionOut>,
+    renditions: Renditions,
 }

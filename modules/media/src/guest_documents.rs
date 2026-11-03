@@ -3,7 +3,7 @@
 
 use crate::{AssetStatus, DocumentKind, LinkSize, MediaError, Visibility, audit, notify};
 use db::{TenantId, Tx, UserId};
-use media_types::{Format, RenditionOut, Size};
+use media_types::{Format, Renditions, Size};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -82,7 +82,7 @@ struct LinkRow {
     mime: Option<String>,
     archive_key: Option<String>,
     #[sqlx(json)]
-    renditions: Vec<RenditionOut>,
+    renditions: Renditions,
 }
 
 /// The bucket and key to sign for the document's `size`: the WebP rendition for `thumb` and `md`, and for a PDF only,
