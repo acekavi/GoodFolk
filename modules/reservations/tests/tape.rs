@@ -45,7 +45,7 @@ impl Hotel {
 
     async fn cancel(&self, stay: &reservations::CreatedRoom) {
         let mut tx = self.tx().await;
-        reservations::cancel_room(&mut tx, self.tenant, Some(self.user), self.property, stay.id, stay.version)
+        reservations::cancel_room(&mut tx, self.tenant, Some(self.user), self.property, stay.id, stay.version, None)
             .await
             .unwrap();
         tx.commit().await.unwrap();

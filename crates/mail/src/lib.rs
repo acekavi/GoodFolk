@@ -10,9 +10,10 @@
 //! **Attachments.** A message with attachments goes to SES as raw MIME (see [`SesMailer`]); one without, as SES's
 //! simple content.
 //!
-//! **The token in the outbox.** An invitation's link must carry its token, and the token is stored only as a hash, so
-//! [`MailJob::Invitation`] carries the token itself through the outbox to the sender. The undelivered outbox row is
-//! the one place it is kept: the relay drops it from the row once the row is delivered or refused (migration 0038).
+//! **The token in the outbox.** An invitation's link and a site booking's manage link must carry their token, and the
+//! token is stored only as a hash, so [`MailJob::Invitation`] and [`MailJob::IbeConfirmation`] carry the token itself
+//! through the outbox to the sender. The undelivered outbox row is the one place it is kept: the relay drops it from
+//! the row once the row is delivered or refused (migrations 0038 and 0048).
 //! Nothing here logs a job or a message body: a send logs the recipient and the subject only, and [`MailJob`]'s
 //! `Debug` hides the token.
 
@@ -39,6 +40,12 @@ pub const DEFAULT_OUTBOX_DIR: &str = "target/mail-outbox";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
     pub to: String,
+    /// The sender's display name in place of `MAIL_FROM`'s own, such as a hotel's name; the address stays the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_name: Option<String>,
+    /// Where replies go, such as a hotel's contact email, instead of the sender.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
     pub subject: String,
     pub text: String,
     pub html: String,
@@ -91,6 +98,12 @@ pub enum MailJob {
     Invitation { invitation_id: Uuid, tenant_id: Uuid, token: String },
     /// Send weekly or monthly report `report_id`, its PDF attached, to `user_id`.
     Report { tenant_id: Uuid, report_id: Uuid, user_id: Uuid },
+    /// Send the booker of booking-site reservation `reservation_id` its confirmation; `token` is what its manage link
+    /// carries.
+    IbeConfirmation { tenant_id: Uuid, reservation_id: Uuid, token: String },
+    /// Tell the booker of booking-site reservation `reservation_id` it is cancelled, with the charge of the `rooms` the
+    /// guest's cancellation closed (not those cancelled before). The email carries no link.
+    IbeCancellation { tenant_id: Uuid, reservation_id: Uuid, rooms: Vec<Uuid> },
 }
 
 impl std::fmt::Debug for MailJob {
@@ -107,6 +120,18 @@ impl std::fmt::Debug for MailJob {
                 .field("tenant_id", tenant_id)
                 .field("report_id", report_id)
                 .field("user_id", user_id)
+                .finish(),
+            Self::IbeConfirmation { tenant_id, reservation_id, token: _ } => f
+                .debug_struct("IbeConfirmation")
+                .field("tenant_id", tenant_id)
+                .field("reservation_id", reservation_id)
+                .field("token", &"<redacted>")
+                .finish(),
+            Self::IbeCancellation { tenant_id, reservation_id, rooms } => f
+                .debug_struct("IbeCancellation")
+                .field("tenant_id", tenant_id)
+                .field("reservation_id", reservation_id)
+                .field("rooms", rooms)
                 .finish(),
         }
     }

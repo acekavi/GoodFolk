@@ -31,7 +31,8 @@ impl std::fmt::Debug for Credentials {
 }
 
 /// Production: SES v2 `SendEmail` (`POST /v2/email/outbound-emails`), signed with SigV4: `Content.Simple` for a
-/// message without attachments, `Content.Raw` (the message as MIME, see [`mime::raw`]) for one with them.
+/// message without attachments, `Content.Raw` (the message as MIME, see [`mime::raw`]) for one with them. A message's
+/// sender name replaces `MAIL_FROM`'s own, and its reply-to address goes to `ReplyToAddresses`.
 #[derive(Debug)]
 pub struct SesMailer {
     region: String,
@@ -69,6 +70,7 @@ impl SesMailer {
 #[async_trait::async_trait]
 impl Mailer for SesMailer {
     async fn send(&self, message: &Message) -> Result<(), MailError> {
+        mime::check_headers(&self.from, message)?;
         let content = |data: &str| json!({ "Data": data, "Charset": "UTF-8" });
         let content = if message.attachments.is_empty() {
             json!({ "Simple": {
@@ -80,11 +82,14 @@ impl Mailer for SesMailer {
             let raw = mime::raw(&self.from, message, &id, time::OffsetDateTime::now_utc())?;
             json!({ "Raw": { "Data": STANDARD.encode(raw) } })
         };
-        let body = json!({
-            "FromEmailAddress": self.from,
+        let mut body = json!({
+            "FromEmailAddress": mime::sender(&self.from, message.from_name.as_deref()).0,
             "Destination": { "ToAddresses": [message.to] },
             "Content": content,
         });
+        if let Some(reply_to) = &message.reply_to {
+            body["ReplyToAddresses"] = json!([reply_to]);
+        }
         let bytes = serde_json::to_vec(&body).map_err(|error| MailError::Permanent(error.to_string()))?;
         let mut request = self
             .http

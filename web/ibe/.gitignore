@@ -1,0 +1,27 @@
+node_modules
+
+# Output
+/test-results
+/playwright-report
+/blob-report
+/.lighthouseci
+.output
+.vercel
+.netlify
+.wrangler
+/.svelte-kit
+/build
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*

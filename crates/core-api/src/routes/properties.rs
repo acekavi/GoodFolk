@@ -2,13 +2,16 @@ use crate::auth::TenantContext;
 use crate::concurrency::{IfMatch, Versioned};
 use crate::error::{ApiError, Changes, validate, validate_changes};
 use crate::extract::{ApiJson, ApiPath};
+use crate::routes::media::media_error;
 use crate::state::AppState;
 use axum::extract::State;
 use db::Scope;
 use garde::Validate;
 use identity::Permission;
-use property::{NewProperty, Property, PropertyChanges, PropertyError};
-use serde::Deserialize;
+use media::AssetStatus;
+use media_types::{Format, Size};
+use property::{IbeSite, IbeSiteChanges, NewProperty, Property, PropertyChanges, PropertyError};
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -59,6 +62,7 @@ pub(crate) fn property_error(err: PropertyError) -> ApiError {
         PropertyError::NotFound => ApiError::not_found(err.to_string()),
         PropertyError::VersionMismatch => ApiError::precondition_failed(err.to_string()),
         PropertyError::Invalid(message) => ApiError::unprocessable(message),
+        PropertyError::CodeInUse(message) => ApiError::unprocessable(message).with("field", "enabled"),
         PropertyError::Database(db_err) => db_err.into(),
     }
 }
@@ -109,4 +113,136 @@ pub async fn update(
         .map_err(property_error)?;
     tx.commit().await?;
     Ok(Versioned::ok(updated.version, updated))
+}
+
+/// The booking site settings, as the page sends them back: every field is written. `null` or a missing optional field
+/// clears it.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct UpdateIbeSiteRequest {
+    /// While off, the site answers `404` for the property.
+    #[garde(skip)]
+    pub enabled: bool,
+    /// A lowercase host name of at least two labels (each 1 to 63 letters, digits and inner hyphens), at most 253
+    /// characters, unique across all tenants.
+    #[garde(inner(
+        length(max = 253),
+        pattern(r"^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+    ))]
+    pub custom_host: Option<String>,
+    /// A completed `ibe_logo` upload of the property, which may still be processing.
+    #[garde(skip)]
+    pub logo_asset_id: Option<Uuid>,
+    /// A finished gallery photo of one of the property's room types.
+    #[garde(skip)]
+    pub hero_asset_id: Option<Uuid>,
+    /// `#rrggbb` in lowercase, giving white text a contrast of 4.5 or more (422).
+    #[garde(inner(pattern(r"^#[0-9a-f]{6}$")))]
+    pub accent: Option<String>,
+    /// At most 500 characters.
+    #[serde(default)]
+    #[garde(length(chars, max = 500))]
+    pub description: String,
+    /// 1 to 50 characters.
+    #[garde(inner(length(chars, min = 1, max = 50)))]
+    pub contact_phone: Option<String>,
+    #[garde(inner(email, length(chars, max = 254)))]
+    pub contact_email: Option<String>,
+    /// Plain text, at most 10,000 characters.
+    #[serde(default)]
+    #[garde(length(chars, max = 10_000))]
+    pub terms: String,
+    /// Plain text, at most 10,000 characters.
+    #[serde(default)]
+    #[garde(length(chars, max = 10_000))]
+    pub privacy: String,
+}
+
+/// The booking site settings with the logo's state and, once it is ready, its public URL.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct IbeSiteView {
+    #[serde(flatten)]
+    pub site: IbeSite,
+    /// Null when there is no logo.
+    pub logo_status: Option<AssetStatus>,
+    pub logo_url: Option<String>,
+}
+
+async fn ibe_site_view(state: &AppState, tx: &mut db::Tx, site: IbeSite) -> Result<IbeSiteView, ApiError> {
+    let logo = match site.logo_asset_id {
+        Some(logo) => media::asset(tx, site.property_id, logo).await.map_err(media_error)?,
+        None => None,
+    };
+    let logo_status = logo.as_ref().map(|asset| asset.status);
+    let logo_url = logo.and_then(|asset| {
+        let chosen = asset
+            .renditions
+            .iter()
+            .find(|rendition| rendition.size == Size::Md && rendition.format == Format::Webp)
+            .or(asset.renditions.first());
+        chosen.map(|rendition| state.storage.public_url(&rendition.key).into())
+    });
+    Ok(IbeSiteView { site, logo_status, logo_url })
+}
+
+/// The property's booking site settings: the defaults, at version 0, until it saves any. Needs `IbeManage`. The `ETag`
+/// is the version to send back as `If-Match`.
+#[utoipa::path(get, operation_id = "get_ibe_site", path = "/api/v1/properties/{property}/ibe-site",
+    params(("property" = Uuid, Path)),
+    responses((status = 200, body = IbeSiteView,
+        headers(("ETag" = String, description = "the version, e.g. \"3\"; send it back as If-Match"))), (status = 403), (status = 404)))]
+pub async fn get_ibe_site(
+    State(state): State<AppState>,
+    ctx: TenantContext,
+    ApiPath(property): ApiPath<Uuid>,
+) -> Result<Versioned<IbeSiteView>, ApiError> {
+    ctx.require(Permission::IbeManage, Some(property))?;
+    let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
+    let site = property::ibe_site(&mut tx, property).await.map_err(property_error)?;
+    let view = ibe_site_view(&state, &mut tx, site).await?;
+    tx.commit().await?;
+    Ok(Versioned::ok(view.site.version, view))
+}
+
+/// Replaces the property's booking site settings. Needs `IbeManage`; send the version as `If-Match` (0 for the first
+/// save). The accent must give white text a contrast of 4.5 or more, the logo must be a completed `ibe_logo` upload and
+/// the hero a finished room type gallery photo of this property, and the custom host must be unused and not the booking
+/// domain's own host (each 422).
+/// Audited as `ibe_site.updated` with the values before and after.
+#[utoipa::path(put, operation_id = "update_ibe_site", path = "/api/v1/properties/{property}/ibe-site", request_body = UpdateIbeSiteRequest,
+    params(("property" = Uuid, Path), ("If-Match" = String, Header, description = "the version edited, e.g. \"3\"; 0 for the first save")),
+    responses((status = 200, body = IbeSiteView,
+        headers(("ETag" = String, description = "the version, e.g. \"4\"; send it back as If-Match"))), (status = 403), (status = 404), (status = 412), (status = 422), (status = 428)))]
+pub async fn update_ibe_site(
+    State(state): State<AppState>,
+    ctx: TenantContext,
+    ApiPath(property): ApiPath<Uuid>,
+    IfMatch(version): IfMatch,
+    ApiJson(body): ApiJson<UpdateIbeSiteRequest>,
+) -> Result<Versioned<IbeSiteView>, ApiError> {
+    ctx.require(Permission::IbeManage, Some(property))?;
+    validate(&body)?;
+    if body.custom_host.as_deref() == Some(state.ibe.public_host().as_str()) {
+        return Err(
+            ApiError::unprocessable("The custom host cannot be the booking domain itself").with("field", "custom_host")
+        );
+    }
+    let changes = IbeSiteChanges {
+        enabled: body.enabled,
+        custom_host: body.custom_host,
+        logo_asset_id: body.logo_asset_id,
+        hero_asset_id: body.hero_asset_id,
+        accent: body.accent,
+        description: body.description,
+        contact_phone: body.contact_phone,
+        contact_email: body.contact_email,
+        terms: body.terms,
+        privacy: body.privacy,
+    };
+    let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
+    let saved = property::update_ibe_site(&mut tx, ctx.tenant, ctx.user, property, version, changes)
+        .await
+        .map_err(property_error)?;
+    let view = ibe_site_view(&state, &mut tx, saved).await?;
+    tx.commit().await?;
+    Ok(Versioned::ok(view.site.version, view))
 }

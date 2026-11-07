@@ -417,10 +417,43 @@ Phase 8 was split (the owner, 2026-10-25): 8a is staff and settings, 8b is Chann
 
 - `channel-svc` with Channex: connect a property, import and map room types, ARI push (debounced and batched), webhook booking ingestion.
 
-## Phase 9 — IBE ([spec outline](specs/phase-9-ibe.md))
+## Phase 9 — Booking site (IBE) ([spec](specs/phase-9-ibe.md), [plan](superpowers/plans/2026-10-28-phase-9-ibe.md))
 
-- Detailed design workshop first (still being planned).
-- SvelteKit SSR app, edge-cached availability search, hold → pay → confirm, payment tokenization.
+The owner asked for the spec to be written from the outline and ARCHITECTURE §10 without a design session (2026-10-28), and put online payment (7c) and Channex (8b) on hold the same day, so the outline's questions were answered as Builder's calls. Migrations `0047`–`0048`. New module `modules/ibe`; public routes in `crates/core-api/src/public`; new app `web/ibe`.
+
+- **The booking site: done.** `web/ibe`, SvelteKit SSR on adapter-node: one site per property at `/<CODE>` on the booking domain or at a custom host's root; residency asked before any price; results per room type with photos, tour video, each `IBE` plan and meal plan priced in its own currency with the bill's taxes, a per-night breakdown and the cancellation terms in words; details and book (Turnstile, honeypot, agreement to the terms); a confirmation page and email; the manage page (view, cancel). SEO title and description, Open Graph, `sitemap.xml`, schema.org `Hotel`. No cookies, no analytics.
+- **Booking: done.** Pay at the hotel: confirmed at once, `guarantee = 'none'`, source `ibe`, no staff actor, a new guest profile per booking, priced again on the server (`409 price_changed`, `409 sold_out`), `Idempotency-Key` per (property, key), the advisory deposit shown and never enforced.
+- **Managing: done.** A 32-byte token stored as SHA-256, valid to the end of the 30th day after check-out, a uniform `410`; cancel under the snapshotted terms with the reason "Cancelled by the guest online" and a cancellation email.
+- **Hotel side: done.** **Settings → Booking site** (`IbeManage`, owner and manager): on/off, custom host, logo (`ibe_logo` media), hero from the gallery, accent (4.5:1 against white), description, contact, terms and privacy notice, all audited and `If-Match`. Room types gain a description. The PMS shows source **Booking site** and filters by it.
+- **Tests:** the core-api `ibe` and `ibe_site` suites, `modules/ibe/tests`, the new tables in the isolation suite, and the Playwright suite `web/ibe/tests/e2e` (book two rooms, the email, the front desk's view, cancel from the email link; a disabled site; a double click books once).
+- **Deviations and rulings**, each made during the phase (ARCHITECTURE §10 has the reasoning):
+  - **`ibe_site.public_code`**, globally unique among enabled sites, since property codes are unique only per tenant; resolution is by host XOR code. A hotel whose code clashes with another enabled site must rename it to publish.
+  - **CORS:** the cacheable reads answer `*` (public data, edge-cached for everyone); the commands and the manage page's read keep the allow-list of the booking domain and enabled custom hosts.
+  - **Idempotency before Turnstile**, a stored answer without the manage token (a replay has no `manage_url`; the link is in the email), and a body hash without the Turnstile token, so a retry with a fresh token replays rather than double-books.
+  - **The SSR server forwards the guest's IP** in `X-IBE-Client-IP`, trusted only with `IBE_SSR_SECRET` (constant-time); a forged header is ignored.
+  - **Online cancel skips rooms already cancelled** (`already_cancelled` only when all are); the email counts only the rooms this cancel closed. The guest-cancel audit uses actor `ibe` and mode `online`.
+  - **Rate hits are pruned daily** by jobs-svc; IPv6 is counted per /64.
+  - **The advisory deposit is priced per meal offer** in the search and shared with the email (`reservations::room_deposit`).
+  - The API accepts `null` arrival time and occupant name; the arrival time is kept in the notes.
+  - **Page speed** (Task 7, to meet the LCP gate): a gallery loads only its first slide, and the next as the guest reaches for it; a gallery that is not the page's largest paint shows its photo once hydrated; the largest paint is preloaded; the app's scripts are not modulepreloaded and SvelteKit's boot waits for the first contentful frame (`paintFirst`); on a phone the hero is 4:3, shown whole. Buttons that need the app (the results' **Choose**, **Book**, the manage page's **Cancel booking**, the search form's room buttons and a gallery's buttons) stay disabled until hydrated, the book form is `post` so a native submit never puts the guest's details in the address, and the manage page drops its token in `afterNavigate`.
+  - **A `phone` gallery rendition** (media engine, 800 px, SSIMULACRA2 ≥ 45 instead of 80; ARCHITECTURE §8.2), offered only to the largest paint on a screen narrower than 40rem: a phone's hero is softer on a detailed photo, tablets and desktops never get it, every other size is unchanged. Photos uploaded before it fall back to the full-quality sizes; nothing is backfilled. core-api now skips rendition sizes it does not know (with a warning), so this release is the rollback floor: deploy core-api before media-svc this once, and never roll core-api back past it once `phone` assets exist (ARCHITECTURE §10.2).
+  - **From the final review:** a retry while the first request with its key still runs is `409 reason: in_progress`, which the book page retries with the same key (five times over about 5 s) and never ends the key on, nor on a `429`; the manage page's server reads the booking with a `POST` carrying the token (`POST …/bookings/manage`, no `GET ?token=`), so only the page's own address reaches the platform's request logs, which the deployment notes exclude; a Turnstile pass must come from the `booking` action on the booking domain or the site's own custom host; the site's server warns at startup in production without `ADDRESS_HEADER`; the results after a room just sold search past the edge cache (`fresh`).
+- **Performance gates: done** (release builds, in process through the router; Lighthouse 3 runs a page, `@lhci/cli` 0.15.1, every run counted):
+
+  | Gate | Spec | Measured |
+  |---|---|---|
+  | `GET …/search`, 3 nights, 2 rooms, 12 room types, 5 `IBE` plans | p95 < 100 ms | p95 12.0 ms (p50 8.8 ms) |
+  | the same, every room sold, the 14 later check-ins tried | p95 < 100 ms | p95 17.1 ms (p50 13.0 ms) |
+  | `POST …/bookings`, 2 rooms | p95 < 300 ms | p95 34.5 ms (p50 28.4 ms) |
+  | landing page LCP, Lighthouse mobile, 10-photo gallery of a 12 MP photo | < 1.5 s | 1.21 s (1207, 1206, 1206 ms) |
+  | results page LCP | < 1.5 s | 1.21 s (1205, 1205, 1206 ms) |
+  | steps from the results to a booking | ≤ 3 | 3 (choose, details, book) |
+
+  The no-result search's 14-day scan, flagged in review, costs about 5 ms more at p95: no change needed. The LCP gate first measured 4.4 s (landing) and 5.0 s (results). Off-screen gallery slides downloading with the page: 2.4 to 2.6 s once only the first loads. Preloading the photo changed nothing (it was found early already), nor did the phone's `sizes` and 4:3 hero alone (2.1 to 2.6 s: the 194 KB `md` AVIF is still the smallest that covers a phone). With the 46 KB `phone` rendition, scripts that start only after the first frame and below-the-fold galleries waiting for hydration, every run is about 1.21 s.
+- **Waits for Phase 7c** (online payment): the hold stage between details and confirmation (hold, pay, confirm on the webhook; `reservation.hold_expires_at` exists), card guarantees and enforced deposits. The three guest steps stay as they are.
+- **Waits for Phase 8b** (Channex): metasearch (Google Hotel Ads, free booking links) and channel-delivered bookings.
+- **Out of scope:** promo codes, member rates, packages and add-ons, chain search, other languages, guest accounts and modifications, custom layouts, analytics; custom-host TLS and DNS stay a manual Cloudflare for SaaS step.
+- **The advisory deposit is labelled "before taxes"** on the book page and in the email (`Deposit (before taxes): …`): it keeps the one amount the staff screens, the night audit and the deposit folio use, priced like the cancellation penalty, rather than a second, tax-inclusive figure for guests.
 
 ## Cross-cutting, every phase
 

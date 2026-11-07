@@ -239,7 +239,7 @@ fn poster_is_a_gallery_ladder() {
     let (png, renditions) = poster_ladder("portrait-rotated.mp4");
     assert_eq!(imaging::dimensions(&png, SourceType::Png).unwrap(), (1080, 1920));
     let sizes: Vec<Size> = renditions.iter().filter(|r| r.format == Format::Webp).map(|r| r.size).collect();
-    assert_eq!(sizes, [Size::Thumb, Size::Sm, Size::Md, Size::Lg]);
+    assert_eq!(sizes, [Size::Thumb, Size::Sm, Size::Phone, Size::Md, Size::Lg]);
     for r in renditions.iter().filter(|r| r.size != Size::Thumb) {
         assert!(r.height > r.width, "{:?} {:?}: {}x{}", r.size, r.format, r.width, r.height);
     }

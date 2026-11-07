@@ -7,10 +7,20 @@
 //!   from storage. There is nothing to send when the report is gone, or the recipient is no longer an owner or manager
 //!   of its property (or of every property); a PDF that cannot be read yet is tried again.
 //!
+//! - A booking site reservation's confirmation is rendered from the booking as it is now, read by
+//!   `ibe::confirmation`: the stay, its rooms and totals with the taxes on the bill, the cancellation terms it kept,
+//!   any advisory deposit, the hotel's contact details and the manage link. It is sent in the hotel's name, with
+//!   replies going to the hotel's contact email. There is nothing to send when the reservation is gone or its manage
+//!   token is no longer the job's.
+//!
+//! - A booking site reservation's cancellation is rendered from the booking as it is now, read by `ibe::cancellation`:
+//!   the stay, and what cancelling cost. It carries no link. There is nothing to send when the reservation is gone or
+//!   a room of it is not cancelled.
+//!
 //! The answer is 204 once the email is sent, also when there is nothing to send or the provider refused it for good,
 //! which is logged as an error: delivering the job again cannot help. It is 503 when the send may succeed later, so the
-//! bus delivers the job again, and 400 for a body that is not a job. An invitation's job carries its token, so nothing
-//! here logs the job's fields (its `Debug` hides the token), the body or a decoding error (which may quote the
+//! bus delivers the job again, and 400 for a body that is not a job. An invitation's and a booking's job carry a
+//! token, so nothing here logs the job's fields (its `Debug` hides the token), the body or a decoding error (which may quote the
 //! payload).
 
 use std::collections::HashMap;
@@ -48,6 +58,12 @@ pub(crate) async fn mail(State(svc): State<JobsSvc>, body: Bytes) -> StatusCode 
         }
         MailJob::Report { tenant_id, report_id, user_id } => {
             report_message(&svc, TenantId(*tenant_id), *report_id, *user_id).await
+        }
+        MailJob::IbeConfirmation { tenant_id, reservation_id, token } => {
+            confirmation_message(&svc, TenantId(*tenant_id), *reservation_id, token).await
+        }
+        MailJob::IbeCancellation { tenant_id, reservation_id, rooms } => {
+            cancellation_message(&svc, TenantId(*tenant_id), *reservation_id, rooms).await
         }
     };
     let message = match message {
@@ -174,7 +190,7 @@ fn render(row: &InvitationRow, properties: &HashMap<Uuid, String>, base_url: &st
         escape(&link),
         escape(&expires)
     ));
-    Message { to: row.email.clone(), subject, text, html, attachments: vec![] }
+    Message { to: row.email.clone(), from_name: None, reply_to: None, subject, text, html, attachments: vec![] }
 }
 
 /// The role as the email names it.
@@ -302,7 +318,227 @@ fn render_report(row: &ReportRow, pdf: Vec<u8>) -> Message {
         content_type: "application/pdf".to_owned(),
         bytes: pdf,
     };
-    Message { to: row.email.clone(), subject, text, html, attachments: vec![attachment] }
+    Message {
+        to: row.email.clone(),
+        from_name: None,
+        reply_to: None,
+        subject,
+        text,
+        html,
+        attachments: vec![attachment],
+    }
+}
+
+/// Site booking `reservation`'s confirmation, or `None` when it is not `tenant`'s, its manage token is no longer
+/// `token`, or its booker has no email.
+async fn confirmation_message(
+    svc: &JobsSvc,
+    tenant: TenantId,
+    reservation: Uuid,
+    token: &str,
+) -> Result<Option<Message>, String> {
+    let mut tx = db::begin(&svc.pool, Scope::tenant(tenant)).await.map_err(|e| e.to_string())?;
+    let confirmation = ibe::confirmation(&mut tx, reservation, token).await.map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    let Some(confirmation) = confirmation else {
+        tracing::warn!(%reservation, "no such site booking, or its manage link has changed; nothing sent");
+        return Ok(None);
+    };
+    let link = format!("{}/{}/manage?token={token}", svc.ibe_public_origin, confirmation.code);
+    Ok(Some(render_confirmation(&confirmation, &link)))
+}
+
+fn render_confirmation(booking: &ibe::Confirmation, link: &str) -> Message {
+    // A control character in the name would break the subject and sender headers; it reads as a space.
+    let property: String = booking.property_name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let subject = format!("Your booking at {property}: {}", booking.confirmation_no);
+    let day = |date: Date| {
+        date.format(format_description!("[weekday], [day padding:none] [month repr:long] [year]"))
+            .unwrap_or_else(|_| date.to_string())
+    };
+    let rooms: Vec<String> = booking
+        .rooms
+        .iter()
+        .map(|room| {
+            let children = match room.children {
+                0 => String::new(),
+                1 => ", 1 child".to_owned(),
+                n => format!(", {n} children"),
+            };
+            let adults = if room.adults == 1 { "1 adult".to_owned() } else { format!("{} adults", room.adults) };
+            format!(
+                "{}, {} ({}), {adults}{children}: {}",
+                room.room_type,
+                room.plan,
+                meal_plan_words(room.meal_plan),
+                ibe::money_text(&room.currency, room.total)
+            )
+        })
+        .collect();
+    let totals: Vec<String> =
+        booking.totals.iter().map(|(currency, amount)| ibe::money_text(currency, *amount)).collect();
+    let deposits: Vec<String> = booking
+        .deposits
+        .iter()
+        .map(|deposit| format!("{} by {}", ibe::money_text(&deposit.currency, deposit.amount), day(deposit.due_date)))
+        .collect();
+    let contact: Vec<&str> =
+        [booking.contact_phone.as_deref(), booking.contact_email.as_deref()].into_iter().flatten().collect();
+
+    let mut text = format!(
+        "Dear {},\n\nThank you for booking with {}. Your booking is confirmed, and you pay at the hotel.\n\n\
+         Confirmation number: {}\nCheck-in: {}\nCheck-out: {}\n\n",
+        booking.booker_name,
+        booking.property_name,
+        booking.confirmation_no,
+        day(booking.check_in),
+        day(booking.check_out)
+    );
+    for room in &rooms {
+        text.push_str(&format!("- {room}\n"));
+    }
+    text.push_str(&format!(
+        "\nTotal, taxes included: {}\n\nCancellation: {}\n",
+        totals.join(" and "),
+        booking.cancellation.join(" ")
+    ));
+    if !deposits.is_empty() {
+        text.push_str(&format!(
+            "\nDeposit (before taxes): {}. The hotel will contact you about the deposit.\n",
+            deposits.join(" and ")
+        ));
+    }
+    text.push_str(&format!("\nView or cancel your booking:\n{link}\n"));
+    if !contact.is_empty() {
+        text.push_str(&format!(
+            "\nTo change your booking, contact {}: {}.\n",
+            booking.property_name,
+            contact.join(", ")
+        ));
+    }
+
+    let mut html = format!(
+        "<p>Dear {},</p>\n<p>Thank you for booking with {}. Your booking is confirmed, and you pay at the hotel.</p>\n\
+         <p>Confirmation number: <strong>{}</strong><br>\nCheck-in: {}<br>\nCheck-out: {}</p>\n<ul>\n",
+        escape(&booking.booker_name),
+        escape(&booking.property_name),
+        escape(&booking.confirmation_no),
+        day(booking.check_in),
+        day(booking.check_out)
+    );
+    for room in &rooms {
+        html.push_str(&format!("<li>{}</li>\n", escape(room)));
+    }
+    html.push_str(&format!(
+        "</ul>\n<p>Total, taxes included: <strong>{}</strong></p>\n<p>Cancellation: {}</p>\n",
+        escape(&totals.join(" and ")),
+        escape(&booking.cancellation.join(" "))
+    ));
+    if !deposits.is_empty() {
+        html.push_str(&format!(
+            "<p>Deposit (before taxes): {}. The hotel will contact you about the deposit.</p>\n",
+            escape(&deposits.join(" and "))
+        ));
+    }
+    html.push_str(&format!("<p><a href=\"{}\">View or cancel your booking</a></p>\n", escape(link)));
+    if !contact.is_empty() {
+        html.push_str(&format!(
+            "<p>To change your booking, contact {}: {}.</p>\n",
+            escape(&booking.property_name),
+            escape(&contact.join(", "))
+        ));
+    }
+    Message {
+        to: booking.booker_email.clone(),
+        from_name: Some(property),
+        reply_to: booking.contact_email.clone(),
+        subject,
+        text,
+        html,
+        attachments: vec![],
+    }
+}
+
+/// Site booking `reservation`'s cancellation, charging the `rooms` it closed, or `None` when it is not `tenant`'s, a
+/// room of it is not cancelled, or its booker has no email.
+async fn cancellation_message(
+    svc: &JobsSvc,
+    tenant: TenantId,
+    reservation: Uuid,
+    rooms: &[Uuid],
+) -> Result<Option<Message>, String> {
+    let mut tx = db::begin(&svc.pool, Scope::tenant(tenant)).await.map_err(|e| e.to_string())?;
+    let cancellation = ibe::cancellation(&mut tx, reservation, rooms).await.map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    let Some(cancellation) = cancellation else {
+        tracing::warn!(%reservation, "no cancelled site booking; nothing sent");
+        return Ok(None);
+    };
+    Ok(Some(render_cancellation(&cancellation)))
+}
+
+fn render_cancellation(booking: &ibe::Cancellation) -> Message {
+    let property: String = booking.property_name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let subject = format!("Your booking at {property} is cancelled: {}", booking.confirmation_no);
+    let day = |date: Date| {
+        date.format(format_description!("[weekday], [day padding:none] [month repr:long] [year]"))
+            .unwrap_or_else(|_| date.to_string())
+    };
+    let fee = if booking.penalty.is_empty() {
+        "There is no cancellation charge.".to_owned()
+    } else {
+        let amounts: Vec<String> =
+            booking.penalty.iter().map(|(currency, amount)| ibe::money_text(currency, *amount)).collect();
+        format!("The cancellation charge under your booking terms is {}, payable to the hotel.", amounts.join(" and "))
+    };
+    let contact: Vec<&str> =
+        [booking.contact_phone.as_deref(), booking.contact_email.as_deref()].into_iter().flatten().collect();
+
+    let mut text = format!(
+        "Dear {},\n\nYour booking with {} is cancelled.\n\nConfirmation number: {}\nCheck-in: {}\nCheck-out: {}\n\n{fee}\n",
+        booking.booker_name,
+        booking.property_name,
+        booking.confirmation_no,
+        day(booking.check_in),
+        day(booking.check_out)
+    );
+    let mut html = format!(
+        "<p>Dear {},</p>\n<p>Your booking with {} is cancelled.</p>\n\
+         <p>Confirmation number: <strong>{}</strong><br>\nCheck-in: {}<br>\nCheck-out: {}</p>\n<p>{}</p>\n",
+        escape(&booking.booker_name),
+        escape(&booking.property_name),
+        escape(&booking.confirmation_no),
+        day(booking.check_in),
+        day(booking.check_out),
+        escape(&fee)
+    );
+    if !contact.is_empty() {
+        text.push_str(&format!("\nFor any question, contact {}: {}.\n", booking.property_name, contact.join(", ")));
+        html.push_str(&format!(
+            "<p>For any question, contact {}: {}.</p>\n",
+            escape(&booking.property_name),
+            escape(&contact.join(", "))
+        ));
+    }
+    Message {
+        to: booking.booker_email.clone(),
+        from_name: Some(property),
+        reply_to: booking.contact_email.clone(),
+        subject,
+        text,
+        html,
+        attachments: vec![],
+    }
+}
+
+/// A meal plan as the email names it.
+fn meal_plan_words(meal_plan: rates::MealPlan) -> &'static str {
+    match meal_plan {
+        rates::MealPlan::Ro => "room only",
+        rates::MealPlan::Bb => "bed and breakfast",
+        rates::MealPlan::Hb => "half board",
+        rates::MealPlan::Fb => "full board",
+    }
 }
 
 /// A month as the monthly email names it: "October 2026".

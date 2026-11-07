@@ -30,6 +30,10 @@
 //!   for a quarter of its 160 guest folios (two lines a day, paid every 4 days, one folio open for a quarter before and
 //!   settled within it) in under 300 ms at p95 (200 samples each); the `render_reports` step of a close that ends a month
 //!   and a quarter (every earlier period already rendered) in under 5 s.
+//! - Phase 9: the booking site's `GET …/search` (3 nights, 2 rooms, 12 room types, 5 `IBE` plans), through the public
+//!   route with its per-IP limit and tenant resolution, in under 100 ms at p95, and so too when every room is sold and
+//!   the 14 later check-ins are tried; `POST …/bookings` for 2 rooms, a fresh `Idempotency-Key` each and Turnstile
+//!   answered by a local stand-in, in under 300 ms at p95 (100 samples).
 //!
 //! Ignored by default because debug builds are several times slower. Run them in release mode, one at a time:
 //!
@@ -2111,4 +2115,248 @@ async fn invoice_pdf_ready_under_2s(_: PgPoolOptions, opts: PgConnectOptions) {
     let median = runs[INVOICE_RUNS / 2];
     println!("invoice issue to pdf_key set, median of {INVOICE_RUNS}: {median:?}");
     assert!(median < Duration::from_secs(2), "median {median:?} is over the 2 s gate");
+}
+
+/// The booking site's gate property: [`property_with_room_types`]' 12 types with 10 rooms each, sold on 5 `IBE` plans
+/// for anyone, priced for `days` days from the business date: `BAR` in USD (room only, breakfast and half board, with a
+/// cancellation policy and an advisory deposit), 3 levels of derived plans below it, and `LOCAL` in LKR (room only and
+/// breakfast); its booking site enabled, coded `RATES`.
+struct IbeHotel {
+    app: TestApp,
+    superuser: PgPool,
+    day0: time::Date,
+    types: Vec<Value>,
+    bar: Value,
+}
+
+impl IbeHotel {
+    const PLANS: usize = 5;
+
+    async fn new(opts: PgConnectOptions, days: i64) -> Self {
+        const ROOMS_PER_TYPE: u32 = 10;
+        let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
+        let app = TestApp::new(opts).await;
+        let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+        let (path, day0, types) = property_with_room_types(&app, &owner).await;
+        for (index, room_type) in types.iter().enumerate() {
+            let first = (u32::try_from(index).unwrap() + 1) * 100 + 1;
+            let range = json!({"room_type_id": room_type, "first": first, "last": first + ROOMS_PER_TYPE - 1});
+            post(&app, &owner, &format!("{path}/rooms/bulk"), range).await;
+        }
+        let policy = json!({"name": "Flexible", "rules": [{"days_before_arrival": 2,
+                            "penalty": {"kind": "nights", "value": 1}}], "no_show": {"kind": "percent", "value": 10000}});
+        let policy = post(&app, &owner, &format!("{path}/cancellation-policies"), policy).await.body;
+        let mut bar = plan_with_meals("BAR", &types, None, &["RO", "BB", "HB"]);
+        bar["cancellation_policy_id"] = policy["id"].clone();
+        bar["deposit_rule"] = json!({"kind": "percent", "value": 3000, "due": {"type": "at_booking"}});
+        let bar = post(&app, &owner, &format!("{path}/rate-plans"), bar).await.body;
+        price_every_cell(
+            &app,
+            &owner,
+            &format!("{path}/rate-plans/{}", bar["id"].as_str().unwrap()),
+            day0,
+            &types,
+            days,
+        )
+        .await;
+        let mut parent = bar.clone();
+        for level in 1..=3 {
+            let mut plan = plan_with_meals(&format!("WEB{level}"), &types, Some(&parent), &["RO", "BB", "HB"]);
+            plan["segment"] = json!("IBE");
+            parent = post(&app, &owner, &format!("{path}/rate-plans"), plan).await.body;
+        }
+        let mut local = plan_with_meals("LOCAL", &types, None, &["RO", "BB"]);
+        local["currency"] = json!("LKR");
+        let local = post(&app, &owner, &format!("{path}/rate-plans"), local).await.body;
+        let local_path = format!("{path}/rate-plans/{}", local["id"].as_str().unwrap());
+        price_every_cell(&app, &owner, &local_path, day0, &types, days).await;
+        for (meal_plan, currency, adult_amount) in [("BB", "USD", 1_500), ("HB", "USD", 3_000), ("BB", "LKR", 150_000)]
+        {
+            let supplement = json!({"meal_plan": meal_plan, "currency": currency, "adult_amount": adult_amount,
+                                    "child_amount": adult_amount / 2, "from": day0.to_string()});
+            post(&app, &owner, &format!("{path}/meal-supplements"), supplement).await;
+        }
+        let site = json!({"enabled": true, "description": "By the lagoon"});
+        let saved = app
+            .send_with(
+                Method::PUT,
+                &format!("{path}/ibe-site"),
+                Some(&owner),
+                Some(site),
+                &[("x-goodfolk-csrf", "1"), ("if-match", "\"0\"")],
+            )
+            .await;
+        assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.body);
+        Self { app, superuser, day0, types, bar }
+    }
+
+    /// The search path for non-residents in `rooms` (`2-0,1-0`) for 3 nights from the business date plus `from`.
+    fn search(&self, from: i64, rooms: &str) -> String {
+        let check_in = self.day0 + time::Duration::days(from);
+        let check_out = check_in + time::Duration::days(3);
+        format!(
+            "/api/public/v1/ibe/RATES/search?check_in={check_in}&check_out={check_out}&residency=non_resident&rooms={rooms}"
+        )
+    }
+}
+
+/// An anonymous request to the public API from the socket peer `peer`, as a guest's browser sends it: no cookie and no
+/// CSRF header.
+async fn public(
+    app: &TestApp,
+    method: Method,
+    path: &str,
+    peer: &str,
+    body: Option<&Value>,
+    key: Option<&str>,
+) -> TestResponse {
+    let mut builder = axum::http::Request::builder().method(method).uri(path).header("origin", "http://localhost:5174");
+    if let Some(key) = key {
+        builder = builder.header("idempotency-key", key);
+    }
+    let mut request = match body {
+        Some(body) => builder
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(body.to_string())),
+        None => builder.body(axum::body::Body::empty()),
+    }
+    .unwrap();
+    request.extensions_mut().insert(axum::extract::ConnectInfo(peer.parse::<std::net::SocketAddr>().unwrap()));
+    let response = tower::ServiceExt::oneshot(app.router.clone(), request).await.unwrap();
+    let (status, headers) = (response.status(), response.headers().clone());
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap() };
+    TestResponse { status, headers, body }
+}
+
+/// A guest address of its own for request `round`, so the per-IP limits (60 searches and 5 bookings a minute) count
+/// every request, as for guests, without refusing the gate's.
+fn guest_peer(round: usize) -> String {
+    format!("10.9.{}.{}:40000", round / 250, round % 250 + 1)
+}
+
+/// p95 of `searches` of `path` from distinct guests, after 20 to warm up; each answer is checked by `check`.
+async fn time_searches(hotel: &IbeHotel, path: &str, check: impl Fn(&Value)) -> (Duration, Duration) {
+    let mut samples: Vec<Duration> = Vec::with_capacity(SAMPLES);
+    for round in 0..SAMPLES + 20 {
+        let peer = guest_peer(round);
+        let started = Instant::now();
+        let response = public(&hotel.app, Method::GET, path, &peer, None, None).await;
+        let elapsed = started.elapsed();
+        assert_eq!(response.status, StatusCode::OK, "{:?}", response.body);
+        check(&response.body);
+        if round >= 20 {
+            samples.push(elapsed);
+        }
+    }
+    samples.sort();
+    (samples[SAMPLES / 2], samples[p95_index(SAMPLES)])
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn ibe_search_p95_under_100ms(_: PgPoolOptions, opts: PgConnectOptions) {
+    const SOLD_OUT_FROM: i64 = 60;
+    let hotel = IbeHotel::new(opts, 90).await;
+    // Every room of every type sold for 3 weeks: a search there has no result and tries the 14 later check-ins.
+    sqlx::query("update inventory_day set sold = physical where date >= $1 and date < $2")
+        .bind(hotel.day0 + time::Duration::days(SOLD_OUT_FROM))
+        .bind(hotel.day0 + time::Duration::days(SOLD_OUT_FROM + 21))
+        .execute(&hotel.superuser)
+        .await
+        .unwrap();
+
+    let (p50, p95) = time_searches(&hotel, &hotel.search(1, "2-0,1-0"), |body| {
+        let types = body["room_types"].as_array().unwrap();
+        assert_eq!(types.len(), ROOM_TYPES as usize, "{body:?}");
+        assert_eq!(types[0]["plans"].as_array().map(Vec::len), Some(IbeHotel::PLANS), "{body:?}");
+    })
+    .await;
+    let (none_p50, none_p95) = time_searches(&hotel, &hotel.search(SOLD_OUT_FROM, "2-0,1-0"), |body| {
+        assert_eq!((&body["room_types"], &body["next_available"]), (&json!([]), &Value::Null), "{body:?}");
+    })
+    .await;
+
+    println!("ibe search, 3 nights x 2 rooms, {ROOM_TYPES} types x 5 IBE plans: p50 {p50:?}, p95 {p95:?}");
+    println!("ibe search, sold out with no check-in free in 14 days: p50 {none_p50:?}, p95 {none_p95:?}");
+    assert!(p95 < Duration::from_millis(100), "p95 {p95:?} is over the 100 ms gate");
+    assert!(none_p95 < Duration::from_millis(100), "sold out: p95 {none_p95:?} is over the 100 ms gate");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+#[ignore = "performance gate; run in release mode (see the module docs)"]
+async fn ibe_booking_p95_under_300ms(_: PgPoolOptions, opts: PgConnectOptions) {
+    const WARMUP: usize = 10;
+    const BOOKINGS: usize = 100;
+    let hotel = IbeHotel::new(opts, i64::try_from(BOOKINGS + WARMUP).unwrap() + 10).await;
+    let app = common::turnstile::with_turnstile(&hotel.app).await;
+    let path = "/api/public/v1/ibe/RATES/bookings";
+
+    let mut samples: Vec<Duration> = Vec::with_capacity(BOOKINGS);
+    for round in 0..BOOKINGS + WARMUP {
+        // A distinct check-in each round, so bookings never wait on one another's counter locks.
+        let from = i64::try_from(round).unwrap() + 1;
+        let peer = guest_peer(round);
+        let rooms =
+            [(&hotel.types[round % hotel.types.len()], "BB"), (&hotel.types[(round + 5) % hotel.types.len()], "RO")];
+        let search = public(&app, Method::GET, &hotel.search(from, "2-0,2-0"), &peer, None, None).await;
+        assert_eq!(search.status, StatusCode::OK, "{:?}", search.body);
+        let mut totals = serde_json::Map::new();
+        for (index, (room_type, meal_plan)) in rooms.iter().enumerate() {
+            let offered = search.body["room_types"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|offered| offered["room_type_id"] == **room_type);
+            let plan = offered.unwrap()["plans"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|plan| plan["rate_plan_id"] == hotel.bar["id"]);
+            let offer = plan.unwrap()["meal_plans"].as_array().unwrap().iter().find(|offer| {
+                offer["meal_plan"] == *meal_plan && offer["rooms"].as_array().unwrap().contains(&json!(index))
+            });
+            let total =
+                offer.unwrap()["total"].as_i64().unwrap() + totals.get("USD").and_then(Value::as_i64).unwrap_or(0);
+            totals.insert("USD".into(), json!(total));
+        }
+        let check_in = hotel.day0 + time::Duration::days(from);
+        let body = json!({
+            "turnstile_token": common::turnstile::passing(),
+            "residency": "non_resident",
+            "booker": {"first_name": "Ada", "last_name": "Booker", "email": format!("guest{round}@example.com"),
+                       "phone": "+94 77 123 4567", "country": "GB", "arrival_time": "14:30"},
+            "rooms": rooms.iter().map(|(room_type, meal_plan)| json!({"room_type_id": room_type,
+                "rate_plan_id": hotel.bar["id"], "meal_plan": meal_plan, "adults": 2, "children": 0})).collect::<Vec<_>>(),
+            "check_in": check_in,
+            "check_out": check_in + time::Duration::days(3),
+            "special_requests": "A quiet room, please",
+            "expected_totals": totals,
+            "agreed": true,
+        });
+        let key = Uuid::now_v7().to_string();
+        let started = Instant::now();
+        let booked = public(&app, Method::POST, path, &peer, Some(&body), Some(&key)).await;
+        let elapsed = started.elapsed();
+        assert_eq!(booked.status, StatusCode::CREATED, "{:?}", booked.body);
+        assert!(booked.body["manage_url"].is_string(), "{:?}", booked.body);
+        // The first ten warm the connection pool and Postgres' caches.
+        if round >= WARMUP {
+            samples.push(elapsed);
+        }
+    }
+
+    let booked: i64 = sqlx::query_scalar(
+        "select count(*) from reservation_room rr join reservation r on r.id = rr.reservation_id
+         where r.source = 'ibe' and r.created_by is null",
+    )
+    .fetch_one(&hotel.superuser)
+    .await
+    .unwrap();
+    assert_eq!(booked, i64::try_from(2 * (BOOKINGS + WARMUP)).unwrap());
+    samples.sort();
+    let p50 = samples[BOOKINGS / 2];
+    let p95 = samples[p95_index(BOOKINGS)];
+    println!("ibe booking, 2 rooms x 3 nights, {BOOKINGS} samples: p50 {p50:?}, p95 {p95:?}");
+    assert!(p95 < Duration::from_millis(300), "p95 {p95:?} is over the 300 ms gate");
 }

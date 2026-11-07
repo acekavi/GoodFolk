@@ -312,12 +312,12 @@ async fn sweep(pool: &PgPool, storage: &Storage) -> Result<(), String> {
     Ok(())
 }
 
-/// The bucket an orphan's object is in: a gallery photo's or video's renditions are public; its raw upload, archive
-/// and `ready` marker, and every object of any other asset, are private.
+/// The bucket an orphan's object is in: a gallery photo's or video's or a booking site logo's renditions are public;
+/// its raw upload, archive and `ready` marker, and every object of any other asset, are private.
 fn orphan_bucket(purpose: Purpose, key: &str) -> Bucket {
     let name = key.rsplit('/').next().unwrap_or_default();
     let private_object = name == "upload" || name == "ready" || name.starts_with("archive.");
-    if matches!(purpose, Purpose::Gallery | Purpose::GalleryVideo) && !private_object {
+    if matches!(purpose, Purpose::Gallery | Purpose::GalleryVideo | Purpose::IbeLogo) && !private_object {
         Bucket::Public
     } else {
         Bucket::Private

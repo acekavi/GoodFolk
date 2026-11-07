@@ -22,6 +22,7 @@ futures.workspace = true
 fx.workspace = true
 garde.workspace = true
 housekeeping.workspace = true
+ibe.workspace = true
 identity.workspace = true
 laundry.workspace = true
 mail.workspace = true
@@ -32,6 +33,7 @@ property.workspace = true
 proto.workspace = true
 rates.workspace = true
 reports.workspace = true
+reqwest.workspace = true
 reservations.workspace = true
 rooms.workspace = true
 rust_decimal.workspace = true
@@ -40,6 +42,7 @@ serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 storage.workspace = true
+subtle = "2"
 svc-auth.workspace = true
 tax.workspace = true
 thiserror.workspace = true
@@ -48,6 +51,7 @@ tokio.workspace = true
 tokio-stream.workspace = true
 tokio-util.workspace = true
 tonic = { workspace = true, features = ["tls-ring", "tls-webpki-roots"] }
+tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -60,11 +64,9 @@ flate2.workspace = true
 http-body-util.workspace = true
 jobs-svc.workspace = true
 media-svc.workspace = true
-reqwest.workspace = true
 tokio = { workspace = true, features = ["net"] }
 # TaskTracker, for the in-process jobs-svc.
 tokio-util = { workspace = true, features = ["rt"] }
-tower.workspace = true
 
 [lints]
 workspace = true

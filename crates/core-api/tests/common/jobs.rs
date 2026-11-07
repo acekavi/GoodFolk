@@ -26,6 +26,7 @@ pub async fn serve(opts: PgConnectOptions) -> SocketAddr {
         tracker: TaskTracker::new(),
         mailer: Arc::new(mail::DevMailer { dir: std::env::temp_dir().join("goodfolk-core-api-jobs-outbox") }),
         app_base_url: "http://app.test".to_owned(),
+        ibe_public_origin: "http://book.test".to_owned(),
     };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

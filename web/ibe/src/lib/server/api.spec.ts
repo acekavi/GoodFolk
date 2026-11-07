@@ -1,0 +1,91 @@
+import { describe, expect, it, vi } from 'vitest';
+import { clientAddress, startupProblem, startupWarning, toApi } from './api';
+
+const PUBLIC = 'https://api.example.lk';
+const PRIVATE = 'https://core-api.internal';
+const SECRET = 'an-ssr-secret-of-at-least-32-characters';
+
+describe('a server render’s API call', () => {
+	it('goes to the private origin naming the guest, with the SSR secret', () => {
+		const sent = toApi(
+			new Request(`${PUBLIC}/api/public/v1/ibe/GAL/search?rooms=2-0`),
+			PUBLIC,
+			PRIVATE,
+			'203.0.113.7',
+			SECRET
+		);
+
+		expect(sent.url).toBe(`${PRIVATE}/api/public/v1/ibe/GAL/search?rooms=2-0`);
+		expect(sent.headers.get('x-ibe-client-ip')).toBe('203.0.113.7');
+		expect(sent.headers.get('x-ibe-ssr-secret')).toBe(SECRET);
+	});
+
+	it('names no guest without a secret, as core-api would ignore it', () => {
+		const sent = toApi(
+			new Request(`${PUBLIC}/api/public/v1/ibe/GAL/site`),
+			PUBLIC,
+			PRIVATE,
+			'203.0.113.7',
+			undefined
+		);
+
+		expect(sent.url).toBe(`${PRIVATE}/api/public/v1/ibe/GAL/site`);
+		expect(sent.headers.has('x-ibe-client-ip')).toBe(false);
+		expect(sent.headers.has('x-ibe-ssr-secret')).toBe(false);
+	});
+
+	it('never sends the secret anywhere but the API', () => {
+		const elsewhere = new Request('https://cdn.example.lk/photo.webp');
+
+		const sent = toApi(elsewhere, PUBLIC, PRIVATE, '203.0.113.7', SECRET);
+
+		expect(sent).toBe(elsewhere);
+		expect(sent.headers.has('x-ibe-ssr-secret')).toBe(false);
+	});
+});
+
+describe('the guest’s address', () => {
+	it('is left out, with one warning, when adapter-node cannot tell it', () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const ip = clientAddress(() => {
+			throw new Error(
+				'Address header was specified with ADDRESS_HEADER=CF-Connecting-IP but is absent'
+			);
+		});
+
+		expect(ip).toBeNull();
+		expect(warn).toHaveBeenCalledOnce();
+		const sent = toApi(
+			new Request(`${PUBLIC}/api/public/v1/ibe/GAL/site`),
+			PUBLIC,
+			PRIVATE,
+			ip,
+			SECRET
+		);
+		expect(sent.url).toBe(`${PRIVATE}/api/public/v1/ibe/GAL/site`);
+		expect(sent.headers.has('x-ibe-client-ip')).toBe(false);
+		expect(sent.headers.has('x-ibe-ssr-secret')).toBe(false);
+		warn.mockRestore();
+	});
+
+	it('is the one adapter-node tells', () => {
+		expect(clientAddress(() => '203.0.113.7')).toBe('203.0.113.7');
+	});
+});
+
+describe('starting the server', () => {
+	it('refuses production without the SSR secret', () => {
+		expect(startupProblem('production', undefined)).toContain('IBE_SSR_SECRET');
+		expect(startupProblem('production', SECRET)).toBeNull();
+		expect(startupProblem('development', undefined)).toBeNull();
+		expect(startupProblem(undefined, undefined)).toBeNull();
+	});
+
+	it('warns in production when the guest’s address has no source', () => {
+		expect(startupWarning('production', undefined)).toContain('ADDRESS_HEADER');
+		expect(startupWarning('production', '')).toContain('ADDRESS_HEADER');
+		expect(startupWarning('production', 'CF-Connecting-IP')).toBeNull();
+		expect(startupWarning('development', undefined)).toBeNull();
+		expect(startupWarning(undefined, undefined)).toBeNull();
+	});
+});

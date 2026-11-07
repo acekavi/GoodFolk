@@ -1,4 +1,5 @@
-//! The CI quality gate: every rendition of every image fixture scores SSIMULACRA2 >= 80.
+//! The CI quality gate: every rendition of every image fixture scores SSIMULACRA2 >= 80, and the phone rendition >= 45
+//! (`quality_target`).
 
 use std::{fs, path::PathBuf};
 
@@ -7,7 +8,7 @@ use fast_image_resize::{
     images::{Image, ImageRef},
 };
 use image::{ImageFormat, RgbaImage, imageops};
-use imaging::{Format, Profile, QUALITY_TARGET, Rendition, SourceType, decode, process, score};
+use imaging::{Format, Profile, Rendition, SourceType, decode, process, quality_target, score};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
@@ -95,9 +96,12 @@ fn quality_gate() {
                 r.score,
                 r.bytes.len()
             );
-            lowest = lowest.min(exact);
-            assert!(exact >= QUALITY_TARGET, "{name} {:?} {:?} scored {exact:.2}", r.size, r.format);
+            let target = quality_target(r.size);
+            if r.size != imaging::Size::Phone {
+                lowest = lowest.min(exact);
+            }
+            assert!(exact >= target, "{name} {:?} {:?} scored {exact:.2}, under {target}", r.size, r.format);
         }
     }
-    println!("lowest exact score: {lowest:.2}");
+    println!("lowest exact score but the phone's: {lowest:.2}");
 }

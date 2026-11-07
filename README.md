@@ -22,6 +22,7 @@ Multi-tenant, cloud-hosted hotel property management system.
 | `modules/*` | Domain modules (`identity`, `property`, `rooms`, `rates`, `reservations`, `housekeeping`, `folio`, `tax`, `fx`, `audit`, …) |
 | `migrations/` | SQL migrations, applied by `core-api migrate` |
 | `web/pms` | SvelteKit staff app (single-page), and the installable housekeeper app under `/hk` |
+| `web/ibe` | The guest booking site: SvelteKit, server-rendered on Node (`Dockerfile.ibe`), one site per property at `/<CODE>` or its custom host |
 
 ## Development
 
@@ -41,7 +42,10 @@ cargo run -p core-api -- migrate   # as the schema owner
 cargo run -p core-api              # API on http://localhost:8080, as the goodfolk_api role
 
 cd web/pms && bun install && bun run dev   # app on http://localhost:5173
+cd web/ibe && bun install && bun run dev   # booking site on http://localhost:5174/<CODE>
 ```
+
+The booking site shows a property once its **Settings → Booking site** is enabled and a rate plan has segment `IBE`. Port 5174 is core-api's development `IBE_PUBLIC_ORIGIN`, so its CORS admits the site's bookings; the site's own settings are under [Booking site](#booking-site-webibe).
 
 ### Media services
 
@@ -141,6 +145,10 @@ cargo fmt --all --check
 cd web/pms
 bun run api:schemas && bun run codegen   # after any API change; commit the result
 bun run lint && bun run check && bun run test && bun run build
+
+cd ../ibe
+bun run api:schemas && bun run codegen   # after a public API change; commit the result
+bun run lint && bun run check && bun run test && bun run build
 ```
 
 ### Performance gates
@@ -169,6 +177,9 @@ Run by hand, because shared CI machines make timings noisy, and one at a time (`
 # reportSummary for 31 days of the same 200 rooms: p95 under 100 ms
 # tdlReport and ssclReport for a quarter of its folios, SSCL reading a folio open since the quarter before: p95 under 300 ms each
 # the close that ends a month and a quarter queues its reports (render_reports) in under 5 s
+# the booking site's search (GET .../search) for 3 nights and 2 rooms on a 12-type property with 5 IBE plans: p95
+# under 100 ms, and the same when every room is sold and the 14 later check-ins are tried too
+# a 2-room booking (POST .../bookings, Turnstile answered by a local stand-in): p95 under 300 ms
 DATABASE_URL=$DATABASE_OWNER_URL cargo test --release -p core-api --test perf -- --ignored --nocapture --test-threads=1
 
 # a 30 s 1080p clip is ready (every rendition and the poster) in under 90 s, and a 60 s 4K HDR clip in under 5 min;
@@ -185,6 +196,14 @@ cargo test --release -p media-svc --test video_perf -- --nocapture --test-thread
 # 3G-class network, service worker included, takes under 2 s (p90 of five cold contexts)
 # a room type gallery of 50 photos paints in under 400 ms (p90 of ten cold loads); needs RustFS
 cd web/pms && E2E_PERF=1 E2E_DATABASE_URL=... bun run test:e2e --grep @perf
+
+# the booking site's landing and results pages reach LCP under 1.5 s on Lighthouse's mobile profile (simulated slow
+# 4G on a mid-range phone) for a property with a 10-photo gallery, every one of 3 runs. It builds and starts core-api
+# and media-svc (release) and the site's `vite preview` on ports of their own, seeds the hotel (the photos are the
+# renditions of a 12 MP JPEG, stored in RustFS) and runs `bunx @lhci/cli@0.15.1 autorun` (needs the internet the first time)
+# with Playwright's Chromium; RustFS must be running. Reports land in web/ibe/.lighthouseci. Measured about 1.21 s on
+# both pages, every run (ROADMAP, Phase 9).
+cd web/ibe && E2E_DATABASE_URL=... E2E_OWNER_URL=... bun run lighthouse
 ```
 
 ### End-to-end tests
@@ -693,6 +712,53 @@ This script sets up its own small hotel, closes a week of it, and reads what the
 
 Not exercised here: a render that fails (the report is stored as `failed`, the owners and managers see the banner `Reports: …` and the next close queues it again; a report rendered on demand that fails shows its error on the page and raises no banner), a catch-up close after a long gap (it renders every older period and emails only the one that just ended), the SSCL exemption for foreign-currency card and bank-transfer payments with its earlier-month line (`modules/reports/tests/sscl.rs`), credit notes in Schedule 04 and purchaser TINs in Schedule 01 (`modules/reports/tests/vat.rs`), the 0.5% and 1% TDL boundary with SLTDA's worked example (`modules/reports/tests/tdl.rs`), and exactly-once mail (`crates/core-api/tests/reports.rs`, `crates/jobs-svc/tests`). The browser flows are in `web/pms/tests/e2e/reports.spec.ts`.
 
+### Trying the booking site by hand
+
+This walkthrough is for trying the guest booking site on your own computer, as a hotel owner would: you set the site up in the PMS, then book and cancel as a guest in another browser window. Nothing here needs a developer once the services are running (step 1). No payment is taken at any point: every booking is "pay at the hotel". D is today.
+
+1. **Start everything.** Each command in its own terminal, from the repository folder, with the exports from Development (including `PUSH_ENDPOINT_MAIL_SEND`, so that the emails are sent). Apply the migrations (through `0048`) first. media-svc and RustFS are needed only for photos (step 3); jobs-svc sends the emails to a folder on your disk instead of a real inbox (see [Email](#email)). The booking form's bot check uses Cloudflare Turnstile's test keys, which always pass but still call Cloudflare, so you need the internet.
+
+   ```sh
+   docker compose up -d postgres              # or your own Postgres on :5432
+   deploy/dev/rustfs.sh start
+   cargo run -p core-api -- migrate
+   cargo run -p core-api              # the API, http://localhost:8080
+   cargo run -p media-svc             # photos, http://localhost:8090
+   cargo run -p jobs-svc              # emails, http://localhost:8091
+   cd web/pms && VITE_IBE_PUBLIC_ORIGIN=http://localhost:5174 bun run dev   # the PMS, http://localhost:5173
+   cd web/ibe && bun run dev          # the booking site, http://localhost:5174
+   ```
+
+2. **The hotel.** In the PMS (http://localhost:5173) sign up as the owner (`owner@example.com`, tenant `Lagoon Hotels`) and add a property coded `GAL`. On **Room types** add `DLX` (Deluxe, up to 2 adults and 1 child) and `STD` (Standard), and on **Rooms** add four rooms of each. In **Settings**, the property, **Currencies and exchange rates**, set a `USD` rate (for example `300`), since the plan below sells in dollars.
+3. **What guests see of each room.** On **Room types**, edit `DLX`: write a short **Description** (up to 1,000 characters), and add a few photos to its gallery (and a tour video if you like). The beds and amenities you set there are shown too. Do the same for `STD`.
+4. **A rate plan for the site.** The site sells only plans whose segment is **IBE**. On **Rate plans** add `WEB` (name `Best available`, standard, currency USD, segment `IBE`, rooms `DLX` and `STD`, meal plans `RO` and `BB`). Bulk-change it to `100.00` a night for the next two weeks, and on **Meal plans** add a `BB` supplement in USD (`15.00` an adult). Optionally give the plan a cancellation policy (**Cancellation policies**: for example free until 2 days before arrival, then one night) and a deposit rule (**Deposit**: 30% at booking). A plan with a residency (FIT-L for residents, FIT-F for visitors) is shown only to guests who answer the residency question that way; a plan with none is shown to everyone.
+5. **Turn the site on.** Open **Settings**, the property, **Booking site** (owners and managers only). Until step 4 is done the page says `No rate plans are sold on the booking site yet: give a plan the IBE segment.` Tick **Booking site is on**, write a **Short description** (up to 500 characters), the **Contact phone** and **Contact email** (shown on the site and in the emails), the **Booking terms** and **Privacy notice** (the guest agrees to both), and pick a **Hero image** from the gallery photos and an **Accent colour** (it must be dark enough for white text: `#1d4ed8` works, a pale yellow is refused). A **Logo** is optional. Leave **Custom host** empty: a hotel's own domain needs a DNS and Cloudflare step at deployment (ARCHITECTURE §10). **Save** (`Saved.`); **Preview**, beside the switch, opens the site (it shows when the PMS was started with `VITE_IBE_PUBLIC_ORIGIN`, as in step 1).
+6. **Search, as a guest.** In a private browser window open http://localhost:5174/GAL. You see the hero, the description and the rooms with their photos. Under **Find a room**, answer **Are you a resident of Sri Lanka?** first (no price is shown before it): choose `No, I am visiting`. Pick check-in D + 1 and check-out D + 4, add a second room with **Add a room**, and **Show rooms and prices**.
+7. **The results.** For each room you asked for (`Choose room 1 of 2 (2 adults)`), every room type free for your dates lists its plans, the cancellation policy in plain words, and a price per meal plan (room only, breakfast): the total for the stay, with taxes and service charge (`Prices are for the whole stay, with taxes and service charge.`). **Price per night** opens the nights and, under `Included in the price:`, each tax and the service charge. Choose a Deluxe for room 1 and a Standard for room 2, then **Continue to your details**. That is the second of at most three steps.
+8. **Book.** Fill in your name, email (any address: nothing is really sent), phone, country and an optional arrival time; a name per room is optional. Read the summary under **Your stay**: each room, the total per currency (`Taxes and service charge included. You pay at the hotel.`), the cancellation terms and, with a deposit rule, the advisory deposit as `Deposit (before taxes): …` with "The hotel will contact you about the deposit" (it is never charged). Tick the agreement to the booking terms and privacy notice, wait a moment for the security check to tick itself, and **Book now, pay at the hotel**. The page says `Your booking is confirmed` with a confirmation number like `GAL-000123`. This page is shown once: keep the email.
+9. **The email.** jobs-svc wrote it to the dev outbox folder. To read the newest one:
+
+   ```sh
+   jq -r '.to, .subject, .text' "$(ls -t target/mail-outbox/*.json | head -1)"
+   ```
+
+   The subject is `Your booking at <hotel>: <confirmation number>`; it has the rooms, the totals, the terms in short, the hotel's contact details and a link `http://localhost:5174/GAL/manage?token=…` to view or cancel. Replies go to the contact email you set.
+10. **In the PMS.** Back in the owner's window open **Reservations**: the booking is there at once, both rooms `Confirmed`, source `Booking site`. Untick the **Booking site** source filter and they disappear; tick it again. Open it: the booker is the guest's name, email, phone and country as typed, a new profile (the site never matches guests by email); each room is `Confirmed` with its plan and nights; and **History** says `The guest, online`. Nothing is guaranteed by card, and the arrival time and any special requests are kept in the reservation's notes.
+11. **Cancel, as the guest.** In the private window open the link from the email. `Your booking` shows the rooms and dates. Under **Cancel this booking** it says what cancelling costs now under the terms the booking was made with (`Cancelling now is free.` here; a penalty is charged exactly as at the front desk, never waived online). **Cancel booking** asks `Cancel the whole booking, every room?`; **Yes, cancel the booking**: `Your booking is cancelled.`, and a cancellation email arrives in the outbox (run the `jq` line again). In the PMS the rooms read `Cancelled`, with the reason `Cancelled by the guest online`. A booking can be cancelled online only while no room is checked in and check-in is after today's business date; after that the page offers no cancel and says to contact the hotel. A wrong or old link (the link works until 30 days after check-out) answers `This link has expired or is not valid`.
+12. **More to try.**
+    - **A price change.** Search, choose and reach the details page, then in the PMS change the plan's price for one of the nights and book: the site says `The price has changed since you searched.`, shows the new total and books only once you confirm it.
+    - **Sold out.** Book the last free room of a type in the PMS while the guest is on the details page: booking then sends the guest back to the results with `That room was just booked; here is what is still available`. Dates with nothing free show `No rooms available for these dates` and, when there is one, the nearest check-in with rooms within 14 days.
+    - **Turning it off.** Untick **Booking site is on** and save: http://localhost:5174/GAL answers `Page not found`.
+13. **The audit log** (as the schema owner):
+
+    ```sh
+    bun -e 'const sql = new Bun.SQL(process.env.DATABASE_OWNER_URL); console.table(await sql`select at, action, actor_user_id, data from audit_log where action ~ ${"^(ibe|reservation)"} order by at desc limit 20`); await sql.close()'
+    ```
+
+    `ibe.booking_created` (actor `ibe`, no user, and no email or phone in the row) and `reservation.created` for the booking; `ibe.booking_cancelled` and a `reservation_room.cancelled` per room, with actor `ibe`, mode `online` and the reason, for the cancel; and your settings saves. The tables keep only the SHA-256 of the manage token.
+
+Not exercised here: the limits (60 searches and 5 bookings a minute from one address, then `429`), a refused bot check, a custom host, and two guests racing for the last room; they are covered by `crates/core-api/tests/ibe.rs` and `modules/ibe/tests`. The browser flow is `web/ibe/tests/e2e/booking.spec.ts`.
+
 ### Configuration
 
 The API (`core-api serve`) reads:
@@ -709,6 +775,10 @@ The API (`core-api serve`) reads:
 | `APP_ENV` | `production` sets `Secure` cookies, disables GraphQL introspection and requires `DATABASE_LISTEN_URL`. |
 | `JOBS_SVC_URL` | jobs-svc's address for gRPC (**Close the day** and **Retry**). Dev default `http://localhost:8091`; required and `https://` in production. |
 | `JOBS_SVC_AUDIENCE` | With `SVC_AUTH=google`: the audience of the ID tokens core-api puts on its calls to jobs-svc. |
+| `IBE_PUBLIC_ORIGIN` | The booking site's origin, e.g. `https://book.example.lk`: a scheme and a host, no path. The public API (`/api/public/v1`) allows it in CORS, beside the custom host of each enabled site, and a site's custom host may not be its host. Dev default `http://localhost:5174`; required, `https://` and without a port in production. |
+| `TRUST_CLOUDFLARE_IP` | `true` takes the public API's client IP (for its per-IP limits) from `CF-Connecting-IP`: set it only behind Cloudflare. Default `false`: the socket peer. **With `true`, core-api must be reachable only through Cloudflare:** Cloud Run's own `*.run.app` URL bypasses it, and through that URL anyone can send `CF-Connecting-IP` themselves, dodging the limits or spending another address's. Turn the URL off or restrict its ingress (internal plus Cloudflare's load balancer, or Cloudflare's IP ranges only) before setting it. The booking site's server needs no such trust: it names guests with `IBE_SSR_SECRET`. |
+| `TURNSTILE_SECRET` | Cloudflare Turnstile's secret key, which verifies the booking form. Dev default Turnstile's published test secret (`1x0000000000000000000000000000000AA`); required in production, and not that one. |
+| `IBE_SSR_SECRET` | Shared with the booking site's server (its own `IBE_SSR_SECRET`). A public API request carrying it in `X-IBE-SSR-Secret` (compared in constant time) is counted for the per-IP limits against the IP in `X-IBE-Client-IP`: the guest a page is being rendered for. Without the right secret those headers are ignored, and the client IP is as `TRUST_CLOUDFLARE_IP` says. Unset by default (nothing is trusted); required in production, at least 32 characters, e.g. `head -c32 /dev/urandom \| base64`. |
 
 core-api no longer reads `FX_IMPORT`: the exchange-rate import moved to jobs-svc (below).
 
@@ -720,7 +790,7 @@ core-api no longer reads `FX_IMPORT`: the exchange-rate import moved to jobs-svc
 |---|---|
 | `DATABASE_URL` | Pooled connection string, as the `goodfolk_api` role (required). Like the API, it refuses a role that bypasses row-level security. |
 | `DATABASE_DIRECT_URL` | Direct, unpooled connection string for the jobs' session advisory locks (a transaction-mode pooler cannot hold one). Required when `APP_ENV=production`; otherwise defaults to `DATABASE_URL`. |
-| `APP_ENV` | `production` logs JSON, requires `DATABASE_DIRECT_URL`, the storage variables, `APP_BASE_URL` and the SES variables, turns the tick off by default, and refuses `SVC_AUTH=secret` and the dev mailer. |
+| `APP_ENV` | `production` logs JSON, requires `DATABASE_DIRECT_URL`, the storage variables, `APP_BASE_URL`, `IBE_PUBLIC_ORIGIN` and the SES variables, turns the tick off by default, and refuses `SVC_AUTH=secret` and the dev mailer. |
 | `PORT` | Listen port (default 8091). One port serves gRPC, `POST /tick`, `POST /mail` and `/healthz`. |
 | `SVC_AUTH`, `INTERNAL_SHARED_SECRET`, `ALLOWED_SERVICE_EMAILS` | Service auth, as for media-svc (below). With `SVC_AUTH=google`, `ALLOWED_SERVICE_EMAILS` lists core-api's runtime service account, the Cloud Scheduler job's service account and the `mail-send` push subscription's service account. |
 | `JOBS_SVC_AUDIENCE` | With `SVC_AUTH=google`: the audience jobs-svc requires on its gRPC calls, `POST /tick` and `POST /mail`; the Cloud Scheduler job's OIDC token and the `mail-send` subscription's use it too. |
@@ -728,10 +798,57 @@ core-api no longer reads `FX_IMPORT`: the exchange-rate import moved to jobs-svc
 | `FX_IMPORT` | `on` (default) or `off`: whether the tick imports the Central Bank's exchange rates (moved from core-api in Phase 7b). An operations switch, allowed in production too: with `off`, rates are set by hand (`PUT …/fx-rates/{date}/{currency}`). The end-to-end suite sets `off`. |
 | `S3_*`, `MEDIA_PUBLIC_BASE_URL` | Storage, for the media sweep, with the same dev defaults as core-api's (see Media engine). |
 | `APP_BASE_URL` | The web app's origin, for the links in emails (`<APP_BASE_URL>/invite/<token>`). Required and `https://` in production; dev default `http://localhost:5173`. |
+| `IBE_PUBLIC_ORIGIN` | The booking site's origin, the same as core-api's, for the manage link in a booking's confirmation email (`<IBE_PUBLIC_ORIGIN>/<CODE>/manage?token=<token>`). A scheme and a host, no path. Dev default `http://localhost:5174`; required, `https://` and without a port in production. |
 | `MAIL_FROM` | Production: the sender address, which SES must have verified. Required. |
 | `AWS_REGION` | Production: the SES region (for example `ap-southeast-1`). Required. |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Production: static keys for an IAM user allowed `ses:SendEmail`. Required: Cloud Run has no AWS instance role. `AWS_SESSION_TOKEN` is optional, for temporary keys. Never printed. |
 | `MAIL_OUTBOX_DIR` | Outside production: the directory the dev mailer writes each message to as JSON. Default `target/mail-outbox`. Ignored in production. |
+
+#### Booking site (web/ibe)
+
+The site renders each page on its server and calls the public API (`/api/public/v1`) from two places: its server
+for the first render, and the guest's browser for everything after (a changed search, the booking, the cancel), so
+core-api's per-IP limits count the guest. It reads, at runtime:
+
+| Variable | Meaning |
+|---|---|
+| `PUBLIC_API_ORIGIN` | Where browsers reach the API, e.g. `https://api.example.lk`. Dev default `http://localhost:8080`. |
+| `IBE_API_ORIGIN` | Where the site's server reaches the API, e.g. core-api's Cloud Run URL. Default `PUBLIC_API_ORIGIN`. |
+| `IBE_SSR_SECRET` | core-api's `IBE_SSR_SECRET`. With it, the server's API calls name the guest they render a page for (`X-IBE-Client-IP`, proved by `X-IBE-SSR-Secret`), so a first render counts against the guest's per-IP limits, not the site's. Server-only: never in the browser's bundle, which `bun run build` checks. Unset (the default), the calls name no one and count against the site's server. Required in production: with `NODE_ENV=production` (the image's), the server refuses to start without it. |
+| `ADDRESS_HEADER`, `XFF_DEPTH` | adapter-node's source of the guest's IP (`getClientAddress()`), which the server names to core-api. Behind Cloudflare, with the site reachable only through it (the same `*.run.app` caution as `TRUST_CLOUDFLARE_IP`), set `ADDRESS_HEADER=CF-Connecting-IP`; a request without the header then names no guest, with a warning in the log, and still renders. Behind other proxies, `ADDRESS_HEADER=X-Forwarded-For` with `XFF_DEPTH` the number of proxies in front. Unset, it is the socket peer, which behind a proxy is the proxy: with `NODE_ENV=production` the server then logs a warning at startup, and still starts. |
+| `PUBLIC_IBE_ORIGIN` | The booking domain, the same as core-api's `IBE_PUBLIC_ORIGIN`: on it a site is `/<CODE>`, and any other host is looked up as a site's custom host (`by-host`, kept for 60 s) and served at its root. Dev default `http://localhost:5174`. |
+| `VITE_IBE_PUBLIC_ORIGIN` | Read by **web/pms** when it is built or started (`bun run dev`, `bun run build`): the booking domain, the same as core-api's `IBE_PUBLIC_ORIGIN`. **Settings → Booking site** uses it for the **Preview** link and the custom host's CNAME hint; unset, neither shows the domain. |
+| `PUBLIC_TURNSTILE_SITEKEY` | Cloudflare Turnstile's site key, the pair of core-api's `TURNSTILE_SECRET`. Dev default Turnstile's test key `1x00000000000000000000AA`, which always passes. The widget's script loads on the book page only. |
+| `PORT`, `HOST` | adapter-node's listen address (default `0.0.0.0:3000`; the image sets `PORT=8080`). Leave `ORIGIN` unset in production: custom hosts share the image, and Cloud Run's TLS makes adapter-node's default `https` right. To run `node build` over plain HTTP locally, set `ORIGIN=http://localhost:5174`. |
+
+The site sets no cookies and loads no analytics or other third-party script. The manage page is sent with
+`Cache-Control: no-store` and `Referrer-Policy: no-referrer`, takes the token out of the address once loaded, reads
+the booking from core-api with the token in a `POST`'s body (never in a URL), and the server logs errors by route,
+never by address.
+
+**Turnstile test keys.** Development and the end-to-end suite use [Cloudflare's published test keys](https://developers.cloudflare.com/turnstile/troubleshooting/testing/), the defaults above. Swap one side to try a refusal:
+
+| Key | Where | Behaviour |
+|---|---|---|
+| `1x00000000000000000000AA` | site key, `PUBLIC_TURNSTILE_SITEKEY` | the visible widget always passes (the default) |
+| `2x00000000000000000000AB` | site key | the visible widget always fails |
+| `3x00000000000000000000FF` | site key | forces an interactive challenge |
+| `1x0000000000000000000000000000000AA` | secret, `TURNSTILE_SECRET` | every token verifies (the default) |
+| `2x0000000000000000000000000000000AA` | secret | every token is refused: a booking answers `400` |
+| `3x0000000000000000000000000000000AA` | secret | refused as already spent (`timeout-or-duplicate`) |
+
+Even the always-pass keys call Cloudflare, so booking needs the internet. Production refuses the test secret. With
+any other secret, core-api also requires a pass to come from the booking form's widget (`action` `booking`) on the
+booking domain or the site's own custom host; the test secret reports every token as solved on `example.com`, so with
+it only the pass itself is checked.
+
+**Deploying the booking site** (details in [ARCHITECTURE.md §10.2](docs/ARCHITECTURE.md)):
+- With `TRUST_CLOUDFLARE_IP=true`, core-api's Cloud Run `*.run.app` URL must be off or its ingress limited to Cloudflare, or anyone can forge `CF-Connecting-IP`; likewise the site's service when it uses `ADDRESS_HEADER=CF-Connecting-IP`.
+- Set the same `IBE_SSR_SECRET` on core-api and the site's server; both refuse to start in production without it.
+- Set `ADDRESS_HEADER` (and `XFF_DEPTH` behind proxies other than Cloudflare) so the site's server sees the guest, not the proxy.
+- The manage page's address carries its token, and the site's Cloud Run request log and Cloudflare's logs record it with its query (core-api is never sent the token in a URL, and the services' own logs leave it out). Add a Cloud Logging exclusion to the `_Default` sink for the site's service, filter `resource.type="cloud_run_revision" AND resource.labels.service_name="<the site's service>" AND httpRequest.requestUrl:"token="`, and leave `ClientRequestURI` (and any query-string field) out of every Cloudflare Logpush job, logging `ClientRequestPath` instead (ARCHITECTURE §10.2).
+- A hotel's own domain is a Cloudflare for SaaS custom hostname, set up by hand, before its host is saved in **Settings → Booking site**; before activating it, check that the site holding the host is that hotel's, and add the host to the Turnstile widget's hostnames.
+- Deploy core-api before media-svc for the Phase 9 release, and never roll core-api back past it once `phone` assets exist: older core-apis read rendition lists strictly. From this release, an unknown size is skipped with a warning, so later sizes need no deploy order (ARCHITECTURE §10.2).
 
 #### Exchange rates
 

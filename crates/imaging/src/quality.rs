@@ -4,13 +4,21 @@ use image::{ImageFormat, RgbaImage};
 use rayon::prelude::*;
 
 use crate::{
-    Format, ImagingError,
+    Format, ImagingError, Size,
     encode::{encode_avif_at, encode_webp, encode_webp_lossless},
     ssim2::Reference,
 };
 
-/// The SSIMULACRA2 score every rendition must reach.
+/// The SSIMULACRA2 score every rendition must reach, but the phone's.
 pub const QUALITY_TARGET: f64 = 80.0;
+/// The SSIMULACRA2 score the phone rendition must reach: lower, so the first image a phone paints is small enough
+/// (about 46 KB of AVIF for a detailed 12 MP photo) to arrive quickly on a slow connection, slightly softer for it.
+pub const PHONE_QUALITY_TARGET: f64 = 45.0;
+
+/// The SSIMULACRA2 score a rendition of `size` must reach.
+pub fn quality_target(size: Size) -> f64 {
+    if size == Size::Phone { PHONE_QUALITY_TARGET } else { QUALITY_TARGET }
+}
 
 /// Lowest and highest encoder quality the search considers.
 const SEARCH_MIN: u8 = 30;
@@ -149,7 +157,7 @@ pub(crate) fn probe(
     Ok(Encoded { bytes, quality, score })
 }
 
-/// The lowest quality in `SEARCH_MIN..=SEARCH_MAX` whose encode of `img` scores at least the target,
+/// The lowest quality in `SEARCH_MIN..=SEARCH_MAX` whose encode of `img` scores at least `target`,
 /// with that encode when it was made (the top of the range is assumed to pass without being tried).
 /// Each round probes several qualities at once and narrows to the gap between the best passing and
 /// the best failing one, so the range of 66 settles in two rounds.
@@ -157,6 +165,7 @@ pub(crate) fn search(
     img: &RgbaImage,
     reference: &Reference,
     format: Format,
+    target: f64,
 ) -> Result<(u8, Option<Encoded>), ImagingError> {
     let (mut fail, mut pass) = (SEARCH_MIN - 1, SEARCH_MAX);
     let mut best: Option<Encoded> = None;
@@ -170,7 +179,7 @@ pub(crate) fn search(
         let probes: Vec<Encoded> =
             points.into_par_iter().map(|q| probe(img, reference, format, q)).collect::<Result<_, _>>()?;
         for p in probes {
-            if p.score >= QUALITY_TARGET {
+            if p.score >= target {
                 if p.quality < pass {
                     pass = p.quality;
                     best = Some(p);
@@ -185,7 +194,7 @@ pub(crate) fn search(
     Ok((pass, best.filter(|b| b.quality == pass)))
 }
 
-/// Encodes `img` at `quality`, stepping the quality up by `BUMP` until the score reaches the target.
+/// Encodes `img` at `quality`, stepping the quality up by `BUMP` until the score reaches `target`.
 /// Past the ceiling a WebP is stored lossless; an AVIF stays at the ceiling (the caller sees its score).
 /// `known` is an encode of `img` already made at `quality`. With `speculate`, a step encodes the next
 /// quality alongside the current one and keeps the lowest that passes, so a miss costs no extra round.
@@ -196,6 +205,7 @@ pub(crate) fn climb(
     mut quality: u8,
     known: Option<Encoded>,
     speculate: bool,
+    target: f64,
 ) -> Result<Encoded, ImagingError> {
     let mut known = known.filter(|k| k.quality == quality);
     loop {
@@ -209,12 +219,12 @@ pub(crate) fn climb(
         } else {
             (known.take().map_or_else(|| probe(img, reference, format, quality), Ok)?, None)
         };
-        if first.score >= QUALITY_TARGET {
+        if first.score >= target {
             return Ok(first);
         }
         let last = second.unwrap_or(first);
-        if last.score >= QUALITY_TARGET || last.quality >= QUALITY_CEILING {
-            if last.score < QUALITY_TARGET && format == Format::Webp {
+        if last.score >= target || last.quality >= QUALITY_CEILING {
+            if last.score < target && format == Format::Webp {
                 let bytes = encode_webp_lossless(img)?;
                 let score = reference.score(&decode_back(&bytes, format)?);
                 return Ok(Encoded { bytes, quality: QUALITY_CEILING, score });

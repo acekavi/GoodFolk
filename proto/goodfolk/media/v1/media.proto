@@ -12,6 +12,7 @@ enum Purpose {
   PURPOSE_ISSUE_PHOTO = 2;
   PURPOSE_GUEST_DOCUMENT = 3;
   PURPOSE_GALLERY_VIDEO = 4;
+  PURPOSE_IBE_LOGO = 5;
 }
 
 message CreateUploadRequest { string tenant_id = 1; string asset_id = 2; Purpose purpose = 3; uint64 bytes = 4; }

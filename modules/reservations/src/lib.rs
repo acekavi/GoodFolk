@@ -37,7 +37,8 @@ pub use detail::{
     reservation_history,
 };
 pub use guests::{
-    Guest, GuestChanges, IdDocType, MAX_GUEST_SEARCH, NewGuest, create_guest, get_guest, search_guests, update_guest,
+    Guest, GuestChanges, IdDocType, MAX_GUEST_SEARCH, NewGuest, create_guest, create_guest_from_site, get_guest,
+    search_guests, update_guest,
 };
 pub use list::{
     ListFilter, ListRequest, MAX_PAGE_SIZE, ReservationRoomPage, ReservationRoomRow, Sort, SortDirection, SortField,
@@ -48,7 +49,8 @@ pub use no_show::{ChangedStay, NoShowRoom, delay_arrival, extend_stay, mark_no_s
 pub use occupants::{RemovedOccupant, RoomOccupant, add_occupant, remove_occupant};
 pub use reservations::{
     CreatedReservation, CreatedRoom, MAX_ROOMS_PER_RESERVATION, NewReservation, NewReservationRoom, ReservationChanges,
-    Source, Total, UpdatedReservation, create_reservation, update_reservation,
+    SITE_ACTOR, Source, Total, UpdatedReservation, create_reservation, create_reservation_from_site,
+    update_reservation,
 };
 pub use stay::{
     CheckInOverride, CheckedIn, CheckedOut, MAX_OVERRIDE_REASON, UndoneCheckIn, check_in, check_out, undo_check_in,
@@ -163,9 +165,10 @@ async fn read_business_date(tx: &mut Tx, property: Uuid) -> Result<Date, Reserva
 /// The SQL for a night's sellable rooms of a room type: the physical count, less what is sold or out of
 /// order, plus the type's overbooking allowance. Positive means at least one more room can be sold that
 /// night. `i` must alias `inventory_day` and `rt` the joined `room_type`; both [`availability`] and
-/// [`create_reservation`] read this figure, so it is written once here rather than copied.
+/// [`create_reservation`] read this figure, as does the booking site's search, so it is written once here rather than
+/// copied.
 /// [`rooms::InventoryDay::available`] stays the plain physical figure and never includes this allowance.
-pub(crate) const SELLABLE: &str = "i.physical - i.sold - i.out_of_order + rt.overbooking";
+pub const SELLABLE: &str = "i.physical - i.sold - i.out_of_order + rt.overbooking";
 
 /// Refuses a stay outside the counter window, `[business date, business date + WINDOW_DAYS)`: it must arrive
 /// on or after the business date and leave by the window's end.

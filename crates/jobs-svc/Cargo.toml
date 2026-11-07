@@ -13,10 +13,12 @@ axum = { workspace = true, features = ["http2"] }
 db.workspace = true
 events.workspace = true
 fx.workspace = true
+ibe.workspace = true
 identity.workspace = true
 mail.workspace = true
 media.workspace = true
 proto.workspace = true
+rates.workspace = true
 reports.workspace = true
 rooms.workspace = true
 serde.workspace = true

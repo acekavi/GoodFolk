@@ -35,7 +35,9 @@ async fn serve() -> anyhow::Result<()> {
     let media_auth = Arc::new(config.media_svc_auth);
     let media = MediaServices::new(storage, &config.media_svc_url, media_auth.clone(), Arc::new(config.internal_auth))?;
     let jobs = JobsServices::new(&config.jobs_svc_url, Arc::new(config.jobs_svc_auth))?;
-    let state = AppState::with_media(pool.clone(), config.production, config.guest_id_keys, media).with_jobs(jobs);
+    let state = AppState::with_media(pool.clone(), config.production, config.guest_id_keys, media)
+        .with_jobs(jobs)
+        .with_ibe(config.ibe);
     // Pushes carry the same credentials as media-svc's gRPC calls. The push bus is for local runs only, where every
     // service takes the one shared secret, so jobs-svc's `mail-send` pushes pass too.
     let push_auth: ::events::HeaderProvider = Arc::new(move || {
@@ -61,8 +63,9 @@ async fn serve() -> anyhow::Result<()> {
 
     let tcp = tokio::net::TcpListener::bind(config.bind_addr).await?;
     tracing::info!(addr = %config.bind_addr, "listening");
-    let served =
-        axum::serve(core_api::without_nagle(tcp), router(state)).with_graceful_shutdown(shutdown_signal()).await;
+    // The socket peer is the public API's client IP when Cloudflare's header is not trusted.
+    let app = router(state).into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let served = axum::serve(core_api::without_nagle(tcp), app).with_graceful_shutdown(shutdown_signal()).await;
     shutdown.cancel();
     if tokio::time::timeout(TASKS_GRACE, relay).await.is_err() {
         tracing::warn!("the outbox relay did not stop in time");

@@ -157,9 +157,17 @@ async fn rooms_in_two_currencies_owe_per_currency_and_a_cancelled_room_owes_noth
 
     let cancelled = &booked.rooms[2];
     let mut tx = hotel.tx().await;
-    reservations::cancel_room(&mut tx, hotel.tenant, Some(hotel.user), hotel.property, cancelled.id, cancelled.version)
-        .await
-        .unwrap();
+    reservations::cancel_room(
+        &mut tx,
+        hotel.tenant,
+        Some(hotel.user),
+        hotel.property,
+        cancelled.id,
+        cancelled.version,
+        None,
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(
         hotel.deposit_due(booked.id).await,

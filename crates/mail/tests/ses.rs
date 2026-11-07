@@ -66,6 +66,8 @@ async fn server(status: StatusCode, error_type: Option<&'static str>) -> (String
 fn message() -> Message {
     Message {
         to: "kamala@example.com".into(),
+        from_name: None,
+        reply_to: None,
         subject: "Hi".into(),
         text: "Text".into(),
         html: "<p>Html</p>".into(),
@@ -126,6 +128,8 @@ async fn ses_raw_mime_with_attachment() {
     let (endpoint, seen) = server(StatusCode::OK, None).await;
     let pdf: Vec<u8> = (0..=255u8).cycle().take(5_000).collect();
     let message = Message {
+        from_name: None,
+        reply_to: None,
         subject: "Galle weekly report, 19–25 Oct 2026".into(),
         text: "Occupancy: 72.5%".into(),
         html: "<p>Occupancy: 72.5%</p>".into(),
@@ -222,6 +226,46 @@ async fn a_header_breaking_recipient_is_refused() {
         Message { to: "kamala@example.com\r\nBcc: all@example.com".into(), attachments: vec![attachment], ..message() };
 
     assert!(matches!(mailer(&endpoint).send(&message).await, Err(MailError::Permanent(_))));
+    assert!(seen.0.lock().unwrap().is_empty());
+}
+
+/// A message's sender name replaces `MAIL_FROM`'s own and its reply-to address is where replies go, in simple content
+/// and in raw MIME alike.
+#[tokio::test]
+async fn a_sender_name_and_a_reply_to_address_reach_ses() {
+    let (endpoint, seen) = server(StatusCode::OK, None).await;
+    let mailer =
+        SesMailer::new("ap-south-1", "GoodFolk <hello@example.com>", credentials()).unwrap().with_endpoint(&endpoint);
+    let hotel = Message {
+        from_name: Some("Galle Fort Hotel".into()),
+        reply_to: Some("desk@gallefort.example".into()),
+        ..message()
+    };
+    let attachment = Attachment { filename: "a.pdf".into(), content_type: "application/pdf".into(), bytes: vec![1] };
+
+    mailer.send(&hotel).await.unwrap();
+    mailer.send(&Message { attachments: vec![attachment], ..hotel.clone() }).await.unwrap();
+
+    let calls = seen.0.lock().unwrap().clone();
+    assert_eq!(calls[0].2["FromEmailAddress"], "\"Galle Fort Hotel\" <hello@example.com>");
+    assert_eq!(calls[0].2["ReplyToAddresses"], serde_json::json!(["desk@gallefort.example"]));
+    let raw = STANDARD.decode(calls[1].2["Content"]["Raw"]["Data"].as_str().unwrap()).unwrap();
+    let mime = String::from_utf8(raw).unwrap();
+    assert!(mime.contains("From: \"Galle Fort Hotel\" <hello@example.com>\r\n"), "{mime}");
+    assert!(mime.contains("Reply-To: desk@gallefort.example\r\n"), "{mime}");
+}
+
+#[tokio::test]
+async fn a_header_breaking_sender_name_or_reply_to_is_refused() {
+    let (endpoint, seen) = server(StatusCode::OK, None).await;
+    let broken = [
+        Message { from_name: Some("Hotel\r\nBcc: all@example.com".into()), ..message() },
+        Message { reply_to: Some("desk@example.com\r\nBcc: all@example.com".into()), ..message() },
+    ];
+
+    for message in broken {
+        assert!(matches!(mailer(&endpoint).send(&message).await, Err(MailError::Permanent(_))));
+    }
     assert!(seen.0.lock().unwrap().is_empty());
 }
 

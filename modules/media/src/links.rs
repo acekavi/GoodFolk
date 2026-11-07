@@ -3,7 +3,7 @@
 
 use crate::{ASSET_COLUMNS_A, AssetRow, AssetStatus, MediaError, Purpose, audit, notify};
 use db::{TenantId, Tx, UserId};
-use media_types::RenditionOut;
+use media_types::Renditions;
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -26,7 +26,7 @@ pub struct GalleryItem {
     pub width: Option<i32>,
     pub height: Option<i32>,
     #[sqlx(json)]
-    pub renditions: Vec<RenditionOut>,
+    pub renditions: Renditions,
 }
 
 /// Puts the room type's photos and videos in the order of `asset_ids`, which must be exactly its items, each once

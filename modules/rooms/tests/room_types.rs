@@ -96,6 +96,52 @@ async fn the_overbooking_allowance_must_be_0_to_20(_: PgPoolOptions, opts: PgCon
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_description_round_trips_and_is_at_most_1000_characters(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts).await;
+    let dlx = hotel.room_type("DLX").await;
+    let mut tx = hotel.tx().await;
+    let describe = |text: String| RoomTypeChanges { description: Some(text), ..RoomTypeChanges::default() };
+
+    let described = rooms::update_room_type(
+        &mut tx,
+        hotel.tenant,
+        hotel.user,
+        hotel.property,
+        dlx.id,
+        dlx.version,
+        describe("A sea view".into()),
+    )
+    .await
+    .unwrap();
+    let too_long = rooms::update_room_type(
+        &mut tx,
+        hotel.tenant,
+        hotel.user,
+        hotel.property,
+        dlx.id,
+        described.version,
+        describe("x".repeat(1001)),
+    )
+    .await;
+    let longest = rooms::update_room_type(
+        &mut tx,
+        hotel.tenant,
+        hotel.user,
+        hotel.property,
+        dlx.id,
+        described.version,
+        describe("é".repeat(1000)),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(dlx.description, "");
+    assert_eq!(described.description, "A sea view");
+    assert!(matches!(too_long, Err(RoomsError::Invalid(_))), "{too_long:?}");
+    assert_eq!(rooms::list_room_types(&mut tx, hotel.property).await.unwrap(), vec![longest]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn an_unknown_property_is_not_found(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts).await;
     let mut tx = hotel.tx().await;

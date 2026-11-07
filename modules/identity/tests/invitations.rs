@@ -101,7 +101,7 @@ impl Tenant {
             .rev()
             .find_map(|job| match job {
                 MailJob::Invitation { invitation_id, token, .. } => (invitation_id == invitation).then_some(token),
-                MailJob::Report { .. } => None,
+                MailJob::Report { .. } | MailJob::IbeConfirmation { .. } | MailJob::IbeCancellation { .. } => None,
             })
             .expect("a mail job for the invitation")
     }
@@ -407,7 +407,7 @@ async fn no_audit_row_or_stored_column_contains_a_token(_: PgPoolOptions, opts: 
         .into_iter()
         .filter_map(|job| match job {
             MailJob::Invitation { token, .. } => Some(token),
-            MailJob::Report { .. } => None,
+            MailJob::Report { .. } | MailJob::IbeConfirmation { .. } | MailJob::IbeCancellation { .. } => None,
         })
         .collect();
 

@@ -11,6 +11,7 @@ pub mod graphql;
 pub mod idempotency;
 pub mod openapi;
 pub mod persisted;
+pub mod public;
 pub mod routes;
 pub mod staff;
 pub mod state;
@@ -19,14 +20,17 @@ pub use routes::router;
 pub use state::AppState;
 
 /// `tcp` with Nagle's algorithm turned off on every connection it accepts; serve the [`router`] on this. Otherwise an
-/// answer written in more than one piece can wait for the client's delayed ACK, about 40 ms.
+/// answer written in more than one piece can wait for the client's delayed ACK, about 40 ms. A named type rather than
+/// `impl Listener`, so the router can be served with the peer's `SocketAddr` as connect info.
 pub fn without_nagle(
     tcp: tokio::net::TcpListener,
-) -> impl axum::serve::Listener<Io = tokio::net::TcpStream, Addr = std::net::SocketAddr> {
+) -> axum::serve::TapIo<tokio::net::TcpListener, fn(&mut tokio::net::TcpStream)> {
     use axum::serve::ListenerExt;
-    tcp.tap_io(|stream| {
-        if let Err(error) = stream.set_nodelay(true) {
-            tracing::warn!(%error, "could not turn Nagle's algorithm off on a connection");
-        }
-    })
+    tcp.tap_io(no_delay)
+}
+
+fn no_delay(stream: &mut tokio::net::TcpStream) {
+    if let Err(error) = stream.set_nodelay(true) {
+        tracing::warn!(%error, "could not turn Nagle's algorithm off on a connection");
+    }
 }

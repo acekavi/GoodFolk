@@ -1217,6 +1217,7 @@ dependencies = [
  "garde",
  "housekeeping",
  "http-body-util",
+ "ibe",
  "identity",
  "jobs-svc",
  "laundry",
@@ -1238,6 +1239,7 @@ dependencies = [
  "sha2 0.11.0",
  "sqlx",
  "storage",
+ "subtle",
  "svc-auth",
  "tax",
  "thiserror",
@@ -2589,6 +2591,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "ibe"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "db",
+ "domain",
+ "events",
+ "folio",
+ "fx",
+ "getrandom 0.3.4",
+ "mail",
+ "media",
+ "media-types",
+ "property",
+ "rates",
+ "reservations",
+ "rooms",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "tax",
+ "thiserror",
+ "time",
+ "tokio",
+ "tracing",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
 name = "icu_collator"
 version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3096,11 +3129,13 @@ dependencies = [
  "events",
  "folio",
  "fx",
+ "ibe",
  "identity",
  "mail",
  "media",
  "property",
  "proto",
+ "rates",
  "reports",
  "reqwest",
  "rooms",
@@ -3534,6 +3569,7 @@ dependencies = [
  "serde",
  "serde_json",
  "time",
+ "tracing",
  "uuid",
 ]
 

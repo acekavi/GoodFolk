@@ -115,6 +115,8 @@ pub struct RoomTypeNode {
     pub overbooking: i32,
     pub beds: Vec<BedNode>,
     pub amenities: Vec<String>,
+    /// What the booking site says about the room type; empty when there is nothing.
+    pub description: String,
     pub sort_order: i32,
     pub active: bool,
     pub version: i32,
@@ -135,6 +137,7 @@ impl From<rooms::RoomType> for RoomTypeNode {
             overbooking: t.overbooking,
             beds: t.bed_config.into_iter().map(|bed| BedNode { kind: bed.kind, count: bed.count }).collect(),
             amenities: t.amenities,
+            description: t.description,
             sort_order: t.sort_order,
             active: t.active,
             version: t.version,
@@ -293,8 +296,9 @@ mirror_enum!(
 );
 mirror_enum!(
     /// A delivered file's size: `THUMB` is a 320 px square, `SM` to `XL` are image long edges of 640 to 2400 px,
+    /// `PHONE` is an 800 px gallery photo at a lower quality, for the booking site's first image on a phone,
     /// `V1080` and `V720` are videos that fit 1920×1080 and 1280×720, and `ORIGINAL` is a guest PDF's linearized copy.
-    RenditionSizeNode as "RenditionSize" from media_types::Size { Thumb, Sm, Md, Lg, Xl, V1080, V720, Original }
+    RenditionSizeNode as "RenditionSize" from media_types::Size { Thumb, Sm, Phone, Md, Lg, Xl, V1080, V720, Original }
 );
 mirror_enum!(ImageFormatNode as "ImageFormat" from media_types::Format { Avif, Webp, #[graphql(name = "AV1")] Av1, H264, Pdf });
 mirror_enum!(DocumentKindNode as "DocumentKind" from media::DocumentKind { Passport, Nic, DrivingLicence, Other });
@@ -349,22 +353,8 @@ pub struct MediaNode {
     pub sources: Vec<VideoSourceNode>,
 }
 
-/// The `type` of a video source. The codec strings are what the encoders write (SVT-AV1: Main profile, level 4.0,
-/// 10-bit; OpenH264: High profile, level 4.0 at 1080p, which also covers 720p) beside the audio they are paired with
-/// (Opus; AAC-LC).
-fn video_mime(format: media_types::Format) -> &'static str {
-    match format {
-        media_types::Format::Av1 => r#"video/mp4; codecs="av01.0.08M.10, opus""#,
-        media_types::Format::H264 => r#"video/mp4; codecs="avc1.640028, mp4a.40.2""#,
-        // `media_parts` passes only video formats.
-        media_types::Format::Avif | media_types::Format::Webp | media_types::Format::Pdf => {
-            unreachable!("not a video format")
-        }
-    }
-}
-
 fn is_video(format: media_types::Format) -> bool {
-    matches!(format, media_types::Format::Av1 | media_types::Format::H264)
+    format.video_source_type().is_some()
 }
 
 /// Splits renditions into a video's poster images and its sources, AV1 before H.264 at each size and the 1080p ones
@@ -385,7 +375,8 @@ fn media_parts(
             width: i32::try_from(r.width).unwrap_or(i32::MAX),
             height: i32::try_from(r.height).unwrap_or(i32::MAX),
             url: url(&r.key),
-            mime: video_mime(r.format).to_owned(),
+            // `videos` holds only video formats.
+            mime: r.format.video_source_type().unwrap_or_default().to_owned(),
         })
         .collect();
     (images.collect(), sources, duration)

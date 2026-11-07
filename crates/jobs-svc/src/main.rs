@@ -38,6 +38,7 @@ async fn main() -> anyhow::Result<()> {
         tracker: TaskTracker::new(),
         mailer: mail::from_env(config.production)?,
         app_base_url: config.app_base_url,
+        ibe_public_origin: config.ibe_public_origin,
     };
 
     let shutdown = CancellationToken::new();

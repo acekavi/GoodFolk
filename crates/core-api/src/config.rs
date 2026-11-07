@@ -35,6 +35,120 @@ pub struct Config {
     pub jobs_svc_auth: TokenSource,
     /// Recognises service calls to `/internal/events` (`CORE_API_AUDIENCE`, `ALLOWED_SERVICE_EMAILS`).
     pub internal_auth: Verifier,
+    /// The public booking site (`IBE_PUBLIC_ORIGIN`, `TRUST_CLOUDFLARE_IP`, `TURNSTILE_SECRET`).
+    pub ibe: IbeConfig,
+}
+
+/// The booking site's origin outside production.
+pub const LOCAL_IBE_PUBLIC_ORIGIN: &str = "http://localhost:5174";
+/// Cloudflare Turnstile's published test secret, which passes every token: the default outside production.
+pub const TURNSTILE_TEST_SECRET: &str = "1x0000000000000000000000000000000AA";
+/// Cloudflare Turnstile's server-side verification endpoint.
+pub const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+
+/// The shortest `IBE_SSR_SECRET` production takes.
+pub const MIN_SSR_SECRET_LEN: usize = 32;
+
+/// The public booking site's settings. `Debug` leaves out the Turnstile and SSR secrets.
+#[derive(Clone)]
+pub struct IbeConfig {
+    /// The booking domain, e.g. `https://book.example.lk`: a scheme and a host (and a port outside production), no
+    /// path. CORS allows it, and a custom host may not be its host.
+    pub public_origin: String,
+    /// Take the client's IP from `CF-Connecting-IP` (only behind Cloudflare, which sets it); otherwise the socket peer.
+    pub trust_cloudflare_ip: bool,
+    /// Verifies the booking form's Turnstile tokens.
+    pub turnstile_secret: String,
+    /// Shared with the booking site's server: a public request carrying it in `X-IBE-SSR-Secret` is counted against
+    /// the client IP in `X-IBE-Client-IP`, the guest the site is rendering a page for. Unset, those headers are ignored.
+    pub ssr_secret: Option<String>,
+    /// Where tokens are verified: always [`TURNSTILE_VERIFY_URL`] when read from the environment; tests point it at a
+    /// stand-in.
+    pub turnstile_url: String,
+}
+
+impl std::fmt::Debug for IbeConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IbeConfig")
+            .field("public_origin", &self.public_origin)
+            .field("trust_cloudflare_ip", &self.trust_cloudflare_ip)
+            .field("turnstile_url", &self.turnstile_url)
+            .finish_non_exhaustive()
+    }
+}
+
+impl IbeConfig {
+    /// The local booking site and Turnstile's test secret, with the socket peer as the client: for development and
+    /// tests.
+    pub fn local() -> Self {
+        Self {
+            public_origin: LOCAL_IBE_PUBLIC_ORIGIN.to_owned(),
+            trust_cloudflare_ip: false,
+            turnstile_secret: TURNSTILE_TEST_SECRET.to_owned(),
+            turnstile_url: TURNSTILE_VERIFY_URL.to_owned(),
+            ssr_secret: None,
+        }
+    }
+
+    /// The host of [`IbeConfig::public_origin`], lowercase.
+    pub fn public_host(&self) -> String {
+        let after_scheme = self.public_origin.split_once("://").map_or(self.public_origin.as_str(), |(_, rest)| rest);
+        let host = after_scheme.rsplit_once(':').map_or(after_scheme, |(host, _)| host);
+        host.to_ascii_lowercase()
+    }
+
+    /// Reads the variables, required in production. Errors name the variable, never its value.
+    fn from_vars(var: &impl Fn(&str) -> Option<String>, production: bool) -> anyhow::Result<Self> {
+        let public_origin = match var("IBE_PUBLIC_ORIGIN") {
+            Some(origin) => origin.trim_end_matches('/').to_ascii_lowercase(),
+            None if production => bail!("IBE_PUBLIC_ORIGIN (the booking site's origin) is required in production"),
+            None => LOCAL_IBE_PUBLIC_ORIGIN.to_owned(),
+        };
+        let Ok(uri) = public_origin.parse::<axum::http::Uri>() else { bail!("IBE_PUBLIC_ORIGIN is not an origin") };
+        let scheme_ok = match uri.scheme_str() {
+            Some("https") => true,
+            Some("http") => !production,
+            _ => false,
+        };
+        if !scheme_ok || uri.host().is_none() || uri.path_and_query().is_some_and(|path| path.as_str() != "/") {
+            bail!("IBE_PUBLIC_ORIGIN must be an https:// origin (http:// outside production) with no path");
+        }
+        if production && uri.port().is_some() {
+            bail!("IBE_PUBLIC_ORIGIN must not name a port in production");
+        }
+        let trust_cloudflare_ip = match var("TRUST_CLOUDFLARE_IP").as_deref() {
+            None | Some("false") => false,
+            Some("true") => true,
+            Some(_) => bail!("TRUST_CLOUDFLARE_IP must be true or false"),
+        };
+        let turnstile_secret = match var("TURNSTILE_SECRET") {
+            Some(secret) if production && secret == TURNSTILE_TEST_SECRET => {
+                bail!("TURNSTILE_SECRET must not be Turnstile's test secret in production")
+            }
+            Some(secret) => secret,
+            None if production => bail!("TURNSTILE_SECRET is required in production"),
+            None => TURNSTILE_TEST_SECRET.to_owned(),
+        };
+        // Production always has its booking site (IBE_PUBLIC_ORIGIN), whose server renders pages for guests.
+        let ssr_secret = match var("IBE_SSR_SECRET") {
+            Some(secret) if production && secret.len() < MIN_SSR_SECRET_LEN => {
+                bail!("IBE_SSR_SECRET must be at least {MIN_SSR_SECRET_LEN} characters in production")
+            }
+            Some(secret) if secret.is_empty() => None,
+            Some(secret) => Some(secret),
+            None if production => {
+                bail!("IBE_SSR_SECRET (shared with the booking site's server) is required in production")
+            }
+            None => None,
+        };
+        Ok(Self {
+            public_origin,
+            trust_cloudflare_ip,
+            turnstile_secret,
+            turnstile_url: TURNSTILE_VERIFY_URL.to_owned(),
+            ssr_secret,
+        })
+    }
 }
 
 impl Config {
@@ -82,6 +196,7 @@ impl Config {
         let media_svc_auth = TokenSource::from_vars("MEDIA_SVC_AUDIENCE", &var)?;
         let jobs_svc_auth = TokenSource::from_vars("JOBS_SVC_AUDIENCE", &var)?;
         let internal_auth = Verifier::from_vars("CORE_API_AUDIENCE", &var)?;
+        let ibe = IbeConfig::from_vars(&var, production)?;
         Ok(Self {
             database_url,
             database_listen_url,
@@ -95,6 +210,7 @@ impl Config {
             jobs_svc_url,
             jobs_svc_auth,
             internal_auth,
+            ibe,
         })
     }
 }
@@ -184,6 +300,9 @@ mod tests {
         ("JOBS_SVC_AUDIENCE", "https://jobs-svc.example.run.app"),
         ("CORE_API_AUDIENCE", "https://core-api.example.run.app"),
         ("ALLOWED_SERVICE_EMAILS", "media-results-push@example.iam.gserviceaccount.com"),
+        ("IBE_PUBLIC_ORIGIN", "https://book.example.lk"),
+        ("TURNSTILE_SECRET", "0x4AAAAAAAexampleexampleexample"),
+        ("IBE_SSR_SECRET", "an-ssr-secret-of-at-least-32-characters"),
     ];
 
     /// `pairs`, then the media variables of the environment `pairs` names (production or not).
@@ -570,5 +689,83 @@ mod tests {
 
     fn lookup(pairs: &[(&str, &str)], name: &str) -> Option<String> {
         pairs.iter().find(|(key, _)| *key == name).map(|(_, value)| (*value).to_owned())
+    }
+
+    #[test]
+    fn the_booking_site_defaults_to_the_local_origin_and_the_turnstile_test_secret() {
+        let config =
+            Config::from_vars(vars(&[("DATABASE_URL", "postgres://localhost/db"), ("GUEST_ID_KEY", GUEST_ID_KEY_B64)]))
+                .unwrap();
+
+        assert_eq!(config.ibe.public_origin, "http://localhost:5174");
+        assert_eq!(config.ibe.public_host(), "localhost");
+        assert!(!config.ibe.trust_cloudflare_ip);
+        assert_eq!(config.ibe.turnstile_secret, super::TURNSTILE_TEST_SECRET);
+        assert_eq!(config.ibe.ssr_secret, None);
+    }
+
+    #[test]
+    fn the_booking_site_origin_is_an_origin_and_its_trailing_slash_is_dropped() {
+        let base = [("DATABASE_URL", "postgres://localhost/db"), ("GUEST_ID_KEY", GUEST_ID_KEY_B64)];
+        let with = |origin: &'static str| {
+            let mut pairs = base.to_vec();
+            pairs.push(("IBE_PUBLIC_ORIGIN", origin));
+            Config::from_vars(vars(&pairs))
+        };
+
+        assert_eq!(with("https://Book.Example.lk/").unwrap().ibe.public_host(), "book.example.lk");
+        for bad in ["book.example.lk", "ftp://book.example.lk", "https://book.example.lk/GAL"] {
+            let err = with(bad).unwrap_err();
+            assert!(format!("{err:#}").contains("IBE_PUBLIC_ORIGIN"), "{bad}: {err:#}");
+        }
+    }
+
+    #[test]
+    fn production_requires_the_booking_site_variables_and_a_real_turnstile_secret() {
+        for missing in ["IBE_PUBLIC_ORIGIN", "TURNSTILE_SECRET", "IBE_SSR_SECRET"] {
+            let pairs: Vec<_> = production_pairs().into_iter().filter(|(name, _)| *name != missing).collect();
+            let err = Config::from_vars(|name| lookup(&pairs, name)).unwrap_err();
+            assert!(format!("{err:#}").contains(missing), "{missing}: {err:#}");
+        }
+        let mut pairs = production_pairs();
+        pairs.retain(|(name, _)| !["IBE_PUBLIC_ORIGIN", "TURNSTILE_SECRET"].contains(name));
+        pairs.extend([("IBE_PUBLIC_ORIGIN", "http://book.example.lk"), ("TURNSTILE_SECRET", "secret")]);
+        assert!(format!("{:#}", Config::from_vars(|name| lookup(&pairs, name)).unwrap_err()).contains("https"));
+        pairs.retain(|(name, _)| !["IBE_PUBLIC_ORIGIN", "TURNSTILE_SECRET"].contains(name));
+        pairs.extend([
+            ("IBE_PUBLIC_ORIGIN", "https://book.example.lk"),
+            ("TURNSTILE_SECRET", super::TURNSTILE_TEST_SECRET),
+        ]);
+        assert!(
+            format!("{:#}", Config::from_vars(|name| lookup(&pairs, name)).unwrap_err()).contains("TURNSTILE_SECRET")
+        );
+    }
+
+    #[test]
+    fn trust_cloudflare_ip_is_true_or_false_and_debug_hides_the_turnstile_secret() {
+        let base = [("DATABASE_URL", "postgres://localhost/db"), ("GUEST_ID_KEY", GUEST_ID_KEY_B64)];
+        let with = |value: &'static str| {
+            let mut pairs = base.to_vec();
+            pairs.extend([("TRUST_CLOUDFLARE_IP", value), ("TURNSTILE_SECRET", "a-turnstile-secret")]);
+            Config::from_vars(vars(&pairs))
+        };
+
+        let trusted = with("true").unwrap();
+        assert!(trusted.ibe.trust_cloudflare_ip);
+        assert!(!format!("{trusted:?}").contains("a-turnstile-secret"));
+        assert!(format!("{:#}", with("yes").unwrap_err()).contains("TRUST_CLOUDFLARE_IP"));
+    }
+
+    #[test]
+    fn the_ssr_secret_is_long_in_production_and_hidden_from_debug() {
+        let mut pairs = production_pairs();
+        pairs.retain(|(name, _)| *name != "IBE_SSR_SECRET");
+        pairs.push(("IBE_SSR_SECRET", "short"));
+        let err = Config::from_vars(|name| lookup(&pairs, name)).unwrap_err();
+        assert!(format!("{err:#}").contains("IBE_SSR_SECRET"), "{err:#}");
+
+        let config = Config::from_vars(|name| lookup(&production_pairs(), name)).unwrap();
+        assert_eq!(config.ibe.ssr_secret.as_deref(), Some("an-ssr-secret-of-at-least-32-characters"));
+        assert!(!format!("{config:?}").contains("an-ssr-secret"));
     }
 }

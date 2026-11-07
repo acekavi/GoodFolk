@@ -1,7 +1,10 @@
 use std::{fs, io::Cursor, path::PathBuf, time::Instant};
 
 use image::{ImageFormat, Rgb, RgbImage, RgbaImage};
-use imaging::{Format, ImagingError, Processed, Profile, QUALITY_TARGET, Size, SourceType, process};
+use imaging::{
+    Format, ImagingError, PHONE_QUALITY_TARGET, Processed, Profile, QUALITY_TARGET, Size, SourceType, process,
+    quality_target,
+};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
@@ -23,7 +26,7 @@ fn webp_pixels(bytes: &[u8]) -> RgbaImage {
 
 #[test]
 fn sizes_never_upscale() {
-    // small.jpg is 800 x 600: thumb and sm are reachable, md (1024) is not.
+    // small.jpg is 800 x 600: thumb, sm and phone (800) are reachable, md (1024) is not.
     let done = process(&fixture("small.jpg"), SourceType::Jpeg, Profile::Gallery).unwrap();
     assert_eq!((done.width, done.height), (800, 600));
     assert_eq!(
@@ -33,6 +36,8 @@ fn sizes_never_upscale() {
             (Size::Thumb, Format::Webp, 320, 320),
             (Size::Sm, Format::Avif, 640, 480),
             (Size::Sm, Format::Webp, 640, 480),
+            (Size::Phone, Format::Avif, 800, 600),
+            (Size::Phone, Format::Webp, 800, 600),
         ]
     );
     assert_eq!(done.archive_ext, "jxl");
@@ -266,6 +271,24 @@ fn photo_12mp_processes_under_budget() {
             r.score
         );
     }
-    assert_eq!(done.renditions.len(), 10);
-    assert!(done.renditions.iter().all(|r| r.score >= QUALITY_TARGET));
+    assert_eq!(done.renditions.len(), 12);
+    assert!(done.renditions.iter().all(|r| r.score >= quality_target(r.size)));
+}
+
+#[test]
+fn a_gallery_photo_gets_a_small_phone_rendition_that_leaves_the_other_sizes_as_they_were() {
+    let bytes = fixture("photo-12mp.jpg");
+    let done = process(&bytes, SourceType::Jpeg, Profile::Gallery).unwrap();
+    let phone: Vec<_> = done.renditions.iter().filter(|r| r.size == Size::Phone).collect();
+    assert_eq!(
+        phone.iter().map(|r| (r.format, r.width, r.height)).collect::<Vec<_>>(),
+        [(Format::Avif, 800, 600), (Format::Webp, 800, 600)]
+    );
+    for r in &phone {
+        assert!(r.score >= PHONE_QUALITY_TARGET, "{:?} scored {}", r.format, r.score);
+    }
+    let avif = phone.iter().find(|r| r.format == Format::Avif).unwrap();
+    assert!(avif.bytes.len() <= 48 * 1024, "the phone AVIF is {} bytes", avif.bytes.len());
+    // Every other size is still held to the full target.
+    assert!(done.renditions.iter().filter(|r| r.size != Size::Phone).all(|r| r.score >= QUALITY_TARGET));
 }

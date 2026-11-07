@@ -106,7 +106,7 @@ async fn upload_flow_gallery_reaches_ready(_: PgPoolOptions, opts: PgConnectOpti
     };
     assert_eq!((media["width"].as_i64(), media["height"].as_i64()), (Some(2400), Some(1800)));
     let renditions = media["renditions"].as_array().unwrap();
-    assert_eq!(renditions.len(), 10, "{renditions:?}");
+    assert_eq!(renditions.len(), 12, "every gallery size, phone included, as AVIF and WebP: {renditions:?}");
     for rendition in renditions {
         let url = rendition["url"].as_str().unwrap();
         assert!(!url.contains("X-Amz-Signature"), "gallery URLs are permanent: {url}");
@@ -115,6 +115,65 @@ async fn upload_flow_gallery_reaches_ready(_: PgPoolOptions, opts: PgConnectOpti
         assert_eq!(response.headers()["cache-control"], storage::IMMUTABLE);
     }
     expect_invalidation(&mut stream, &key, Duration::from_secs(5)).await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_booking_site_logo_uploads_to_the_public_bucket_and_is_saved_with_the_site(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
+    let stack = stack(opts).await;
+    let app = &stack.app;
+    let hotel = Hotel::new(app, "owner@example.com", "GAL").await;
+    let desk = app.staff(&superuser, &hotel.owner, "desk@example.com", "front_desk").await;
+    let uploads = format!("{}/media/uploads", hotel.path);
+    let logo = fixture("small.jpg");
+
+    let by_desk = post(app, &desk, &uploads, start_body("ibe_logo", hotel.id, &logo)).await;
+    let wrong_target = post(app, &hotel.owner, &uploads, start_body("ibe_logo", hotel.room_type, &logo)).await;
+    let mut too_big = start_body("ibe_logo", hotel.id, &logo);
+    too_big["bytes"] = json!(5 * 1024 * 1024 + 1);
+    let too_big = post(app, &hotel.owner, &uploads, too_big).await;
+    let completed = upload(app, &hotel.owner, &hotel.path, start_body("ibe_logo", hotel.id, &logo), &logo).await;
+
+    assert_eq!(by_desk.status, StatusCode::FORBIDDEN, "{:?}", by_desk.body);
+    assert_eq!(wrong_target.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", wrong_target.body);
+    assert_eq!(too_big.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", too_big.body);
+    assert_eq!(completed.status, StatusCode::OK, "{:?}", completed.body);
+    assert_eq!(completed.body["purpose"], "ibe_logo");
+    let asset = uuid(&completed.body["asset_id"]);
+    let visibility: String = sqlx::query_scalar("select visibility from media_asset where id = $1")
+        .bind(asset)
+        .fetch_one(&superuser)
+        .await
+        .unwrap();
+    assert_eq!(visibility, "public");
+
+    let site = format!("{}/ibe-site", hotel.path);
+    let saved = app
+        .send_with(
+            Method::PUT,
+            &site,
+            Some(&hotel.owner),
+            Some(json!({"enabled": false, "logo_asset_id": asset})),
+            &[("x-goodfolk-csrf", "1"), ("if-match", "\"0\"")],
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.body);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let view = loop {
+        let view = app.send(Method::GET, &site, Some(&hotel.owner), None).await.body;
+        if view["logo_status"] == "ready" {
+            break view;
+        }
+        assert_ne!(view["logo_status"], "failed", "{view:?}");
+        assert!(tokio::time::Instant::now() < deadline, "the logo was not ready in time");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    let url = view["logo_url"].as_str().unwrap();
+    assert!(!url.contains("X-Amz-Signature"), "the logo's URL is permanent: {url}");
+    assert_eq!(http().get(url).send().await.unwrap().status(), 200);
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -824,7 +883,7 @@ async fn gallery_video_upload_to_ready_lists_sources(_: PgPoolOptions, opts: PgC
     assert_eq!(sources[1]["mime"], r#"video/mp4; codecs="avc1.640028, mp4a.40.2""#);
     assert_eq!((sources[0]["width"].as_i64(), sources[0]["height"].as_i64()), (Some(1920), Some(1080)));
     let renditions = media["renditions"].as_array().unwrap();
-    assert_eq!(renditions.len(), 8, "the poster: thumb, sm, md and lg as AVIF and WebP: {renditions:?}");
+    assert_eq!(renditions.len(), 10, "the poster: thumb, sm, phone, md and lg as AVIF and WebP: {renditions:?}");
     for url in sources.iter().chain(renditions).map(|r| r["url"].as_str().unwrap()) {
         assert!(!url.contains("X-Amz-Signature"), "gallery URLs are permanent: {url}");
         let response = http().head(url).send().await.unwrap();

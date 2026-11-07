@@ -8,6 +8,9 @@ pub const DEFAULT_PORT: u16 = 8091;
 /// The web app's origin outside production: the PMS's Vite dev server.
 pub const DEFAULT_APP_BASE_URL: &str = "http://localhost:5173";
 
+/// The booking site's origin outside production, as core-api's default.
+pub const DEFAULT_IBE_PUBLIC_ORIGIN: &str = "http://localhost:5174";
+
 /// Pooled connections: a tick runs its jobs one at a time, and each background close holds at most one.
 pub const MAX_CONNECTIONS: u32 = 10;
 
@@ -29,6 +32,8 @@ pub struct Config {
     pub storage: StorageConfig,
     /// The web app's origin, which email links start with.
     pub app_base_url: String,
+    /// The booking site's origin, which a booking's manage link starts with.
+    pub ibe_public_origin: String,
 }
 
 impl Config {
@@ -41,7 +46,9 @@ impl Config {
     ///   `POST /tick`);
     /// - `FX_IMPORT`: `on` or `off` (default `on`);
     /// - the storage variables;
-    /// - `APP_BASE_URL` (required in production; else [`DEFAULT_APP_BASE_URL`]).
+    /// - `APP_BASE_URL` (required in production; else [`DEFAULT_APP_BASE_URL`]);
+    /// - `IBE_PUBLIC_ORIGIN` (required in production, where it is `https://` with no port; else
+    ///   [`DEFAULT_IBE_PUBLIC_ORIGIN`]), as core-api reads it.
     ///
     /// The mailer reads its own variables (`mail::from_env`).
     pub fn from_env() -> anyhow::Result<Self> {
@@ -79,6 +86,7 @@ impl Config {
             }
             None => DEFAULT_APP_BASE_URL.to_owned(),
         };
+        let ibe_public_origin = ibe_public_origin(var("IBE_PUBLIC_ORIGIN"), production)?;
         Ok(Self {
             port,
             database_url,
@@ -88,8 +96,28 @@ impl Config {
             fx_import,
             storage,
             app_base_url,
+            ibe_public_origin,
         })
     }
+}
+
+/// `IBE_PUBLIC_ORIGIN` lowercase without a trailing `/`: an `https://` origin with a host and no path (`http://` outside
+/// production), with no port in production; required in production. The same rules as core-api's.
+fn ibe_public_origin(value: Option<String>, production: bool) -> anyhow::Result<String> {
+    let origin = match value {
+        Some(origin) => origin.trim_end_matches('/').to_ascii_lowercase(),
+        None if production => bail!("IBE_PUBLIC_ORIGIN (the booking site's origin) is required in production"),
+        None => return Ok(DEFAULT_IBE_PUBLIC_ORIGIN.to_owned()),
+    };
+    let Ok(uri) = origin.parse::<axum::http::Uri>() else { bail!("IBE_PUBLIC_ORIGIN is not an origin") };
+    let no_path = uri.path_and_query().is_none_or(|path| path.as_str() == "/");
+    if !is_origin(&origin, production) || !no_path {
+        bail!("IBE_PUBLIC_ORIGIN must be an https:// origin (http:// outside production) with no path");
+    }
+    if production && uri.port().is_some() {
+        bail!("IBE_PUBLIC_ORIGIN must not name a port in production");
+    }
+    Ok(origin)
 }
 
 /// Whether `url` is an `https://` URL with a host (or `http://`, outside production).
@@ -120,6 +148,7 @@ mod tests {
         assert!(config.fx_import);
         assert!(!config.production);
         assert_eq!(config.app_base_url, "http://localhost:5173");
+        assert_eq!(config.ibe_public_origin, "http://localhost:5174");
     }
 
     #[test]
@@ -145,11 +174,19 @@ mod tests {
         let no_origin = Config::from_vars(direct).unwrap_err();
         assert!(no_origin.to_string().contains("APP_BASE_URL"));
 
-        let complete = |name: &str| match name {
+        let with_app = |name: &str| match name {
             "APP_BASE_URL" => Some("https://app.example.com/".to_owned()),
             _ => direct(name),
         };
+        let no_booking_site = Config::from_vars(with_app).unwrap_err();
+        assert!(no_booking_site.to_string().contains("IBE_PUBLIC_ORIGIN"));
+
+        let complete = |name: &str| match name {
+            "IBE_PUBLIC_ORIGIN" => Some("https://Book.example.lk/".to_owned()),
+            _ => with_app(name),
+        };
         let config = Config::from_vars(complete).unwrap();
+        assert_eq!(config.ibe_public_origin, "https://book.example.lk");
         assert_eq!(config.database_direct_url, "postgres://direct/db");
         assert_eq!(config.app_base_url, "https://app.example.com");
         assert!(!config.internal_tick);
@@ -186,6 +223,7 @@ mod tests {
                 "S3_PRIVATE_BUCKET" => Some("goodfolk-private".to_owned()),
                 "MEDIA_PUBLIC_BASE_URL" => Some("https://media.example.com/".to_owned()),
                 "APP_BASE_URL" => Some(url.to_owned()),
+                "IBE_PUBLIC_ORIGIN" => Some("https://book.example.lk".to_owned()),
                 _ => None,
             }
         };
@@ -203,5 +241,25 @@ mod tests {
             "http://localhost:4173"
         );
         assert!(Config::from_vars(with(true, "https://app.example.com")).is_ok());
+    }
+
+    #[test]
+    fn ibe_public_origin_is_an_origin_without_a_path_and_https_without_a_port_in_production() {
+        use super::ibe_public_origin;
+        let origin = |value: &str, production: bool| ibe_public_origin(Some(value.to_owned()), production);
+
+        assert_eq!(origin("http://localhost:5174/", false).unwrap(), "http://localhost:5174");
+        assert_eq!(origin("https://book.example.lk", true).unwrap(), "https://book.example.lk");
+        for (bad, production) in [
+            ("http://book.example.lk", true),
+            ("https://book.example.lk:8443", true),
+            ("https://book.example.lk/site", false),
+            ("https://book.example.lk?x=1", false),
+            ("book.example.lk", false),
+            ("https://", false),
+        ] {
+            let err = origin(bad, production).unwrap_err();
+            assert!(err.to_string().contains("IBE_PUBLIC_ORIGIN"), "{bad}: {err}");
+        }
     }
 }

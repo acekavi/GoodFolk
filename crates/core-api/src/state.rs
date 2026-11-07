@@ -1,3 +1,4 @@
+use crate::config::IbeConfig;
 use crate::events::LiveEvent;
 use crate::graphql::{GqlSchema, build_schema};
 use crate::persisted;
@@ -45,6 +46,8 @@ pub struct AppState {
     pub jobs: JobsClient<Channel>,
     /// The `Authorization` sent with every call to jobs-svc.
     pub jobs_auth: Arc<TokenSource>,
+    /// The public booking site's settings.
+    pub ibe: Arc<IbeConfig>,
 }
 
 /// The media engine's services, as [`AppState::with_media`] takes them.
@@ -119,7 +122,7 @@ fn svc_channel(url: &str, name: &str) -> anyhow::Result<Channel> {
 }
 
 impl AppState {
-    /// The state with [`MediaServices::local`] and [`JobsServices::local`]: for tests and tools. `serve` uses
+    /// The state with [`MediaServices::local`], [`JobsServices::local`] and [`IbeConfig::local`]: for tests and tools. `serve` uses
     /// [`AppState::with_media`] and [`AppState::with_jobs`].
     pub fn new(pool: PgPool, production: bool, guest_id_keys: GuestIdKeys) -> Self {
         Self::with_media(pool, production, guest_id_keys, MediaServices::local())
@@ -142,12 +145,18 @@ impl AppState {
             internal_auth,
             jobs,
             jobs_auth,
+            ibe: Arc::new(IbeConfig::local()),
         }
     }
 
     /// The state calling jobs-svc through `jobs` (it is [`JobsServices::local`] until then).
     pub fn with_jobs(self, jobs: JobsServices) -> Self {
         Self { jobs: jobs.jobs, jobs_auth: jobs.jobs_auth, ..self }
+    }
+
+    /// The state with the booking site's settings `ibe` (they are [`IbeConfig::local`] until then).
+    pub fn with_ibe(self, ibe: IbeConfig) -> Self {
+        Self { ibe: Arc::new(ibe), ..self }
     }
 }
 

@@ -1,0 +1,3 @@
+# Pages a guest reaches only by booking (book, booked, manage) carry noindex themselves.
+User-agent: *
+Disallow:

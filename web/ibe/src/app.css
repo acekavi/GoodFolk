@@ -1,0 +1,184 @@
+/*
+ * The booking site's look: a quiet stone page, ink text, and the property's accent (`--accent`, set per site, with
+ * white text at 4.5:1 or more) only on actions and choices. The accent is sure of 4.5:1 only against white, so text
+ * in it sits on white surfaces; links on the page are ink, underlined in the accent. System fonts: nothing is
+ * downloaded before the hero.
+ */
+:root {
+	--paper: #f6f7f4;
+	--surface: #ffffff;
+	--ink: #1e2826;
+	--muted: #4f5a56;
+	--line: #d5dbd6;
+	--danger: #a3261b;
+	--accent: #1f5c4a;
+	--serif:
+		'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', 'URW Palladio L', P052,
+		Georgia, serif;
+	--sans:
+		system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans', 'Helvetica Neue', Arial, sans-serif;
+	--measure: 64ch;
+	--radius: 6px;
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	-webkit-text-size-adjust: 100%;
+}
+
+body {
+	margin: 0;
+	background: var(--paper);
+	color: var(--ink);
+	font: 1rem/1.55 var(--sans);
+}
+
+h1,
+h2,
+h3 {
+	font-family: var(--serif);
+	font-weight: 600;
+	line-height: 1.15;
+	margin: 0;
+	letter-spacing: -0.005em;
+}
+
+h1 {
+	font-size: clamp(2.25rem, 7vw, 4.25rem);
+}
+
+h2 {
+	font-size: clamp(1.5rem, 3.5vw, 2rem);
+}
+
+h3 {
+	font-size: 1.3rem;
+}
+
+p {
+	margin: 0;
+}
+
+a {
+	color: var(--ink);
+	text-decoration-color: var(--accent);
+	text-decoration-thickness: 2px;
+	text-underline-offset: 0.2em;
+}
+
+img,
+video {
+	display: block;
+	max-width: 100%;
+}
+
+:focus-visible {
+	outline: 3px solid var(--accent);
+	outline-offset: 2px;
+}
+
+button,
+input,
+select,
+textarea {
+	font: inherit;
+	color: inherit;
+}
+
+label {
+	display: block;
+	font-weight: 600;
+	font-size: 0.95rem;
+}
+
+input[type='text'],
+input[type='email'],
+input[type='tel'],
+input[type='date'],
+input[type='time'],
+select,
+textarea {
+	display: block;
+	width: 100%;
+	margin-top: 0.3rem;
+	padding: 0.6rem 0.7rem;
+	border: 1px solid #8a948f;
+	border-radius: var(--radius);
+	background: var(--surface);
+	min-height: 2.75rem;
+}
+
+textarea {
+	min-height: 6rem;
+	resize: vertical;
+}
+
+.button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.5rem;
+	min-height: 2.75rem;
+	padding: 0.6rem 1.25rem;
+	border: 1px solid var(--accent);
+	border-radius: var(--radius);
+	background: var(--accent);
+	color: #fff;
+	font-weight: 600;
+	text-decoration: none;
+	cursor: pointer;
+}
+
+.button.quiet {
+	background: var(--surface);
+	color: var(--accent);
+}
+
+.button:disabled {
+	opacity: 0.55;
+	cursor: not-allowed;
+}
+
+.wrap {
+	width: min(100% - 2rem, 72rem);
+	margin-inline: auto;
+}
+
+.notice {
+	padding: 1rem 1.25rem;
+	border-left: 4px solid var(--accent);
+	background: var(--surface);
+}
+
+.notice.error {
+	border-left-color: var(--danger);
+}
+
+.muted {
+	color: var(--muted);
+}
+
+.visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	* {
+		scroll-behavior: auto !important;
+		transition: none !important;
+		animation: none !important;
+	}
+}

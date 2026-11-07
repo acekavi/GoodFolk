@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1
+# The booking site (web/ibe): built with Bun, served by adapter-node's server on a distroless Node base (no shell,
+# runs as non-root). The build bundles every dependency, so the image holds only the build output.
+FROM oven/bun:1.3 AS build
+WORKDIR /src
+COPY web/ibe/package.json web/ibe/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY web/ibe/ ./
+RUN bun run build
+
+FROM gcr.io/distroless/nodejs24-debian12:nonroot
+WORKDIR /app
+COPY --from=build /src/build ./build
+COPY --from=build /src/package.json ./package.json
+# Cloud Run terminates TLS, so adapter-node's default https protocol is right. ORIGIN stays unset: a site's custom
+# host is served by the same image, and the page's own origin comes from the request's Host.
+ENV NODE_ENV=production PORT=8080
+EXPOSE 8080
+CMD ["build"]

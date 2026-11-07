@@ -62,6 +62,7 @@ enum Pending {
     RoomTypeVideo { id: Uuid },
     RoomIssue { id: Uuid },
     Guest { id: Uuid, document_kind: DocumentKind },
+    IbeLogo,
 }
 
 impl From<Target> for Pending {
@@ -71,6 +72,7 @@ impl From<Target> for Pending {
             Target::RoomTypeVideo(id) => Pending::RoomTypeVideo { id },
             Target::RoomIssue(id) => Pending::RoomIssue { id },
             Target::Guest { guest, kind } => Pending::Guest { id: guest, document_kind: kind },
+            Target::IbeLogo => Pending::IbeLogo,
         }
     }
 }
@@ -82,6 +84,7 @@ impl From<Pending> for Target {
             Pending::RoomTypeVideo { id } => Target::RoomTypeVideo(id),
             Pending::RoomIssue { id } => Target::RoomIssue(id),
             Pending::Guest { id, document_kind } => Target::Guest { guest: id, kind: document_kind },
+            Pending::IbeLogo => Target::IbeLogo,
         }
     }
 }
@@ -146,6 +149,18 @@ pub async fn start_upload(
     .execute(&mut **tx)
     .await?;
     Ok(NewUpload { asset_id, purpose })
+}
+
+/// The property's asset `id`, whatever its state; `None` if the property has no such asset.
+pub async fn asset(tx: &mut Tx, property: Uuid, id: Uuid) -> Result<Option<AssetRow>, MediaError> {
+    let row = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select {ASSET_COLUMNS} from media_asset where id = $1 and property_id = $2"
+    )))
+    .bind(id)
+    .bind(property)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row)
 }
 
 /// What `Finalize` checks an upload in progress against.
@@ -357,6 +372,7 @@ async fn check_target(tx: &mut Tx, property: Uuid, target: Target) -> Result<(),
             }
             (sqlx::query_scalar("select 1 from guest where id = $1").bind(guest), "guest")
         }
+        Target::IbeLogo => (sqlx::query_scalar("select 1 from property where id = $1").bind(property), "property"),
     };
     let found: Option<i32> = query.fetch_optional(&mut **tx).await?;
     found.map(|_| ()).ok_or(MediaError::NotFound(what))
@@ -548,6 +564,10 @@ async fn write_link(
                 "guest_id": guest, "kind": kind.as_str(), "asset_id": asset, "duplicate": duplicate
             });
             audit(tx, tenant, Some(user), "guest_document.uploaded", "guest_document", document, data).await
+        }
+        Target::IbeLogo => {
+            let data = serde_json::json!({ "purpose": "ibe_logo", "kind": "image", "duplicate": duplicate });
+            audit(tx, tenant, Some(user), "media.uploaded", "media_asset", asset, data).await
         }
     }
 }

@@ -496,6 +496,7 @@ enum Seed {
     Laundry,
     Staff,
     Reports,
+    Ibe,
 }
 
 impl Seed {
@@ -511,6 +512,7 @@ impl Seed {
             Seed::Laundry => seed_laundry(pool, tenant).await,
             Seed::Staff => seed_staff(pool, tenant).await,
             Seed::Reports => seed_reports(pool, tenant).await,
+            Seed::Ibe => seed_ibe(pool, tenant).await,
         }
     }
 }
@@ -1488,6 +1490,43 @@ async fn report_mail_records_are_isolated_by_tenant(_: PgPoolOptions, opts: PgCo
         "insert into report_mail (tenant_id, report_id, user_id)
          select $1, report_id, user_id from report_mail",
         Seed::Reports,
+    )
+    .await;
+}
+
+async fn seed_ibe(pool: &PgPool, tenant: TenantId) {
+    seed_reservations(pool, tenant).await;
+    let mut tx = begin(pool, Scope::tenant(tenant)).await.unwrap();
+    let statements = [
+        "insert into ibe_site (tenant_id, property_id, enabled, public_code) select $1, id, false, code from property",
+        "insert into reservation_access_token (tenant_id, reservation_id, sha256, expires_at)
+         select $1, id, sha256($2), now() + interval '30 days' from reservation",
+    ];
+    for statement in statements {
+        sqlx::query(statement).bind(tenant.0).bind(tenant.0.as_bytes().to_vec()).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn ibe_sites_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "ibe_site",
+        "insert into ibe_site (tenant_id, property_id) select $1, property_id from ibe_site",
+        Seed::Ibe,
+    )
+    .await;
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn reservation_access_tokens_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "reservation_access_token",
+        "insert into reservation_access_token (tenant_id, reservation_id, sha256, expires_at)
+         select $1, reservation_id, sha256('x'::bytea), now() from reservation_access_token",
+        Seed::Ibe,
     )
     .await;
 }

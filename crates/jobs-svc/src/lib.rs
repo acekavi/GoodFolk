@@ -46,6 +46,8 @@ pub struct JobsSvc {
     pub mailer: Arc<dyn ::mail::Mailer>,
     /// The web app's origin, which email links start with (`APP_BASE_URL`).
     pub app_base_url: String,
+    /// The booking site's origin, which a booking's manage link starts with (`IBE_PUBLIC_ORIGIN`).
+    pub ibe_public_origin: String,
 }
 
 /// gRPC (tonic) + HTTP (`/tick` and `/mail` behind svc-auth, `/healthz`) on one port (tonic's axum router).

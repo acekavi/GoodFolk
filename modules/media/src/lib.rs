@@ -11,7 +11,7 @@ mod links;
 mod sweep;
 
 pub use assets::{
-    Completed, NewUpload, PROCESS_TOPIC, PendingUpload, Verified, apply_result, complete_upload, pending_upload,
+    Completed, NewUpload, PROCESS_TOPIC, PendingUpload, Verified, apply_result, asset, complete_upload, pending_upload,
     refuse_upload, set_s3_upload_id, start_upload,
 };
 pub use guest_documents::{
@@ -23,7 +23,7 @@ pub use links::{
 pub use sweep::{StaleUpload, SweepReport, sweep};
 
 use db::{Event, TenantId, Tx, UserId};
-use media_types::{Profile, RenditionOut};
+use media_types::{Profile, Renditions};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -33,7 +33,8 @@ db::text_enum!(
         Gallery = "gallery",
         IssuePhoto = "issue_photo",
         GuestDocument = "guest_document",
-        GalleryVideo = "gallery_video"
+        GalleryVideo = "gallery_video",
+        IbeLogo = "ibe_logo"
     }
 );
 
@@ -67,13 +68,14 @@ impl Purpose {
             Purpose::Gallery | Purpose::IssuePhoto => 25 * MIB,
             Purpose::GuestDocument => 15 * MIB,
             Purpose::GalleryVideo => 500 * MIB,
+            Purpose::IbeLogo => 5 * MIB,
         }
     }
 
-    /// `public` for gallery photos and videos, `private` for everything else.
+    /// `public` for gallery photos and videos and the booking site logo, `private` for everything else.
     pub fn visibility(self) -> &'static str {
         match self {
-            Purpose::Gallery | Purpose::GalleryVideo => Visibility::Public.as_str(),
+            Purpose::Gallery | Purpose::GalleryVideo | Purpose::IbeLogo => Visibility::Public.as_str(),
             Purpose::IssuePhoto | Purpose::GuestDocument => Visibility::Private.as_str(),
         }
     }
@@ -85,18 +87,24 @@ impl Purpose {
             Purpose::IssuePhoto => Profile::IssuePhoto,
             Purpose::GuestDocument => Profile::GuestDocument,
             Purpose::GalleryVideo => Profile::GalleryVideo,
+            Purpose::IbeLogo => Profile::IbeLogo,
         }
     }
 }
 
-/// What an upload is for: a photo or a video in a room type's gallery, a room issue, or a guest's ID document of
-/// `kind`.
+/// What an upload is for: a photo or a video in a room type's gallery, a room issue, a guest's ID document of `kind`,
+/// or the logo of a property's booking site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     RoomType(Uuid),
     RoomTypeVideo(Uuid),
     RoomIssue(Uuid),
-    Guest { guest: Uuid, kind: DocumentKind },
+    Guest {
+        guest: Uuid,
+        kind: DocumentKind,
+    },
+    /// The property's booking site logo: the upload only becomes an asset; saving the site settings uses it.
+    IbeLogo,
 }
 
 impl Target {
@@ -106,6 +114,7 @@ impl Target {
             Target::RoomTypeVideo(_) => Purpose::GalleryVideo,
             Target::RoomIssue(_) => Purpose::IssuePhoto,
             Target::Guest { .. } => Purpose::GuestDocument,
+            Target::IbeLogo => Purpose::IbeLogo,
         }
     }
 }
@@ -158,7 +167,7 @@ pub struct AssetRow {
     pub height: Option<i32>,
     pub archive_key: Option<String>,
     #[sqlx(json)]
-    pub renditions: Vec<RenditionOut>,
+    pub renditions: Renditions,
     pub created_at: OffsetDateTime,
     pub ready_at: Option<OffsetDateTime>,
 }

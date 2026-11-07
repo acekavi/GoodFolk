@@ -89,6 +89,10 @@ pub(crate) fn penalty_amount(penalty: Penalty, nights: &[(Date, i64, i64)]) -> i
 /// A penalty posts to the reservation's deposit folio as this stay's `cancellation_fee` line
 /// ([`folio::post_cancellation_fee`]), tax-inclusive when its rate plan's prices are: that needs a rate for a foreign
 /// currency on the business date and an open deposit folio (`Conflict` otherwise).
+///
+/// `audit_reason`, when given, is kept in the audit row as the reason for cancelling, and with no `actor` it means the
+/// guest cancelled on the booking site: the row then names the site as the actor and its mode is `online`, not the
+/// automatic close's `auto`.
 pub async fn cancel_room(
     tx: &mut Tx,
     tenant: TenantId,
@@ -96,6 +100,7 @@ pub async fn cancel_room(
     property: Uuid,
     id: Uuid,
     expected_version: i32,
+    audit_reason: Option<&str>,
 ) -> Result<CancelledRoom, ReservationsError> {
     let (stay, current) = lock_closing_stay(tx, property, id, expected_version).await?;
     let status =
@@ -124,12 +129,19 @@ pub async fn cancel_room(
         .await?;
     bump_reservation(tx, stay.reservation_id).await?;
 
-    let data = serde_json::json!({
+    let mut data = serde_json::json!({
         "reservation_id": stay.reservation_id,
         "penalty": penalty,
         "currency": stay.currency,
         "mode": mode(actor),
     });
+    if let Some(reason) = audit_reason {
+        data["reason"] = serde_json::json!(reason);
+        if actor.is_none() {
+            data["actor"] = serde_json::json!(crate::SITE_ACTOR);
+            data["mode"] = serde_json::json!("online");
+        }
+    }
     audit(tx, tenant, actor, "reservation_room.cancelled", "reservation_room", id, data).await?;
     notify(tx, tenant, property, closed_keys(property, &stay, from)).await?;
 

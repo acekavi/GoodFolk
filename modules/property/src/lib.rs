@@ -1,5 +1,9 @@
 //! Properties (hotels) within a tenant.
 
+mod ibe;
+
+pub use ibe::{IbeSite, IbeSiteChanges, MIN_ACCENT_CONTRAST, contrast_with_white, ibe_site, update_ibe_site};
+
 use db::{Event, TenantId, Tx, UserId};
 use serde::Serialize;
 use time::Date;
@@ -62,6 +66,9 @@ pub enum PropertyError {
     /// A business rule, such as accepted currencies that leave out the base currency.
     #[error("{0}")]
     Invalid(String),
+    /// Another enabled booking site already answers to the code (`CodeInUse` carries the message).
+    #[error("{0}")]
+    CodeInUse(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }

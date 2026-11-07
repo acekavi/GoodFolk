@@ -4,6 +4,150 @@
  */
 
 export interface paths {
+    "/api/public/v1/ibe/by-host/{host}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The code of the enabled site at the custom host `host`, for the booking site's server to address it by. `404` when
+         *     no enabled site has that host. 60 lookups a minute per IP (`429` with `Retry-After`): each one asks the database.
+         */
+        get: operations["ibe_by_host"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/public/v1/ibe/{code}/bookings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Books rooms on the site of the property coded `code`, paid at the hotel: a confirmed reservation from the booking
+         *     site, and its confirmation email with the manage link. Prices are always worked out again: a total per currency
+         *     other than `expected_totals` is `409` with `reason: price_changed` and the new `totals`, which the guest confirms;
+         *     a room no longer free is `409` with `reason: sold_out`. A booking the site does not sell is `422`.
+         * @description Checked in this order: 5 bookings a minute per IP (`429` with `Retry-After`); the `Idempotency-Key` (required);
+         *     the hidden `website` field, which a bot fills (it is answered as if booked, the same way for the same key, and
+         *     nothing is kept); the key's stored answer (scoped to the property: the same booking again gets the first answer,
+         *     without asking Turnstile again, but with no `manage_url`, since the manage token is never stored; another booking
+         *     with the same key is `409`, and so is the same booking while its first request is still running, with
+         *     `reason: in_progress`); then, for a new key only, the Turnstile token (`400` when missing or refused, `503`
+         *     when it cannot be checked; neither keeps anything under the key). The Turnstile token is not part of what makes
+         *     two requests the same booking: a retry after a lost answer may carry a fresh one and still gets the first answer.
+         *
+         *     Keep the `Idempotency-Key` while retrying the same booking, also after a `409` with `reason: in_progress` (retry
+         *     shortly), and treat any other `4xx` as the end of its key: a changed price is confirmed with a new key.
+         */
+        post: operations["ibe_book"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/public/v1/ibe/{code}/bookings/manage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The booking whose manage link carries `token`, for the manage page's server: what the guest needs to see and whether
+         *     they can still cancel it (every room tentative or confirmed, check-in after the business date), with what
+         *     cancelling would cost now. A `POST` with the token in the body, so it is in no URL a request log records; it reads
+         *     only, and only the site's server calls it, so it allows no other origin than the commands do. Never cached, since
+         *     it is one guest's data. `410` for a token that is wrong, expired (after the end of the 30th day after check-out, in
+         *     the property's time zone) or another property's, always with the same answer. 5 requests a minute per IP, with the
+         *     cancel (`429` with `Retry-After`).
+         */
+        post: operations["ibe_manage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/public/v1/ibe/{code}/bookings/manage/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancels the whole booking whose manage link carries `token`, as the guest: the existing cancellation under the
+         *     terms the booking kept, with the reason "Cancelled by the guest online", the penalty never waived, and a
+         *     cancellation email. All rooms or none. Answers the booking as it is now. `409` with `reason: not_cancellable` once a
+         *     room is checked in, cancelled or due to arrive today or earlier, and with `reason: already_cancelled` for a booking
+         *     cancelled already (also for the second of two cancels at once); `410` as the manage page has it. Shares the manage
+         *     page's 5 requests a minute per IP.
+         */
+        post: operations["ibe_cancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/public/v1/ibe/{code}/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the site offers for a stay: each room type free for every room asked that it can hold, with every `IBE` plan
+         *     open for the stay, priced in its own currency with the taxes on the bill. Without any, `next_available` is the
+         *     nearest later check-in within 14 days for the same stay. 1 to 30 nights from the business date up to 18 months
+         *     ahead, 1 to 4 rooms (`422`). 60 searches a minute per IP (`429` with `Retry-After`). Cached at the edge for 30 s.
+         */
+        get: operations["ibe_search"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/public/v1/ibe/{code}/site": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The booking site of the property coded `code`: branding, contact, terms, and its active room types with their
+         *     photos and tour videos. `404` unless its site is enabled. Cached at the edge for 5 minutes.
+         */
+        get: operations["ibe_site"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -600,6 +744,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/properties/{property}/ibe-site": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The property's booking site settings: the defaults, at version 0, until it saves any. Needs `IbeManage`. The `ETag`
+         *     is the version to send back as `If-Match`.
+         */
+        get: operations["get_ibe_site"];
+        /**
+         * Replaces the property's booking site settings. Needs `IbeManage`; send the version as `If-Match` (0 for the first
+         *     save). The accent must give white text a contrast of 4.5 or more, the logo must be a completed `ibe_logo` upload and
+         *     the hero a finished room type gallery photo of this property, and the custom host must be unused and not the booking
+         *     domain's own host (each 422).
+         *     Audited as `ibe_site.updated` with the values before and after.
+         */
+        put: operations["update_ibe_site"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/properties/{property}/invoices/{invoice}/credit-note": {
         parameters: {
             query?: never;
@@ -953,7 +1124,8 @@ export interface paths {
         /**
          * Starts an upload: records the asset and has media-svc open a multipart upload, whose part URLs work for an hour.
          *     Needs `MediaManage` for a gallery photo, `RoomIssuesReport` for an issue photo and `GuestDocumentsManage` for a
-         *     guest document, and `MediaManage` for a room type's video (`gallery_video`). An issue holds at most 5 photos and a
+         *     guest document, `MediaManage` for a room type's video (`gallery_video`) and `IbeManage` for the booking site's logo
+         *     (`ibe_logo`, up to 5 MB, with the property as the target). An issue holds at most 5 photos and a
          *     room type at most 3 videos, counting uploads in progress (409). A video can be up to 500 MB. When media-svc cannot be
          *     reached in 2 s the answer is 502 and nothing is recorded. A retried request with the same `Idempotency-Key` is
          *     answered without starting another upload.
@@ -2154,6 +2326,79 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        /** @description One room of a booking, as one of the search's offers. */
+        BookRoom: {
+            /** Format: int32 */
+            adults: number;
+            /** Format: int32 */
+            children: number;
+            meal_plan: string;
+            /** @description Who stays in the room; the booker when absent. */
+            occupant_name?: string | null;
+            /** Format: uuid */
+            rate_plan_id: string;
+            /** Format: uuid */
+            room_type_id: string;
+        };
+        /** @description The person booking, who gets the confirmation email. */
+        Booker: {
+            /**
+             * @description When the guest expects to arrive, `HH:MM`.
+             * @example 14:30
+             */
+            arrival_time?: string | null;
+            /** @description The country of residence, ISO 3166-1 alpha-2 such as `LK`. */
+            country: string;
+            email: string;
+            first_name: string;
+            last_name: string;
+            phone: string;
+        };
+        /** @description A booking from the site's form. */
+        BookingBody: components["schemas"]["BookingRequest"] & {
+            /** @description The Turnstile widget's token. */
+            turnstile_token?: string;
+            /** @description A field people never see, so never fill: a form that fills it is a bot's. */
+            website?: string;
+        };
+        /** @description A booking made. */
+        BookingConfirmed: {
+            confirmation_no: string;
+            /**
+             * @description The manage page's link, with the booking's manage token: in the first answer only. The token is never stored
+             *     for a replay, so a retry with the same `Idempotency-Key` answers without it; the link is in the confirmation
+             *     email.
+             */
+            manage_url?: string | null;
+        };
+        /** @description What a booking that cannot be made as sent answers: the new totals for a price that changed. */
+        BookingConflict: {
+            /** @description `price_changed`, `sold_out`, or `in_progress` while the same booking's first request is still running. */
+            reason: string;
+            /** @description The totals now, per currency in minor units, when the price changed. */
+            totals?: {
+                [key: string]: number;
+            } | null;
+        };
+        /** @description A booking as the site's form sends it. Prices are never taken from it: `expected_totals` is what the guest saw. */
+        BookingRequest: {
+            /** @description The guest agreed to the hotel's booking terms and privacy notice. */
+            agreed: boolean;
+            booker: components["schemas"]["Booker"];
+            /** Format: date */
+            check_in: string;
+            /** Format: date */
+            check_out: string;
+            /** @description The total the guest agreed to per currency, in minor units, taxes included. */
+            expected_totals: {
+                [key: string]: number;
+            };
+            /** @description The guest's answer to "Are you a resident of Sri Lanka?"; the booker's residency, which every room is priced for. */
+            residency: components["schemas"]["Residency"];
+            rooms: components["schemas"]["BookRoom"][];
+            /** @description Up to 500 characters, kept as the reservation's notes. */
+            special_requests?: string;
+        };
         /**
          * @description Changes a plan's prices on `[from, to)`. Left out, `weekdays` (ISO: 1 = Monday … 7 = Sunday),
          *     `room_type_ids` and `occupancies` mean all.
@@ -2174,6 +2419,14 @@ export interface components {
              * @description How many of the plan's own prices changed.
              */
             changed: number;
+        };
+        /** @description A guest's request to cancel the booking whose manage link carries `token`. */
+        CancelBody: {
+            token: string;
+        };
+        /** @description What a cancellation that cannot be made answers: `not_cancellable` or `already_cancelled`. */
+        CancelConflict: {
+            reason: string;
         };
         /** @description What cancelling or not arriving costs. Reservations (Phase 3) apply it; rate plans name one. */
         CancellationPolicy: {
@@ -2697,6 +2950,42 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        /** @description A property's booking site settings. A property that never saved any has the defaults, at version 0. */
+        IbeSite: {
+            /** @description `#rrggbb`, lowercase, with a contrast of 4.5 or more against white. */
+            accent?: string | null;
+            contact_email?: string | null;
+            contact_phone?: string | null;
+            /** @description A lowercase domain name, unique across all tenants. */
+            custom_host?: string | null;
+            description: string;
+            /** @description While off, the site answers `404` for the property. */
+            enabled: boolean;
+            /**
+             * Format: uuid
+             * @description A ready gallery photo of one of the property's room types.
+             */
+            hero_asset_id?: string | null;
+            /**
+             * Format: uuid
+             * @description An `ibe_logo` asset of the property, which may still be processing.
+             */
+            logo_asset_id?: string | null;
+            privacy: string;
+            /** Format: uuid */
+            property_id: string;
+            terms: string;
+            /**
+             * Format: int32
+             * @description Send it as `If-Match`: 0 until the first save.
+             */
+            version: number;
+        };
+        /** @description The booking site settings with the logo's state and, once it is ready, its public URL. */
+        IbeSiteView: components["schemas"]["IbeSite"] & {
+            logo_status?: components["schemas"]["AssetStatus"] | null;
+            logo_url?: string | null;
+        };
         /** @description An identity document. `Debug` hides the number, which is sealed on arrival and never shown again. */
         IdDocRequest: {
             /** @description 1 to 50 characters. Responses show only its last 4 characters behind a mask, such as `•••• 1234`. */
@@ -2708,6 +2997,21 @@ export interface components {
          * @enum {string}
          */
         IdDocType: "passport" | "nic" | "driving_licence" | "other";
+        /** @description One delivered image. */
+        Image: {
+            /** @description `avif` or `webp`. */
+            format: string;
+            /** Format: int32 */
+            height: number;
+            /**
+             * @description `thumb` (a 320 px square), `sm` to `xl`: long edges of 640 to 2400 px, or `phone`: 800 px at a lower quality,
+             *     for the first image a phone paints.
+             */
+            size: string;
+            url: string;
+            /** Format: int32 */
+            width: number;
+        };
         Invitation: {
             /** Format: date-time */
             created_at: string;
@@ -2894,6 +3198,72 @@ export interface components {
             password: string;
         };
         /**
+         * @description The manage link's token, as the manage page's server sends it: in the body, so it is in no URL that a platform's
+         *     request log records.
+         */
+        ManageBody: {
+            token: string;
+        };
+        /** @description A booking as its manage page shows it. Amounts are in minor units of their currency, with the taxes on the bill. */
+        ManageView: {
+            /** @description Whether the guest can cancel online: every room tentative or confirmed, and check-in after the business date. */
+            cancellable: boolean;
+            /** @description Each distinct wording of the rooms' booked cancellation terms, in room order. */
+            cancellation: string[];
+            /** @description What cancelling cost per currency, for the rooms cancelled. */
+            cancellation_penalty: {
+                [key: string]: number;
+            };
+            /** Format: date */
+            check_in: string;
+            /** Format: date */
+            check_out: string;
+            confirmation_no: string;
+            /** @description To change the booking, the guest contacts the hotel. */
+            contact_email?: string | null;
+            contact_phone?: string | null;
+            /** @description What cancelling now costs per currency, while the booking is cancellable. */
+            penalty_if_cancelled: {
+                [key: string]: number;
+            };
+            property_name: string;
+            rooms: components["schemas"]["ManagedRoom"][];
+            /** @description The reservation's status: `tentative`, `confirmed`, `checked_in`, `checked_out`, `cancelled` or `no_show`. */
+            status: string;
+            totals: {
+                [key: string]: number;
+            };
+        };
+        /** @description One booked room as the guest sees it. */
+        ManagedRoom: {
+            /** Format: int32 */
+            adults: number;
+            /** Format: int32 */
+            children: number;
+            currency: string;
+            meal_plan: string;
+            plan: string;
+            room_type: string;
+            status: string;
+            /** Format: int64 */
+            total: number;
+        };
+        /** @description The price of one meal plan for the rooms asked with one occupancy. */
+        MealOffer: {
+            deposit?: components["schemas"]["OfferDeposit"] | null;
+            meal_plan: string;
+            nights: components["schemas"]["NightPrice"][];
+            /** @description The rooms asked (0-based, in the order asked) this price is for: those with the same adults and children. */
+            rooms: number[];
+            /** @description The taxes and service charge the bill shows over the stay, for one room, in the order they apply. */
+            taxes: components["schemas"]["TaxLine"][];
+            /**
+             * Format: int64
+             * @description The stay for one of those rooms, with the taxes on the bill, in minor units.
+             */
+            total: number;
+        };
+        /**
          * @description Room only, bed and breakfast, half board, full board.
          * @enum {string}
          */
@@ -2946,6 +3316,11 @@ export interface components {
             /** Format: int32 */
             width?: number | null;
         };
+        /**
+         * @description Whether a gallery item is a photo or a video.
+         * @enum {string}
+         */
+        MediaKind: "image" | "video";
         Member: {
             display_name: string;
             email: string;
@@ -3042,6 +3417,23 @@ export interface components {
          * @enum {string}
          */
         MovementKind: "receive" | "transfer" | "send" | "return" | "write_off";
+        /** @description One night's price, in minor units. */
+        NightPrice: {
+            /** Format: date */
+            date: string;
+            /** Format: int64 */
+            meal: number;
+            /**
+             * Format: int64
+             * @description The room and the meal plan as priced: before taxes, or including them on a tax-inclusive plan.
+             */
+            room: number;
+            /**
+             * Format: int64
+             * @description With the taxes on the bill.
+             */
+            total: number;
+        };
         /** @description A room marked a no-show and what not arriving cost, in its currency. */
         NoShowRoom: {
             currency: string;
@@ -3053,6 +3445,17 @@ export interface components {
             reservation_id: string;
             /** Format: int32 */
             version: number;
+        };
+        /**
+         * @description An advisory deposit for one room, in minor units of the plan's currency: priced and dated as
+         *     [`reservations::room_deposit`] prices and dates the booked room's, and as its confirmation email shows it. Never
+         *     enforced.
+         */
+        OfferDeposit: {
+            /** Format: int64 */
+            amount: number;
+            /** Format: date */
+            due_date: string;
         };
         Order: {
             /** Format: date-time */
@@ -3189,6 +3592,17 @@ export interface components {
          * @enum {string}
          */
         PlanKind: "standard" | "derived" | "custom";
+        /** @description A rate plan open for the stay, in its own currency. */
+        PlanOffer: {
+            /** @description The cancellation policy in plain words. */
+            cancellation: string;
+            currency: string;
+            /** @description RO, BB, HB, FB, each once per occupancy it is priced for. */
+            meal_plans: components["schemas"]["MealOffer"][];
+            name: string;
+            /** Format: uuid */
+            rate_plan_id: string;
+        };
         PosBillRequest: {
             /** @description 1 to 50 characters; with the outlet it names the bill, so posting it again changes nothing. */
             bill_no: string;
@@ -3440,7 +3854,7 @@ export interface components {
          * @description What an asset is for. It decides the visibility, the size limit and the renditions.
          * @enum {string}
          */
-        Purpose: "gallery" | "issue_photo" | "guest_document" | "gallery_video";
+        Purpose: "gallery" | "issue_photo" | "guest_document" | "gallery_video" | "ibe_logo";
         RatePlan: {
             active: boolean;
             allowed_meal_plans: components["schemas"]["MealPlan"][];
@@ -3754,6 +4168,8 @@ export interface components {
             base_occupancy: number;
             bed_config: components["schemas"]["Bed"][];
             code: string;
+            /** @description What the booking site says about the room type, at most 1000 characters; empty when there is nothing. */
+            description: string;
             /** Format: uuid */
             id: string;
             /** Format: int32 */
@@ -3778,12 +4194,33 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        /** @description A room type with rooms free for every room asked that it can hold, and the plans it is sold on for the stay. */
+        RoomTypeResult: {
+            /**
+             * Format: int32
+             * @description The fewest rooms free on any night of the stay.
+             */
+            available: number;
+            /** @description By plan code. */
+            plans: components["schemas"]["PlanOffer"][];
+            /** Format: uuid */
+            room_type_id: string;
+        };
         RoutingRequest: {
             /**
              * @description The categories the reservation's account pays (`room`, `meal_plan`, `laundry`, `misc`, `fee`,
              *     `pos:<OUTLET>`); empty routes everything to the stays.
              */
             categories: string[];
+        };
+        /**
+         * @description What the site offers for a stay. With no room type, `next_available` is the nearest later check-in, within
+         *     [`NEXT_AVAILABLE_DAYS`], for the same nights and rooms that has one.
+         */
+        SearchResult: {
+            /** Format: date */
+            next_available?: string | null;
+            room_types: components["schemas"]["RoomTypeResult"][];
         };
         /** @description A housekeeping section: a group of rooms one housekeeper looks after. */
         Section: {
@@ -3918,6 +4355,75 @@ export interface components {
             password: string;
             tenant_name: string;
         };
+        /** @description The code a custom host's site is addressed by. */
+        SiteCode: {
+            code: string;
+        };
+        /** @description A ready photo or tour video. */
+        SiteMedia: {
+            caption?: string | null;
+            /**
+             * Format: int32
+             * @description A video's length in milliseconds.
+             */
+            duration_ms?: number | null;
+            /** Format: int32 */
+            height?: number | null;
+            /** @description The images: a photo's, or a video's poster. */
+            images: components["schemas"]["Image"][];
+            kind: components["schemas"]["MediaKind"];
+            /** @description A video's encodings, AV1 first at each size and the larger size first; empty for a photo. */
+            sources: components["schemas"]["VideoSource"][];
+            /** Format: int32 */
+            width?: number | null;
+        };
+        /** @description An active room type as the site shows it. */
+        SiteRoomType: {
+            amenities: string[];
+            beds: components["schemas"]["Bed"][];
+            description: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: int32 */
+            max_adults: number;
+            /** Format: int32 */
+            max_children: number;
+            /** Format: int32 */
+            max_occupancy: number;
+            /** @description The ready photos and tour videos of its gallery, in order. */
+            media: components["schemas"]["SiteMedia"][];
+            name: string;
+        };
+        /** @description A property's booking site: branding, contact, terms and the active room types, in display order. */
+        SiteView: {
+            /** @description `#rrggbb`, with a contrast of 4.5 or more against white text. */
+            accent?: string | null;
+            /**
+             * Format: date
+             * @description The earliest check-in a search accepts.
+             */
+            business_date: string;
+            /** @description Local time guests may check in from, `HH:MM`. */
+            check_in_time: string;
+            /** @description Local time guests check out by, `HH:MM`. */
+            check_out_time: string;
+            /** @description The code the site is addressed by: `/<code>` on the booking domain. */
+            code: string;
+            contact_email?: string | null;
+            contact_phone?: string | null;
+            description: string;
+            hero?: components["schemas"]["SiteMedia"] | null;
+            /** @description The logo's images; empty without a logo or while it is processing. */
+            logo: components["schemas"]["Image"][];
+            name: string;
+            /** @description The privacy notice, plain text. */
+            privacy: string;
+            room_types: components["schemas"]["SiteRoomType"][];
+            /** @description The booking terms, plain text. */
+            terms: string;
+            /** @description IANA time zone, e.g. `Asia/Colombo`. */
+            timezone: string;
+        };
         /**
          * @description What posted a line.
          * @enum {string}
@@ -3926,7 +4432,7 @@ export interface components {
         StartUploadRequest: {
             /**
              * Format: int64
-             * @description The file's size: at most 25 MiB for photos, 15 MiB for guest documents and 500 MB for videos.
+             * @description The file's size: at most 25 MiB for photos, 5 MiB for a logo, 15 MiB for guest documents and 500 MB for videos.
              */
             bytes: number;
             /** @description 1 to 255 characters. Only shown; the file's type is decided from its bytes. */
@@ -3937,7 +4443,8 @@ export interface components {
             sha256: string;
             /**
              * Format: uuid
-             * @description The room type (`gallery`, `gallery_video`), room issue (`issue_photo`) or guest (`guest_document`).
+             * @description The room type (`gallery`, `gallery_video`), room issue (`issue_photo`), guest (`guest_document`) or the property
+             *     itself (`ibe_logo`).
              */
             target_id: string;
         };
@@ -3996,6 +4503,12 @@ export interface components {
             currencies: string[];
             /** @enum {string} */
             type: "payment_currency";
+        };
+        /** @description One tax, levy or service charge over a stay. */
+        TaxLine: {
+            /** Format: int64 */
+            amount: number;
+            name: string;
         };
         /** @description A stored rule, with its id and version, as the settings screens show it. */
         TaxRuleRow: {
@@ -4138,6 +4651,40 @@ export interface components {
             phone?: string | null;
             residency?: components["schemas"]["Residency"] | null;
         };
+        /**
+         * @description The booking site settings, as the page sends them back: every field is written. `null` or a missing optional field
+         *     clears it.
+         */
+        UpdateIbeSiteRequest: {
+            /** @description `#rrggbb` in lowercase, giving white text a contrast of 4.5 or more (422). */
+            accent?: string | null;
+            contact_email?: string | null;
+            /** @description 1 to 50 characters. */
+            contact_phone?: string | null;
+            /**
+             * @description A lowercase host name of at least two labels (each 1 to 63 letters, digits and inner hyphens), at most 253
+             *     characters, unique across all tenants.
+             */
+            custom_host?: string | null;
+            /** @description At most 500 characters. */
+            description?: string;
+            /** @description While off, the site answers `404` for the property. */
+            enabled: boolean;
+            /**
+             * Format: uuid
+             * @description A finished gallery photo of one of the property's room types.
+             */
+            hero_asset_id?: string | null;
+            /**
+             * Format: uuid
+             * @description A completed `ibe_logo` upload of the property, which may still be processing.
+             */
+            logo_asset_id?: string | null;
+            /** @description Plain text, at most 10,000 characters. */
+            privacy?: string;
+            /** @description Plain text, at most 10,000 characters. */
+            terms?: string;
+        };
         UpdateIssueRequest: {
             /** @description Only `resolved` is accepted. */
             status: components["schemas"]["IssueStatus"];
@@ -4252,6 +4799,8 @@ export interface components {
             /** Format: int32 */
             base_occupancy?: number | null;
             bed_config?: components["schemas"]["BedRequest"][] | null;
+            /** @description Up to 1000 characters, shown on the booking site; empty clears it. */
+            description?: string | null;
             /** Format: int32 */
             max_adults?: number | null;
             /** Format: int32 */
@@ -4329,6 +4878,20 @@ export interface components {
          * @enum {string}
          */
         VatReturnPeriod: "monthly" | "quarterly";
+        /** @description One delivered encoding of a video. */
+        VideoSource: {
+            /** @description `av1` or `h264`. */
+            format: string;
+            /** Format: int32 */
+            height: number;
+            /** @description The `type` for a `<source>`: the container with its codecs. */
+            mime: string;
+            /** @description `v1080` or `v720`: fits 1920×1080 or 1280×720. */
+            size: string;
+            url: string;
+            /** Format: int32 */
+            width: number;
+        };
     };
     responses: never;
     parameters: never;
@@ -4338,6 +4901,318 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    ibe_by_host: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description a custom host, e.g. `book.galleforthotel.lk` */
+                host: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SiteCode"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    "Retry-After"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ibe_book: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description 8 to 160 characters, new for each booking attempt */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description the property code, any case */
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BookingBody"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BookingConfirmed"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BookingConflict"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    "Retry-After"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ibe_manage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description the property code, any case */
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManageBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManageView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    "Retry-After"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ibe_cancel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description the property code, any case */
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManageView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CancelConflict"];
+                };
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    "Retry-After"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ibe_search: {
+        parameters: {
+            query: {
+                check_in: string;
+                check_out: string;
+                /** @description the guest's answer to "Are you a resident of Sri Lanka?" */
+                residency: components["schemas"]["Residency"];
+                /** @description each room's adults and children, `adults-children`, comma-separated: `2-0,2-1` */
+                rooms: string;
+                /** @description ignored by the search: a value new to the edge's cache, for a search that must not be answered from it, as after a room was just sold */
+                fresh?: string;
+            };
+            header?: never;
+            path: {
+                /** @description the property code, any case */
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchResult"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    "Retry-After"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ibe_site: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description the property code, any case */
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SiteView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     login: {
         parameters: {
             query?: never;
@@ -5877,6 +6752,101 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_ibe_site: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "3"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IbeSiteView"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_ibe_site: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description the version edited, e.g. "3"; 0 for the first save */
+                "If-Match": string;
+            };
+            path: {
+                property: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateIbeSiteRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description the version, e.g. "4"; send it back as If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IbeSiteView"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };

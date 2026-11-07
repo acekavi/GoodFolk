@@ -1,5 +1,6 @@
 //! `POST /mail`: an invitation's email, sent to the dev outbox while the invitation is pending, and never a token in
-//! the logs; and a weekly or monthly report's email, with its PDF from storage attached.
+//! the logs; a weekly or monthly report's email, with its PDF from storage attached; and a booking site
+//! reservation's confirmation, in the hotel's name with its manage link.
 
 mod common;
 
@@ -9,7 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use common::hotel::Hotel;
+use common::hotel::{Hotel, Stay};
 use common::{SECRET, http, serve, storage, svc};
 use events::{PushEnvelope, PushMessage};
 use jobs_svc::JobsSvc;
@@ -409,5 +410,166 @@ async fn a_report_email_goes_only_to_an_owner_or_manager_of_the_property_now(_: 
         assert_eq!(post_mail(addr, push(&report_job(&hotel, report)), Some(SECRET)).await, 204, "{grants:?}");
     }
     assert_eq!(sent(&outbox).len(), 2);
+    std::fs::remove_dir_all(outbox).unwrap();
+}
+
+/// A booking-site reservation of `hotel` booked by Kamala Perera (kamala@example.com) for 2 nights from D + 10 at 10 000
+/// a night with 2 000 breakfast (before taxes), under one night's cancellation penalty and a 50% deposit due 7 days before arrival,
+/// whose manage link carries `token`; the hotel's site has a contact phone and email.
+async fn site_booking(hotel: &Hotel, token: &str) -> Uuid {
+    let terms = serde_json::json!({
+        "rules": [{"days_before_arrival": 3, "penalty": {"kind": "nights", "value": 1}}],
+        "no_show": {"kind": "nights", "value": 1},
+    });
+    let deposit =
+        serde_json::json!({"kind": "percent", "value": 5000, "due": {"type": "days_before_arrival", "days": 7}});
+    let stay = Stay {
+        source: "ibe",
+        meal_amount: 2_000,
+        terms: Some(terms),
+        deposit_terms: Some(deposit),
+        first_name: "Kamala",
+        last_name: "Perera",
+        booked: 0,
+        ..Stay::new(hotel.property, "confirmed", 10, 12)
+    };
+    let booked = hotel.stay(stay).await;
+    let mut tx = hotel.tx().await;
+    sqlx::query(
+        "update guest set email = 'kamala@example.com'
+         where id = (select booker_guest_id from reservation where id = $1)",
+    )
+    .bind(booked.reservation)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into ibe_site (tenant_id, property_id, enabled, public_code, contact_phone, contact_email)
+         values ($1, $2, true, 'GAL', '+94 91 222 3333', 'desk@gallefort.example')",
+    )
+    .bind(hotel.tenant.0)
+    .bind(hotel.property)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into reservation_access_token (tenant_id, reservation_id, sha256, expires_at)
+         values ($1, $2, $3, now() + interval '30 days')",
+    )
+    .bind(hotel.tenant.0)
+    .bind(booked.reservation)
+    .bind(Sha256::digest(token.as_bytes()).to_vec())
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    booked.reservation
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn an_ibe_confirmation_is_sent_in_the_hotels_name_with_the_manage_link(_: PgPoolOptions, opts: PgConnectOptions) {
+    let logs = captured_logs();
+    let hotel = Hotel::new(opts.clone()).await;
+    let (svc, outbox) = mailing(&hotel, opts);
+    let addr = serve(JobsSvc { ibe_public_origin: "https://book.example.lk".into(), ..svc }).await;
+    let token = "bWFuYWdlLXRva2VuLXRoYXQtbXVzdC1uZXZlci1iZS1sb2dnZWQ";
+    let reservation = site_booking(&hotel, token).await;
+    let job = MailJob::IbeConfirmation { tenant_id: hotel.tenant.0, reservation_id: reservation, token: token.into() };
+
+    assert_eq!(post_mail(addr, push(&job), Some(SECRET)).await, 204);
+    let stale =
+        MailJob::IbeConfirmation { tenant_id: hotel.tenant.0, reservation_id: reservation, token: "old".into() };
+    assert_eq!(post_mail(addr, push(&stale), Some(SECRET)).await, 204, "a token no longer the booking's");
+
+    let messages = sent(&outbox);
+    assert_eq!(messages.len(), 1);
+    let message = &messages[0];
+    let confirmation_no: String = sqlx::query_scalar("select confirmation_no from reservation where id = $1")
+        .bind(reservation)
+        .fetch_one(&mut *hotel.tx().await)
+        .await
+        .unwrap();
+    assert_eq!(message.to, "kamala@example.com");
+    assert_eq!(message.subject, format!("Your booking at Hotel GAL: {confirmation_no}"));
+    assert_eq!(message.from_name.as_deref(), Some("Hotel GAL"));
+    assert_eq!(message.reply_to.as_deref(), Some("desk@gallefort.example"));
+    let link = format!("https://book.example.lk/GAL/manage?token={token}");
+    // The property's tax rules apply, as the booking's search priced it.
+    let confirmation = ibe::confirmation(&mut hotel.tx().await, reservation, token).await.unwrap().unwrap();
+    let total = ibe::money_text("LKR", confirmation.totals["LKR"]);
+    assert!(confirmation.totals["LKR"] > 24_000, "taxed: {:?}", confirmation.totals);
+    let due =
+        hotel.day(3).format(time::macros::format_description!("[day padding:none] [month repr:long] [year]")).unwrap();
+    for body in [&message.text, &message.html] {
+        assert!(body.contains(&link), "{body}");
+        assert!(body.contains("Kamala Perera"), "{body}");
+        assert!(body.contains("Total, taxes included: ") && body.contains(&total), "{body}");
+        assert!(body.contains("bed and breakfast"), "{body}");
+        assert!(
+            body.contains("Free cancellation until 3 days before arrival; after that, one night is charged"),
+            "{body}"
+        );
+        assert!(
+            body.contains("Deposit (before taxes): LKR 120.00 by ") && body.contains(&due),
+            "the deposit and its due date: {body}"
+        );
+        assert!(body.contains("The hotel will contact you about the deposit"), "{body}");
+        assert!(body.contains("+94 91 222 3333") && body.contains("desk@gallefort.example"), "{body}");
+        assert_eq!(body.matches(token).count(), 1, "the token is only in the link: {body}");
+    }
+    assert!(message.html.contains(&format!("<a href=\"{link}\">")), "{}", message.html);
+    assert!(!logs.text().contains(token), "a log line carries the token");
+    std::fs::remove_dir_all(outbox).unwrap();
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn an_ibe_cancellation_names_the_charge_and_carries_no_link(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts.clone()).await;
+    let (svc, outbox) = mailing(&hotel, opts);
+    let addr = serve(JobsSvc { ibe_public_origin: "https://book.example.lk".into(), ..svc }).await;
+    let token = "bWFuYWdlLXRva2VuLXRoYXQtbXVzdC1uZXZlci1iZS1sb2dnZWQ";
+    let reservation = site_booking(&hotel, token).await;
+    let rooms: Vec<Uuid> = sqlx::query_scalar("select id from reservation_room where reservation_id = $1")
+        .bind(reservation)
+        .fetch_all(&mut *hotel.tx().await)
+        .await
+        .unwrap();
+    let job = MailJob::IbeCancellation { tenant_id: hotel.tenant.0, reservation_id: reservation, rooms };
+
+    assert_eq!(post_mail(addr, push(&job), Some(SECRET)).await, 204);
+    assert!(sent(&outbox).is_empty(), "a booking that is not cancelled has no cancellation to send");
+
+    let mut tx = hotel.tx().await;
+    sqlx::query(
+        "update reservation_room set status = 'cancelled', cancelled_at = now(), cancellation_penalty = 10000,
+                cancelled_business_date = $2
+         where reservation_id = $1",
+    )
+    .bind(reservation)
+    .bind(hotel.day(0))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(post_mail(addr, push(&job), Some(SECRET)).await, 204);
+
+    let messages = sent(&outbox);
+    assert_eq!(messages.len(), 1);
+    let message = &messages[0];
+    let confirmation_no: String = sqlx::query_scalar("select confirmation_no from reservation where id = $1")
+        .bind(reservation)
+        .fetch_one(&mut *hotel.tx().await)
+        .await
+        .unwrap();
+    assert_eq!(message.to, "kamala@example.com");
+    assert_eq!(message.subject, format!("Your booking at Hotel GAL is cancelled: {confirmation_no}"));
+    assert_eq!(message.from_name.as_deref(), Some("Hotel GAL"));
+    assert_eq!(message.reply_to.as_deref(), Some("desk@gallefort.example"));
+    for body in [&message.text, &message.html] {
+        assert!(body.contains("Kamala Perera") && body.contains(&confirmation_no), "{body}");
+        assert!(body.contains("The cancellation charge under your booking terms is LKR 100.00"), "{body}");
+        assert!(body.contains("+94 91 222 3333") && body.contains("desk@gallefort.example"), "{body}");
+        assert!(!body.contains(token) && !body.contains("manage"), "no link: {body}");
+    }
     std::fs::remove_dir_all(outbox).unwrap();
 }

@@ -61,7 +61,7 @@ pub use night_audit::StartedClose;
 pub use pos::{
     CreateOutletRequest, PosBillRequest, PosItemRequest, PosTargetRequest, SettledRequest, UpdateOutletRequest,
 };
-pub use properties::{CreatePropertyRequest, UpdatePropertyRequest};
+pub use properties::{CreatePropertyRequest, IbeSiteView, UpdateIbeSiteRequest, UpdatePropertyRequest};
 pub use rates::{
     BulkChangeRequest, BulkChangeResponse, CreateCancellationPolicyRequest, CreateMealSupplementRequest,
     CreateRatePlanRequest, PriceChangeRequest, PriceRequest, RestrictionsRequest, SetPricesRequest,
@@ -203,6 +203,7 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/outlets/{{outlet}}"), patch(pos::update_outlet))
         .route(&format!("{PROPERTY}/tax-rules/{{rule}}"), patch(taxes::update_rule).delete(taxes::end_rule))
         .route(&format!("{PROPERTY}/tax-settings"), patch(taxes::update_settings))
+        .route(&format!("{PROPERTY}/ibe-site"), get(properties::get_ibe_site).put(properties::update_ibe_site))
         .route(&format!("{PROPERTY}/fx-rates/{{date}}/{{currency}}"), put(fx::set_rate))
         .route(&format!("{PROPERTY}/night-audit/close"), post(night_audit::close))
         .route(&format!("{PROPERTY}/night-audit/runs/{{run}}/retry"), post(night_audit::retry))
@@ -224,6 +225,9 @@ pub fn router(state: AppState) -> Router {
         .route("/internal/events", post(internal::events))
         .route_layer(svc_auth::layer(state.internal_auth.clone()));
 
+    // Anonymous and cookie-free, so outside the CSRF check: the booking site's API.
+    let public = crate::public::router(&state).layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)));
+
     Router::new()
         .merge(requests)
         .merge(streams)
@@ -234,8 +238,11 @@ pub fn router(state: AppState) -> Router {
         // Set last, so they cover every route above.
         .fallback(|| async { ApiError::not_found("no such route") })
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
+        // After the fallbacks: the public routes bring their own, inside their CORS layer, so a preflight (an
+        // `OPTIONS` no route has) reaches CORS rather than a bare 405.
+        .merge(public)
         .layer(CompressionLayer::new())
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(crate::public::request_span))
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .with_state(state)

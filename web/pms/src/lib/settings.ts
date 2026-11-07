@@ -200,6 +200,7 @@ export function isValidRate(text: string): boolean {
 export type SettingsLink =
 	| 'general'
 	| 'taxes'
+	| 'booking-site'
 	| 'exchange-rates'
 	| 'sections'
 	| 'block-reasons'
@@ -217,7 +218,7 @@ export interface SettingsGroup {
 /**
  * The Settings index at the property: its groups, each with the pages the user may open, and no group left empty.
  * Each page keeps its own permission: General `PropertiesManage`; Taxes and invoices, Currencies and exchange rates
- * and Outlets `FolioView`; Sections and Block reasons `RoomsManage`; Laundry prices `LaundryPricesManage`;
+ * and Outlets `FolioView`; Booking site `IbeManage`; Sections and Block reasons `RoomsManage`; Laundry prices `LaundryPricesManage`;
  * Cancellation policies (on Rate plans) `RatesManage`; Staff `StaffManage` at any property; Permissions every member
  * but a till (`posOnly`).
  */
@@ -236,7 +237,8 @@ export function settingsIndex(profile: Profile, propertyId: string): SettingsGro
 					link: 'exchange-rates',
 					label: 'Currencies and exchange rates',
 					shown: at('folioView')
-				}
+				},
+				{ link: 'booking-site', label: 'Booking site', shown: at('ibeManage') }
 			]
 		},
 		{

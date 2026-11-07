@@ -145,7 +145,8 @@ describe('can', () => {
 			laundryOrders: ['owner', 'manager', 'front_desk', 'hk_supervisor', 'housekeeping'],
 			laundryPricesManage: ['owner', 'manager'],
 			reportsView: ['owner', 'manager', 'accountant'],
-			reportsLiability: ['owner', 'accountant']
+			reportsLiability: ['owner', 'accountant'],
+			ibeManage: ['owner', 'manager']
 		} as const;
 		for (const [action, allowed] of Object.entries(expected)) {
 			for (const role of roles) {

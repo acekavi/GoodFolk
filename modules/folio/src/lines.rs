@@ -257,11 +257,7 @@ pub(crate) async fn post_locked(
             resident,
             currency: charge.currency.clone(),
         };
-        if charge.inclusive {
-            tax::back_calculate(amount, &rules, &context)?
-        } else {
-            tax::calculate(amount, &rules, &context)?
-        }
+        charge_taxes(amount, charge.inclusive, &rules, &context)?
     };
 
     let rate = fx::rate_for(tx, folio.property_id, &charge.currency, charge.business_date).await?.ok_or_else(|| {
@@ -351,6 +347,18 @@ pub(crate) async fn post_locked(
     }
     notify(tx, tenant, folio.property_id, vec![folio_key(folio.id)]).await?;
     Ok(line)
+}
+
+/// The taxes of a charge of `amount` under `rules` in `context`: added on top, or, when `inclusive`, contained in it
+/// (back-calculated, so the net plus the on-bill taxes equal `amount` exactly). Every taxed posting goes through it, and
+/// so does the booking site's price preview, so a previewed night is taxed exactly as it later posts.
+pub fn charge_taxes(
+    amount: i64,
+    inclusive: bool,
+    rules: &[tax::Rule],
+    context: &tax::Context,
+) -> Result<tax::Breakdown, tax::TaxError> {
+    if inclusive { tax::back_calculate(amount, rules, context) } else { tax::calculate(amount, rules, context) }
 }
 
 /// Whether `err` is a violation of the unique index `index`.

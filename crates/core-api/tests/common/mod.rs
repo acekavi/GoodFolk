@@ -2,6 +2,7 @@
 
 pub mod jobs;
 pub mod media;
+pub mod turnstile;
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
