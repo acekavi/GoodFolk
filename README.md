@@ -94,8 +94,10 @@ core-api's outbox relay delivers the `media-process` push when an upload complet
 It needs Postgres and, for the media sweep, the storage of Media services (the same local defaults). It connects as its own role, `goodfolk_jobs_svc` locally (`DATABASE_URL`, a login in `goodfolk_jobs`, which alone may run the functions that read across tenants; it refuses a role that bypasses row-level security or is not in `goodfolk_jobs`) and shares core-api's service credentials (`SVC_AUTH`, `INTERNAL_SHARED_SECRET`); core-api finds it at `JOBS_SVC_URL`, `http://localhost:8091` by default. Run it next to core-api, with the exports from Development:
 
 ```sh
-# deploy/dev/postgres-init.sql creates the role in a new container; on an older database, create it once as the
-# schema owner: create role goodfolk_jobs_svc login password 'goodfolk_jobs_svc_dev' in role goodfolk_jobs;
+# deploy/dev/postgres-init.sql creates the roles in a new container; on an older cluster, create them once as the
+# schema owner, before migrating (migration 0050 stops without goodfolk_jobs):
+#   create role goodfolk_jobs nologin in role goodfolk_app;
+#   create role goodfolk_jobs_svc login password 'goodfolk_jobs_svc_dev' in role goodfolk_jobs;
 DATABASE_URL=postgres://goodfolk_jobs_svc:goodfolk_jobs_svc_dev@localhost:5432/goodfolk \
   cargo run -p jobs-svc            # on http://localhost:8091
 ```
@@ -913,6 +915,18 @@ PUSH_ENDPOINT_MAIL_SEND=http://localhost:8091/mail
 ```
 
 `set -a; . ./.env; set +a` exports it; jobs-svc reads the same file. Deployment notes (R2 bucket rules, the Pub/Sub topics, `Dockerfile.media-svc`, and jobs-svc on Cloud Run) are in [ARCHITECTURE.md §8.5](docs/ARCHITECTURE.md). For jobs-svc in short: deploy `Dockerfile.jobs-svc` to Cloud Run with `--no-cpu-throttling` (CPU always allocated, so a close started over gRPC keeps running after the call returns), and create a Cloud Scheduler job that sends `POST /tick` every 15 minutes with an OIDC token for the `JOBS_SVC_AUDIENCE` audience. At the first deployment, check jobs-svc's owner policies on the real database (ARCHITECTURE §8.5): the development owner is a superuser, so the tests do not prove them.
+
+### Deploying
+
+Steps the code cannot take for you (ARCHITECTURE §8.5 and §10.2 have the rest):
+
+- **jobs-svc's database role (migration 0050).** jobs-svc connects as its own login, in the group role `goodfolk_jobs`, which alone may run the functions that read or purge across tenants. Roll it out in this order, so a running jobs-svc keeps working at every step:
+  1. As a role with `CREATEROLE` and admin on `goodfolk_app` (on Cloud SQL, `cloudsqlsuperuser` or the role that created `goodfolk_app`): `create role goodfolk_jobs nologin in role goodfolk_app;` and `create role <jobs login> login password '<secret>' in role goodfolk_jobs;`.
+  2. Point the **running** jobs-svc's `DATABASE_URL` (and `DATABASE_DIRECT_URL`) secret at the new login and redeploy that same revision. `goodfolk_jobs` is in `goodfolk_app`, so it can do everything `goodfolk_api` could.
+  3. Run the migrations (`core-api migrate`, through `0050`). 0050 stops with a message if `goodfolk_jobs` is missing or not in `goodfolk_app`; it creates no roles. Try it on staging as the real owner first: the development owner is a superuser.
+  4. Deploy the new core-api and the new jobs-svc. The new jobs-svc refuses to start unless its role may run the job functions; core-api never calls them.
+- **The client IP.** core-api must sit behind Cloudflare with `TRUST_CLOUDFLARE_IP=true` and its `*.run.app` URL locked (ARCHITECTURE §10.2); production refuses to start without it while the sign-in limits are on.
+- **HSTS.** Turn on HSTS (`Strict-Transport-Security`, max-age of at least six months; add subdomains only once every subdomain serves HTTPS) in the Cloudflare zone's SSL/TLS → Edge Certificates for the staff app's, the API's and the booking domain's hosts. The apps do not send it themselves.
 
 ### Adding staff
 
