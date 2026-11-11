@@ -1,5 +1,5 @@
 use crate::auth::{Authenticated, removal_cookie, session_cookie};
-use crate::error::{ApiError, validate};
+use crate::error::{ApiError, validate, verification_error};
 use crate::extract::ApiJson;
 use crate::public::{ClientIp, limits};
 use crate::state::AppState;
@@ -53,6 +53,13 @@ pub struct LoginRequest {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SwitchTenantRequest {
     pub tenant_id: Uuid,
+}
+
+/// The token from a verification email's link.
+// No `Debug`, so it cannot be logged.
+#[derive(Deserialize, ToSchema)]
+pub struct VerifyEmailRequest {
+    pub token: String,
 }
 
 /// 5 sign-ups a minute per IP (`429` with `Retry-After`). `503` with `Retry-After` when the server is hashing as many
@@ -113,6 +120,31 @@ pub async fn login(
     let (token, expires) = identity::create_session(&state.pool, user, tenant).await?;
     let profile = identity::load_profile(&state.pool, user, tenant).await?;
     Ok((jar.add(session_cookie(token, expires, state.production)), Json(profile)))
+}
+
+/// Public. Confirms the email address of the account a verification link was sent for: `token` is from the link's
+/// fragment. No session is needed, so the link works in any browser. An unknown, expired or replaced link (each new
+/// one replaces the last) is 410 "This verification link is no longer valid". 20 email verifications, invitation
+/// previews and accepts a minute per IP, together (`429` with `Retry-After`).
+#[utoipa::path(post, operation_id = "verify_email", path = "/api/v1/auth/verify-email", request_body = VerifyEmailRequest,
+    responses((status = 204), (status = 410), (status = 429, headers(("Retry-After" = String)))))]
+pub async fn verify_email(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    ApiJson(body): ApiJson<VerifyEmailRequest>,
+) -> Result<StatusCode, ApiError> {
+    limit_ip(&state, "token", ip, TOKEN_REQUESTS_PER_MINUTE).await?;
+    identity::verify_email(&state.pool, &body.token).await.map_err(verification_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Sends the signed-in user a new link to verify their email address; earlier links stop working. `409` when it is
+/// already verified; `429` with `Retry-After` within a minute of the last email, or after 5 within a day.
+#[utoipa::path(post, operation_id = "resend_verification", path = "/api/v1/auth/verify-email/resend",
+    responses((status = 204), (status = 401), (status = 409), (status = 429, headers(("Retry-After" = String)))))]
+pub async fn resend_verification(State(state): State<AppState>, auth: Authenticated) -> Result<StatusCode, ApiError> {
+    identity::resend_verification(&state.pool, auth.session.user).await.map_err(verification_error)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(post, path = "/api/v1/auth/logout", responses((status = 204), (status = 401)))]

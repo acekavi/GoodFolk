@@ -17,11 +17,19 @@
 //!   the stay, and what cancelling cost. It carries no link. There is nothing to send when the reservation is gone or
 //!   a room of it is not cancelled.
 //!
+//! - An email verification asks the person who signed up to confirm their address, with a link carrying the token in
+//!   its fragment, which browsers never send to a server. There is nothing to send when the user is gone or already
+//!   verified, or the job's token is no longer their newest unexpired link.
+//!
+//! No subject of an email to someone outside the tenant carries text the tenant chose (its name or an inviter's),
+//! except a hotel's own name on its guests' booking emails: a subject is what a phishing message would forge, so the
+//! platform's own emails keep fixed ones. A report's subject names its property, but it goes to the tenant's own staff.
+//!
 //! The answer is 204 once the email is sent, also when there is nothing to send or the provider refused it for good,
 //! which is logged as an error: delivering the job again cannot help. It is 503 when the send may succeed later, so the
-//! bus delivers the job again, and 400 for a body that is not a job. An invitation's and a booking's job carry a
-//! token, so nothing here logs the job's fields (its `Debug` hides the token), the body or a decoding error (which may quote the
-//! payload).
+//! bus delivers the job again, and 400 for a body that is not a job. An invitation's, a booking's and a verification's
+//! job carry a token, so nothing here logs the job's fields (its `Debug` hides the token), the body or a decoding error
+//! (which may quote the payload).
 
 use std::collections::HashMap;
 
@@ -64,6 +72,9 @@ pub(crate) async fn mail(State(svc): State<JobsSvc>, body: Bytes) -> StatusCode 
         }
         MailJob::IbeCancellation { tenant_id, reservation_id, rooms } => {
             cancellation_message(&svc, TenantId(*tenant_id), *reservation_id, rooms).await
+        }
+        MailJob::EmailVerification { user_id, token } => {
+            verification_message(&svc, *user_id, token).await.map_err(|e| e.to_string())
         }
     };
     let message = match message {
@@ -147,7 +158,7 @@ async fn invitation_message(
 
 fn render(row: &InvitationRow, properties: &HashMap<Uuid, String>, base_url: &str, token: &str) -> Message {
     let inviter = row.inviter_name.as_deref().unwrap_or("Someone");
-    let subject = format!("{inviter} invited you to {} on GoodFolk", row.tenant_name);
+    let subject = INVITATION_SUBJECT.to_owned();
     let grants: Vec<String> = row
         .grants
         .iter()
@@ -191,6 +202,66 @@ fn render(row: &InvitationRow, properties: &HashMap<Uuid, String>, base_url: &st
         escape(&expires)
     ));
     Message { to: row.email.clone(), from_name: None, reply_to: None, subject, text, html, attachments: vec![] }
+}
+
+/// An invitation's subject. The team's and the inviter's names are free text anyone who signs up chooses, so they stay
+/// in the body, never in the subject.
+const INVITATION_SUBJECT: &str = "You are invited to join a team on GoodFolk";
+
+/// A verification email's subject.
+const VERIFICATION_SUBJECT: &str = "Confirm your email address for GoodFolk";
+
+/// User `user`'s verification email, or `None` when the user is gone or already verified, or `token` is not their
+/// newest unexpired link.
+async fn verification_message(svc: &JobsSvc, user: Uuid, token: &str) -> Result<Option<Message>, sqlx::Error> {
+    // `app_user` and `email_verification` are global, with no row-level security: no tenant scope is needed.
+    let row: Option<(String, bool, Option<Vec<u8>>)> = sqlx::query_as(
+        "select u.email::text, u.email_verified_at is not null,
+                (select v.token_hash from email_verification v where v.user_id = u.id and v.expires_at > now()
+                 order by v.created_at desc, v.id desc limit 1)
+         from app_user u where u.id = $1",
+    )
+    .bind(user)
+    .fetch_optional(&svc.pool)
+    .await?;
+    let Some((email, verified, newest)) = row else {
+        tracing::warn!(%user, "no such user; nothing sent");
+        return Ok(None);
+    };
+    if verified {
+        tracing::info!(%user, "the email is already verified; nothing sent");
+        return Ok(None);
+    }
+    if newest.is_none_or(|hash| Sha256::digest(token.as_bytes()).as_slice() != hash.as_slice()) {
+        tracing::info!(%user, "a newer verification link was sent since, or this one expired; nothing sent");
+        return Ok(None);
+    }
+    Ok(Some(render_verification(&email, &svc.app_base_url, token)))
+}
+
+/// The verification email. It names neither the person nor a team, which whoever signs up chooses: someone may sign
+/// up with an address that is not theirs, and its owner then gets only this fixed text.
+fn render_verification(email: &str, base_url: &str, token: &str) -> Message {
+    let link = format!("{}/verify-email#{token}", base_url.trim_end_matches('/'));
+    let text = format!(
+        "Hello,\n\nSomeone created a GoodFolk account with this email address. If it was you, confirm the address \
+         here:\n{link}\n\nThe link works for 24 hours. If it was not you, you can ignore this email.\n"
+    );
+    let html = format!(
+        "<p>Hello,</p>\n<p>Someone created a GoodFolk account with this email address. If it was you, confirm the \
+         address:</p>\n<p><a href=\"{0}\">Confirm my email address</a></p>\n<p>The link works for 24 hours. If it was \
+         not you, you can ignore this email.</p>\n",
+        escape(&link)
+    );
+    Message {
+        to: email.to_owned(),
+        from_name: None,
+        reply_to: None,
+        subject: VERIFICATION_SUBJECT.to_owned(),
+        text,
+        html,
+        attachments: vec![],
+    }
 }
 
 /// The role as the email names it.

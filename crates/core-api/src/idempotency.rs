@@ -39,7 +39,8 @@ fn scoped_hash(scope: Uuid, method: &Method, uri: &Uri, body: &[u8]) -> Vec<u8> 
 }
 
 /// Makes create commands safe to retry. The first response for an `Idempotency-Key` is stored
-/// and replayed for retries of the same request. Server errors are not stored, so they can be retried.
+/// and replayed for retries of the same request. Server errors are not stored, so they can be retried, and neither is
+/// a `429`: a limit says "not now", not what the request does, so the same key may be sent again once it allows.
 ///
 /// A claim that is still unfinished after [`ABANDONED_CLAIM_AFTER`] belongs to a request that timed out,
 /// was cancelled or could not record its response, and the next request with that key takes it over.
@@ -143,7 +144,8 @@ async fn once(
 
     let response = run.await;
     let fits = response.body().size_hint().upper().is_some_and(|size| size <= MAX_BODY_BYTES as u64);
-    if response.status().is_server_error() || !fits || response.extensions().get::<ReleaseClaim>().is_some() {
+    let transient = response.status().is_server_error() || response.status() == StatusCode::TOO_MANY_REQUESTS;
+    if transient || !fits || response.extensions().get::<ReleaseClaim>().is_some() {
         release(state, tenant, key, claimed_at).await;
         return Ok(response);
     }

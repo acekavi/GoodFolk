@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { can, canAnywhere, isTenantOwner, posOnly, type Profile } from './session';
 
 function profile(grants: Profile['grants']): Profile {
-	return { user_id: 'u', email: 'a@b.lk', display_name: 'A', tenants: [], grants };
+	return {
+		user_id: 'u',
+		email: 'a@b.lk',
+		email_verified: true,
+		display_name: 'A',
+		tenants: [],
+		grants
+	};
 }
 
 describe('isTenantOwner', () => {

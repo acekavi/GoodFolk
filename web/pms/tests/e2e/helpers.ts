@@ -230,6 +230,15 @@ export async function book(
 }
 
 /**
+ * Confirms `email`'s address from the newest verification email jobs-svc sent it (see `inviteLink`), as its owner
+ * would: owners who signed up invite staff only once they have.
+ */
+export async function verifyEmail(page: Page, email: string): Promise<void> {
+	await page.goto(await mailedLink(email, /\/verify-email#[\w-]+/, 'a verification email'));
+	await expect(page.getByRole('status')).toContainText('Your email address is confirmed.');
+}
+
+/**
  * Adds a staff user with `role` (tenant-wide) to the owner's tenant through `core-api add-staff`, as the schema
  * owner (`E2E_OWNER_URL`), and returns their email. They sign in with `PASSWORD`.
  */
@@ -397,6 +406,11 @@ export async function housekeepingProperty(
  * newest is the last (a resend replaces an earlier link).
  */
 export async function inviteLink(email: string): Promise<string> {
+	return mailedLink(email, /\/invite\/[\w-]+/, 'an invitation email');
+}
+
+/** The path matching `pattern` in the newest email to `email` that has one (see `inviteLink`). */
+async function mailedLink(email: string, pattern: RegExp, what: string): Promise<string> {
 	const dir = process.env.MAIL_OUTBOX_DIR;
 	if (!dir) throw new Error('MAIL_OUTBOX_DIR is set by playwright.config.ts');
 	let link = '';
@@ -412,12 +426,12 @@ export async function inviteLink(email: string): Promise<string> {
 						readFileSync(join(dir, name), 'utf8')
 					);
 					if (mail.to !== email) continue;
-					link = /\/invite\/[\w-]+/.exec(mail.text)?.[0] ?? '';
-					return link;
+					link = pattern.exec(mail.text)?.[0] ?? '';
+					if (link) return link;
 				}
 				return '';
 			},
-			{ message: `an invitation email to ${email}`, timeout: 30_000 }
+			{ message: `${what} to ${email}`, timeout: 30_000 }
 		)
 		.not.toBe('');
 	return link;

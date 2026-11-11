@@ -153,8 +153,10 @@ pub async fn add_staff(pool: &PgPool, input: AddStaff) -> Result<Outcome, AddSta
     };
     let mut user_created = false;
     if let Some((id, hash)) = &new_account {
+        // The operator vouches for the address, as an invitation's email does for an invited person's.
         user_created = sqlx::query(
-            "insert into app_user (id, email, password_hash, display_name) values ($1, $2, $3, $4)
+            "insert into app_user (id, email, password_hash, display_name, email_verified_at)
+             values ($1, $2, $3, $4, now())
              on conflict (email) do nothing",
         )
         .bind(id.0)

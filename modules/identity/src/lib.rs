@@ -7,13 +7,15 @@ mod password;
 mod rbac;
 mod session;
 mod throttle;
+mod verification;
 
 pub use account::{
     AuthenticateError, Profile, SignupError, SignupInput, TenantSummary, authenticate, default_tenant, load_profile,
     signup,
 };
 pub use invitations::{
-    Acceptor, GrantSpec, INVITATION_TTL, Invitation, InvitationStatus, Preview, StaffError, accept, invite,
+    Acceptor, GrantSpec, INVITATION_EMAILS_PER_ACTOR_PER_HOUR, INVITATION_EMAILS_PER_TENANT_PER_DAY,
+    INVITATION_RESEND_SECS, INVITATION_TTL, Invitation, InvitationStatus, Preview, StaffError, accept, invite,
     list_invitations, preview, resend, revoke_invitation, staff_key,
 };
 pub use members::{MatrixRow, Member, members, permission_matrix, revoke_member, set_grants};
@@ -27,6 +29,10 @@ pub use session::{
     switch_tenant,
 };
 pub use throttle::{LOGIN_WINDOW_SECS, MAX_LOGIN_FAILURES, clear_login_failures, reserve_login_attempt};
+pub use verification::{
+    VERIFICATION_EMAILS_PER_DAY, VERIFICATION_RESEND_SECS, VERIFICATION_TTL, VerificationError, resend_verification,
+    verify_email,
+};
 
 /// Whether `err` violated the named constraint or unique index.
 fn violates(err: &sqlx::Error, constraint: &str) -> bool {

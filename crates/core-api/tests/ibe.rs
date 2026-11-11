@@ -451,10 +451,12 @@ async fn a_booking_is_201_and_writes_its_confirmation_mail_job(_: PgPoolOptions,
     .unwrap();
     assert_eq!(source, "ibe");
     assert_eq!(hash, ibe::token_hash(token));
-    let jobs: Vec<Value> = sqlx::query_scalar("select payload from outbox where topic = 'mail-send'")
-        .fetch_all(&hotel.superuser)
-        .await
-        .unwrap();
+    let jobs: Vec<Value> = sqlx::query_scalar(
+        "select payload from outbox where topic = 'mail-send' and not payload ? 'EmailVerification'",
+    )
+    .fetch_all(&hotel.superuser)
+    .await
+    .unwrap();
     assert_eq!(jobs.len(), 1);
     let job: mail::MailJob = serde_json::from_value(jobs[0].clone()).unwrap();
     let tenant: Uuid = sqlx::query_scalar("select tenant_id from reservation where id = $1")
@@ -727,7 +729,8 @@ async fn the_honeypot_gets_a_decoy_201_and_nothing_is_kept(_: PgPoolOptions, opt
     assert_eq!(token.len(), 43);
     assert_eq!(hotel.reservations().await, 0);
     let kept: (i64, i64, i64) = sqlx::query_as(
-        "select (select count(*) from guest), (select count(*) from outbox where topic = 'mail-send'),
+        "select (select count(*) from guest),
+                (select count(*) from outbox where topic = 'mail-send' and not payload ? 'EmailVerification'),
                 (select count(*) from idempotency_key where key like '%/booking-key-0001')",
     )
     .fetch_one(&hotel.superuser)
@@ -900,10 +903,12 @@ async fn a_guest_cancels_online_once(_: PgPoolOptions, opts: PgConnectOptions) {
     assert_eq!(again.status, StatusCode::CONFLICT);
     assert_eq!(again.body["reason"], "already_cancelled");
     assert_eq!(page.body["status"], "cancelled", "the page still shows it");
-    let jobs: Vec<Value> = sqlx::query_scalar("select payload from outbox where topic = 'mail-send' order by id")
-        .fetch_all(&hotel.superuser)
-        .await
-        .unwrap();
+    let jobs: Vec<Value> = sqlx::query_scalar(
+        "select payload from outbox where topic = 'mail-send' and not payload ? 'EmailVerification' order by id",
+    )
+    .fetch_all(&hotel.superuser)
+    .await
+    .unwrap();
     assert_eq!(jobs.len(), 2, "the confirmation and one cancellation");
     assert!(jobs[1].get("IbeCancellation").is_some(), "{:?}", jobs[1]);
     assert!(!jobs[1].to_string().contains(&token));

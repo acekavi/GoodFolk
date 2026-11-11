@@ -33,7 +33,8 @@ pub enum AuthenticateError {
     Database(#[from] sqlx::Error),
 }
 
-/// Creates a user, their tenant, a membership and an owner grant in one transaction.
+/// Creates a user, their tenant, a membership and an owner grant in one transaction, and queues the email asking
+/// them to verify their address (they cannot invite staff until they do).
 pub async fn signup(pool: &PgPool, input: SignupInput) -> Result<(UserId, TenantId), SignupError> {
     let user = UserId(Uuid::now_v7());
     let tenant = TenantId(Uuid::now_v7());
@@ -66,6 +67,7 @@ pub async fn signup(pool: &PgPool, input: SignupInput) -> Result<(UserId, Tenant
         .bind(user.0)
         .execute(&mut *tx)
         .await?;
+    crate::verification::send_verification(&mut tx, user).await?;
     tx.commit().await?;
     Ok((user, tenant))
 }
@@ -144,6 +146,8 @@ pub struct TenantSummary {
 pub struct Profile {
     pub user_id: Uuid,
     pub email: String,
+    /// Whether the user has confirmed their email address; until then they cannot invite staff.
+    pub email_verified: bool,
     pub display_name: String,
     pub tenants: Vec<TenantSummary>,
     pub current_tenant: Option<Uuid>,
@@ -152,8 +156,8 @@ pub struct Profile {
 
 pub async fn load_profile(pool: &PgPool, user: UserId, current: Option<TenantId>) -> Result<Profile, sqlx::Error> {
     let mut tx = db::begin(pool, Scope { tenant: current, user: Some(user) }).await?;
-    let (email, display_name): (String, String) =
-        sqlx::query_as("select email::text, display_name from app_user where id = $1")
+    let (email, email_verified, display_name): (String, bool, String) =
+        sqlx::query_as("select email::text, email_verified_at is not null, display_name from app_user where id = $1")
             .bind(user.0)
             .fetch_one(&mut *tx)
             .await?;
@@ -169,6 +173,7 @@ pub async fn load_profile(pool: &PgPool, user: UserId, current: Option<TenantId>
     Ok(Profile {
         user_id: user.0,
         email,
+        email_verified,
         display_name,
         tenants: tenants.into_iter().map(|(id, name)| TenantSummary { id, name }).collect(),
         current_tenant: current.map(|t| t.0),

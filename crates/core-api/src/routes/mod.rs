@@ -34,7 +34,7 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 use tower_http::trace::TraceLayer;
 
 pub use accounts::{CreateAccountRequest, UpdateAccountRequest};
-pub use auth::{LoginRequest, SignupRequest, SwitchTenantRequest};
+pub use auth::{LoginRequest, SignupRequest, SwitchTenantRequest, VerifyEmailRequest};
 pub use blocks::{CreateBlockReasonRequest, CreateBlockRequest, ShortenBlockRequest, UpdateBlockReasonRequest};
 pub use folio::{
     PaymentDetails, PaymentMethod, PostChargeRequest, PostChargesResponse, PostFailure, ReasonRequest, RefundRequest,
@@ -139,6 +139,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/signup", post(auth::signup))
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/logout", post(auth::logout))
+        .route("/api/v1/auth/verify-email", post(auth::verify_email))
+        .route("/api/v1/auth/verify-email/resend", post(auth::resend_verification))
         .route("/api/v1/me", get(auth::me))
         .route("/api/v1/session/tenant", put(auth::switch_tenant))
         .route("/api/v1/invitations/preview", post(staff::preview))

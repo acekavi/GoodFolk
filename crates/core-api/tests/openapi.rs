@@ -19,6 +19,8 @@ fn the_openapi_document_lists_every_rest_route() {
             "/api/v1/auth/login",
             "/api/v1/auth/logout",
             "/api/v1/auth/signup",
+            "/api/v1/auth/verify-email",
+            "/api/v1/auth/verify-email/resend",
             "/api/v1/invitations",
             "/api/v1/invitations/accept",
             "/api/v1/invitations/preview",

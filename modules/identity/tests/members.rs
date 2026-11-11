@@ -39,6 +39,12 @@ impl Tenant {
         let superuser = PgPoolOptions::new().max_connections(1).connect_with(opts.clone()).await.unwrap();
         let pool = app_pool(opts, 5).await;
         let (owner, tenant) = signup(&pool, signup_input("owner@example.com", "Lagoon Hotels")).await.unwrap();
+        // Only an owner who verified their email may invite.
+        sqlx::query("update app_user set email_verified_at = now() where id = $1")
+            .bind(owner.0)
+            .execute(&superuser)
+            .await
+            .unwrap();
         let mut ids = Vec::new();
         for (code, name) in [("GAL", "Galle Fort"), ("KAN", "Kandy Hills")] {
             let id = Uuid::now_v7();

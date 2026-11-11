@@ -1,6 +1,6 @@
 //! The daily cleanup: expired sessions, sign-in failures older than the throttle window, and idempotency keys older
-//! than a week, across tenants through `app.purge_expired`; the booking site's per-IP counters a day after their
-//! window; and, when there is object storage, each property's reports rendered on demand once they are 30 days old,
+//! than a week, across tenants through `app.purge_expired`; the per-IP counters a day after their window; email
+//! verification links a day after they expired; and, when there is object storage, each property's reports rendered on demand once they are 30 days old,
 //! with their PDFs, in a transaction scoped to its tenant.
 
 use db::{Scope, TenantId};
@@ -31,11 +31,27 @@ pub(crate) async fn run(pool: &PgPool, storage: Option<&Storage>) -> Result<(), 
             .await
             .map_err(|error| error.to_string())?
             .rows_affected();
+    // Neither does `email_verification`. A link a day past its expiry was sent over two days ago, so it no longer
+    // counts toward the day's limit on verification emails either.
+    let verification_links = sqlx::query("delete from email_verification where expires_at < now() - interval '1 day'")
+        .execute(pool)
+        .await
+        .map_err(|error| error.to_string())?
+        .rows_affected();
     let (reports, pdf_failures) = match storage {
         Some(storage) => purge_reports(pool, storage).await.map_err(|error| error.to_string())?,
         None => (0, 0),
     };
-    tracing::info!(sessions, login_failures, idempotency_keys, rate_hits, reports, pdf_failures, "cleanup done");
+    tracing::info!(
+        sessions,
+        login_failures,
+        idempotency_keys,
+        rate_hits,
+        verification_links,
+        reports,
+        pdf_failures,
+        "cleanup done"
+    );
     Ok(())
 }
 

@@ -57,7 +57,11 @@ fn captured_logs() -> &'static CapturedLogs {
     LOGS.get_or_init(|| {
         let logs = CapturedLogs::default();
         tracing::subscriber::set_global_default(
-            tracing_subscriber::fmt().with_max_level(tracing::Level::TRACE).with_writer(logs.clone()).finish(),
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::TRACE)
+                .with_ansi(false)
+                .with_writer(logs.clone())
+                .finish(),
         )
         .expect("no other global subscriber in this test binary");
         logs
@@ -161,19 +165,19 @@ async fn a_pending_invitation_sends_one_email_with_the_link(_: PgPoolOptions, op
     assert_eq!(messages.len(), 1);
     let message = &messages[0];
     assert_eq!(message.to, "kamala@example.com");
-    assert_eq!(message.subject, "U invited you to T on GoodFolk");
+    assert_eq!(message.subject, "You are invited to join a team on GoodFolk", "no free text in the subject");
     let link = format!("https://app.example.com/invite/{token}");
     for body in [&message.text, &message.html] {
         assert!(body.contains(&link), "{body}");
         assert!(body.contains("Front desk at Hotel GAL"), "{body}");
         assert!(body.contains("Manager at all properties"), "{body}");
         assert!(body.contains("The invitation expires on "), "{body}");
+        assert!(body.contains("U invited you to join T on GoodFolk"), "the names stay in the body: {body}");
         assert_eq!(body.matches(token).count(), 1, "the token is only in the link: {body}");
     }
     assert!(message.html.contains(&format!("<a href=\"{link}\">")), "{}", message.html);
 
     let logs = logs.text();
-    assert!(logs.contains("kamala@example.com") && logs.contains("U invited you to T on GoodFolk"), "{logs}");
     assert!(!logs.contains(token), "a log line carries the token");
     std::fs::remove_dir_all(outbox).unwrap();
 }
@@ -232,6 +236,79 @@ async fn an_invitation_of_another_tenant_sends_nothing(_: PgPoolOptions, opts: P
 
     let job = MailJob::Invitation { invitation_id: id, tenant_id: Uuid::now_v7(), token: "token".into() };
     assert_eq!(post_mail(addr, push(&job), Some(SECRET)).await, 204);
+    assert!(sent(&outbox).is_empty());
+}
+
+/// A verification link for `hotel`'s user carrying `token`, sent `ago` before now.
+async fn verification(hotel: &Hotel, token: &str, ago: &str) {
+    sqlx::query(
+        "insert into email_verification (id, user_id, token_hash, created_at, expires_at)
+         values ($1, $2, $3, now() - $4::interval, now() - $4::interval + interval '1 day')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(hotel.user.0)
+    .bind(Sha256::digest(token.as_bytes()).to_vec())
+    .bind(ago)
+    .execute(&hotel.pool)
+    .await
+    .unwrap();
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn an_email_verification_sends_its_link_in_the_fragment_under_a_fixed_subject(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let logs = captured_logs();
+    let hotel = Hotel::new(opts.clone()).await;
+    let (svc, outbox) = mailing(&hotel, opts);
+    let addr = serve(svc).await;
+    let token = "dmVyaWZpY2F0aW9uLXRva2VuLW5ldmVyLWxvZ2dlZC0xMjM0";
+    verification(&hotel, token, "0 seconds").await;
+    let email: String = sqlx::query_scalar("select email::text from app_user where id = $1")
+        .bind(hotel.user.0)
+        .fetch_one(&hotel.pool)
+        .await
+        .unwrap();
+    let job = MailJob::EmailVerification { user_id: hotel.user.0, token: token.into() };
+
+    assert_eq!(post_mail(addr, push(&job), Some(SECRET)).await, 204);
+
+    let messages = sent(&outbox);
+    assert_eq!(messages.len(), 1);
+    let message = &messages[0];
+    assert_eq!(message.to, email);
+    assert_eq!(message.subject, "Confirm your email address for GoodFolk");
+    let link = format!("https://app.example.com/verify-email#{token}");
+    for body in [&message.text, &message.html] {
+        assert!(body.contains(&link), "{body}");
+        assert_eq!(body.matches(token).count(), 1, "the token is only in the link: {body}");
+    }
+    assert!(!format!("{job:?}").contains(token), "Debug hides the token");
+    assert!(!logs.text().contains(token), "a log line carries the token");
+    std::fs::remove_dir_all(outbox).unwrap();
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_replaced_or_used_verification_link_sends_nothing(_: PgPoolOptions, opts: PgConnectOptions) {
+    let hotel = Hotel::new(opts.clone()).await;
+    let (svc, outbox) = mailing(&hotel, opts);
+    let addr = serve(svc).await;
+    verification(&hotel, "older", "2 minutes").await;
+    verification(&hotel, "newer", "1 minute").await;
+    let job = |token: &str| MailJob::EmailVerification { user_id: hotel.user.0, token: token.into() };
+
+    assert_eq!(post_mail(addr, push(&job("older")), Some(SECRET)).await, 204);
+    assert!(sent(&outbox).is_empty(), "a replaced link was mailed");
+    sqlx::query("update app_user set email_verified_at = now() where id = $1")
+        .bind(hotel.user.0)
+        .execute(&hotel.pool)
+        .await
+        .unwrap();
+    assert_eq!(post_mail(addr, push(&job("newer")), Some(SECRET)).await, 204);
+    assert!(sent(&outbox).is_empty(), "a verified user was mailed");
+    let unknown = MailJob::EmailVerification { user_id: Uuid::now_v7(), token: "newer".into() };
+    assert_eq!(post_mail(addr, push(&unknown), Some(SECRET)).await, 204);
     assert!(sent(&outbox).is_empty());
 }
 

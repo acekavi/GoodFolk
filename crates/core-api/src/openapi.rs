@@ -15,7 +15,7 @@ use crate::routes::{
     StartUploadRequest, StartedUpload, SwitchTenantRequest, UpdateAccountRequest, UpdateBlockReasonRequest,
     UpdateCancellationPolicyRequest, UpdateGuestRequest, UpdateIbeSiteRequest, UpdateIssueRequest,
     UpdateMealSupplementRequest, UpdatePropertyRequest, UpdateRatePlanRequest, UpdateReservationRequest,
-    UpdateRoomRequest, UpdateRoomTypeRequest, UploadPart, UploadedPart,
+    UpdateRoomRequest, UpdateRoomTypeRequest, UploadPart, UploadedPart, VerifyEmailRequest,
 };
 use crate::routes::{
     CreateLaundryOrderRequest, CreateLaundryPriceRequest, CreateLinenItemRequest, CreateLinenLocationRequest,
@@ -44,6 +44,8 @@ use utoipa::OpenApi;
         crate::routes::auth::signup,
         crate::routes::auth::login,
         crate::routes::auth::logout,
+        crate::routes::auth::verify_email,
+        crate::routes::auth::resend_verification,
         crate::routes::auth::me,
         crate::routes::auth::switch_tenant,
         crate::routes::properties::create,
@@ -157,6 +159,7 @@ use utoipa::OpenApi;
         SignupRequest,
         LoginRequest,
         SwitchTenantRequest,
+        VerifyEmailRequest,
         CreatePropertyRequest,
         UpdatePropertyRequest,
         UpdateIbeSiteRequest,

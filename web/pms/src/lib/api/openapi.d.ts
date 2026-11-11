@@ -137,7 +137,8 @@ export interface paths {
         };
         /**
          * The booking site of the property coded `code`: branding, contact, terms, and its active room types with their
-         *     photos and tour videos. `404` unless its site is enabled. Cached at the edge for 5 minutes.
+         *     photos and tour videos. `404` unless its site is enabled. Cached at the edge for 5 minutes. 60 reads a minute per
+         *     IP (`429` with `Retry-After`): each one that misses the edge asks the database.
          */
         get: operations["ibe_site"];
         put?: never;
@@ -158,8 +159,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * After 5 failed attempts for one email within 15 minutes, further attempts for that email are answered
-         *     with 429 until the window passes, whether or not the account exists. A successful sign-in clears them.
+         * 20 attempts a minute per IP (`429` with `Retry-After`). After 5 failed attempts for one email within 15 minutes,
+         *     further attempts for that email are answered with 429 until the window passes, whether or not the account exists.
+         *     A successful sign-in clears them. `503` with `Retry-After` when the server is hashing as many passwords as it allows
+         *     at once.
          */
         post: operations["login"];
         delete?: never;
@@ -193,7 +196,53 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /**
+         * 5 sign-ups a minute per IP (`429` with `Retry-After`). `503` with `Retry-After` when the server is hashing as many
+         *     passwords as it allows at once.
+         */
         post: operations["signup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/verify-email": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Public. Confirms the email address of the account a verification link was sent for: `token` is from the link's
+         *     fragment. No session is needed, so the link works in any browser. An unknown, expired or replaced link (each new
+         *     one replaces the last) is 410 "This verification link is no longer valid". 20 email verifications, invitation
+         *     previews and accepts a minute per IP, together (`429` with `Retry-After`).
+         */
+        post: operations["verify_email"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/verify-email/resend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sends the signed-in user a new link to verify their email address; earlier links stop working. `409` when it is
+         *     already verified; `429` with `Retry-After` within a minute of the last email, or after 5 within a day.
+         */
+        post: operations["resend_verification"];
         delete?: never;
         options?: never;
         head?: never;
@@ -228,7 +277,8 @@ export interface paths {
         /**
          * Public. With a session, accepts as its user (whose email must be the invitation's) and switches the session to the
          *     tenant. Without one, creates the account with `password` (409 "Sign in as <email> to accept" if the email already
-         *     has one) and signs it in. Answers 410 and 429 as preview does.
+         *     has one) and signs it in. Answers 410 and 429 as preview does, and 503 with `Retry-After` when the server is
+         *     hashing as many passwords as it allows at once.
          */
         post: operations["accept_invitation"];
         delete?: never;
@@ -248,7 +298,8 @@ export interface paths {
         put?: never;
         /**
          * Public. An unknown, used, expired or revoked token is 410 "This invitation is no longer valid". After 5 failed
-         *     attempts with one token within 15 minutes, further ones are 429 until the window passes.
+         *     attempts with one token within 15 minutes, further ones are 429 until the window passes. 20 previews, accepts and
+         *     email verifications a minute per IP, together (`429` with `Retry-After`).
          */
         post: operations["preview_invitation"];
         delete?: never;
@@ -3821,6 +3872,8 @@ export interface components {
             current_tenant?: string | null;
             display_name: string;
             email: string;
+            /** @description Whether the user has confirmed their email address; until then they cannot invite staff. */
+            email_verified: boolean;
             grants: components["schemas"]["Grant"][];
             tenants: components["schemas"]["TenantSummary"][];
             /** Format: uuid */
@@ -4878,6 +4931,10 @@ export interface components {
          * @enum {string}
          */
         VatReturnPeriod: "monthly" | "quarterly";
+        /** @description The token from a verification email's link. */
+        VerifyEmailRequest: {
+            token: string;
+        };
         /** @description One delivered encoding of a video. */
         VideoSource: {
             /** @description `av1` or `h264`. */
@@ -5211,6 +5268,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            429: {
+                headers: {
+                    "Retry-After"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     login: {
@@ -5242,6 +5306,14 @@ export interface operations {
             };
             429: {
                 headers: {
+                    "Retry-After"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    "Retry-After"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -5300,6 +5372,90 @@ export interface operations {
             };
             422: {
                 headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    "Retry-After"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    "Retry-After"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    verify_email: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VerifyEmailRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    "Retry-After"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resend_verification: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    "Retry-After"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -5396,6 +5552,14 @@ export interface operations {
             };
             429: {
                 headers: {
+                    "Retry-After"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    "Retry-After"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -5431,6 +5595,7 @@ export interface operations {
             };
             429: {
                 headers: {
+                    "Retry-After"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;

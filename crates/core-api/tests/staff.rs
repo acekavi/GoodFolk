@@ -390,7 +390,42 @@ impl Tenant {
         assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
         let me = app.send(Method::GET, "/api/v1/me", Some(&owner), None).await;
         let tenant = common::uuid(&me.body["current_tenant"]);
-        Self { app, superuser, owner, tenant, property: common::uuid(&created.body["id"]) }
+        let t = Self { app, superuser, owner, tenant, property: common::uuid(&created.body["id"]) };
+        let verified = t.verify(&t.verification_token("owner@example.com").await).await;
+        assert_eq!(verified.status, StatusCode::NO_CONTENT, "{:?}", verified.body);
+        t
+    }
+
+    /// The jobs `mail-send` rows carry, newest first.
+    async fn mailed(&self) -> Vec<MailJob> {
+        let payloads: Vec<Value> =
+            sqlx::query_scalar("select payload from outbox where topic = $1 order by created_at desc, id desc")
+                .bind(mail::SEND_TOPIC)
+                .fetch_all(&self.superuser)
+                .await
+                .unwrap();
+        payloads.into_iter().map(|payload| serde_json::from_value::<MailJob>(payload).unwrap()).collect()
+    }
+
+    /// The newest verification token mailed to `email`, as the email's link carries it: only the outbox has it.
+    async fn verification_token(&self, email: &str) -> String {
+        let user: Uuid = sqlx::query_scalar("select id from app_user where email = $1::citext")
+            .bind(email)
+            .fetch_one(&self.superuser)
+            .await
+            .unwrap();
+        self.mailed()
+            .await
+            .into_iter()
+            .find_map(|job| match job {
+                MailJob::EmailVerification { user_id, token } => (user_id == user).then_some(token),
+                _ => None,
+            })
+            .expect("a verification email was queued")
+    }
+
+    async fn verify(&self, token: &str) -> TestResponse {
+        self.app.send(Method::POST, "/api/v1/auth/verify-email", None, Some(json!({"token": token}))).await
     }
 
     async fn invite_as(&self, cookie: &str, email: &str, grants: Value) -> TestResponse {
@@ -417,20 +452,23 @@ impl Tenant {
 
     /// The newest token mailed for `invitation`, as the email's link carries it: only the outbox has it.
     async fn token(&self, invitation: Uuid) -> String {
-        let payloads: Vec<Value> =
-            sqlx::query_scalar("select payload from outbox where topic = $1 order by created_at desc, id desc")
-                .bind(mail::SEND_TOPIC)
-                .fetch_all(&self.superuser)
-                .await
-                .unwrap();
-        payloads
+        self.mailed()
+            .await
             .into_iter()
-            .map(|payload| serde_json::from_value::<MailJob>(payload).unwrap())
             .find_map(|job| match job {
                 MailJob::Invitation { invitation_id, token, .. } => (invitation_id == invitation).then_some(token),
-                MailJob::Report { .. } | MailJob::IbeConfirmation { .. } | MailJob::IbeCancellation { .. } => None,
+                _ => None,
             })
             .expect("the invitation was mailed")
+    }
+
+    /// Moves `invitation`'s last email back a minute, so it may be resent.
+    async fn age(&self, invitation: Uuid) {
+        sqlx::query("update invitation set expires_at = expires_at - interval '1 minute' where id = $1")
+            .bind(invitation)
+            .execute(&self.superuser)
+            .await
+            .unwrap();
     }
 
     async fn preview(&self, token: &str) -> TestResponse {
@@ -500,12 +538,8 @@ async fn an_invited_clerk_sets_a_password_and_is_signed_in_with_the_grants(_: Pg
         (Some("kamala@example.com"), Some("pending"))
     );
     assert_eq!(replayed.body, invited.body, "a retry replays the invitation and sends nothing more");
-    let mailed: i64 = sqlx::query_scalar("select count(*) from outbox where topic = $1")
-        .bind(mail::SEND_TOPIC)
-        .fetch_one(&t.superuser)
-        .await
-        .unwrap();
-    assert_eq!(mailed, 1);
+    let invitations_mailed = t.mailed().await.iter().filter(|job| matches!(job, MailJob::Invitation { .. })).count();
+    assert_eq!(invitations_mailed, 1);
     assert_eq!(preview.status, StatusCode::OK, "{:?}", preview.body);
     assert_eq!(
         preview.body,
@@ -515,6 +549,7 @@ async fn an_invited_clerk_sets_a_password_and_is_signed_in_with_the_grants(_: Pg
     assert_eq!(accepted.status, StatusCode::OK, "{:?}", accepted.body);
     assert_eq!(me.status, StatusCode::OK, "{:?}", me.body);
     assert_eq!(me.body["email"], "kamala@example.com");
+    assert_eq!(me.body["email_verified"], true, "the invitation reached their email");
     assert_eq!(me.body["current_tenant"], json!(t.tenant));
     assert_eq!(me.body["grants"], json!([{"property_id": t.property, "role": "front_desk"}]));
     assert!(is_gone(&again), "a token works once: {} {:?}", again.status, again.body);
@@ -562,6 +597,7 @@ async fn resent_and_revoked_invitations_refuse_their_old_links(_: PgPoolOptions,
     let t = Tenant::new(opts).await;
     let invitation = t.invite("kamala@example.com").await;
     let first = t.token(invitation).await;
+    t.age(invitation).await;
 
     let resent =
         t.app.send(Method::POST, &format!("/api/v1/invitations/{invitation}/resend"), Some(&t.owner), None).await;
@@ -692,4 +728,189 @@ async fn a_token_is_throttled_like_a_sign_in(_: PgPoolOptions, opts: PgConnectOp
     let keys: Vec<String> =
         sqlx::query_scalar("select distinct email::text from login_failure").fetch_all(&t.superuser).await.unwrap();
     assert!(keys.iter().all(|key| key.starts_with("invitation:") && !key.contains("guess")), "{keys:?}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_new_owner_invites_staff_only_once_their_email_is_verified(_: PgPoolOptions, opts: PgConnectOptions) {
+    let t = Tenant::new(opts).await;
+    let fresh = t.app.signup_owner("fresh@example.com", "Fresh Hotels").await;
+    let grants = json!([{"role": "manager", "property_id": null}]);
+
+    let before = t.app.send(Method::GET, "/api/v1/me", Some(&fresh), None).await;
+    let refused = t.invite_as(&fresh, "kamala@example.com", grants.clone()).await;
+    let first_link = t.verification_token("fresh@example.com").await;
+    // Another link may be asked for once a minute has passed; it replaces the first.
+    sqlx::query("update email_verification set created_at = created_at - interval '1 minute'")
+        .execute(&t.superuser)
+        .await
+        .unwrap();
+    let resent = t.app.send(Method::POST, "/api/v1/auth/verify-email/resend", Some(&fresh), None).await;
+    let second_link = t.verification_token("fresh@example.com").await;
+    let replaced = t.verify(&first_link).await;
+    let verified = t.verify(&second_link).await;
+    let used = t.verify(&second_link).await;
+    let after = t.app.send(Method::GET, "/api/v1/me", Some(&fresh), None).await;
+    let invited = t.invite_as(&fresh, "kamala@example.com", grants).await;
+    let again = t.app.send(Method::POST, "/api/v1/auth/verify-email/resend", Some(&fresh), None).await;
+
+    assert_eq!(before.body["email_verified"], false);
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    assert_eq!(refused.body["reason"], "email_unverified");
+    assert_eq!(refused.body["detail"], "Verify your email address before inviting staff");
+    assert_eq!(resent.status, StatusCode::NO_CONTENT, "{:?}", resent.body);
+    assert_ne!(first_link, second_link);
+    let gone = json!({"type": "about:blank", "title": "Gone", "status": 410,
+                      "detail": "This verification link is no longer valid"});
+    assert_eq!((replaced.status, &replaced.body), (StatusCode::GONE, &gone), "a resend replaces the earlier link");
+    assert_eq!(verified.status, StatusCode::NO_CONTENT, "{:?}", verified.body);
+    assert_eq!((used.status, &used.body), (StatusCode::GONE, &gone), "a link works once");
+    assert_eq!(after.body["email_verified"], true);
+    assert_eq!(invited.status, StatusCode::CREATED, "{:?}", invited.body);
+    assert_eq!(again.status, StatusCode::CONFLICT, "nothing left to verify: {:?}", again.body);
+    for response in [&before, &refused, &resent, &replaced, &verified, &after, &again] {
+        assert!(!response.body.to_string().contains(&second_link), "{:?}", response.body);
+    }
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_unverified_owner_cannot_resend_an_invitation(_: PgPoolOptions, opts: PgConnectOptions) {
+    let t = Tenant::new(opts).await;
+    let invitation = t.invite("kamala@example.com").await;
+    t.age(invitation).await;
+    sqlx::query("update app_user set email_verified_at = null where email = 'owner@example.com'")
+        .execute(&t.superuser)
+        .await
+        .unwrap();
+
+    let resent =
+        t.app.send(Method::POST, &format!("/api/v1/invitations/{invitation}/resend"), Some(&t.owner), None).await;
+
+    assert_eq!(resent.status, StatusCode::FORBIDDEN, "{:?}", resent.body);
+    assert_eq!(resent.body["reason"], "email_unverified");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn verification_emails_are_limited_to_one_a_minute_and_five_a_day(_: PgPoolOptions, opts: PgConnectOptions) {
+    let t = Tenant::new(opts).await;
+    let fresh = t.app.signup_owner("fresh@example.com", "Fresh Hotels").await;
+    let resend = || t.app.send(Method::POST, "/api/v1/auth/verify-email/resend", Some(&fresh), None);
+
+    let too_soon = resend().await;
+    // Four more sent earlier today, a minute or more ago: five in the day with the sign-up's.
+    sqlx::query("update email_verification set created_at = now() - interval '2 hours'")
+        .execute(&t.superuser)
+        .await
+        .unwrap();
+    for _ in 0..4 {
+        let sent = resend().await;
+        assert_eq!(sent.status, StatusCode::NO_CONTENT, "{:?}", sent.body);
+        sqlx::query("update email_verification set created_at = created_at - interval '1 minute'")
+            .execute(&t.superuser)
+            .await
+            .unwrap();
+    }
+    let sixth = resend().await;
+    let signed_out = t.app.send(Method::POST, "/api/v1/auth/verify-email/resend", None, None).await;
+
+    assert_eq!(too_soon.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", too_soon.body);
+    let wait: u64 = too_soon.headers[header::RETRY_AFTER].to_str().unwrap().parse().unwrap();
+    assert!((1..=60).contains(&wait), "{wait}");
+    assert_eq!(sixth.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", sixth.body);
+    assert!(sixth.body["detail"].as_str().unwrap().contains("5 verification emails"), "{:?}", sixth.body);
+    assert!(sixth.headers.contains_key(header::RETRY_AFTER));
+    assert_eq!(signed_out.status, StatusCode::UNAUTHORIZED);
+    let mailed = t.mailed().await.iter().filter(|job| matches!(job, MailJob::EmailVerification { .. })).count();
+    assert_eq!(mailed, 1 + 5, "the tenant's owner's link and fresh's five");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_unknown_or_expired_verification_link_is_gone(_: PgPoolOptions, opts: PgConnectOptions) {
+    let t = Tenant::new(opts).await;
+    t.app.signup_owner("fresh@example.com", "Fresh Hotels").await;
+    let token = t.verification_token("fresh@example.com").await;
+    sqlx::query("update email_verification set expires_at = now() - interval '1 second'")
+        .execute(&t.superuser)
+        .await
+        .unwrap();
+
+    let expired = t.verify(&token).await;
+    let unknown = t.verify("not-a-token").await;
+
+    assert_eq!(expired.status, StatusCode::GONE, "{:?}", expired.body);
+    assert_eq!((unknown.status, &unknown.body), (StatusCode::GONE, &expired.body));
+    let verified: bool =
+        sqlx::query_scalar("select email_verified_at is not null from app_user where email = 'fresh@example.com'")
+            .fetch_one(&t.superuser)
+            .await
+            .unwrap();
+    assert!(!verified);
+}
+
+/// Records `count` invitation emails sent in the tenant by `actor`, `ago` before now, as the audit log keeps them.
+async fn sent_earlier(t: &Tenant, actor: Uuid, count: usize, ago: &str) {
+    for _ in 0..count {
+        sqlx::query(
+            "insert into audit_log (id, tenant_id, actor_user_id, action, entity, entity_id, at)
+             values ($1, $2, $3, 'invitation.created', 'invitation', $1, now() - $4::interval)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(t.tenant)
+        .bind(actor)
+        .bind(ago)
+        .execute(&t.superuser)
+        .await
+        .unwrap();
+    }
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn invitation_emails_are_limited_per_tenant_per_actor_and_per_invitation(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let t = Tenant::new(opts).await;
+    let owner = common::uuid(&t.app.send(Method::GET, "/api/v1/me", Some(&t.owner), None).await.body["user_id"]);
+    let manager = t.app.staff(&t.superuser, &t.owner, "manager@example.com", "manager").await;
+    let housekeeping = json!([{"role": "housekeeping", "property_id": t.property}]);
+
+    let invitation = t.invite("kamala@example.com").await;
+    let resent_at_once =
+        t.app.send(Method::POST, &format!("/api/v1/invitations/{invitation}/resend"), Some(&t.owner), None).await;
+    // The owner sent 9 more within the hour: 10 is the most one person sends in an hour.
+    sent_earlier(&t, owner, 9, "10 minutes").await;
+    let owner_over = t.invite_as(&t.owner, "a@example.com", housekeeping.clone()).await;
+    let manager_still = t.invite_as(&manager, "b@example.com", housekeeping.clone()).await;
+    // Others sent 9 more earlier in the day: 20 in the tenant.
+    sqlx::query(
+        "insert into audit_log (id, tenant_id, action, entity, entity_id, at)
+         select gen_random_uuid(), $1, 'invitation.resent', 'invitation', gen_random_uuid(), now() - interval '5 hours'
+         from generate_series(1, 9)",
+    )
+    .bind(t.tenant)
+    .execute(&t.superuser)
+    .await
+    .unwrap();
+    let body = json!({"email": "c@example.com", "display_name": "Kamala", "grants": housekeeping});
+    let headers = [("x-goodfolk-csrf", "1"), ("idempotency-key", "invite-over-limit")];
+    let tenant_over =
+        t.app.send_with(Method::POST, "/api/v1/invitations", Some(&manager), Some(body.clone()), &headers).await;
+    // Once the day's oldest sends age out, the same key may be sent again: a 429 is not kept as its answer.
+    sqlx::query("delete from audit_log where action = 'invitation.resent'").execute(&t.superuser).await.unwrap();
+    let retried = t.app.send_with(Method::POST, "/api/v1/invitations", Some(&manager), Some(body), &headers).await;
+
+    assert_eq!(resent_at_once.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", resent_at_once.body);
+    assert!(resent_at_once.headers.contains_key(header::RETRY_AFTER));
+    assert_eq!(owner_over.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", owner_over.body);
+    assert!(owner_over.body["detail"].as_str().unwrap().contains("last hour"), "{:?}", owner_over.body);
+    let wait: u64 = owner_over.headers[header::RETRY_AFTER].to_str().unwrap().parse().unwrap();
+    assert!((3000..=3600).contains(&wait), "the oldest of the hour frees in about 50 minutes: {wait}");
+    assert_eq!(manager_still.status, StatusCode::CREATED, "{:?}", manager_still.body);
+    assert_eq!(tenant_over.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", tenant_over.body);
+    assert!(tenant_over.body["detail"].as_str().unwrap().contains("last day"), "{:?}", tenant_over.body);
+    assert_eq!(retried.status, StatusCode::CREATED, "{:?}", retried.body);
+    let invitations: Vec<String> = sqlx::query_scalar("select email::text from invitation order by created_at")
+        .fetch_all(&t.superuser)
+        .await
+        .unwrap();
+    assert_eq!(invitations, ["kamala@example.com", "b@example.com", "c@example.com"], "refused ones were not created");
 }

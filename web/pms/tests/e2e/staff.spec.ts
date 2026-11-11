@@ -1,20 +1,35 @@
 import { expect, test } from '@playwright/test';
-import { addStaff, createProperty, inviteLink, PASSWORD, signIn, signUp } from './helpers';
+import {
+	addStaff,
+	createProperty,
+	inviteLink,
+	PASSWORD,
+	signIn,
+	signUp,
+	verifyEmail
+} from './helpers';
 
-// Staff end to end, in a real browser against the real API and jobs-svc, which sends the invitation to the dev
-// mailer's outbox (playwright.config.ts): an owner invites, the invitee accepts from the emailed link, removing
-// them signs them out, and a manager's limits show in the UI and hold on the server.
+// Staff end to end, in a real browser against the real API and jobs-svc, which sends the emails to the dev mailer's
+// outbox (playwright.config.ts): a new owner confirms their email before inviting, the invitee accepts from the
+// emailed link, removing them signs them out, and a manager's limits show in the UI and hold on the server.
 
-test('an owner invites a front-desk clerk, who accepts from the emailed link; removing them signs their open page out', async ({
+test('an owner confirms their email, invites a front-desk clerk, who accepts from the emailed link; removing them signs their open page out', async ({
 	page,
 	browser
 }) => {
-	await signUp(page);
+	const { email } = await signUp(page);
 	await createProperty(page, 'STF');
 	const propertyId = page.url().split('/p/')[1];
 
+	// Until the owner confirms their email, the Staff page asks them to, in place of Invite.
 	await page.goto('/settings/staff');
 	await expect(page.getByRole('heading', { name: 'Staff', exact: true })).toBeVisible();
+	const verify = page.getByRole('note', { name: 'Verify your email' });
+	await expect(verify).toContainText(email);
+	await expect(page.getByRole('button', { name: 'Invite', exact: true })).toHaveCount(0);
+	await verifyEmail(page, email);
+	await page.goto('/settings/staff');
+	await expect(verify).toBeHidden();
 	const clerk = `clerk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`;
 	await page.getByRole('button', { name: 'Invite', exact: true }).click();
 	const invite = page.getByRole('dialog', { name: 'Invite someone' });

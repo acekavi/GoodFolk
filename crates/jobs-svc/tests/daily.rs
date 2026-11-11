@@ -248,6 +248,32 @@ async fn cleanup_deletes_rate_hits_a_day_after_their_window(_: PgPoolOptions, op
     assert_eq!(left, ["192.0.2.3"]);
 }
 
+/// Cleanup deletes the email verification links a day after they expired.
+#[sqlx::test(migrations = "../../migrations")]
+async fn cleanup_deletes_verification_links_a_day_after_they_expired(_: PgPoolOptions, opts: PgConnectOptions) {
+    let owner = PgPool::connect_with(opts.clone()).await.unwrap();
+    let hotel = Hotel::new(opts.clone()).await;
+    let svc = svc(hotel.pool.clone(), opts);
+    for (token, expired) in [("long gone", "2 days"), ("just gone", "23 hours"), ("live", "-1 hour")] {
+        sqlx::query(
+            "insert into email_verification (id, user_id, token_hash, created_at, expires_at)
+             values (gen_random_uuid(), $1, sha256($2::bytea), now() - $3::interval - interval '1 day',
+                     now() - $3::interval)",
+        )
+        .bind(hotel.user.0)
+        .bind(token.as_bytes())
+        .bind(expired)
+        .execute(&owner)
+        .await
+        .unwrap();
+    }
+
+    assert!(daily(&svc, at(&hotel, 0, 12, 0)).await.contains(&ran("cleanup", "")));
+
+    let left: i64 = sqlx::query_scalar("select count(*) from email_verification").fetch_one(&owner).await.unwrap();
+    assert_eq!(left, 2, "the link that expired 2 days ago went; the others stay");
+}
+
 /// Cleanup deletes the reports rendered on demand once they are 30 days old, with their PDFs; the close's reports and
 /// younger ones stay.
 #[sqlx::test(migrations = "../../migrations")]

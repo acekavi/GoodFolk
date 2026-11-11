@@ -10,10 +10,11 @@
 //! **Attachments.** A message with attachments goes to SES as raw MIME (see [`SesMailer`]); one without, as SES's
 //! simple content.
 //!
-//! **The token in the outbox.** An invitation's link and a site booking's manage link must carry their token, and the
-//! token is stored only as a hash, so [`MailJob::Invitation`] and [`MailJob::IbeConfirmation`] carry the token itself
-//! through the outbox to the sender. The undelivered outbox row is the one place it is kept: the relay drops it from
-//! the row once the row is delivered or refused (migrations 0038 and 0048).
+//! **The token in the outbox.** An invitation's link, a site booking's manage link and an email verification's link
+//! must carry their token, and the token is stored only as a hash, so [`MailJob::Invitation`],
+//! [`MailJob::IbeConfirmation`] and [`MailJob::EmailVerification`] carry the token itself through the outbox to the
+//! sender. The undelivered outbox row is the one place it is kept: the relay drops it from the row once the row is
+//! delivered or refused (migrations 0038, 0048 and 0049).
 //! Nothing here logs a job or a message body: a send logs the recipient and the subject only, and [`MailJob`]'s
 //! `Debug` hides the token.
 
@@ -104,6 +105,8 @@ pub enum MailJob {
     /// Tell the booker of booking-site reservation `reservation_id` it is cancelled, with the charge of the `rooms` the
     /// guest's cancellation closed (not those cancelled before). The email carries no link.
     IbeCancellation { tenant_id: Uuid, reservation_id: Uuid, rooms: Vec<Uuid> },
+    /// Ask user `user_id` to confirm their email address; `token` is what the confirmation link carries.
+    EmailVerification { user_id: Uuid, token: String },
 }
 
 impl std::fmt::Debug for MailJob {
@@ -133,6 +136,9 @@ impl std::fmt::Debug for MailJob {
                 .field("reservation_id", reservation_id)
                 .field("rooms", rooms)
                 .finish(),
+            Self::EmailVerification { user_id, token: _ } => {
+                f.debug_struct("EmailVerification").field("user_id", user_id).field("token", &"<redacted>").finish()
+            }
         }
     }
 }
@@ -160,3 +166,4 @@ pub fn from_vars(var: impl Fn(&str) -> Option<String>, production: bool) -> anyh
     };
     Ok(Arc::new(SesMailer::new(&required("AWS_REGION")?, &required("MAIL_FROM")?, credentials)?))
 }
+

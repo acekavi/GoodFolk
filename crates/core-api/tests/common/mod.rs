@@ -144,14 +144,20 @@ impl TestApp {
 }
 
 impl TestApp {
-    /// Signs up `email` and makes them `role` in the tenant of `owner_cookie`, with their session switched to it.
-    /// Staff invitations arrive in Phase 8; until then the membership is written directly as `superuser`.
+    /// Signs up `email` and makes them `role` in the tenant of `owner_cookie`, with their session switched to it. The
+    /// membership is written directly as `superuser`, standing in for an accepted invitation, so their email counts as
+    /// verified as an invitee's does.
     pub async fn staff(&self, superuser: &PgPool, owner_cookie: &str, email: &str, role: &str) -> String {
         let cookie = self.signup_owner(email, "Own tenant").await;
         let user = self.send(Method::GET, "/api/v1/me", Some(&cookie), None).await.body["user_id"].clone();
         let tenant =
             self.send(Method::GET, "/api/v1/me", Some(owner_cookie), None).await.body["current_tenant"].clone();
         let (user, tenant) = (uuid(&user), uuid(&tenant));
+        sqlx::query("update app_user set email_verified_at = now() where id = $1")
+            .bind(user)
+            .execute(superuser)
+            .await
+            .unwrap();
         sqlx::query("insert into membership (tenant_id, user_id) values ($1, $2)")
             .bind(tenant)
             .bind(user)
