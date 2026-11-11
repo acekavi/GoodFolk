@@ -420,6 +420,35 @@ async fn cf_connecting_ip_counts_only_when_trusted(_: PgPoolOptions, opts: PgCon
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_site_read_rendered_for_a_guest_counts_against_the_guest(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let secret = "an-ssr-secret-of-at-least-32-characters";
+    let state = AppState::new(app.pool.clone(), false, db::testing::guest_id_keys())
+        .with_ibe(IbeConfig { ssr_secret: Some(secret.into()), ..IbeConfig::local() });
+    let site_server = TestApp { router: router(state.clone()), state, pool: app.pool.clone() };
+    // The site's server has spent its own address's minute on other guests' renders.
+    seed_hits(&hotel.superuser, "site", "192.0.2.10", 60).await;
+
+    let rendered = call(
+        &site_server,
+        Method::GET,
+        "/api/public/v1/ibe/GAL/site",
+        "192.0.2.10:1000",
+        &[("x-ibe-client-ip", "203.0.113.7"), ("x-ibe-ssr-secret", secret)],
+    )
+    .await;
+
+    assert_eq!(rendered.status, StatusCode::OK, "each guest has their own limit: {:?}", rendered.body);
+    let hits: i32 =
+        sqlx::query_scalar("select hits from ibe_rate_hit where scope = 'site' and host(ip) = '203.0.113.7'")
+            .fetch_one(&hotel.superuser)
+            .await
+            .unwrap();
+    assert_eq!(hits, 1);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn the_sites_server_names_the_guest_ip_only_with_the_ssr_secret(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts, "GAL", true).await;
