@@ -7,13 +7,14 @@ use uuid::Uuid;
 pub const MAX_LOGIN_FAILURES: i64 = 5;
 pub const LOGIN_WINDOW_SECS: i32 = 15 * 60;
 
-/// Reserves a sign-in attempt for `email`. Returns `false`, recording nothing, if [`MAX_LOGIN_FAILURES`]
+/// Reserves a sign-in attempt for `email`. Returns `None`, recording nothing, if [`MAX_LOGIN_FAILURES`]
 /// attempts failed within the window. Otherwise the attempt counts as a failure until
-/// [`clear_login_failures`] is called after a successful sign-in.
+/// [`clear_login_failures`] is called after a successful sign-in, or [`release_login_attempt`] when the password
+/// could not be checked at all.
 ///
 /// The attempt is recorded before the password is checked, under a per-email lock, so concurrent attempts
 /// cannot exceed the limit.
-pub async fn reserve_login_attempt(pool: &PgPool, email: &str) -> Result<bool, sqlx::Error> {
+pub async fn reserve_login_attempt(pool: &PgPool, email: &str) -> Result<Option<Uuid>, sqlx::Error> {
     let mut tx = db::begin(pool, Scope::default()).await?;
     sqlx::query("select pg_advisory_xact_lock(hashtextextended(lower($1::text), 0))")
         .bind(email)
@@ -28,7 +29,7 @@ pub async fn reserve_login_attempt(pool: &PgPool, email: &str) -> Result<bool, s
     .await?;
     if recent >= MAX_LOGIN_FAILURES {
         tx.commit().await?;
-        return Ok(false);
+        return Ok(None);
     }
     // Older attempts no longer count, so they are pruned here.
     sqlx::query("delete from login_failure where email = $1::citext and at <= now() - make_interval(secs => $2)")
@@ -36,13 +37,21 @@ pub async fn reserve_login_attempt(pool: &PgPool, email: &str) -> Result<bool, s
         .bind(LOGIN_WINDOW_SECS)
         .execute(&mut *tx)
         .await?;
+    let attempt = Uuid::now_v7();
     sqlx::query("insert into login_failure (id, email) values ($1, $2::citext)")
-        .bind(Uuid::now_v7())
+        .bind(attempt)
         .bind(email)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    Ok(true)
+    Ok(Some(attempt))
+}
+
+/// Takes back the attempt [`reserve_login_attempt`] recorded, when the password was never checked (the server was too
+/// busy to hash it): that is not a failed sign-in, so it must not count toward the lockout.
+pub async fn release_login_attempt(pool: &PgPool, attempt: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("delete from login_failure where id = $1").bind(attempt).execute(pool).await?;
+    Ok(())
 }
 
 /// Forgets `email`'s failed attempts, after a successful sign-in.

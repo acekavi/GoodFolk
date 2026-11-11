@@ -291,26 +291,39 @@ fn signup_body(email: &str) -> serde_json::Value {
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
-async fn the_21st_sign_in_in_a_minute_from_one_ip_is_429_and_counts_against_no_email(
+async fn the_21st_failed_sign_in_in_a_minute_from_one_ip_is_429_and_successes_do_not_count(
     _: PgPoolOptions,
     opts: PgConnectOptions,
 ) {
     let app = TestApp::new(opts.clone()).await;
     let superuser = PgPool::connect_with(opts).await.unwrap();
     app.signup_owner("owner@example.com", "A").await;
+    app.signup_owner("other@example.com", "B").await;
     seed_hits(&superuser, "login", "192.0.2.10", 19).await;
-    let body = || Some(json!({"email": "owner@example.com", "password": "a long enough password"}));
+    let login = |email: &str, password: &str| Some(json!({"email": email, "password": password}));
+    let from = |body| app.send_from("192.0.2.10:1000", Method::POST, "/api/v1/auth/login", body);
 
-    let twentieth = app.send_from("192.0.2.10:1000", Method::POST, "/api/v1/auth/login", body()).await;
-    let twenty_first = app.send_from("192.0.2.10:1000", Method::POST, "/api/v1/auth/login", body()).await;
-    let elsewhere = app.send_from("192.0.2.11:1000", Method::POST, "/api/v1/auth/login", body()).await;
+    // Staff behind one address (a hotel's NAT) who sign in are not counted, only failures are.
+    let success = from(login("owner@example.com", "a long enough password")).await;
+    let twentieth_failure = from(login("other@example.com", "not the password")).await;
+    let refused = from(login("owner@example.com", "a long enough password")).await;
+    let elsewhere = app
+        .send_from(
+            "192.0.2.11:1000",
+            Method::POST,
+            "/api/v1/auth/login",
+            login("owner@example.com", "a long enough password"),
+        )
+        .await;
 
-    assert_eq!(twentieth.status, StatusCode::OK, "{:?}", twentieth.body);
-    assert_eq!(twenty_first.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", twenty_first.body);
-    assert!(twenty_first.headers.contains_key(header::RETRY_AFTER));
+    assert_eq!(success.status, StatusCode::OK, "{:?}", success.body);
+    assert_eq!(twentieth_failure.status, StatusCode::UNAUTHORIZED, "{:?}", twentieth_failure.body);
+    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", refused.body);
+    assert!(refused.headers.contains_key(header::RETRY_AFTER));
     assert_eq!(elsewhere.status, StatusCode::OK, "{:?}", elsewhere.body);
-    let failures: i64 = sqlx::query_scalar("select count(*) from login_failure").fetch_one(&superuser).await.unwrap();
-    assert_eq!(failures, 0, "an attempt refused by the IP limit is not an attempt on the email");
+    let failures: Vec<String> =
+        sqlx::query_scalar("select email::text from login_failure").fetch_all(&superuser).await.unwrap();
+    assert_eq!(failures, ["other@example.com"], "an attempt refused by the IP limit is not an attempt on the email");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

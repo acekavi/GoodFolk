@@ -28,7 +28,9 @@ pub use session::{
     SESSION_TTL, SessionInfo, TenantAccess, create_session, delete_session, resolve_session, resolve_tenant_access,
     switch_tenant,
 };
-pub use throttle::{LOGIN_WINDOW_SECS, MAX_LOGIN_FAILURES, clear_login_failures, reserve_login_attempt};
+pub use throttle::{
+    LOGIN_WINDOW_SECS, MAX_LOGIN_FAILURES, clear_login_failures, release_login_attempt, reserve_login_attempt,
+};
 pub use verification::{
     VERIFICATION_EMAILS_PER_DAY, VERIFICATION_RESEND_SECS, VERIFICATION_TTL, VerificationError, email_verified,
     resend_verification, verify_email,

@@ -15,7 +15,8 @@ use std::net::IpAddr;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-/// Sign-in attempts one IP may make a minute, whatever the emails. The per-email throttle stays besides.
+/// Failed sign-ins one IP may make a minute, whatever the emails: successful ones do not count, so many staff behind
+/// one address (a hotel's NAT, a mobile carrier's) are not refused. The per-email throttle stays besides.
 pub const LOGINS_PER_MINUTE: u32 = 20;
 /// Sign-ups one IP may make a minute.
 pub const SIGNUPS_PER_MINUTE: u32 = 5;
@@ -91,7 +92,7 @@ pub async fn signup(
     Ok((StatusCode::CREATED, jar.add(session_cookie(token, expires, state.production)), Json(profile)))
 }
 
-/// 20 attempts a minute per IP (`429` with `Retry-After`). After 5 failed attempts for one email within 15 minutes,
+/// 20 failed attempts a minute per IP (`429` with `Retry-After`). After 5 failed attempts for one email within 15 minutes,
 /// further attempts for that email are answered with 429 until the window passes, whether or not the account exists.
 /// A successful sign-in clears them. `503` with `Retry-After` when the server is hashing as many passwords as it allows
 /// at once.
@@ -104,17 +105,27 @@ pub async fn login(
     jar: CookieJar,
     ApiJson(body): ApiJson<LoginRequest>,
 ) -> Result<(CookieJar, Json<Profile>), ApiError> {
-    limit_ip(&state, "login", ip, LOGINS_PER_MINUTE).await?;
-    if !identity::reserve_login_attempt(&state.pool, &body.email).await? {
-        return Err(ApiError::too_many_requests("too many failed sign-in attempts; try again in 15 minutes"));
+    if state.auth_ip_limits {
+        limits::refuse_if_over(&state.pool, "login", ip, LOGINS_PER_MINUTE).await?;
     }
-    let user = identity::authenticate(&state.pool, &body.email, &body.password)
-        .await
-        .map_err(|err| match err {
-            AuthenticateError::Busy(busy) => ApiError::from(busy),
-            AuthenticateError::Database(db_err) => db_err.into(),
-        })?
-        .ok_or_else(ApiError::invalid_credentials)?;
+    let Some(attempt) = identity::reserve_login_attempt(&state.pool, &body.email).await? else {
+        return Err(ApiError::too_many_requests("too many failed sign-in attempts; try again in 15 minutes"));
+    };
+    let user = match identity::authenticate(&state.pool, &body.email, &body.password).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            if state.auth_ip_limits {
+                limits::count(&state.pool, "login", ip).await?;
+            }
+            return Err(ApiError::invalid_credentials());
+        }
+        // The password was never checked: neither a failed attempt for the email nor for the address.
+        Err(AuthenticateError::Busy(busy)) => {
+            identity::release_login_attempt(&state.pool, attempt).await?;
+            return Err(busy.into());
+        }
+        Err(AuthenticateError::Database(db_err)) => return Err(db_err.into()),
+    };
     identity::clear_login_failures(&state.pool, &body.email).await?;
     let tenant = identity::default_tenant(&state.pool, user).await?;
     let (token, expires) = identity::create_session(&state.pool, user, tenant).await?;

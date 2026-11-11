@@ -201,3 +201,17 @@ async fn a_grant_with_an_unknown_role_is_skipped_with_a_warning(_: PgPoolOptions
     let logged = logs.text();
     assert!(logged.contains("WARN") && logged.contains("night_auditor"), "logged: {logged}");
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_released_attempt_does_not_count_toward_the_lockout(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts, 1).await;
+    for _ in 0..identity::MAX_LOGIN_FAILURES {
+        let attempt = identity::reserve_login_attempt(&pool, "owner@example.com").await.unwrap().unwrap();
+        // As when every hashing slot was busy: the password was never checked.
+        identity::release_login_attempt(&pool, attempt).await.unwrap();
+    }
+
+    let next = identity::reserve_login_attempt(&pool, "owner@example.com").await.unwrap();
+
+    assert!(next.is_some(), "released attempts are not failures");
+}

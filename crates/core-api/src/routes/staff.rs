@@ -184,13 +184,14 @@ fn throttle_key(token: &str) -> String {
     })
 }
 
-/// Reserves an attempt with `token` under the sign-in throttle, returning its key to clear on success.
-async fn reserve_attempt(state: &AppState, token: &str) -> Result<String, ApiError> {
+/// Reserves an attempt with `token` under the sign-in throttle, returning its key to clear on success and the attempt
+/// to take back if the server was too busy to try it.
+async fn reserve_attempt(state: &AppState, token: &str) -> Result<(String, uuid::Uuid), ApiError> {
     let key = throttle_key(token);
-    if !identity::reserve_login_attempt(&state.pool, &key).await? {
+    let Some(attempt) = identity::reserve_login_attempt(&state.pool, &key).await? else {
         return Err(ApiError::too_many_requests("too many attempts with this invitation; try again in 15 minutes"));
-    }
-    Ok(key)
+    };
+    Ok((key, attempt))
 }
 
 /// Public. An unknown, used, expired or revoked token is 410 "This invitation is no longer valid". After 5 failed
@@ -204,7 +205,7 @@ pub async fn preview(
     ApiJson(body): ApiJson<InvitationTokenRequest>,
 ) -> Result<Json<InvitationPreview>, ApiError> {
     limit_ip(&state, "token", ip, TOKEN_REQUESTS_PER_MINUTE).await?;
-    let key = reserve_attempt(&state, &body.token).await?;
+    let (key, _) = reserve_attempt(&state, &body.token).await?;
     let preview = identity::preview(&state.pool, &body.token).await.map_err(staff_error)?;
     identity::clear_login_failures(&state.pool, &key).await?;
     Ok(Json(preview.into()))
@@ -224,7 +225,7 @@ pub async fn accept(
     ApiJson(body): ApiJson<AcceptInvitationRequest>,
 ) -> Result<(CookieJar, Json<Profile>), ApiError> {
     limit_ip(&state, "token", ip, TOKEN_REQUESTS_PER_MINUTE).await?;
-    let key = reserve_attempt(&state, &body.token).await?;
+    let (key, attempt) = reserve_attempt(&state, &body.token).await?;
     let session = match jar.get(SESSION_COOKIE) {
         Some(cookie) => identity::resolve_session(&state.pool, cookie.value()).await?,
         None => None,
@@ -234,7 +235,15 @@ pub async fn accept(
         (None, Some(password)) => Acceptor::NewUser { password },
         (None, None) => return Err(ApiError::unprocessable("set a password, or sign in, to accept")),
     };
-    let (user, tenant) = identity::accept(&state.pool, &body.token, acceptor).await.map_err(staff_error)?;
+    let (user, tenant) = match identity::accept(&state.pool, &body.token, acceptor).await {
+        Ok(joined) => joined,
+        // The password was never hashed: not a failed attempt with the token.
+        Err(identity::StaffError::Busy(busy)) => {
+            identity::release_login_attempt(&state.pool, attempt).await?;
+            return Err(busy.into());
+        }
+        Err(err) => return Err(staff_error(err)),
+    };
     identity::clear_login_failures(&state.pool, &key).await?;
     // A signed-in session was switched to the tenant in the accept's own transaction.
     let jar = match session {
