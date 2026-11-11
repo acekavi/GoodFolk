@@ -159,7 +159,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 20 attempts a minute per IP (`429` with `Retry-After`). After 5 failed attempts for one email within 15 minutes,
+         * 20 failed attempts a minute per IP (`429` with `Retry-After`). After 5 failed attempts for one email within 15 minutes,
          *     further attempts for that email are answered with 429 until the window passes, whether or not the account exists.
          *     A successful sign-in clears them. `503` with `Retry-After` when the server is hashing as many passwords as it allows
          *     at once.
@@ -317,7 +317,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Sends a pending or expired invitation again with a new link, valid for 7 days from now. The old link stops working. */
+        /**
+         * Sends a pending or expired invitation again with a new link, valid for 7 days from now. The old link stops working.
+         *     At most once a minute per invitation, within the tenant's and the sender's limits on invitation emails.
+         */
         post: operations["resend_invitation"];
         delete?: never;
         options?: never;
@@ -812,7 +815,9 @@ export interface paths {
          *     save). The accent must give white text a contrast of 4.5 or more, the logo must be a completed `ibe_logo` upload and
          *     the hero a finished room type gallery photo of this property, and the custom host must be unused and not the booking
          *     domain's own host (each 422).
-         *     Audited as `ibe_site.updated` with the values before and after.
+         *     Turning the site on needs the acting user's email verified (`403` with `reason: email_unverified`): a site's
+         *     bookings send email from the platform, with the property's name, to any address a guest gives. A site already on
+         *     stays on. Audited as `ibe_site.updated` with the values before and after.
          */
         put: operations["update_ibe_site"];
         post?: never;
@@ -5485,6 +5490,7 @@ export interface operations {
                     "application/json": components["schemas"]["Invitation"];
                 };
             };
+            /** @description not allowed to give these grants, or `reason: email_unverified`: the inviter has not verified their email */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5499,6 +5505,14 @@ export interface operations {
             };
             422: {
                 headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 20 invitation emails a day per tenant, or 10 an hour per sender, were sent */
+            429: {
+                headers: {
+                    "Retry-After"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -5621,6 +5635,7 @@ export interface operations {
                     "application/json": components["schemas"]["Invitation"];
                 };
             };
+            /** @description not allowed to act on this invitation, or `reason: email_unverified`: the sender has not verified their email */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5635,6 +5650,14 @@ export interface operations {
             };
             409: {
                 headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description sent less than a minute ago, or the tenant's or the sender's limit was reached */
+            429: {
+                headers: {
+                    "Retry-After"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -6987,6 +7010,7 @@ export interface operations {
                     "application/json": components["schemas"]["IbeSiteView"];
                 };
             };
+            /** @description no `IbeManage` here, or `reason: email_unverified`: turning the site on needs a verified email */
             403: {
                 headers: {
                     [name: string]: unknown;

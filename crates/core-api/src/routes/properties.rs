@@ -213,7 +213,9 @@ pub async fn get_ibe_site(
 #[utoipa::path(put, operation_id = "update_ibe_site", path = "/api/v1/properties/{property}/ibe-site", request_body = UpdateIbeSiteRequest,
     params(("property" = Uuid, Path), ("If-Match" = String, Header, description = "the version edited, e.g. \"3\"; 0 for the first save")),
     responses((status = 200, body = IbeSiteView,
-        headers(("ETag" = String, description = "the version, e.g. \"4\"; send it back as If-Match"))), (status = 403), (status = 404), (status = 412), (status = 422), (status = 428)))]
+        headers(("ETag" = String, description = "the version, e.g. \"4\"; send it back as If-Match"))),
+        (status = 403, description = "no `IbeManage` here, or `reason: email_unverified`: turning the site on needs a verified email"),
+        (status = 404), (status = 412), (status = 422), (status = 428)))]
 pub async fn update_ibe_site(
     State(state): State<AppState>,
     ctx: TenantContext,

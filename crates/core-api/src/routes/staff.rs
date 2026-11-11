@@ -91,7 +91,10 @@ async fn begin(state: &AppState, ctx: &TenantContext) -> Result<db::Tx, ApiError
 
 #[utoipa::path(post, operation_id = "create_invitation", path = "/api/v1/invitations", request_body = CreateInvitationRequest,
     params(("Idempotency-Key" = String, Header)),
-    responses((status = 201, body = Invitation), (status = 403), (status = 409), (status = 422)))]
+    responses((status = 201, body = Invitation),
+        (status = 403, description = "not allowed to give these grants, or `reason: email_unverified`: the inviter has not verified their email"),
+        (status = 409), (status = 422),
+        (status = 429, description = "20 invitation emails a day per tenant, or 10 an hour per sender, were sent", headers(("Retry-After" = String)))))]
 pub async fn invite(
     State(state): State<AppState>,
     ctx: TenantContext,
@@ -107,9 +110,13 @@ pub async fn invite(
 }
 
 /// Sends a pending or expired invitation again with a new link, valid for 7 days from now. The old link stops working.
+/// At most once a minute per invitation, within the tenant's and the sender's limits on invitation emails.
 #[utoipa::path(post, operation_id = "resend_invitation", path = "/api/v1/invitations/{invitation}/resend",
     params(("invitation" = Uuid, Path)),
-    responses((status = 200, body = Invitation), (status = 403), (status = 404), (status = 409)))]
+    responses((status = 200, body = Invitation),
+        (status = 403, description = "not allowed to act on this invitation, or `reason: email_unverified`: the sender has not verified their email"),
+        (status = 404), (status = 409),
+        (status = 429, description = "sent less than a minute ago, or the tenant's or the sender's limit was reached", headers(("Retry-After" = String)))))]
 pub async fn resend(
     State(state): State<AppState>,
     ctx: TenantContext,
