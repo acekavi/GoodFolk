@@ -68,6 +68,8 @@ export default defineConfig({
 				PUSH_ENDPOINT_REPORT_RENDER: `http://localhost:${MEDIA_PORT}/render-report`,
 				PUSH_ENDPOINT_MAIL_SEND: `http://localhost:${JOBS_PORT}/mail`,
 				JOBS_SVC_URL: `http://localhost:${JOBS_PORT}`,
+				// Every browser of the suite signs up and in from this one address, many times a minute.
+				AUTH_IP_LIMITS: 'off',
 				RUST_LOG: 'warn'
 			},
 			reuseExistingServer: !process.env.CI,

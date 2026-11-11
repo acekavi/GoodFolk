@@ -1,3 +1,4 @@
+use crate::password::{Busy, bounded};
 use crate::rbac::{Grant, Role, load_grants};
 use crate::{hash_password, verify_password};
 use db::{Scope, TenantId, Tx, UserId};
@@ -18,6 +19,17 @@ pub enum SignupError {
     #[error("an account with this email already exists")]
     EmailTaken,
     #[error(transparent)]
+    Busy(#[from] Busy),
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+/// Why a sign-in could not be checked.
+#[derive(Debug, thiserror::Error)]
+pub enum AuthenticateError {
+    #[error(transparent)]
+    Busy(#[from] Busy),
+    #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
 
@@ -25,7 +37,7 @@ pub enum SignupError {
 pub async fn signup(pool: &PgPool, input: SignupInput) -> Result<(UserId, TenantId), SignupError> {
     let user = UserId(Uuid::now_v7());
     let tenant = TenantId(Uuid::now_v7());
-    let hash = hash_in_background(input.password).await;
+    let hash = hash_in_background(input.password).await?;
 
     let mut tx = db::begin(pool, Scope { tenant: Some(tenant), user: Some(user) }).await?;
     if !insert_user(&mut tx, user, &input.email, &hash, &input.display_name).await? {
@@ -63,9 +75,9 @@ pub(crate) fn password_is_valid(password: &str) -> bool {
     (12..=128).contains(&password.chars().count())
 }
 
-/// Hashes `password` on the blocking pool.
-pub(crate) async fn hash_in_background(password: String) -> String {
-    tokio::task::spawn_blocking(move || hash_password(&password)).await.expect("hashing task does not panic")
+/// Hashes `password` on the blocking pool, within the bound on concurrent hashes.
+pub(crate) async fn hash_in_background(password: String) -> Result<String, Busy> {
+    bounded(move || hash_password(&password)).await
 }
 
 /// Creates the `app_user` as sign-up does. Returns `false` if the email is taken; `tx` is then aborted.
@@ -94,7 +106,7 @@ pub(crate) async fn insert_user(
 static DUMMY_HASH: LazyLock<String> = LazyLock::new(|| hash_password("dummy password for timing"));
 
 /// Returns the user if the email and password match.
-pub async fn authenticate(pool: &PgPool, email: &str, password: &str) -> Result<Option<UserId>, sqlx::Error> {
+pub async fn authenticate(pool: &PgPool, email: &str, password: &str) -> Result<Option<UserId>, AuthenticateError> {
     let row: Option<(Uuid, String)> = sqlx::query_as("select id, password_hash from app_user where email = $1::citext")
         .bind(email)
         .fetch_optional(pool)
@@ -105,11 +117,8 @@ pub async fn authenticate(pool: &PgPool, email: &str, password: &str) -> Result<
         None => (None, None),
     };
     // DUMMY_HASH is computed on first use, so it is only touched on the blocking pool.
-    let valid = tokio::task::spawn_blocking(move || {
-        verify_password(&password, stored_hash.as_deref().unwrap_or(DUMMY_HASH.as_str()))
-    })
-    .await
-    .expect("verification task does not panic");
+    let valid =
+        bounded(move || verify_password(&password, stored_hash.as_deref().unwrap_or(DUMMY_HASH.as_str()))).await?;
     Ok(user.filter(|_| valid))
 }
 

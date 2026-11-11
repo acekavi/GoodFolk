@@ -6,12 +6,23 @@ pub mod turnstile;
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
+use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use core_api::{AppState, router};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicU32, Ordering};
 use tower::ServiceExt;
+
+/// A new client address in 10.0.0.0/8 for each call: a request that names none comes from its own address, as the
+/// server is served with connect info, so tests that sign up many users stay under the per-IP limits.
+fn next_peer() -> SocketAddr {
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed) & 0x00ff_ffff;
+    SocketAddr::from((Ipv4Addr::from(0x0a00_0000 | n), 40000))
+}
 
 pub struct TestApp {
     pub router: Router,
@@ -82,8 +93,24 @@ impl TestApp {
         self.call(builder.body(Body::from(body.to_owned())).unwrap()).await
     }
 
-    /// A body that is not JSON comes back as a JSON string, so a test can show what it was.
-    async fn call(&self, request: Request<Body>) -> TestResponse {
+    /// Sends a request as the browser SPA would, from the client address `peer` (`ip:port`).
+    pub async fn send_from(&self, peer: &str, method: Method, path: &str, body: Option<Value>) -> TestResponse {
+        let mut builder = Request::builder().method(method).uri(path).header("x-goodfolk-csrf", "1");
+        builder = builder.extension(ConnectInfo(peer.parse::<SocketAddr>().expect("an ip:port peer")));
+        let request = match body {
+            Some(body) => builder.header(header::CONTENT_TYPE, "application/json").body(Body::from(body.to_string())),
+            None => builder.body(Body::empty()),
+        }
+        .unwrap();
+        self.call(request).await
+    }
+
+    /// A body that is not JSON comes back as a JSON string, so a test can show what it was. A request without a
+    /// client address gets a new one ([`next_peer`]).
+    async fn call(&self, mut request: Request<Body>) -> TestResponse {
+        if request.extensions().get::<ConnectInfo<SocketAddr>>().is_none() {
+            request.extensions_mut().insert(ConnectInfo(next_peer()));
+        }
         let response = self.router.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let headers = response.headers().clone();

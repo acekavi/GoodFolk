@@ -1,5 +1,6 @@
-//! Per-IP limits of the public API, counted in Postgres (`ibe_rate_hit`) in fixed one-minute windows, so every
-//! instance shares them.
+//! Per-IP limits of the public API, and of the staff API's anonymous routes (sign-in, sign-up and the emailed links,
+//! `routes::auth::limit_ip`), counted in Postgres (`ibe_rate_hit`) in fixed one-minute windows, so every instance
+//! shares them.
 
 use crate::error::ApiError;
 use sqlx::PgPool;

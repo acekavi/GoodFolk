@@ -48,6 +48,9 @@ pub struct AppState {
     pub jobs_auth: Arc<TokenSource>,
     /// The public booking site's settings.
     pub ibe: Arc<IbeConfig>,
+    /// Whether sign-in, sign-up, email verification and the invitation links are limited per client IP (on unless
+    /// `AUTH_IP_LIMITS=off`, which production refuses).
+    pub auth_ip_limits: bool,
 }
 
 /// The media engine's services, as [`AppState::with_media`] takes them.
@@ -146,6 +149,7 @@ impl AppState {
             jobs,
             jobs_auth,
             ibe: Arc::new(IbeConfig::local()),
+            auth_ip_limits: true,
         }
     }
 
@@ -157,6 +161,11 @@ impl AppState {
     /// The state with the booking site's settings `ibe` (they are [`IbeConfig::local`] until then).
     pub fn with_ibe(self, ibe: IbeConfig) -> Self {
         Self { ibe: Arc::new(ibe), ..self }
+    }
+
+    /// The state with the per-IP limits of the anonymous staff routes on or off (on until then).
+    pub fn with_auth_ip_limits(self, auth_ip_limits: bool) -> Self {
+        Self { auth_ip_limits, ..self }
     }
 }
 

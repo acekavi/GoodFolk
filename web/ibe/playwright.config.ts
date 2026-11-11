@@ -79,6 +79,8 @@ export default defineConfig({
 				IBE_PUBLIC_ORIGIN: `http://localhost:${SITE_PORT}`,
 				IBE_SSR_SECRET,
 				TURNSTILE_SECRET,
+				// The suite signs its hotels' owners up from this one address, many times a minute.
+				AUTH_IP_LIMITS: 'off',
 				RUST_LOG: 'warn'
 			},
 			reuseExistingServer: !process.env.CI,

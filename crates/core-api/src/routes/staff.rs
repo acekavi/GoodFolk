@@ -6,6 +6,8 @@ use crate::auth::{SESSION_COOKIE, TenantContext, session_cookie};
 use crate::concurrency::{IfMatch, Versioned};
 use crate::error::{ApiError, staff_error};
 use crate::extract::{ApiJson, ApiPath};
+use crate::public::ClientIp;
+use crate::routes::auth::{TOKEN_REQUESTS_PER_MINUTE, limit_ip};
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
@@ -192,13 +194,16 @@ async fn reserve_attempt(state: &AppState, token: &str) -> Result<String, ApiErr
 }
 
 /// Public. An unknown, used, expired or revoked token is 410 "This invitation is no longer valid". After 5 failed
-/// attempts with one token within 15 minutes, further ones are 429 until the window passes.
+/// attempts with one token within 15 minutes, further ones are 429 until the window passes. 20 previews, accepts and
+/// email verifications a minute per IP, together (`429` with `Retry-After`).
 #[utoipa::path(post, operation_id = "preview_invitation", path = "/api/v1/invitations/preview", request_body = InvitationTokenRequest,
-    responses((status = 200, body = InvitationPreview), (status = 410), (status = 429)))]
+    responses((status = 200, body = InvitationPreview), (status = 410), (status = 429, headers(("Retry-After" = String)))))]
 pub async fn preview(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     ApiJson(body): ApiJson<InvitationTokenRequest>,
 ) -> Result<Json<InvitationPreview>, ApiError> {
+    limit_ip(&state, "token", ip, TOKEN_REQUESTS_PER_MINUTE).await?;
     let key = reserve_attempt(&state, &body.token).await?;
     let preview = identity::preview(&state.pool, &body.token).await.map_err(staff_error)?;
     identity::clear_login_failures(&state.pool, &key).await?;
@@ -207,14 +212,18 @@ pub async fn preview(
 
 /// Public. With a session, accepts as its user (whose email must be the invitation's) and switches the session to the
 /// tenant. Without one, creates the account with `password` (409 "Sign in as <email> to accept" if the email already
-/// has one) and signs it in. Answers 410 and 429 as preview does.
+/// has one) and signs it in. Answers 410 and 429 as preview does, and 503 with `Retry-After` when the server is
+/// hashing as many passwords as it allows at once.
 #[utoipa::path(post, operation_id = "accept_invitation", path = "/api/v1/invitations/accept", request_body = AcceptInvitationRequest,
-    responses((status = 200, body = Profile), (status = 403), (status = 409), (status = 410), (status = 422), (status = 429)))]
+    responses((status = 200, body = Profile), (status = 403), (status = 409), (status = 410), (status = 422),
+        (status = 429, headers(("Retry-After" = String))), (status = 503, headers(("Retry-After" = String)))))]
 pub async fn accept(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     jar: CookieJar,
     ApiJson(body): ApiJson<AcceptInvitationRequest>,
 ) -> Result<(CookieJar, Json<Profile>), ApiError> {
+    limit_ip(&state, "token", ip, TOKEN_REQUESTS_PER_MINUTE).await?;
     let key = reserve_attempt(&state, &body.token).await?;
     let session = match jar.get(SESSION_COOKIE) {
         Some(cookie) => identity::resolve_session(&state.pool, cookie.value()).await?,

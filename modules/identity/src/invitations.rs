@@ -113,6 +113,8 @@ pub enum StaffError {
     #[error("the member was changed by someone else; reload and try again")]
     VersionMismatch,
     #[error(transparent)]
+    Busy(#[from] crate::Busy),
+    #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
 
@@ -471,7 +473,7 @@ pub async fn accept(pool: &PgPool, token: &str, acceptor: Acceptor) -> Result<(U
             }
             // An existing account is found by `insert_user` after the liveness re-check below, so a token used by a
             // racing accept is always Gone, never "Sign in as …".
-            (UserId(Uuid::now_v7()), Some(hash_in_background(password).await), None)
+            (UserId(Uuid::now_v7()), Some(hash_in_background(password).await?), None)
         }
         Acceptor::SignedIn(session) => {
             let user = session.user;

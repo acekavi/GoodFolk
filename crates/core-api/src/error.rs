@@ -128,6 +128,12 @@ impl From<sqlx::Error> for ApiError {
     }
 }
 
+impl From<identity::Busy> for ApiError {
+    fn from(err: identity::Busy) -> Self {
+        Self::service_unavailable(err.to_string()).retry_after(1)
+    }
+}
+
 /// Maps the night audit's errors to problem details.
 pub(crate) fn audit_error(err: audit::AuditError) -> ApiError {
     match err {
@@ -166,6 +172,7 @@ pub(crate) fn staff_error(err: identity::StaffError) -> ApiError {
         identity::StaffError::Conflict(message) => ApiError::conflict(message),
         identity::StaffError::Invalid(message) => ApiError::unprocessable(message),
         identity::StaffError::VersionMismatch => ApiError::precondition_failed(err.to_string()),
+        identity::StaffError::Busy(busy) => busy.into(),
         identity::StaffError::Database(db_err) => db_err.into(),
     }
 }

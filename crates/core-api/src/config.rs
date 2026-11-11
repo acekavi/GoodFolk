@@ -37,6 +37,10 @@ pub struct Config {
     pub internal_auth: Verifier,
     /// The public booking site (`IBE_PUBLIC_ORIGIN`, `TRUST_CLOUDFLARE_IP`, `TURNSTILE_SECRET`).
     pub ibe: IbeConfig,
+    /// Limit sign-in, sign-up, email verification and the invitation links per client IP (`AUTH_IP_LIMITS`, `on` by
+    /// default). `off` is for the end-to-end suite, whose browsers all sign up from one address, and production
+    /// refuses it.
+    pub auth_ip_limits: bool,
 }
 
 /// The booking site's origin outside production.
@@ -197,6 +201,12 @@ impl Config {
         let jobs_svc_auth = TokenSource::from_vars("JOBS_SVC_AUDIENCE", &var)?;
         let internal_auth = Verifier::from_vars("CORE_API_AUDIENCE", &var)?;
         let ibe = IbeConfig::from_vars(&var, production)?;
+        let auth_ip_limits = match var("AUTH_IP_LIMITS").as_deref() {
+            None | Some("on") => true,
+            Some("off") if production => bail!("AUTH_IP_LIMITS=off is refused in production"),
+            Some("off") => false,
+            Some(_) => bail!("AUTH_IP_LIMITS must be on or off"),
+        };
         Ok(Self {
             database_url,
             database_listen_url,
@@ -211,6 +221,7 @@ impl Config {
             jobs_svc_auth,
             internal_auth,
             ibe,
+            auth_ip_limits,
         })
     }
 }
@@ -364,6 +375,26 @@ mod tests {
 
         assert!(shown.contains("GUEST_ID_KEY"), "{shown}");
         assert!(!shown.contains(short), "{shown}");
+    }
+
+    #[test]
+    fn auth_ip_limits_are_on_by_default_and_production_refuses_them_off() {
+        let dev = [("DATABASE_URL", "postgres://localhost/db"), ("GUEST_ID_KEY", GUEST_ID_KEY_B64)];
+        let default = Config::from_vars(vars(&dev)).unwrap();
+        let off = Config::from_vars(vars(&[dev[0], dev[1], ("AUTH_IP_LIMITS", "off")])).unwrap();
+        let unknown = Config::from_vars(vars(&[dev[0], dev[1], ("AUTH_IP_LIMITS", "no")]));
+        let production_off = Config::from_vars(vars(&[
+            ("DATABASE_URL", "postgres://pooler/db"),
+            ("DATABASE_LISTEN_URL", "postgres://direct/db"),
+            ("GUEST_ID_KEY", PROD_KEY_B64),
+            ("APP_ENV", "production"),
+            ("AUTH_IP_LIMITS", "off"),
+        ]));
+
+        assert!(default.auth_ip_limits);
+        assert!(!off.auth_ip_limits);
+        assert!(unknown.unwrap_err().to_string().contains("AUTH_IP_LIMITS"));
+        assert!(production_off.unwrap_err().to_string().contains("AUTH_IP_LIMITS"));
     }
 
     #[test]
