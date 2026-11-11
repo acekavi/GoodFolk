@@ -25,7 +25,8 @@ use crate::state::AppState;
 use crate::{csrf, events, graphql, idempotency};
 use axum::Router;
 use axum::extract::Request;
-use axum::middleware::{Next, from_fn, from_fn_with_state};
+use axum::http::{HeaderValue, header};
+use axum::middleware::{Next, from_fn, from_fn_with_state, map_response};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use std::time::Duration;
@@ -135,6 +136,13 @@ pub fn router(state: AppState) -> Router {
         .route_layer(from_fn_with_state(state.clone(), idempotency::idempotent))
         .layer(from_fn(|request, next| deadline(COMPLETE_UPLOAD_TIMEOUT, request, next)));
 
+    // Reads that audit each answer: a cross-site navigation must not reach them, so they need the CSRF header too.
+    let audited_reads = Router::new()
+        .route(&format!("{PROPERTY}/guest-documents/{{document}}/link"), get(media::guest_document_link))
+        .route(&format!("{PROPERTY}/invoices/{{invoice}}/link"), get(folio::invoice_link))
+        .route(&format!("{PROPERTY}/reports/{{report}}"), get(reports::report))
+        .route_layer(from_fn(csrf::require_csrf_header_on_reads));
+
     let requests = Router::new()
         .route("/api/v1/auth/signup", post(auth::signup))
         .route("/api/v1/auth/login", post(auth::login))
@@ -198,10 +206,8 @@ pub fn router(state: AppState) -> Router {
             patch(media::caption_gallery_photo).delete(media::remove_gallery_photo),
         )
         .route(&format!("{PROPERTY}/room-issues/{{issue}}/media/{{asset}}"), delete(media::remove_issue_photo))
-        .route(&format!("{PROPERTY}/guest-documents/{{document}}/link"), get(media::guest_document_link))
         .route(&format!("{PROPERTY}/guest-documents/{{document}}"), delete(media::delete_guest_document))
         .route(&format!("{PROPERTY}/reservations/{{reservation}}/routing"), put(folio::set_routing))
-        .route(&format!("{PROPERTY}/invoices/{{invoice}}/link"), get(folio::invoice_link))
         .route(&format!("{PROPERTY}/outlets/{{outlet}}"), patch(pos::update_outlet))
         .route(&format!("{PROPERTY}/tax-rules/{{rule}}"), patch(taxes::update_rule).delete(taxes::end_rule))
         .route(&format!("{PROPERTY}/tax-settings"), patch(taxes::update_settings))
@@ -211,9 +217,9 @@ pub fn router(state: AppState) -> Router {
         .route(&format!("{PROPERTY}/night-audit/runs/{{run}}/retry"), post(night_audit::retry))
         .route(&format!("{PROPERTY}/reports/vat/{{period}}/schedule01.csv"), get(reports::vat_schedule01))
         .route(&format!("{PROPERTY}/reports/vat/{{period}}/schedule04.csv"), get(reports::vat_schedule04))
-        .route(&format!("{PROPERTY}/reports/{{report}}"), get(reports::report))
         .route(&format!("{PROPERTY}/report-emails/{{kind}}"), put(reports::set_report_email))
         .route("/graphql", post(graphql::handler))
+        .merge(audited_reads)
         .merge(commands)
         .layer(from_fn(|request, next| deadline(REQUEST_TIMEOUT, request, next)))
         .merge(long_commands);
@@ -234,6 +240,7 @@ pub fn router(state: AppState) -> Router {
         .merge(requests)
         .merge(streams)
         .layer(from_fn(csrf::require_csrf_header))
+        .layer(map_response(no_store))
         .merge(internal)
         .route("/healthz", get(health::live))
         .route("/readyz", get(health::ready))
@@ -248,6 +255,13 @@ pub fn router(state: AppState) -> Router {
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .with_state(state)
+}
+
+/// Marks a staff API answer `Cache-Control: no-store`: each one is one user's (a profile, a signed link to an ID
+/// document, a tax schedule), so no browser cache or proxy may keep it. The public API sets its own caching.
+async fn no_store(mut response: Response) -> Response {
+    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// Answers 504 if the rest of the stack takes longer than `limit`. The handler is dropped (cancelled).

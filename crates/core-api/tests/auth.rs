@@ -109,6 +109,27 @@ async fn state_changing_requests_need_the_csrf_header(_: PgPoolOptions, opts: Pg
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn reads_that_audit_their_answer_need_the_csrf_header_too(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    let owner = app.signup_owner("owner@example.com", "A").await;
+    let (property, id) = (uuid::Uuid::now_v7(), uuid::Uuid::now_v7());
+
+    for path in [
+        format!("/api/v1/properties/{property}/guest-documents/{id}/link?variant=original"),
+        format!("/api/v1/properties/{property}/invoices/{id}/link"),
+        format!("/api/v1/properties/{property}/reports/{id}"),
+    ] {
+        // A cross-site navigation carries the cookie (SameSite=Lax) but cannot add the header.
+        let navigated = app.send_with(Method::GET, &path, Some(&owner), None, &[]).await;
+        let from_the_app = app.send(Method::GET, &path, Some(&owner), None).await;
+
+        assert_eq!(navigated.status, StatusCode::FORBIDDEN, "{path}: {:?}", navigated.body);
+        assert_eq!(navigated.body["detail"], "missing x-goodfolk-csrf header");
+        assert_ne!(from_the_app.status, StatusCode::FORBIDDEN, "{path}: {:?}", from_the_app.body);
+    }
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn a_user_cannot_switch_into_a_tenant_they_do_not_belong_to(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts).await;
     let alice = app.signup_owner("alice@example.com", "Alice Hotels").await;
@@ -347,4 +368,25 @@ async fn auth_ip_limits_off_counts_nothing(_: PgPoolOptions, opts: PgConnectOpti
         .await
         .unwrap();
     assert_eq!(hits, 5);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn staff_api_answers_are_never_stored_and_public_ones_keep_their_own_caching(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let app = TestApp::new(opts).await;
+    let owner = app.signup_owner("owner@example.com", "A").await;
+
+    let me = app.send(Method::GET, "/api/v1/me", Some(&owner), None).await;
+    let refused = app.send(Method::GET, "/api/v1/me", None, None).await;
+    let graphql =
+        app.send(Method::POST, "/graphql", Some(&owner), Some(json!({"query": "{ properties { code } }"}))).await;
+    let public = app.send(Method::GET, "/api/public/v1/ibe/NOPE/site", None, None).await;
+
+    for answer in [&me, &refused, &graphql] {
+        assert_eq!(answer.headers[header::CACHE_CONTROL], "no-store", "{:?}", answer.body);
+    }
+    assert_eq!(public.status, StatusCode::NOT_FOUND);
+    assert_ne!(public.headers.get(header::CACHE_CONTROL).map(|v| v.to_str().unwrap()), Some("no-store"));
 }
