@@ -29,7 +29,7 @@ impl Mailer for DevMailer {
         let partial = self.dir.join(format!("{id}.json.partial"));
         tokio::fs::write(&partial, json).await.map_err(failed)?;
         tokio::fs::rename(&partial, self.dir.join(format!("{id}.json"))).await.map_err(failed)?;
-        tracing::info!(to = %message.to, subject = %message.subject, "mail written to the outbox");
+        tracing::info!(to_domain = crate::recipient_domain(&message.to), "mail written to the outbox");
         Ok(())
     }
 }

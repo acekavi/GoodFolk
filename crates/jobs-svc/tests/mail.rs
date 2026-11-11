@@ -57,7 +57,11 @@ fn captured_logs() -> &'static CapturedLogs {
     LOGS.get_or_init(|| {
         let logs = CapturedLogs::default();
         tracing::subscriber::set_global_default(
-            tracing_subscriber::fmt().with_max_level(tracing::Level::TRACE).with_writer(logs.clone()).finish(),
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::TRACE)
+                .with_ansi(false)
+                .with_writer(logs.clone())
+                .finish(),
         )
         .expect("no other global subscriber in this test binary");
         logs
@@ -175,6 +179,9 @@ async fn a_pending_invitation_sends_one_email_with_the_link(_: PgPoolOptions, op
 
     let logs = logs.text();
     assert!(!logs.contains(token), "a log line carries the token");
+    // The fixture's own SQL names the address, so only the send's fields are checked.
+    assert!(logs.contains("to_domain=\"example.com\""), "{logs}");
+    assert!(!logs.contains("to=kamala@") && !logs.contains("to=\"kamala@"), "a recipient address: {logs}");
     std::fs::remove_dir_all(outbox).unwrap();
 }
 

@@ -29,7 +29,7 @@
 //! which is logged as an error: delivering the job again cannot help. It is 503 when the send may succeed later, so the
 //! bus delivers the job again, and 400 for a body that is not a job. An invitation's, a booking's and a verification's
 //! job carry a token, so nothing here logs the job's fields (its `Debug` hides the token), the body or a decoding error
-//! (which may quote the payload).
+//! (which may quote the payload). A recipient is logged by its domain only.
 
 use std::collections::HashMap;
 
@@ -88,11 +88,13 @@ pub(crate) async fn mail(State(svc): State<JobsSvc>, body: Bytes) -> StatusCode 
     match svc.mailer.send(&message).await {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(MailError::Retryable(error)) => {
-            tracing::warn!(?job, to = %message.to, %error, "the email will be sent again");
+            let to_domain = mail::recipient_domain(&message.to);
+            tracing::warn!(?job, to_domain, %error, "the email will be sent again");
             StatusCode::SERVICE_UNAVAILABLE
         }
         Err(MailError::Permanent(error)) => {
-            tracing::error!(?job, to = %message.to, %error, "the email was refused");
+            let to_domain = mail::recipient_domain(&message.to);
+            tracing::error!(?job, to_domain, %error, "the email was refused");
             StatusCode::NO_CONTENT
         }
     }
