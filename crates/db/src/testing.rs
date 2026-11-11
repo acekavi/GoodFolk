@@ -20,6 +20,22 @@ pub async fn app_pool(opts: PgConnectOptions, max_connections: u32) -> PgPool {
         .expect("connect test pool")
 }
 
+/// A pool acting as jobs-svc's role, `goodfolk_jobs`: the app role's rights plus the cross-tenant job functions
+/// (migration 0050). Code that only jobs-svc runs (the sweeps, the imports, the jobs' property lists) is tested on it.
+pub async fn jobs_pool(opts: PgConnectOptions, max_connections: u32) -> PgPool {
+    PgPoolOptions::new()
+        .max_connections(max_connections)
+        .after_connect(|conn, _| {
+            Box::pin(async move {
+                conn.execute("set role goodfolk_jobs").await?;
+                Ok(())
+            })
+        })
+        .connect_with(opts)
+        .await
+        .expect("connect test jobs pool")
+}
+
 /// A fixed guest ID key for tests (base64 of 32 bytes). Never use it outside tests.
 pub const GUEST_ID_KEY_B64: &str = crate::crypto::TEST_KEY_B64;
 

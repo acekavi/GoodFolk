@@ -61,7 +61,7 @@ async fn sweep_keeps_documents_of_guest_with_future_stay(_: PgPoolOptions, opts:
     // A young document stays whatever the stays.
     let (young, _) = hotel.old_document(6, 300).await;
 
-    let report = sweep(&hotel.pool).await.unwrap();
+    let report = sweep(&hotel.jobs).await.unwrap();
 
     assert_eq!(report.expired_documents, 2);
     for (guest, kept) in [(booker, 1), (primary, 1), (occupant, 1), (departed, 0), (cancelled, 0), (young, 1)] {
@@ -111,7 +111,7 @@ async fn sweep_deletes_expired_documents_and_orphans(_: PgPoolOptions, opts: PgC
     .await
     .unwrap();
 
-    let mut report = sweep(&hotel.pool).await.unwrap();
+    let mut report = sweep(&hotel.jobs).await.unwrap();
     report.orphans.sort_by_key(|(_, id, _, _)| *id);
 
     assert_eq!(report.expired_documents, 1);
@@ -148,7 +148,7 @@ async fn sweep_deletes_expired_documents_and_orphans(_: PgPoolOptions, opts: PgC
     assert_eq!(report.purged_processed_events, 1);
     assert!(hotel.outbox("media-process").await.is_empty());
 
-    let again = sweep(&hotel.pool).await.unwrap();
+    let again = sweep(&hotel.jobs).await.unwrap();
     assert_eq!(again, media::SweepReport::default(), "a second sweep finds nothing");
 }
 
@@ -159,7 +159,7 @@ async fn sweep_fails_stuck_processing(_: PgPoolOptions, opts: PgConnectOptions) 
     hotel.exec("update media_asset set processing_at = now() - interval '61 minutes' where id = $1", stuck).await;
     let busy = asset_of(&hotel.upload(Target::RoomType(hotel.room_type), 2).await);
 
-    let report = sweep(&hotel.pool).await.unwrap();
+    let report = sweep(&hotel.jobs).await.unwrap();
 
     assert_eq!(report.stuck, 1);
     let rows: Vec<(Uuid, String, Option<String>)> =
@@ -194,7 +194,7 @@ async fn sweep_never_deletes_an_asset_a_duplicate_just_linked(_: PgPoolOptions, 
 
     let sweeping = {
         let hotel = hotel.clone();
-        tokio::spawn(async move { sweep(&hotel.pool).await })
+        tokio::spawn(async move { sweep(&hotel.jobs).await })
     };
     let mut waited = 0;
     loop {
@@ -233,7 +233,7 @@ async fn kept_documents_wait_for_their_next_possible_expiry(_: PgPoolOptions, op
     hotel.stay(recent, "occupant", -103, -100, "checked_out").await;
     let (expired, _) = hotel.old_document(3, 900).await;
 
-    let report = sweep(&hotel.pool).await.unwrap();
+    let report = sweep(&hotel.jobs).await.unwrap();
 
     assert_eq!(report.expired_documents, 1);
     assert_eq!(hotel.documents_of(expired).await, 0);
@@ -249,9 +249,9 @@ async fn kept_documents_wait_for_their_next_possible_expiry(_: PgPoolOptions, op
     assert_eq!(recheck(recent).await, midnight(-100 + 365));
 
     let due: Vec<(Uuid, String, Uuid)> =
-        sqlx::query_as("select tenant_id, kind, id from app.media_sweep_due()").fetch_all(&hotel.pool).await.unwrap();
+        sqlx::query_as("select tenant_id, kind, id from app.media_sweep_due()").fetch_all(&hotel.jobs).await.unwrap();
     assert!(due.iter().all(|(_, kind, _)| kind != "expired_document"), "kept documents are not listed: {due:?}");
-    assert_eq!(sweep(&hotel.pool).await.unwrap(), media::SweepReport::default());
+    assert_eq!(sweep(&hotel.jobs).await.unwrap(), media::SweepReport::default());
 }
 
 /// A removed video's upload is its archive, listed once, and the `ready` marker media-svc wrote is listed too.
@@ -287,7 +287,7 @@ async fn sweep_lists_a_removed_videos_objects_and_marker(_: PgPoolOptions, opts:
     tx.commit().await.unwrap();
     hotel.exec("update media_asset set created_at = now() - interval '2 days' where id = $1", video).await;
 
-    let report = sweep(&hotel.pool).await.unwrap();
+    let report = sweep(&hotel.jobs).await.unwrap();
 
     let keys = ["upload", "1080p.av1.mp4", "thumb.avif", "ready"].map(|name| format!("{prefix}/{name}")).to_vec();
     assert_eq!(report.orphans, [(hotel.tenant, video, Purpose::GalleryVideo, keys)]);

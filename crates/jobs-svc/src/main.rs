@@ -21,6 +21,14 @@ async fn main() -> anyhow::Result<()> {
     init_tracing(config.production);
     let pool = db::connect(&config.database_url, MAX_CONNECTIONS).await?;
     db::assert_rls_applies(&pool).await?;
+    // The cross-tenant job functions are granted to `goodfolk_jobs` alone (migration 0050), not to the API's role.
+    let jobs_role: bool = sqlx::query_scalar("select has_function_privilege('app.jobs_properties()', 'execute')")
+        .fetch_one(&pool)
+        .await
+        .context("checking the database role")?;
+    if !jobs_role {
+        anyhow::bail!("DATABASE_URL must connect as a member of goodfolk_jobs, jobs-svc's role (migration 0050)");
+    }
     let lock: PgConnectOptions =
         config.database_direct_url.parse().context("DATABASE_DIRECT_URL is not a connection string")?;
     let verifier = Arc::new(Verifier::from_env("JOBS_SVC_AUDIENCE")?);

@@ -913,6 +913,8 @@ async fn housekeeper_cannot_start_a_video_upload(_: PgPoolOptions, opts: PgConne
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn removing_a_video_unlinks_it(_: PgPoolOptions, opts: PgConnectOptions) {
     let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
+    // The sweep is jobs-svc's, on its own role.
+    let jobs = db::testing::jobs_pool(opts.clone(), 1).await;
     let app = TestApp::new(opts).await;
     let storage = storage().await;
     let hotel = Hotel::new(&app, "owner@example.com", "GAL").await;
@@ -928,7 +930,7 @@ async fn removing_a_video_unlinks_it(_: PgPoolOptions, opts: PgConnectOptions) {
         .execute(&superuser)
         .await
         .unwrap();
-    assert!(media::sweep(&app.pool).await.unwrap().orphans.is_empty(), "a linked video is not an orphan");
+    assert!(media::sweep(&jobs).await.unwrap().orphans.is_empty(), "a linked video is not an orphan");
 
     let removed = app
         .send(
@@ -942,7 +944,7 @@ async fn removing_a_video_unlinks_it(_: PgPoolOptions, opts: PgConnectOptions) {
     assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
     let body = graphql(&app, &hotel.owner, GALLERY_VIDEOS, json!({"p": hotel.id})).await;
     assert_eq!(body["data"]["roomTypes"][0]["media"], json!([]));
-    let report = media::sweep(&app.pool).await.unwrap();
+    let report = media::sweep(&jobs).await.unwrap();
     assert_eq!(report.failures, 0);
     let orphans: Vec<_> = report.orphans.iter().map(|(_, asset, purpose, _)| (*asset, *purpose)).collect();
     assert_eq!(orphans, [(video, media::Purpose::GalleryVideo)]);

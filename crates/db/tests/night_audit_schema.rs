@@ -1,7 +1,7 @@
 //! What the Phase 7b migration (`migrations/0031_night_audit.sql`) puts on audit runs, statistics, stays and the
 //! jobs-svc definer functions, checked directly in the database.
 
-use db::testing::app_pool;
+use db::testing::{app_pool, jobs_pool};
 use db::{Scope, TenantId, begin};
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -220,7 +220,8 @@ async fn a_cancellation_date_is_required_exactly_for_cancelled_and_no_show_rooms
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn the_jobs_definers_return_rows_across_tenants(_: PgPoolOptions, opts: PgConnectOptions) {
-    let (owner, pool) = pools(opts).await;
+    let owner = PgPoolOptions::new().max_connections(1).connect_with(opts.clone()).await.unwrap();
+    let pool = jobs_pool(opts, 1).await;
     let (a, b) = (hotel(&owner, "GAL").await, hotel(&owner, "KAN").await);
     let open = run(&owner, &a, "failed").await.unwrap();
     run(&owner, &b, "completed").await.unwrap();
@@ -256,7 +257,8 @@ async fn a_second_open_run(pool: &PgPool, hotel: &Hotel) {
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn purge_expired_deletes_only_rows_past_their_window(_: PgPoolOptions, opts: PgConnectOptions) {
-    let (owner, pool) = pools(opts).await;
+    let owner = PgPoolOptions::new().max_connections(1).connect_with(opts.clone()).await.unwrap();
+    let pool = jobs_pool(opts, 1).await;
     let first = hotel(&owner, "GAL").await;
     let user = Uuid::now_v7();
     sqlx::query("insert into app_user (id, email, password_hash, display_name) values ($1, 'u@example.com', 'x', 'U')")

@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use common::hotel::{Hotel, Stay};
-use common::{SECRET, http, serve, storage, svc};
+use common::{SECRET, http, jobs, serve, storage, svc};
 use events::{PushEnvelope, PushMessage};
 use jobs_svc::JobsSvc;
 use mail::{DevMailer, MailJob, Message};
@@ -57,11 +57,7 @@ fn captured_logs() -> &'static CapturedLogs {
     LOGS.get_or_init(|| {
         let logs = CapturedLogs::default();
         tracing::subscriber::set_global_default(
-            tracing_subscriber::fmt()
-                .with_max_level(tracing::Level::TRACE)
-                .with_ansi(false)
-                .with_writer(logs.clone())
-                .finish(),
+            tracing_subscriber::fmt().with_max_level(tracing::Level::TRACE).with_writer(logs.clone()).finish(),
         )
         .expect("no other global subscriber in this test binary");
         logs
@@ -69,12 +65,12 @@ fn captured_logs() -> &'static CapturedLogs {
 }
 
 /// The service with a dev mailer writing to a new directory; returns it with that directory.
-fn mailing(hotel: &Hotel, opts: PgConnectOptions) -> (JobsSvc, PathBuf) {
+async fn mailing(opts: PgConnectOptions) -> (JobsSvc, PathBuf) {
     let outbox = std::env::temp_dir().join(format!("goodfolk-jobs-svc-mail-{}", Uuid::now_v7()));
     let svc = JobsSvc {
         mailer: Arc::new(DevMailer { dir: outbox.clone() }),
         app_base_url: "https://app.example.com".to_owned(),
-        ..svc(hotel.pool.clone(), opts)
+        ..svc(jobs(&opts).await, opts)
     };
     (svc, outbox)
 }
@@ -153,7 +149,7 @@ async fn mail_without_a_token_is_401() {
 async fn a_pending_invitation_sends_one_email_with_the_link(_: PgPoolOptions, opts: PgConnectOptions) {
     let logs = captured_logs();
     let hotel = Hotel::new(opts.clone()).await;
-    let (svc, outbox) = mailing(&hotel, opts);
+    let (svc, outbox) = mailing(opts).await;
     let addr = serve(svc).await;
     let token = "dG9rZW4tdGhhdC1tdXN0LW5ldmVyLWJlLWxvZ2dlZC0xMjM0";
     let id = invitation(&hotel, "pending", token).await;
@@ -185,7 +181,7 @@ async fn a_pending_invitation_sends_one_email_with_the_link(_: PgPoolOptions, op
 #[sqlx::test(migrations = "../../migrations")]
 async fn an_invitation_no_longer_pending_sends_nothing(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts.clone()).await;
-    let (svc, outbox) = mailing(&hotel, opts);
+    let (svc, outbox) = mailing(opts).await;
     let addr = serve(svc).await;
 
     for status in ["revoked", "accepted", "expired"] {
@@ -202,7 +198,7 @@ async fn an_invitation_no_longer_pending_sends_nothing(_: PgPoolOptions, opts: P
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_job_whose_token_a_resend_replaced_sends_nothing(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts.clone()).await;
-    let (svc, outbox) = mailing(&hotel, opts);
+    let (svc, outbox) = mailing(opts).await;
     let addr = serve(svc).await;
     let id = invitation(&hotel, "pending", "old-token").await;
     // The resend gave the invitation a new token; its own job carries that one.
@@ -230,7 +226,7 @@ async fn a_job_whose_token_a_resend_replaced_sends_nothing(_: PgPoolOptions, opt
 #[sqlx::test(migrations = "../../migrations")]
 async fn an_invitation_of_another_tenant_sends_nothing(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts.clone()).await;
-    let (svc, outbox) = mailing(&hotel, opts);
+    let (svc, outbox) = mailing(opts).await;
     let addr = serve(svc).await;
     let id = invitation(&hotel, "pending", "token").await;
 
@@ -261,7 +257,7 @@ async fn an_email_verification_sends_its_link_in_the_fragment_under_a_fixed_subj
 ) {
     let logs = captured_logs();
     let hotel = Hotel::new(opts.clone()).await;
-    let (svc, outbox) = mailing(&hotel, opts);
+    let (svc, outbox) = mailing(opts).await;
     let addr = serve(svc).await;
     let token = "dmVyaWZpY2F0aW9uLXRva2VuLW5ldmVyLWxvZ2dlZC0xMjM0";
     verification(&hotel, token, "0 seconds").await;
@@ -292,7 +288,7 @@ async fn an_email_verification_sends_its_link_in_the_fragment_under_a_fixed_subj
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_replaced_or_used_verification_link_sends_nothing(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts.clone()).await;
-    let (svc, outbox) = mailing(&hotel, opts);
+    let (svc, outbox) = mailing(opts).await;
     let addr = serve(svc).await;
     verification(&hotel, "older", "2 minutes").await;
     verification(&hotel, "newer", "1 minute").await;
@@ -314,8 +310,7 @@ async fn a_replaced_or_used_verification_link_sends_nothing(_: PgPoolOptions, op
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_body_that_is_not_a_job_is_400(_: PgPoolOptions, opts: PgConnectOptions) {
-    let hotel = Hotel::new(opts.clone()).await;
-    let (svc, _) = mailing(&hotel, opts);
+    let (svc, _) = mailing(opts).await;
     let addr = serve(svc).await;
 
     assert_eq!(post_mail(addr, b"not json".to_vec(), Some(SECRET)).await, 400);
@@ -400,7 +395,7 @@ fn report_job(hotel: &Hotel, report_id: Uuid) -> MailJob {
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_report_email_carries_the_headline_and_attaches_the_pdf(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts.clone()).await;
-    let (svc, outbox) = mailing(&hotel, opts);
+    let (svc, outbox) = mailing(opts).await;
     let addr = serve(JobsSvc { storage: Some(storage().await), ..svc }).await;
     let pdf = format!("%PDF-1.7 weekly {}", Uuid::now_v7()).into_bytes();
     let weekly = ready_report(&hotel, "weekly", date!(2026 - 10 - 19), date!(2026 - 10 - 25), Some(&pdf)).await;
@@ -440,7 +435,7 @@ async fn a_report_email_carries_the_headline_and_attaches_the_pdf(_: PgPoolOptio
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_report_whose_pdf_cannot_be_read_is_retried(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts.clone()).await;
-    let (svc, outbox) = mailing(&hotel, opts);
+    let (svc, outbox) = mailing(opts).await;
     let without_storage = serve(svc.clone()).await;
     let addr = serve(JobsSvc { storage: Some(storage().await), ..svc }).await;
     let report = ready_report(&hotel, "weekly", date!(2026 - 10 - 19), date!(2026 - 10 - 25), None).await;
@@ -453,7 +448,7 @@ async fn a_report_whose_pdf_cannot_be_read_is_retried(_: PgPoolOptions, opts: Pg
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_report_job_for_no_such_report_or_member_sends_nothing(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts.clone()).await;
-    let (svc, outbox) = mailing(&hotel, opts);
+    let (svc, outbox) = mailing(opts).await;
     let addr = serve(JobsSvc { storage: Some(storage().await), ..svc }).await;
     let report = ready_report(&hotel, "weekly", date!(2026 - 10 - 19), date!(2026 - 10 - 25), Some(b"%PDF-")).await;
 
@@ -472,7 +467,7 @@ async fn a_report_job_for_no_such_report_or_member_sends_nothing(_: PgPoolOption
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_report_email_goes_only_to_an_owner_or_manager_of_the_property_now(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts.clone()).await;
-    let (svc, outbox) = mailing(&hotel, opts);
+    let (svc, outbox) = mailing(opts).await;
     let addr = serve(JobsSvc { storage: Some(storage().await), ..svc }).await;
     let report = ready_report(&hotel, "weekly", date!(2026 - 10 - 19), date!(2026 - 10 - 25), Some(b"%PDF-")).await;
     let other = hotel.add_property("OTH").await;
@@ -547,7 +542,7 @@ async fn site_booking(hotel: &Hotel, token: &str) -> Uuid {
 async fn an_ibe_confirmation_is_sent_in_the_hotels_name_with_the_manage_link(_: PgPoolOptions, opts: PgConnectOptions) {
     let logs = captured_logs();
     let hotel = Hotel::new(opts.clone()).await;
-    let (svc, outbox) = mailing(&hotel, opts);
+    let (svc, outbox) = mailing(opts).await;
     let addr = serve(JobsSvc { ibe_public_origin: "https://book.example.lk".into(), ..svc }).await;
     let token = "bWFuYWdlLXRva2VuLXRoYXQtbXVzdC1uZXZlci1iZS1sb2dnZWQ";
     let reservation = site_booking(&hotel, token).await;
@@ -602,7 +597,7 @@ async fn an_ibe_confirmation_is_sent_in_the_hotels_name_with_the_manage_link(_: 
 #[sqlx::test(migrations = "../../migrations")]
 async fn an_ibe_cancellation_names_the_charge_and_carries_no_link(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts.clone()).await;
-    let (svc, outbox) = mailing(&hotel, opts);
+    let (svc, outbox) = mailing(opts).await;
     let addr = serve(JobsSvc { ibe_public_origin: "https://book.example.lk".into(), ..svc }).await;
     let token = "bWFuYWdlLXRva2VuLXRoYXQtbXVzdC1uZXZlci1iZS1sb2dnZWQ";
     let reservation = site_booking(&hotel, token).await;

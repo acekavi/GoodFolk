@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use common::hotel::Hotel;
-use common::{storage, svc};
+use common::{jobs, storage, svc};
 use jobs_svc::JobsSvc;
 use jobs_svc::tick::tick_with;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -73,7 +73,7 @@ impl fx::RateSource for FakeSource {
 async fn the_window_cleanup_and_drift_jobs_run_once_a_day(_: PgPoolOptions, opts: PgConnectOptions) {
     let owner = PgPool::connect_with(opts.clone()).await.unwrap();
     let hotel = Hotel::new(opts.clone()).await;
-    let svc = svc(hotel.pool.clone(), opts);
+    let svc = svc(jobs(&opts).await, opts);
     let p = hotel.property.to_string();
     let last_day = async || -> Option<Date> {
         sqlx::query_scalar("select max(date) from inventory_day where property_id = $1")
@@ -105,7 +105,7 @@ async fn two_concurrent_ticks_run_each_job_once(_: PgPoolOptions, opts: PgConnec
     let hotel = Hotel::new(opts.clone()).await;
     let source = Arc::new(FakeSource::default());
     let svc =
-        JobsSvc { storage: Some(storage().await), fx_source: Some(source.clone()), ..svc(hotel.pool.clone(), opts) };
+        JobsSvc { storage: Some(storage().await), fx_source: Some(source.clone()), ..svc(jobs(&opts).await, opts) };
     let now = at(&hotel, 0, 10, 30);
 
     let (first, second) = tokio::join!(daily(&svc, now), daily(&svc, now));
@@ -135,7 +135,7 @@ async fn an_alerted_import_is_tried_again_and_a_complete_one_is_not(_: PgPoolOpt
     let hotel = Hotel::new(opts.clone()).await;
     let source = Arc::new(FakeSource::default());
     source.short.store(true, Ordering::SeqCst);
-    let svc = JobsSvc { fx_source: Some(source.clone()), ..svc(hotel.pool.clone(), opts.clone()) };
+    let svc = JobsSvc { fx_source: Some(source.clone()), ..svc(jobs(&opts).await, opts.clone()) };
     let fx = |jobs: Vec<(String, String, String)>| -> Vec<String> {
         jobs.into_iter().filter(|(job, ..)| job == "fx_import").map(|(.., outcome)| outcome).collect()
     };
@@ -170,7 +170,7 @@ async fn an_alerted_import_is_tried_again_and_a_complete_one_is_not(_: PgPoolOpt
 async fn cleanup_deletes_exactly_the_expired_rows(_: PgPoolOptions, opts: PgConnectOptions) {
     let owner = PgPool::connect_with(opts.clone()).await.unwrap();
     let hotel = Hotel::new(opts.clone()).await;
-    let svc = svc(hotel.pool.clone(), opts);
+    let svc = svc(jobs(&opts).await, opts);
     for (token, expires) in [("expired", "-1 minute"), ("expired too", "-2 days"), ("fresh", "1 hour")] {
         sqlx::query(
             "insert into session (id, token_hash, user_id, expires_at)
@@ -229,7 +229,7 @@ async fn cleanup_deletes_exactly_the_expired_rows(_: PgPoolOptions, opts: PgConn
 async fn cleanup_deletes_rate_hits_a_day_after_their_window(_: PgPoolOptions, opts: PgConnectOptions) {
     let owner = PgPool::connect_with(opts.clone()).await.unwrap();
     let hotel = Hotel::new(opts.clone()).await;
-    let svc = svc(hotel.pool.clone(), opts);
+    let svc = svc(jobs(&opts).await, opts);
     for (ip, age) in [("192.0.2.1", "2 days"), ("192.0.2.2", "1 day 2 minutes"), ("192.0.2.3", "23 hours")] {
         sqlx::query(
             "insert into ibe_rate_hit (scope, ip, window_start, hits)
@@ -253,7 +253,7 @@ async fn cleanup_deletes_rate_hits_a_day_after_their_window(_: PgPoolOptions, op
 async fn cleanup_deletes_verification_links_a_day_after_they_expired(_: PgPoolOptions, opts: PgConnectOptions) {
     let owner = PgPool::connect_with(opts.clone()).await.unwrap();
     let hotel = Hotel::new(opts.clone()).await;
-    let svc = svc(hotel.pool.clone(), opts);
+    let svc = svc(jobs(&opts).await, opts);
     for (token, expired) in [("long gone", "2 days"), ("just gone", "23 hours"), ("live", "-1 hour")] {
         sqlx::query(
             "insert into email_verification (id, user_id, token_hash, created_at, expires_at)
@@ -281,7 +281,7 @@ async fn cleanup_deletes_on_demand_reports_after_30_days_with_their_pdfs(_: PgPo
     let owner = PgPool::connect_with(opts.clone()).await.unwrap();
     let hotel = Hotel::new(opts.clone()).await;
     let storage = storage().await;
-    let svc = JobsSvc { storage: Some(storage.clone()), ..svc(hotel.pool.clone(), opts) };
+    let svc = JobsSvc { storage: Some(storage.clone()), ..svc(jobs(&opts).await, opts) };
     let mut reports = Vec::new();
     for (kind, age) in [("on_demand", "31 days"), ("on_demand", "29 days"), ("weekly", "400 days")] {
         let id = Uuid::now_v7();
@@ -318,7 +318,7 @@ async fn cleanup_deletes_on_demand_reports_after_30_days_with_their_pdfs(_: PgPo
 async fn a_drift_raises_its_alert_and_a_clean_check_clears_it(_: PgPoolOptions, opts: PgConnectOptions) {
     let owner = PgPool::connect_with(opts.clone()).await.unwrap();
     let hotel = Hotel::new(opts.clone()).await;
-    let svc = svc(hotel.pool.clone(), opts);
+    let svc = svc(jobs(&opts).await, opts);
     hotel.window(hotel.property).await;
     let set_sold = async |sold: i32| {
         sqlx::query("update inventory_day set sold = $3 where property_id = $1 and date = $2")
@@ -354,7 +354,7 @@ async fn the_media_sweep_removes_an_orphans_objects_once_a_day(_: PgPoolOptions,
     let owner = PgPool::connect_with(opts.clone()).await.unwrap();
     let hotel = Hotel::new(opts.clone()).await;
     let storage = storage().await;
-    let svc = JobsSvc { storage: Some(storage.clone()), ..svc(hotel.pool.clone(), opts.clone()) };
+    let svc = JobsSvc { storage: Some(storage.clone()), ..svc(jobs(&opts).await, opts.clone()) };
     // A ready gallery asset nothing links to, two days old: an orphan.
     let asset = Uuid::now_v7();
     let rendition = storage::rendition_key(hotel.tenant.0, asset, "md", "avif");
