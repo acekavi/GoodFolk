@@ -207,6 +207,14 @@ impl Config {
             Some("off") => false,
             Some(_) => bail!("AUTH_IP_LIMITS must be on or off"),
         };
+        // Browsers call the staff API directly, never with the booking site's SSR secret, so without Cloudflare's
+        // header every user is the socket peer (Cloud Run's front end) and shares one sign-in limit.
+        if production && auth_ip_limits && !ibe.trust_cloudflare_ip {
+            bail!(
+                "TRUST_CLOUDFLARE_IP=true is required in production: the sign-in limits count per client IP, and \
+                 without Cloudflare's header every user would be the proxy's address"
+            );
+        }
         Ok(Self {
             database_url,
             database_listen_url,
@@ -314,6 +322,7 @@ mod tests {
         ("IBE_PUBLIC_ORIGIN", "https://book.example.lk"),
         ("TURNSTILE_SECRET", "0x4AAAAAAAexampleexampleexample"),
         ("IBE_SSR_SECRET", "an-ssr-secret-of-at-least-32-characters"),
+        ("TRUST_CLOUDFLARE_IP", "true"),
     ];
 
     /// `pairs`, then the media variables of the environment `pairs` names (production or not).
@@ -395,6 +404,24 @@ mod tests {
         assert!(!off.auth_ip_limits);
         assert!(unknown.unwrap_err().to_string().contains("AUTH_IP_LIMITS"));
         assert!(production_off.unwrap_err().to_string().contains("AUTH_IP_LIMITS"));
+    }
+
+    #[test]
+    fn production_needs_a_trusted_client_ip_for_the_sign_in_limits() {
+        let production = |trust: &'static str| {
+            Config::from_vars(vars(&[
+                ("DATABASE_URL", "postgres://pooler/db"),
+                ("DATABASE_LISTEN_URL", "postgres://direct/db"),
+                ("GUEST_ID_KEY", PROD_KEY_B64),
+                ("APP_ENV", "production"),
+                ("TRUST_CLOUDFLARE_IP", trust),
+            ]))
+        };
+
+        let untrusted = production("false").unwrap_err().to_string();
+
+        assert!(untrusted.contains("TRUST_CLOUDFLARE_IP"), "{untrusted}");
+        assert!(production("true").unwrap().ibe.trust_cloudflare_ip);
     }
 
     #[test]
