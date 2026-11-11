@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# The workflow only reads the repository; its token can write nothing.
+permissions:
+  contents: read
+
 jobs:
   rust:
     runs-on: ubuntu-latest
