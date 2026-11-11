@@ -228,3 +228,20 @@ test('/favicon.ico on the booking domain answers 404', async ({ request }) => {
 test('a path that is not a property code answers 404', async ({ request }) => {
 	expect((await request.get('/x')).status()).toBe(404);
 });
+
+test("the site's pages may not be framed, sniffed or leak their address", async ({
+	page,
+	browser
+}) => {
+	const owner = await browser.newContext({ baseURL: PMS });
+	const hotel = await seedHotel(owner.request);
+
+	const landing = await page.goto(`/${hotel.code}`);
+	const headers = landing!.headers();
+
+	expect(headers['content-security-policy']).toBe("frame-ancestors 'none'");
+	expect(headers['x-frame-options']).toBe('DENY');
+	expect(headers['x-content-type-options']).toBe('nosniff');
+	expect(headers['referrer-policy']).toBe('strict-origin-when-cross-origin');
+	await owner.close();
+});

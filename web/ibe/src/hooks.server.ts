@@ -2,6 +2,7 @@ import type { Handle, HandleFetch, HandleServerError, ServerInit } from '@svelte
 import { env } from '$env/dynamic/private';
 import { apiOrigin } from '$lib/config';
 import { clientAddress, isApiCall, startupProblem, startupWarning, toApi } from '$lib/server/api';
+import { withSecurityHeaders } from '$lib/server/headers';
 import { paintFirst } from '$lib/server/hydrate';
 
 /** Where this server reaches the API (`IBE_API_ORIGIN`): a private address in production, the public one by default. */
@@ -12,14 +13,18 @@ function serverApiOrigin(): string {
 /**
  * A load's API answers are inlined for the browser with `content-length`, which openapi-fetch reads. The app's
  * scripts are not preloaded (CSS is inlined, so nothing else is), and its boot waits for the first frame (`paintFirst`):
- * the page's largest paint does not share a phone's connection with them.
+ * the page's largest paint does not share a phone's connection with them. Every answer carries the security headers
+ * (`withSecurityHeaders`).
  */
-export const handle: Handle = ({ event, resolve }) =>
-	resolve(event, {
+export const handle: Handle = async ({ event, resolve }) => {
+	const response = await resolve(event, {
 		filterSerializedResponseHeaders: (name) => name === 'content-length',
 		preload: ({ type }) => type === 'css',
 		transformPageChunk: ({ html }) => paintFirst(html)
 	});
+	withSecurityHeaders(response.headers);
+	return response;
+};
 
 /**
  * Fails fast: a production server without the SSR secret would count every guest's render against itself. Warns of a
