@@ -123,6 +123,16 @@ impl TestApp {
         TestResponse { status, headers, body }
     }
 
+    /// Marks `email`'s address verified, as following the link of the email sent at sign-up does: inviting staff and
+    /// turning a booking site on need it.
+    pub async fn verify_email(&self, email: &str) {
+        sqlx::query("update app_user set email_verified_at = now() where email = $1::citext")
+            .bind(email)
+            .execute(&self.pool)
+            .await
+            .unwrap();
+    }
+
     /// Signs up a new owner and returns their session cookie (`name=value`).
     pub async fn signup_owner(&self, email: &str, tenant_name: &str) -> String {
         let response = self

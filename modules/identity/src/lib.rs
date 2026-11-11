@@ -30,8 +30,8 @@ pub use session::{
 };
 pub use throttle::{LOGIN_WINDOW_SECS, MAX_LOGIN_FAILURES, clear_login_failures, reserve_login_attempt};
 pub use verification::{
-    VERIFICATION_EMAILS_PER_DAY, VERIFICATION_RESEND_SECS, VERIFICATION_TTL, VerificationError, resend_verification,
-    verify_email,
+    VERIFICATION_EMAILS_PER_DAY, VERIFICATION_RESEND_SECS, VERIFICATION_TTL, VerificationError, email_verified,
+    resend_verification, verify_email,
 };
 
 /// Whether `err` violated the named constraint or unique index.

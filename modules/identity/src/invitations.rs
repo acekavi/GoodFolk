@@ -5,7 +5,7 @@
 use crate::account::{hash_in_background, insert_user, password_is_valid};
 use crate::rbac::{Grant, Role, check_may_give, load_grants};
 use crate::session::{SessionInfo, new_token, token_hash};
-use crate::verification::{is_verified, mark_verified};
+use crate::verification::{email_verified, mark_verified};
 use db::{Event, Scope, TenantId, Tx, UserId};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -221,7 +221,7 @@ fn check_rules(actor_grants: &[Grant], grants: &[GrantSpec]) -> Result<(), Staff
 /// Refuses an actor who has not verified their email address: invitations go out from the platform's own mail
 /// identity, so only someone proven to read their address may send them.
 async fn require_verified(tx: &mut Tx, actor: UserId) -> Result<(), StaffError> {
-    if is_verified(tx, actor).await? { Ok(()) } else { Err(StaffError::Unverified) }
+    if email_verified(tx, actor).await? { Ok(()) } else { Err(StaffError::Unverified) }
 }
 
 /// Refuses another invitation email once the tenant sent [`INVITATION_EMAILS_PER_TENANT_PER_DAY`] within a day, or

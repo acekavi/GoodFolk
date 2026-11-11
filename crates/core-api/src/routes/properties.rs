@@ -207,7 +207,9 @@ pub async fn get_ibe_site(
 /// save). The accent must give white text a contrast of 4.5 or more, the logo must be a completed `ibe_logo` upload and
 /// the hero a finished room type gallery photo of this property, and the custom host must be unused and not the booking
 /// domain's own host (each 422).
-/// Audited as `ibe_site.updated` with the values before and after.
+/// Turning the site on needs the acting user's email verified (`403` with `reason: email_unverified`): a site's
+/// bookings send email from the platform, with the property's name, to any address a guest gives. A site already on
+/// stays on. Audited as `ibe_site.updated` with the values before and after.
 #[utoipa::path(put, operation_id = "update_ibe_site", path = "/api/v1/properties/{property}/ibe-site", request_body = UpdateIbeSiteRequest,
     params(("property" = Uuid, Path), ("If-Match" = String, Header, description = "the version edited, e.g. \"3\"; 0 for the first save")),
     responses((status = 200, body = IbeSiteView,
@@ -239,6 +241,16 @@ pub async fn update_ibe_site(
         privacy: body.privacy,
     };
     let mut tx = db::begin(&state.pool, Scope::tenant(ctx.tenant)).await?;
+    if body.enabled {
+        let on: Option<bool> = sqlx::query_scalar("select enabled from ibe_site where property_id = $1")
+            .bind(property)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if !on.unwrap_or(false) && !identity::email_verified(&mut tx, ctx.user).await? {
+            return Err(ApiError::forbidden("Verify your email address before turning the booking site on")
+                .with("reason", "email_unverified"));
+        }
+    }
     let saved = property::update_ibe_site(&mut tx, ctx.tenant, ctx.user, property, version, changes)
         .await
         .map_err(property_error)?;

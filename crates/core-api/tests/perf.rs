@@ -2139,6 +2139,7 @@ impl IbeHotel {
         let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
         let app = TestApp::new(opts).await;
         let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+        app.verify_email("owner@example.com").await;
         let (path, day0, types) = property_with_room_types(&app, &owner).await;
         for (index, room_type) in types.iter().enumerate() {
             let first = (u32::try_from(index).unwrap() + 1) * 100 + 1;

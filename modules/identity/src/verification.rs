@@ -124,8 +124,9 @@ pub(crate) async fn mark_verified(tx: &mut Tx, user: UserId) -> Result<(), sqlx:
     Ok(())
 }
 
-/// Whether `user` has verified their email.
-pub(crate) async fn is_verified(tx: &mut Tx, user: UserId) -> Result<bool, sqlx::Error> {
+/// Whether `user` has verified their email: needed to invite staff and to turn a booking site on, both of which make
+/// the platform send email.
+pub async fn email_verified(tx: &mut Tx, user: UserId) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar("select email_verified_at is not null from app_user where id = $1")
         .bind(user.0)
         .fetch_one(&mut **tx)

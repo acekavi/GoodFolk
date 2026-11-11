@@ -38,7 +38,9 @@ impl Hotel {
     /// custom host (see `host`).
     async fn new(app: &TestApp, opts: PgConnectOptions, code: &str, enabled: bool) -> Self {
         let superuser = PgPool::connect_with(opts).await.unwrap();
-        let owner = app.signup_owner(&format!("owner@{}.example", code.to_lowercase()), code).await;
+        let email = format!("owner@{}.example", code.to_lowercase());
+        let owner = app.signup_owner(&email, code).await;
+        app.verify_email(&email).await;
         let property = json!({"code": code, "name": code, "timezone": "Asia/Colombo", "base_currency": "LKR"});
         let created = post(app, &owner, "/api/v1/properties", property).await;
         let path = format!("/api/v1/properties/{}", uuid(&created["id"]));

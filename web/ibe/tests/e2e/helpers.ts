@@ -69,6 +69,15 @@ export async function seedHotel(api: APIRequestContext, enabled = true): Promise
 		}
 	});
 	expect(signedUp.status(), await signedUp.text()).toBe(201);
+	// As following the link of the sign-up's verification email would: turning a booking site on needs it.
+	runAsOwner(
+		`
+		const sql = new Bun.SQL(process.env.URL);
+		await sql\`update app_user set email_verified_at = now() where email = \${process.env.EMAIL}\`;
+		await sql.close();
+	`,
+		{ EMAIL: ownerEmail }
+	);
 	const me = await api.get('/api/v1/me');
 	const tenant: string = (await me.json()).current_tenant;
 

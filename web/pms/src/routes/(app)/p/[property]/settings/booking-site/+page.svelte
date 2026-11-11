@@ -5,6 +5,7 @@
 	with the rest; the hero image is chosen from the room type galleries.
 -->
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
 	import { onDestroy } from 'svelte';
@@ -215,6 +216,13 @@
 				<input type="checkbox" bind:checked={draft.enabled} />
 				Booking site is on
 			</label>
+			{#if me.data && !me.data.email_verified && !site.data?.enabled}
+				<p class="note" role="note">
+					Verify your email address to turn the booking site on: open the link we sent to
+					<strong>{me.data.email}</strong>. <a href={resolve('/settings/staff')}>Staff</a> can send it
+					again.
+				</p>
+			{/if}
 			<p class="hint">
 				While it is off, the site answers “not found” for this property.
 				{#if preview}
