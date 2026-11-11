@@ -455,6 +455,34 @@ The owner asked for the spec to be written from the outline and ARCHITECTURE §1
 - **Out of scope:** promo codes, member rates, packages and add-ons, chain search, other languages, guest accounts and modifications, custom layouts, analytics; custom-host TLS and DNS stay a manual Cloudflare for SaaS step.
 - **The advisory deposit is labelled "before taxes"** on the book page and in the email (`Deposit (before taxes): …`): it keeps the one amount the staff screens, the night audit and the deposit folio use, priced like the cancellation penalty, rather than a second, tax-inclusive figure for guests.
 
+## Pre-launch hardening: the security review (branch `hardening`)
+
+A static review before launch found no Critical or High issue and no break in tenant isolation; it found 3 Medium and 16 Low ones, about abuse of the anonymous and self-serve surfaces. The owner decided (2026-11-11) that a new owner must verify their email before inviting staff, and may use the app at once otherwise. Fixed (ARCHITECTURE §11):
+
+- **Sign-in and sign-up** are limited per IP (sign-in 20 a minute, sign-up 5, the emailed-token routes 20), in the public API's Postgres windows, and Argon2 runs at most 4 at a time per instance (a 3 s wait, then `503`). The per-email lockout stays; its tradeoff is written down.
+- **Email verification** at sign-up (migration `0049`): no invitation or resend until the owner has followed the link; invitations limited to 20 emails a day per tenant, 10 an hour per person and one resend a minute per invitation; no free text in the platform's email subjects.
+- **The booking site's `site` read** is limited to 60 a minute per IP, like the search.
+- **Live events** of a property reach only users who may view it; staff API answers are `no-store`; the three audited link reads need the CSRF header; both web apps send framing, sniffing and referrer headers; mail logs name only the recipient's domain; `audit_log` joins the isolation suite and the tables without row-level security are pinned; jobs-svc has its own role, `goodfolk_jobs`, which alone runs the cross-tenant definers (migration `0050`); the CI token is read-only.
+
+### Security follow-ups
+
+Recorded by the review and not fixed in this pass, each with why:
+
+- **A sign-in challenge once an email is throttled** (M1): a CAPTCHA (Turnstile) would let the account's owner in while an attacker keeps failing for that email. It needs a widget and UI on the sign-in page; the per-IP limit already caps how many accounts one address can lock.
+- **SES bounce and complaint alerts** (M2): watch the account's reputation metrics in CloudWatch and alert before SES pauses sending. Infrastructure outside the repo.
+- **Edge cache key for the booking site's `site` read, and an in-memory cache of the CORS host check** (M3): Cloudflare's cache key should ignore the query for `site` (a Cache Rule), and `enabled_custom_host` could cache its answer briefly. The per-IP limit bounds the load meanwhile.
+- **The invitation token in the link's path** (L3): move it to the fragment (`/invite#<token>`), as the verification link has it. It touches the sign-in redirect back to the invitation; meanwhile the page sends no referrer and the deployment keeps `/invite/` paths out of its logs (ARCHITECTURE §10.2).
+- **Custom booking hosts are first come and unverified** (L6): verify ownership (a DNS TXT challenge, or Cloudflare for SaaS's hostname status) before a host is saved or allowed by CORS. A new flow with its own UI.
+- **Upload part URLs do not bind the part size** (L7): sign `Content-Length` into each part, or cap uploads in progress per user. A change to the storage crate's presigning and media-svc's protocol; finalize already refuses the upload.
+- **On-demand report renders are not throttled** (L8): a per-user and per-property limit, or deduplicating identical renders in flight. The limits here are per IP; a per-user counter is new.
+- **Unbounded GraphQL lists** (L9): `roomIssues` with no status filter, `members` and `invitations` need paging (`first`/`after`) or a default filter and cap; a change to the web app's queries too.
+- **Booking-site inventory held by bots** (L12): per-site anomaly alerts, a per-property cap on site bookings an hour, or a card guarantee once Phase 7c lands. A product decision.
+- **Media workers can reach the network** (L13): least privilege for media-svc's service account, and seccomp or a network namespace without egress for the workers. Infrastructure, and the sandbox needs its own testing.
+- **Signing up says which emails have accounts** (L10): answer every sign-up alike and email the address's owner instead. It changes the sign-up flow (the session cookie is set on success); the per-IP limit of 5 sign-ups a minute bounds probing meanwhile.
+- **A composite key from `role_grant` to its property** (L14): `(tenant_id, property_id)` referencing `property (tenant_id, id)`, as defence in depth beside `validate_grants`. Accepting an invitation relies on the current constraint's name to answer `410` for a deleted property, so it needs that path changed with it.
+- **CI supply chain** (L15): pin third-party actions by commit SHA and base images by digest, and add a JavaScript audit. `bun audit` reports 19 advisories for `web/pms` (1 critical, 5 high: `shell-quote` and `@graphql-tools/*` through GraphQL Codegen, `vite`, `vitest`, `minimatch`, `@sveltejs/kit`'s `cookie`) and 5 low or moderate for `web/ibe`, mostly build tooling; they need triage and upgrades before the audit can gate CI.
+- **A full Content-Security-Policy** for both web apps (L11): `script-src` and the rest. The booking site's boot script is rewritten after SvelteKit renders it (`paintFirst`), so SvelteKit's CSP hashes would not match, and the policy must allow Turnstile and the media origin; the staff app needs its media, blob and worker sources listed. HSTS is set at the Cloudflare zone. The `__Host-` cookie prefix for `gf_session` belongs with it.
+
 ## Cross-cutting, every phase
 
 - Load tests (k6 or oha) on new hot endpoints, and EXPLAIN plans reviewed for new queries at seeded scale.
