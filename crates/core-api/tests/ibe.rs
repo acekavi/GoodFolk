@@ -269,6 +269,28 @@ async fn the_61st_search_in_a_minute_from_one_ip_is_429_with_retry_after(_: PgPo
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_61st_site_read_in_a_minute_from_one_ip_is_429_whatever_its_query(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let app = TestApp::new(opts.clone()).await;
+    Hotel::new(&app, opts.clone(), "GAL", true).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    seed_hits(&superuser, "site", "198.51.100.8", 59).await;
+
+    // A query the edge has not seen misses its cache, so each one reaches the API and counts.
+    let sixtieth = call(&app, Method::GET, "/api/public/v1/ibe/GAL/site?x=1", "198.51.100.8:40000", &[]).await;
+    let sixty_first = call(&app, Method::GET, "/api/public/v1/ibe/GAL/site?x=2", "198.51.100.8:40000", &[]).await;
+    let elsewhere = call(&app, Method::GET, "/api/public/v1/ibe/GAL/site", "198.51.100.7:40000", &[]).await;
+
+    assert_eq!(sixtieth.status, StatusCode::OK, "{:?}", sixtieth.body);
+    assert_eq!(sixty_first.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", sixty_first.body);
+    let retry_after: u64 = sixty_first.headers[header::RETRY_AFTER].to_str().unwrap().parse().unwrap();
+    assert!((1..=60).contains(&retry_after), "{retry_after}");
+    assert_eq!(elsewhere.status, StatusCode::OK, "another address has its own count");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn the_61st_host_lookup_in_a_minute_from_one_ip_is_429(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts, "GAL", true).await;

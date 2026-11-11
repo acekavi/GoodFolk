@@ -347,7 +347,7 @@
         "tags": [
           "crate::public::ibe"
         ],
-        "summary": "The booking site of the property coded `code`: branding, contact, terms, and its active room types with their\nphotos and tour videos. `404` unless its site is enabled. Cached at the edge for 5 minutes.",
+        "summary": "The booking site of the property coded `code`: branding, contact, terms, and its active room types with their\nphotos and tour videos. `404` unless its site is enabled. Cached at the edge for 5 minutes. 60 reads a minute per\nIP (`429` with `Retry-After`): each one that misses the edge asks the database.",
         "operationId": "ibe_site",
         "parameters": [
           {
@@ -377,7 +377,16 @@
               }
             }
           },
-          "404": {}
+          "404": {},
+          "429": {
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
         }
       }
     }

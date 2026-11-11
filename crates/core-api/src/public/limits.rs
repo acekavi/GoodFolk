@@ -8,6 +8,8 @@ use std::net::{IpAddr, Ipv6Addr};
 
 /// Searches one IP may make a minute.
 pub const SEARCHES_PER_MINUTE: u32 = 60;
+/// Site reads one IP may make a minute: the edge serves most of them, but a query string it has not seen misses it.
+pub const SITES_PER_MINUTE: u32 = 60;
 /// Bookings one IP may send a minute.
 pub const BOOKINGS_PER_MINUTE: u32 = 5;
 /// Manage page views and cancellations one IP may send a minute, together.

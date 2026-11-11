@@ -4,7 +4,7 @@ use crate::error::ApiError;
 use crate::extract::{ApiPath, ApiQuery};
 use crate::idempotency;
 use crate::public::limits::{
-    self, BOOKINGS_PER_MINUTE, HOST_LOOKUPS_PER_MINUTE, MANAGES_PER_MINUTE, SEARCHES_PER_MINUTE,
+    self, BOOKINGS_PER_MINUTE, HOST_LOOKUPS_PER_MINUTE, MANAGES_PER_MINUTE, SEARCHES_PER_MINUTE, SITES_PER_MINUTE,
 };
 use crate::public::{ClientIp, turnstile};
 use crate::state::AppState;
@@ -194,14 +194,18 @@ pub async fn by_host(
 }
 
 /// The booking site of the property coded `code`: branding, contact, terms, and its active room types with their
-/// photos and tour videos. `404` unless its site is enabled. Cached at the edge for 5 minutes.
+/// photos and tour videos. `404` unless its site is enabled. Cached at the edge for 5 minutes. 60 reads a minute per
+/// IP (`429` with `Retry-After`): each one that misses the edge asks the database.
 #[utoipa::path(get, operation_id = "ibe_site", path = "/api/public/v1/ibe/{code}/site",
     params(("code" = String, Path, description = "the property code, any case")),
-    responses((status = 200, body = SiteView, headers(("Cache-Control" = String))), (status = 404)))]
+    responses((status = 200, body = SiteView, headers(("Cache-Control" = String))), (status = 404),
+        (status = 429, headers(("Retry-After" = String)))))]
 pub async fn site(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     ApiPath(code): ApiPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    limits::check(&state.pool, "site", ip, SITES_PER_MINUTE).await?;
     let (tenant, property) = resolve(&state, Some(&code), None).await?;
     let mut tx = db::begin(&state.pool, Scope::tenant(tenant)).await?;
     let view = ibe::site(&mut tx, property, |key| state.storage.public_url(key).into()).await.map_err(ibe_error)?;
