@@ -152,6 +152,49 @@ test('double-clicking Book makes one reservation', async ({ page, browser }) => 
 	expect(reservationCount(hotel)).toBe(1);
 });
 
+test('a booking whose answer is lost keeps its details and key, and the retry books it once', async ({
+	page,
+	browser
+}) => {
+	const owner = await browser.newContext({ baseURL: PMS });
+	const hotel = await seedHotel(owner.request);
+
+	await pickTwoRooms(page, hotel);
+	await fillDetails(page, guestEmail());
+	const keys: string[] = [];
+	page.on('request', (request) => {
+		if (request.method() === 'POST' && request.url().endsWith('/bookings')) {
+			keys.push(request.headers()['idempotency-key']);
+		}
+	});
+	// The first booking reaches the API and is made, but its answer never reaches the page.
+	await page.route('**/bookings', async (route) => {
+		await route.fetch();
+		await route.abort('failed');
+	});
+	await page.getByRole('button', { name: 'Book now, pay at the hotel' }).click();
+
+	await expect(page.getByText('Your details stay as you sent them')).toBeVisible();
+	await expect(page.getByLabel('First name')).toBeDisabled();
+	await expect(page.getByLabel('Email')).toBeDisabled();
+	expect(reservationCount(hotel)).toBe(1);
+
+	await page.unroute('**/bookings');
+	await expect
+		.poll(() => page.locator('input[name="cf-turnstile-response"]').inputValue(), {
+			message: 'the renewed security check (calls Cloudflare: needs the internet)',
+			timeout: 30_000
+		})
+		.not.toBe('');
+	await page.getByRole('button', { name: 'Book now, pay at the hotel' }).click();
+	await expect(page.getByRole('heading', { name: 'Your booking is confirmed' })).toBeVisible();
+
+	// The retry was the same booking under the same key, so the API replayed the first: still one reservation.
+	expect(keys).toHaveLength(2);
+	expect(keys[1]).toBe(keys[0]);
+	expect(reservationCount(hotel)).toBe(1);
+});
+
 test('Book waits for the page to hydrate, and the form never puts the details in its address', async ({
 	page,
 	browser

@@ -233,32 +233,32 @@ export function bookingOutcome(status: number, body: unknown, retryAfter: string
 }
 
 /**
- * The `Idempotency-Key` of booking attempts. One booking keeps its key until the API has answered it: a retry after a
- * network failure, a `5xx`, a `409` still in progress or a `429` (refused before the key is looked up, so nothing was
- * booked under it) sends the same booking with the same key, even with a fresh Turnstile token, which core-api leaves
- * out of what it compares, so a first attempt that got through is replayed, never booked twice. Any other answer (a
- * changed price among them) ends the key, and a booking with other details gets a new one.
+ * The `Idempotency-Key` of booking attempts. A booking keeps its key until the API has settled it: while an attempt is
+ * unanswered, or answered by a network failure, a `5xx`, a `409` still in progress or a `429` (refused before the key
+ * is looked up), it may yet have been booked, so the next attempt is the same booking with the same key, even with a
+ * fresh Turnstile token, which core-api leaves out of what it compares, and is replayed, never booked twice. `pending`
+ * says so, and the book page keeps the guest's details as they were sent until then. Any other answer (a changed price
+ * among them) settles the booking, and the next attempt gets a new key.
  */
 export function attemptKeys(newKey: () => string = () => crypto.randomUUID()) {
 	let key: string | null = null;
-	let booking = '';
 	return {
-		keyFor(payload: BookingBody): string {
-			const serialized = JSON.stringify({ ...payload, turnstile_token: undefined });
-			if (key === null || serialized !== booking) key = newKey();
-			booking = serialized;
+		keyFor(): string {
+			key ??= newKey();
 			return key;
 		},
 		answered(outcome: Outcome) {
-			if (
-				outcome.kind !== 'failed' &&
-				outcome.kind !== 'in_progress' &&
-				outcome.kind !== 'too_many'
-			)
-				key = null;
+			if (!UNSETTLED.has(outcome.kind)) key = null;
+		},
+		/** Whether an attempt may still have been booked, so the next must send the same details with the same key. */
+		get pending(): boolean {
+			return key !== null;
 		}
 	};
 }
+
+/** The answers after which an attempt may still have been booked. */
+const UNSETTLED = new Set<Outcome['kind']>(['failed', 'in_progress', 'too_many']);
 
 /** The API's answer to one booking request. */
 export interface Answer {
