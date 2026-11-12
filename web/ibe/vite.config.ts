@@ -16,9 +16,9 @@ export default defineConfig({
 			inlineStyleThreshold: 16384
 		})
 	],
-	// core-api's development IBE_PUBLIC_ORIGIN is http://localhost:5174: its CORS admits bookings from this port.
-	server: { port: 5174, strictPort: true },
-	preview: { port: 5174, strictPort: true },
+	// core-api's development IBE_PUBLIC_ORIGIN is http://localhost:5281: its CORS admits bookings from this port.
+	server: { port: 5281, strictPort: true },
+	preview: { port: 5281, strictPort: true },
 	test: {
 		expect: { requireAssertions: true },
 		projects: [

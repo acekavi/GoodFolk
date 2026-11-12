@@ -19,7 +19,11 @@ export default defineConfig({
 			paths: { relative: false }
 		})
 	],
+	// A fixed port, not Vite's next free one: jobs-svc's mail links and the dev buckets' CORS name it, and another
+	// project's dev server on 5173 would otherwise push this app onto the booking site's port.
 	server: {
+		port: 5280,
+		strictPort: true,
 		proxy: {
 			'/api': api,
 			'/graphql': api

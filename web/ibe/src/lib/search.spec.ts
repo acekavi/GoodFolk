@@ -126,7 +126,7 @@ describe('the residency gate', () => {
 	it('sends no search request before an answer', async () => {
 		const fetch = vi.fn<typeof globalThis.fetch>();
 		const url = new URL(
-			'http://localhost:5174/GAL/rooms?check_in=2026-11-10&check_out=2026-11-13&rooms=2-0'
+			'http://localhost:5281/GAL/rooms?check_in=2026-11-10&check_out=2026-11-13&rooms=2-0'
 		);
 
 		expect(await searchFromUrl(fetch, 'GAL', url, BUSINESS_DATE)).toEqual({ kind: 'unanswered' });
@@ -144,7 +144,7 @@ describe('the residency gate', () => {
 				})
 		);
 		const url = new URL(
-			'http://localhost:5174/GAL/rooms?check_in=2026-11-10&check_out=2026-11-13&rooms=2-0,2-1&residency=resident'
+			'http://localhost:5281/GAL/rooms?check_in=2026-11-10&check_out=2026-11-13&rooms=2-0,2-1&residency=resident'
 		);
 
 		const searched = await searchFromUrl(fetch, 'GAL', url, BUSINESS_DATE);
@@ -170,7 +170,7 @@ describe('the residency gate', () => {
 				})
 		);
 		const results =
-			'http://localhost:5174/GAL/rooms?check_in=2026-11-10&check_out=2026-11-13&rooms=2-0&residency=resident';
+			'http://localhost:5281/GAL/rooms?check_in=2026-11-10&check_out=2026-11-13&rooms=2-0&residency=resident';
 		const url = new URL(soldOutHref(results, 'attempt key 1'));
 
 		await searchFromUrl(fetch, 'GAL', url, BUSINESS_DATE);
@@ -190,7 +190,7 @@ describe('the residency gate', () => {
 				})
 		);
 		const url = new URL(
-			'http://localhost:5174/GAL/rooms?check_in=2026-11-10&check_out=2026-11-13&rooms=2-0&residency=resident'
+			'http://localhost:5281/GAL/rooms?check_in=2026-11-10&check_out=2026-11-13&rooms=2-0&residency=resident'
 		);
 
 		expect(await searchFromUrl(fetch, 'GAL', url, BUSINESS_DATE)).toEqual({

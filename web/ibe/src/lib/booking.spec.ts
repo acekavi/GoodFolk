@@ -90,7 +90,7 @@ const details: Details = {
 
 describe('the picks', () => {
 	it('travel in the book page’s address, one per room in order', () => {
-		const url = new URL('http://localhost:5174/GAL/book');
+		const url = new URL('http://localhost:5281/GAL/book');
 		for (const pick of picks) url.searchParams.append('pick', pickParam(pick));
 
 		expect(picksFromUrl(url, 2)).toEqual(picks);

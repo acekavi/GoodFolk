@@ -9,7 +9,7 @@ export function apiOrigin(): string {
 
 /** The booking domain's own origin (`PUBLIC_IBE_ORIGIN`), core-api's `IBE_PUBLIC_ORIGIN`; any other host is custom. */
 export function bookingOrigin(): string {
-	return (env.PUBLIC_IBE_ORIGIN || 'http://localhost:5174').replace(/\/$/, '');
+	return (env.PUBLIC_IBE_ORIGIN || 'http://localhost:5281').replace(/\/$/, '');
 }
 
 /** Cloudflare Turnstile's site key (`PUBLIC_TURNSTILE_SITEKEY`); the default is its test key, which always passes. */

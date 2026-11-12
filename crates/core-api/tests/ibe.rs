@@ -136,7 +136,7 @@ async fn book(app: &TestApp, body: &Value, key: Option<&str>, peer: &str) -> Ans
         .method(Method::POST)
         .uri("/api/public/v1/ibe/GAL/bookings")
         .header(header::CONTENT_TYPE, "application/json")
-        .header("origin", "http://localhost:5174");
+        .header("origin", "http://localhost:5281");
     if let Some(key) = key {
         builder = builder.header("idempotency-key", key);
     }
@@ -319,7 +319,7 @@ async fn cached_reads_allow_any_origin_with_a_star(_: PgPoolOptions, opts: PgCon
     let allowed = |answer: &Answer| answer.headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).cloned();
 
     let reads = [
-        call(&app, Method::GET, "/api/public/v1/ibe/GAL/site", PEER, &from("http://localhost:5174")).await,
+        call(&app, Method::GET, "/api/public/v1/ibe/GAL/site", PEER, &from("http://localhost:5281")).await,
         call(&app, Method::GET, &hotel.search("GAL", 1), PEER, &from("https://evil.example")).await,
         call(&app, Method::GET, "/api/public/v1/ibe/by-host/stay.galle.example", PEER, &from("https://x.example"))
             .await,
@@ -358,7 +358,7 @@ async fn commands_allow_the_booking_domain_and_enabled_custom_hosts_only(_: PgPo
     };
     let allowed = |answer: &Answer| answer.headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).cloned();
 
-    let booking_domain = preflight("http://localhost:5174").await;
+    let booking_domain = preflight("http://localhost:5281").await;
     let custom_host = preflight("https://stay.galle.example").await;
     let other = preflight("https://evil.example").await;
     let plain_http = preflight("http://stay.galle.example").await;
@@ -366,7 +366,7 @@ async fn commands_allow_the_booking_domain_and_enabled_custom_hosts_only(_: PgPo
     let disabled_host = preflight("https://stay.galle.example").await;
 
     assert_eq!(booking_domain.status, StatusCode::OK);
-    assert_eq!(allowed(&booking_domain).unwrap(), "http://localhost:5174");
+    assert_eq!(allowed(&booking_domain).unwrap(), "http://localhost:5281");
     assert!(
         booking_domain.headers[header::ACCESS_CONTROL_ALLOW_METHODS].to_str().unwrap().contains("POST"),
         "{:?}",
@@ -490,10 +490,10 @@ async fn a_booking_is_201_and_writes_its_confirmation_mail_job(_: PgPoolOptions,
     assert_eq!(booked.status, StatusCode::CREATED, "{:?}", booked.body);
     let confirmation_no = booked.body["confirmation_no"].as_str().unwrap();
     assert!(confirmation_no.starts_with("GAL-"), "{confirmation_no}");
-    assert_eq!(booked.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "http://localhost:5174");
+    assert_eq!(booked.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "http://localhost:5281");
     let manage_url = booked.body["manage_url"].as_str().unwrap();
     let token =
-        manage_url.strip_prefix("http://localhost:5174/GAL/manage?token=").unwrap_or_else(|| panic!("{manage_url}"));
+        manage_url.strip_prefix("http://localhost:5281/GAL/manage?token=").unwrap_or_else(|| panic!("{manage_url}"));
     let (reservation, source, hash): (Uuid, String, Vec<u8>) = sqlx::query_as(
         "select r.id, r.source, t.sha256 from reservation r
          join reservation_access_token t on t.reservation_id = r.id where r.confirmation_no = $1",
@@ -778,7 +778,7 @@ async fn the_honeypot_gets_a_decoy_201_and_nothing_is_kept(_: PgPoolOptions, opt
     assert!(number.len() == 6 && number.bytes().all(|b| b.is_ascii_digit()), "{confirmation_no}");
     let manage_url = decoy.body["manage_url"].as_str().unwrap();
     let token =
-        manage_url.strip_prefix("http://localhost:5174/GAL/manage?token=").unwrap_or_else(|| panic!("{manage_url}"));
+        manage_url.strip_prefix("http://localhost:5281/GAL/manage?token=").unwrap_or_else(|| panic!("{manage_url}"));
     assert_eq!(token.len(), 43);
     assert_eq!(hotel.reservations().await, 0);
     let kept: (i64, i64, i64) = sqlx::query_as(
@@ -834,16 +834,16 @@ async fn a_foreign_origin_preflight_for_post_bookings_is_refused(_: PgPoolOption
     };
 
     let foreign = preflight("https://evil.example").await;
-    let own = preflight("http://localhost:5174").await;
+    let own = preflight("http://localhost:5281").await;
 
     assert!(foreign.headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(), "{:?}", foreign.headers);
-    assert_eq!(own.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "http://localhost:5174");
+    assert_eq!(own.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "http://localhost:5281");
     assert!(own.headers.get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS).is_none());
 }
 
 /// Posts the JSON `body` to `path` from `peer` as the booking site's server would: no cookie and no CSRF header.
 async fn post_public(app: &TestApp, path: &str, peer: &str, body: &str) -> Answer {
-    post_from(app, path, peer, "http://localhost:5174", body).await
+    post_from(app, path, peer, "http://localhost:5281", body).await
 }
 
 /// [`post_public`] from a page at `origin`.
@@ -915,7 +915,7 @@ async fn the_manage_page_is_never_cached_and_every_bad_token_is_the_same_410(_: 
         assert_eq!(answer.headers[header::CACHE_CONTROL], "no-store", "{:?}", answer.body);
     }
     for answer in [&page, &wrong, &late, &elsewhere] {
-        assert_eq!(answer.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "http://localhost:5174", "not `*`");
+        assert_eq!(answer.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "http://localhost:5281", "not `*`");
     }
     assert_eq!(foreign.status, StatusCode::OK, "CORS binds browsers only; the site's server sends no allowed origin");
     assert!(foreign.headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(), "{:?}", foreign.headers);
@@ -948,7 +948,7 @@ async fn a_guest_cancels_online_once(_: PgPoolOptions, opts: PgConnectOptions) {
     assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
     assert_eq!(shapeless.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(cancelled.status, StatusCode::OK, "{:?}", cancelled.body);
-    assert_eq!(cancelled.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "http://localhost:5174");
+    assert_eq!(cancelled.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "http://localhost:5281");
     assert_eq!(
         (cancelled.body["status"].as_str(), cancelled.body["cancellable"].as_bool()),
         (Some("cancelled"), Some(false))

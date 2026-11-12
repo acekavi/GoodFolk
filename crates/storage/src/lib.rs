@@ -30,7 +30,7 @@ pub const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 /// How long a signed request made by this client stays valid.
 const REQUEST_TTL: Duration = Duration::from_secs(60);
 /// Origins allowed to PUT and GET against the private bucket in development.
-const DEV_CORS_ORIGINS: &str = "http://localhost:5173,http://localhost:4173";
+const DEV_CORS_ORIGINS: &str = "http://localhost:5280,http://localhost:4173";
 
 /// reqwest is built without a bundled TLS provider, so one must be installed before any client is built. This
 /// installs ring, which the tree already has; another component having installed a provider first is fine.
