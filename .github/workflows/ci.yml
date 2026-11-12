@@ -76,6 +76,8 @@ jobs:
         with:
           bun-version: 1.3.14
       - run: bun install --frozen-lockfile
+      # Known advisories that cannot reach these apps are ignored by ID in the script (docs/ROADMAP.md, L15).
+      - run: bun run audit
       - name: Generated API types match the backend
         run: |
           bun run api:schemas
