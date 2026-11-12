@@ -2,12 +2,12 @@
 
 use crate::crypto::{GuestIdKey, GuestIdKeys};
 use sqlx::Executor;
-use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
+use sqlx::postgres::{PgConnectOptions, PgPool};
 
 /// A pool acting as `goodfolk_app`, so row-level security applies
 /// exactly as in production. (`#[sqlx::test]` connects as a superuser, which bypasses RLS.)
 pub async fn app_pool(opts: PgConnectOptions, max_connections: u32) -> PgPool {
-    PgPoolOptions::new()
+    crate::pool_options()
         .max_connections(max_connections)
         .after_connect(|conn, _| {
             Box::pin(async move {
@@ -23,7 +23,7 @@ pub async fn app_pool(opts: PgConnectOptions, max_connections: u32) -> PgPool {
 /// A pool acting as jobs-svc's role, `goodfolk_jobs`: the app role's rights plus the cross-tenant job functions
 /// (migration 0050). Code that only jobs-svc runs (the sweeps, the imports, the jobs' property lists) is tested on it.
 pub async fn jobs_pool(opts: PgConnectOptions, max_connections: u32) -> PgPool {
-    PgPoolOptions::new()
+    crate::pool_options()
         .max_connections(max_connections)
         .after_connect(|conn, _| {
             Box::pin(async move {
