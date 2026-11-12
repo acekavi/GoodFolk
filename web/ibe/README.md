@@ -5,9 +5,9 @@ whose site is enabled is served at `/<CODE>` on the booking domain, or at the ro
 
 ```sh
 bun install
-bun run dev        # http://localhost:5174/<CODE>, against core-api on http://localhost:8080
+bun run dev        # http://localhost:5281/<CODE>, against core-api on http://localhost:8080
 bun run lint && bun run check && bun run test && bun run build
-node build         # the production server (PORT, HOST; ORIGIN=http://localhost:5174 for plain HTTP locally)
+node build         # the production server (PORT, HOST; ORIGIN=http://localhost:5281 for plain HTTP locally)
 ```
 
 `bun run test:e2e` books, emails and cancels through the built site and the built staff app against a real API (it

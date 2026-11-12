@@ -44,7 +44,7 @@ pub struct Config {
 }
 
 /// The booking site's origin outside production.
-pub const LOCAL_IBE_PUBLIC_ORIGIN: &str = "http://localhost:5174";
+pub const LOCAL_IBE_PUBLIC_ORIGIN: &str = "http://localhost:5281";
 /// Cloudflare Turnstile's published test secret, which passes every token: the default outside production.
 pub const TURNSTILE_TEST_SECRET: &str = "1x0000000000000000000000000000000AA";
 /// Cloudflare Turnstile's server-side verification endpoint.
@@ -755,7 +755,7 @@ mod tests {
             Config::from_vars(vars(&[("DATABASE_URL", "postgres://localhost/db"), ("GUEST_ID_KEY", GUEST_ID_KEY_B64)]))
                 .unwrap();
 
-        assert_eq!(config.ibe.public_origin, "http://localhost:5174");
+        assert_eq!(config.ibe.public_origin, "http://localhost:5281");
         assert_eq!(config.ibe.public_host(), "localhost");
         assert!(!config.ibe.trust_cloudflare_ip);
         assert_eq!(config.ibe.turnstile_secret, super::TURNSTILE_TEST_SECRET);

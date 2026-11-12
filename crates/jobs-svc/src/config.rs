@@ -6,10 +6,10 @@ use storage::StorageConfig;
 pub const DEFAULT_PORT: u16 = 8091;
 
 /// The web app's origin outside production: the PMS's Vite dev server.
-pub const DEFAULT_APP_BASE_URL: &str = "http://localhost:5173";
+pub const DEFAULT_APP_BASE_URL: &str = "http://localhost:5280";
 
 /// The booking site's origin outside production, as core-api's default.
-pub const DEFAULT_IBE_PUBLIC_ORIGIN: &str = "http://localhost:5174";
+pub const DEFAULT_IBE_PUBLIC_ORIGIN: &str = "http://localhost:5281";
 
 /// Pooled connections: a tick runs its jobs one at a time, and each background close holds at most one.
 pub const MAX_CONNECTIONS: u32 = 10;
@@ -147,8 +147,8 @@ mod tests {
         assert!(config.internal_tick);
         assert!(config.fx_import);
         assert!(!config.production);
-        assert_eq!(config.app_base_url, "http://localhost:5173");
-        assert_eq!(config.ibe_public_origin, "http://localhost:5174");
+        assert_eq!(config.app_base_url, "http://localhost:5280");
+        assert_eq!(config.ibe_public_origin, "http://localhost:5281");
     }
 
     #[test]
@@ -248,7 +248,7 @@ mod tests {
         use super::ibe_public_origin;
         let origin = |value: &str, production: bool| ibe_public_origin(Some(value.to_owned()), production);
 
-        assert_eq!(origin("http://localhost:5174/", false).unwrap(), "http://localhost:5174");
+        assert_eq!(origin("http://localhost:5281/", false).unwrap(), "http://localhost:5281");
         assert_eq!(origin("https://book.example.lk", true).unwrap(), "https://book.example.lk");
         for (bad, production) in [
             ("http://book.example.lk", true),

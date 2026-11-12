@@ -6,7 +6,7 @@ import { expect, type APIRequestContext, type Page } from '@playwright/test';
 
 /** The built staff app, which proxies `/api` and `/graphql` to the API (see playwright.config.ts). */
 /** The booking site's port: core-api's development IBE_PUBLIC_ORIGIN, which its CORS admits. */
-export const SITE_PORT = 5174;
+export const SITE_PORT = 5281;
 export const SITE_ORIGIN = `http://localhost:${SITE_PORT}`;
 export const PMS = 'http://localhost:4273';
 export const PASSWORD = 'a long enough password';
