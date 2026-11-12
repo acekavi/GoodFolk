@@ -135,7 +135,7 @@ Moved out of Phase 0 during planning (nothing used them yet): outbox → Pub/Sub
   | Gate | Spec | Measured |
   |---|---|---|
   | `tapeWindow`, 10 rooms × 14 days of a 500-room property with 18 months of stays, in-process through the router, release | p95 < 5 ms | p95 3.91 ms and 4.20 ms on two runs, then 2.66 and 2.75 ms on two later runs (p95 3.9–5.6 ms across ten runs on a busy machine before the last fix, so run it with nothing else using a core) |
-  | `tapeWindow`, 10 rooms × 42 days (the spec's window), same fixture | p95 < 5 ms | p95 4.48 ms and 4.12 ms on two runs, `powersave`, nothing else running |
+  | `tapeWindow`, 10 rooms × 42 days (the spec's window), same fixture | p95 < 5 ms | p95 4.48 ms and 4.12 ms on two runs, `powersave`, nothing else running; 2026-11-12, after the pool stopped pinging connections used in the last 5 s: p95 3.86, 4.25 and 3.89 ms (4.19–4.45 ms with a ping on every acquire; 5.2–5.8 ms on a dev Postgres up for a day, the Phase 4 code included) |
   | `unassignedStays`, 42 days | p95 < 5 ms | p95 2.8–3.4 ms |
   | `tapeWindow` payload, the busiest 14-day tile of the first page, gzipped | < 8 KB | 1.7 KB |
   | Page change, tiles prefetched (browser, p90 of ten) | < 50 ms | p90 43.9, 37.0 and 38.9 ms on three early runs, then 29.1, 32.8, 32.1, 22.0 and 21.6 ms in this wave; a picker change p90 24.3, 25.7, 25.7, 17.2 and 31.7 ms in the same runs |

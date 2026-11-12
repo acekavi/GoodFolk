@@ -20,7 +20,25 @@ use std::time::Duration;
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
 pub async fn connect(url: &str, max_connections: u32) -> Result<PgPool, sqlx::Error> {
-    PgPoolOptions::new().max_connections(max_connections).acquire_timeout(Duration::from_secs(3)).connect(url).await
+    pool_options().max_connections(max_connections).acquire_timeout(Duration::from_secs(3)).connect(url).await
+}
+
+/// How long a pooled connection may sit idle before it is pinged on its way out of the pool.
+const PING_AFTER_IDLE: Duration = Duration::from_secs(5);
+
+/// The pool options every service uses. A connection idle for more than [`PING_AFTER_IDLE`] is pinged before it is
+/// handed out, so one the server closed (Neon suspends an idle compute, a proxy drops an idle connection) is replaced
+/// rather than failing the request; one that has just been used is not, which saves a round trip on every
+/// transaction of a busy service.
+pub fn pool_options() -> PgPoolOptions {
+    PgPoolOptions::new().test_before_acquire(false).before_acquire(|conn, meta| {
+        Box::pin(async move {
+            if meta.idle_for > PING_AFTER_IDLE {
+                sqlx::Connection::ping(conn).await?;
+            }
+            Ok(true)
+        })
+    })
 }
 
 /// The enabled booking site that `code` (a property code, any case) or `host` (a custom host) names, as its tenant and

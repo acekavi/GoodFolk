@@ -185,6 +185,9 @@ Run by hand, because shared CI machines make timings noisy, and one at a time (`
 # the booking site's search (GET .../search) for 3 nights and 2 rooms on a 12-type property with 5 IBE plans: p95
 # under 100 ms, and the same when every room is sold and the 14 later check-ins are tried too
 # a 2-room booking (POST .../bookings, Turnstile answered by a local stand-in): p95 under 300 ms
+# run them with nothing else using a core, on a freshly started Postgres: a dev cluster up for a day of test runs
+# measured the 42-day tapeWindow 1-1.5 ms slower at p95 than the same code after a restart, and the release media-svc
+# must be built first (cargo build --release -p media-svc)
 DATABASE_URL=$DATABASE_OWNER_URL cargo test --release -p core-api --test perf -- --ignored --nocapture --test-threads=1
 
 # a 30 s 1080p clip is ready (every rendition and the poster) in under 90 s, and a 60 s 4K HDR clip in under 5 min;
