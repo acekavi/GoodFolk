@@ -31,6 +31,12 @@ impl Tenant {
         let superuser = PgPoolOptions::new().max_connections(1).connect_with(opts.clone()).await.unwrap();
         let pool = app_pool(opts, 5).await;
         let (owner, tenant) = signup(&pool, signup_input("owner@example.com", "Lagoon Hotels")).await.unwrap();
+        // Only an owner who verified their email may invite.
+        sqlx::query("update app_user set email_verified_at = now() where id = $1")
+            .bind(owner.0)
+            .execute(&superuser)
+            .await
+            .unwrap();
         let mut ids = Vec::new();
         for (code, name) in [("GAL", "Galle Fort"), ("KAN", "Kandy Hills")] {
             let id = Uuid::now_v7();
@@ -61,7 +67,14 @@ impl Tenant {
         self.invite_as(self.owner, email, grants).await.unwrap()
     }
 
+    /// Resends `id` as the owner, its last email moved back a minute first (one invitation is sent at most once a
+    /// minute).
     async fn resend(&self, id: Uuid) -> Invitation {
+        sqlx::query("update invitation set expires_at = expires_at - interval '1 minute' where id = $1")
+            .bind(id)
+            .execute(&self.superuser)
+            .await
+            .unwrap();
         let mut tx = begin(&self.pool, Scope { tenant: Some(self.tenant), user: Some(self.owner) }).await.unwrap();
         let invitation = resend(&mut tx, self.tenant, self.owner, id).await.unwrap();
         tx.commit().await.unwrap();
@@ -82,7 +95,7 @@ impl Tenant {
         invitations
     }
 
-    /// The `mail-send` jobs queued, oldest first.
+    /// The `mail-send` jobs queued, oldest first, but for the owner's email verification sent at sign-up.
     async fn mail_jobs(&self) -> Vec<MailJob> {
         let payloads: Vec<serde_json::Value> =
             sqlx::query_scalar("select payload from outbox where topic = $1 order by id")
@@ -90,7 +103,11 @@ impl Tenant {
                 .fetch_all(&self.superuser)
                 .await
                 .unwrap();
-        payloads.into_iter().map(|payload| serde_json::from_value(payload).unwrap()).collect()
+        payloads
+            .into_iter()
+            .map(|payload| serde_json::from_value(payload).unwrap())
+            .filter(|job| !matches!(job, MailJob::EmailVerification { .. }))
+            .collect()
     }
 
     /// The newest token sent for `invitation`, as the email's link carries it.
@@ -101,7 +118,7 @@ impl Tenant {
             .rev()
             .find_map(|job| match job {
                 MailJob::Invitation { invitation_id, token, .. } => (invitation_id == invitation).then_some(token),
-                MailJob::Report { .. } | MailJob::IbeConfirmation { .. } | MailJob::IbeCancellation { .. } => None,
+                _ => None,
             })
             .expect("a mail job for the invitation")
     }
@@ -407,7 +424,7 @@ async fn no_audit_row_or_stored_column_contains_a_token(_: PgPoolOptions, opts: 
         .into_iter()
         .filter_map(|job| match job {
             MailJob::Invitation { token, .. } => Some(token),
-            MailJob::Report { .. } | MailJob::IbeConfirmation { .. } | MailJob::IbeCancellation { .. } => None,
+            _ => None,
         })
         .collect();
 

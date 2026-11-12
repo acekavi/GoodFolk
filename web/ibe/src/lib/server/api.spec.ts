@@ -20,6 +20,20 @@ describe('a server render’s API call', () => {
 		expect(sent.headers.get('x-ibe-ssr-secret')).toBe(SECRET);
 	});
 
+	it('names the guest on the site read too, so each guest has their own site limit', () => {
+		const sent = toApi(
+			new Request(`${PUBLIC}/api/public/v1/ibe/GAL/site`),
+			PUBLIC,
+			PRIVATE,
+			'203.0.113.8',
+			SECRET
+		);
+
+		expect(sent.url).toBe(`${PRIVATE}/api/public/v1/ibe/GAL/site`);
+		expect(sent.headers.get('x-ibe-client-ip')).toBe('203.0.113.8');
+		expect(sent.headers.get('x-ibe-ssr-secret')).toBe(SECRET);
+	});
+
 	it('names no guest without a secret, as core-api would ignore it', () => {
 		const sent = toApi(
 			new Request(`${PUBLIC}/api/public/v1/ibe/GAL/site`),

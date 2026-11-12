@@ -21,6 +21,7 @@ impl Hotel {
     async fn new(app: &TestApp, opts: PgConnectOptions, email: &str, code: &str) -> Self {
         let superuser = PgPool::connect_with(opts).await.unwrap();
         let owner = app.signup_owner(email, code).await;
+        app.verify_email(email).await;
         let property = json!({"code": code, "name": code, "timezone": "Asia/Colombo", "base_currency": "LKR"});
         let id = uuid(&post(app, &owner, "/api/v1/properties", property).await.body["id"]);
         let path = format!("/api/v1/properties/{id}");
@@ -336,4 +337,38 @@ async fn the_custom_host_cannot_be_the_booking_domain(_: PgPoolOptions, opts: Pg
     assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", refused.body);
     assert_eq!(refused.body["field"], "custom_host");
     assert_eq!(fine.status, StatusCode::OK, "{:?}", fine.body);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn turning_a_site_on_needs_a_verified_email_and_a_site_already_on_stays_on(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "owner@example.com", "GAL").await;
+    let path = format!("{}/ibe-site", hotel.path);
+    let unverify = || async {
+        sqlx::query("update app_user set email_verified_at = null where email = 'owner@example.com'")
+            .execute(&hotel.superuser)
+            .await
+            .unwrap();
+    };
+    unverify().await;
+    let off = json!({"enabled": false, "description": "By the sea"});
+
+    let saved_off = versioned(&app, Method::PUT, &hotel.owner, &path, 0, Some(off)).await;
+    let refused = versioned(&app, Method::PUT, &hotel.owner, &path, 1, Some(site())).await;
+    app.verify_email("owner@example.com").await;
+    let turned_on = versioned(&app, Method::PUT, &hotel.owner, &path, 1, Some(site())).await;
+    unverify().await;
+    let mut edited = site();
+    edited["description"] = json!("By the old fort");
+    let still_on = versioned(&app, Method::PUT, &hotel.owner, &path, 2, Some(edited)).await;
+
+    assert_eq!(saved_off.status, StatusCode::OK, "settings while off need no verification: {:?}", saved_off.body);
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    assert_eq!(refused.body["reason"], "email_unverified");
+    assert_eq!(turned_on.status, StatusCode::OK, "{:?}", turned_on.body);
+    assert_eq!(still_on.status, StatusCode::OK, "a site already on stays on: {:?}", still_on.body);
+    assert_eq!(still_on.body["enabled"], true);
 }

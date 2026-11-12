@@ -6,6 +6,8 @@ use crate::auth::{SESSION_COOKIE, TenantContext, session_cookie};
 use crate::concurrency::{IfMatch, Versioned};
 use crate::error::{ApiError, staff_error};
 use crate::extract::{ApiJson, ApiPath};
+use crate::public::ClientIp;
+use crate::routes::auth::{TOKEN_REQUESTS_PER_MINUTE, limit_ip};
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
@@ -89,7 +91,10 @@ async fn begin(state: &AppState, ctx: &TenantContext) -> Result<db::Tx, ApiError
 
 #[utoipa::path(post, operation_id = "create_invitation", path = "/api/v1/invitations", request_body = CreateInvitationRequest,
     params(("Idempotency-Key" = String, Header)),
-    responses((status = 201, body = Invitation), (status = 403), (status = 409), (status = 422)))]
+    responses((status = 201, body = Invitation),
+        (status = 403, description = "not allowed to give these grants, or `reason: email_unverified`: the inviter has not verified their email"),
+        (status = 409), (status = 422),
+        (status = 429, description = "20 invitation emails a day per tenant, or 10 an hour per sender, were sent", headers(("Retry-After" = String)))))]
 pub async fn invite(
     State(state): State<AppState>,
     ctx: TenantContext,
@@ -105,9 +110,13 @@ pub async fn invite(
 }
 
 /// Sends a pending or expired invitation again with a new link, valid for 7 days from now. The old link stops working.
+/// At most once a minute per invitation, within the tenant's and the sender's limits on invitation emails.
 #[utoipa::path(post, operation_id = "resend_invitation", path = "/api/v1/invitations/{invitation}/resend",
     params(("invitation" = Uuid, Path)),
-    responses((status = 200, body = Invitation), (status = 403), (status = 404), (status = 409)))]
+    responses((status = 200, body = Invitation),
+        (status = 403, description = "not allowed to act on this invitation, or `reason: email_unverified`: the sender has not verified their email"),
+        (status = 404), (status = 409),
+        (status = 429, description = "sent less than a minute ago, or the tenant's or the sender's limit was reached", headers(("Retry-After" = String)))))]
 pub async fn resend(
     State(state): State<AppState>,
     ctx: TenantContext,
@@ -182,24 +191,28 @@ fn throttle_key(token: &str) -> String {
     })
 }
 
-/// Reserves an attempt with `token` under the sign-in throttle, returning its key to clear on success.
-async fn reserve_attempt(state: &AppState, token: &str) -> Result<String, ApiError> {
+/// Reserves an attempt with `token` under the sign-in throttle, returning its key to clear on success and the attempt
+/// to take back if the server was too busy to try it.
+async fn reserve_attempt(state: &AppState, token: &str) -> Result<(String, uuid::Uuid), ApiError> {
     let key = throttle_key(token);
-    if !identity::reserve_login_attempt(&state.pool, &key).await? {
+    let Some(attempt) = identity::reserve_login_attempt(&state.pool, &key).await? else {
         return Err(ApiError::too_many_requests("too many attempts with this invitation; try again in 15 minutes"));
-    }
-    Ok(key)
+    };
+    Ok((key, attempt))
 }
 
 /// Public. An unknown, used, expired or revoked token is 410 "This invitation is no longer valid". After 5 failed
-/// attempts with one token within 15 minutes, further ones are 429 until the window passes.
+/// attempts with one token within 15 minutes, further ones are 429 until the window passes. 20 previews, accepts and
+/// email verifications a minute per IP, together (`429` with `Retry-After`).
 #[utoipa::path(post, operation_id = "preview_invitation", path = "/api/v1/invitations/preview", request_body = InvitationTokenRequest,
-    responses((status = 200, body = InvitationPreview), (status = 410), (status = 429)))]
+    responses((status = 200, body = InvitationPreview), (status = 410), (status = 429, headers(("Retry-After" = String)))))]
 pub async fn preview(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     ApiJson(body): ApiJson<InvitationTokenRequest>,
 ) -> Result<Json<InvitationPreview>, ApiError> {
-    let key = reserve_attempt(&state, &body.token).await?;
+    limit_ip(&state, "token", ip, TOKEN_REQUESTS_PER_MINUTE).await?;
+    let (key, _) = reserve_attempt(&state, &body.token).await?;
     let preview = identity::preview(&state.pool, &body.token).await.map_err(staff_error)?;
     identity::clear_login_failures(&state.pool, &key).await?;
     Ok(Json(preview.into()))
@@ -207,15 +220,19 @@ pub async fn preview(
 
 /// Public. With a session, accepts as its user (whose email must be the invitation's) and switches the session to the
 /// tenant. Without one, creates the account with `password` (409 "Sign in as <email> to accept" if the email already
-/// has one) and signs it in. Answers 410 and 429 as preview does.
+/// has one) and signs it in. Answers 410 and 429 as preview does, and 503 with `Retry-After` when the server is
+/// hashing as many passwords as it allows at once.
 #[utoipa::path(post, operation_id = "accept_invitation", path = "/api/v1/invitations/accept", request_body = AcceptInvitationRequest,
-    responses((status = 200, body = Profile), (status = 403), (status = 409), (status = 410), (status = 422), (status = 429)))]
+    responses((status = 200, body = Profile), (status = 403), (status = 409), (status = 410), (status = 422),
+        (status = 429, headers(("Retry-After" = String))), (status = 503, headers(("Retry-After" = String)))))]
 pub async fn accept(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     jar: CookieJar,
     ApiJson(body): ApiJson<AcceptInvitationRequest>,
 ) -> Result<(CookieJar, Json<Profile>), ApiError> {
-    let key = reserve_attempt(&state, &body.token).await?;
+    limit_ip(&state, "token", ip, TOKEN_REQUESTS_PER_MINUTE).await?;
+    let (key, attempt) = reserve_attempt(&state, &body.token).await?;
     let session = match jar.get(SESSION_COOKIE) {
         Some(cookie) => identity::resolve_session(&state.pool, cookie.value()).await?,
         None => None,
@@ -225,7 +242,15 @@ pub async fn accept(
         (None, Some(password)) => Acceptor::NewUser { password },
         (None, None) => return Err(ApiError::unprocessable("set a password, or sign in, to accept")),
     };
-    let (user, tenant) = identity::accept(&state.pool, &body.token, acceptor).await.map_err(staff_error)?;
+    let (user, tenant) = match identity::accept(&state.pool, &body.token, acceptor).await {
+        Ok(joined) => joined,
+        // The password was never hashed: not a failed attempt with the token.
+        Err(identity::StaffError::Busy(busy)) => {
+            identity::release_login_attempt(&state.pool, attempt).await?;
+            return Err(busy.into());
+        }
+        Err(err) => return Err(staff_error(err)),
+    };
     identity::clear_login_failures(&state.pool, &key).await?;
     // A signed-in session was switched to the tenant in the accept's own transaction.
     let jar = match session {

@@ -5,7 +5,7 @@ mod common;
 
 use audit::{AlertKind, AuditError, CloseHooks, HookFuture, Mode, RunStatus, Step};
 use common::hotel::Hotel;
-use common::{SECRET, client, close_counts, http, serve, svc, wait_for};
+use common::{SECRET, client, close_counts, http, jobs, serve, svc, wait_for};
 use db::{TenantId, Tx};
 use jobs_svc::due::audit_moment;
 use jobs_svc::tick::tick_with;
@@ -35,7 +35,7 @@ async fn business_date(owner: &PgPool, property: Uuid) -> time::Date {
 async fn a_close_started_by_hand_completes_and_cannot_be_retried(_: PgPoolOptions, opts: PgConnectOptions) {
     let owner = PgPool::connect_with(opts.clone()).await.unwrap();
     let hotel = Hotel::new(opts.clone()).await;
-    let addr = serve(svc(hotel.pool.clone(), opts)).await;
+    let addr = serve(svc(jobs(&opts).await, opts)).await;
     let mut client = client(addr).await;
 
     let run = client.start_close(start(&hotel)).await.unwrap().into_inner().run_id;
@@ -63,7 +63,7 @@ async fn a_close_started_by_hand_completes_and_cannot_be_retried(_: PgPoolOption
 async fn a_second_start_returns_the_same_run(_: PgPoolOptions, opts: PgConnectOptions) {
     let owner = PgPool::connect_with(opts.clone()).await.unwrap();
     let hotel = Hotel::new(opts.clone()).await;
-    let addr = serve(svc(hotel.pool.clone(), opts.clone())).await;
+    let addr = serve(svc(jobs(&opts).await, opts.clone())).await;
     let mut client = client(addr).await;
     // Holding the property's lock keeps the first start's close from running, so the run stays D's.
     let mut lock = PgConnection::connect_with(&opts).await.unwrap();
@@ -86,7 +86,7 @@ async fn a_second_start_returns_the_same_run(_: PgPoolOptions, opts: PgConnectOp
 #[sqlx::test(migrations = "../../migrations")]
 async fn bad_requests_are_refused(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts.clone()).await;
-    let addr = serve(svc(hotel.pool.clone(), opts)).await;
+    let addr = serve(svc(jobs(&opts).await, opts)).await;
     let mut client = client(addr).await;
 
     let junk = StartCloseRequest { property_id: "junk".into(), ..start(&hotel) };
@@ -105,7 +105,7 @@ async fn bad_requests_are_refused(_: PgPoolOptions, opts: PgConnectOptions) {
 async fn a_manual_close_waits_for_the_arrivals_and_departures(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts.clone()).await;
     hotel.stay(common::hotel::Stay::new(hotel.property, "confirmed", 0, 2)).await;
-    let addr = serve(svc(hotel.pool.clone(), opts)).await;
+    let addr = serve(svc(jobs(&opts).await, opts)).await;
 
     let refused = client(addr).await.start_close(start(&hotel)).await.unwrap_err();
     assert_eq!(refused.code(), Code::FailedPrecondition);
@@ -116,7 +116,7 @@ async fn a_manual_close_waits_for_the_arrivals_and_departures(_: PgPoolOptions, 
 async fn a_tick_racing_a_start_gives_one_run_closed_once(_: PgPoolOptions, opts: PgConnectOptions) {
     let owner = PgPool::connect_with(opts.clone()).await.unwrap();
     let hotel = Hotel::new(opts.clone()).await;
-    let svc = svc(hotel.pool.clone(), opts);
+    let svc = svc(jobs(&opts).await, opts);
     let addr = serve(svc.clone()).await;
     let mut starter = client(addr).await;
     // The tick's clock stops at D's audit moment, so it closes D too, but never D + 1.
@@ -139,7 +139,7 @@ async fn a_tick_racing_a_start_gives_one_run_closed_once(_: PgPoolOptions, opts:
 #[sqlx::test(migrations = "../../migrations")]
 async fn the_tick_closes_a_property_at_its_audit_moment(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts.clone()).await;
-    let svc = svc(hotel.pool.clone(), opts);
+    let svc = svc(jobs(&opts).await, opts);
     let moment = audit_moment(hotel.business_date, time::macros::time!(03:00));
 
     let response = tick_with(&svc, |_| moment).await;
@@ -155,7 +155,7 @@ async fn the_tick_closes_a_property_at_its_audit_moment(_: PgPoolOptions, opts: 
 async fn post_tick_answers_with_the_report(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts.clone()).await;
     hotel.move_business_date(hotel.property, -2).await;
-    let addr = serve(svc(hotel.pool.clone(), opts)).await;
+    let addr = serve(svc(jobs(&opts).await, opts)).await;
 
     let response = http().post(format!("http://{addr}/tick")).bearer_auth(SECRET).send().await.unwrap();
     assert_eq!(response.status(), 200);
@@ -185,7 +185,7 @@ async fn the_tick_resumes_a_crashed_close(_: PgPoolOptions, opts: PgConnectOptio
     let crashed = audit::execute(&hotel.pool, &opts, hotel.tenant, run.id, &Crash).await.unwrap_err();
     assert!(matches!(crashed, AuditError::Interrupted), "{crashed:?}");
     assert_eq!(audit::get_run(&mut hotel.tx().await, run.id).await.unwrap().status, RunStatus::Running);
-    let addr = serve(svc(hotel.pool.clone(), opts)).await;
+    let addr = serve(svc(jobs(&opts).await, opts)).await;
 
     let response = client(addr).await.tick(TickRequest {}).await.unwrap().into_inner();
     let resumed: Vec<_> = response.jobs.iter().filter(|job| job.job == "resume").collect();
@@ -224,7 +224,7 @@ async fn the_tick_queues_the_reports_a_failed_render_left(_: PgPoolOptions, opts
     assert_eq!((unrendered.status, unrendered.steps.len()), (RunStatus::Completed, 5));
     let alerts = audit::alerts::list(&mut hotel.tx().await, hotel.property).await.unwrap();
     assert_eq!(alerts.iter().map(|alert| alert.kind).collect::<Vec<_>>(), [AlertKind::Reports]);
-    let svc = svc(hotel.pool.clone(), opts);
+    let svc = svc(jobs(&opts).await, opts);
     let before_the_moment = audit_moment(sunday, time::macros::time!(03:00)) - time::Duration::hours(1);
 
     let response = tick_with(&svc, |_| before_the_moment).await;

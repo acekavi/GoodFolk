@@ -33,7 +33,12 @@ fn authorise(mut request: Request<()>) -> Result<Request<()>, Status> {
     Ok(request)
 }
 
-/// The service over `pool` (acting as the app role), taking its locks on connections to `lock`, with no storage,
+/// A pool acting as jobs-svc's role, `goodfolk_jobs`, as the service connects in production (migration 0050).
+pub async fn jobs(opts: &PgConnectOptions) -> PgPool {
+    db::testing::jobs_pool(opts.clone(), 4).await
+}
+
+/// The service over `pool` (acting as jobs-svc's role, [`jobs`]), taking its locks on connections to `lock`, with no storage,
 /// no exchange-rate source, and a dev mailer writing to a new directory under the system's temporary one.
 pub fn svc(pool: PgPool, lock: PgConnectOptions) -> JobsSvc {
     let outbox = std::env::temp_dir().join(format!("goodfolk-jobs-svc-outbox-{}", Uuid::now_v7()));

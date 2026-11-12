@@ -128,6 +128,25 @@ impl From<sqlx::Error> for ApiError {
     }
 }
 
+impl From<identity::Busy> for ApiError {
+    fn from(err: identity::Busy) -> Self {
+        Self::service_unavailable(err.to_string()).retry_after(1)
+    }
+}
+
+/// Maps email verification's errors to problem details. A link that cannot be used is a 410 with only the fixed text,
+/// whatever the reason, so tokens cannot be probed.
+pub(crate) fn verification_error(err: identity::VerificationError) -> ApiError {
+    match err {
+        identity::VerificationError::Gone => ApiError::gone(err.to_string()),
+        identity::VerificationError::AlreadyVerified => ApiError::conflict(err.to_string()),
+        identity::VerificationError::TooMany { message, retry_after } => {
+            ApiError::too_many_requests(message).retry_after(retry_after)
+        }
+        identity::VerificationError::Database(db_err) => db_err.into(),
+    }
+}
+
 /// Maps the night audit's errors to problem details.
 pub(crate) fn audit_error(err: audit::AuditError) -> ApiError {
     match err {
@@ -166,6 +185,11 @@ pub(crate) fn staff_error(err: identity::StaffError) -> ApiError {
         identity::StaffError::Conflict(message) => ApiError::conflict(message),
         identity::StaffError::Invalid(message) => ApiError::unprocessable(message),
         identity::StaffError::VersionMismatch => ApiError::precondition_failed(err.to_string()),
+        identity::StaffError::Unverified => ApiError::forbidden(err.to_string()).with("reason", "email_unverified"),
+        identity::StaffError::TooMany { message, retry_after } => {
+            ApiError::too_many_requests(message).retry_after(retry_after)
+        }
+        identity::StaffError::Busy(busy) => busy.into(),
         identity::StaffError::Database(db_err) => db_err.into(),
     }
 }

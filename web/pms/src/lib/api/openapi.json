@@ -347,7 +347,7 @@
         "tags": [
           "crate::public::ibe"
         ],
-        "summary": "The booking site of the property coded `code`: branding, contact, terms, and its active room types with their\nphotos and tour videos. `404` unless its site is enabled. Cached at the edge for 5 minutes.",
+        "summary": "The booking site of the property coded `code`: branding, contact, terms, and its active room types with their\nphotos and tour videos. `404` unless its site is enabled. Cached at the edge for 5 minutes. 60 reads a minute per\nIP (`429` with `Retry-After`): each one that misses the edge asks the database.",
         "operationId": "ibe_site",
         "parameters": [
           {
@@ -377,7 +377,16 @@
               }
             }
           },
-          "404": {}
+          "404": {},
+          "429": {
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -386,7 +395,7 @@
         "tags": [
           "crate::routes::auth"
         ],
-        "summary": "After 5 failed attempts for one email within 15 minutes, further attempts for that email are answered\nwith 429 until the window passes, whether or not the account exists. A successful sign-in clears them.",
+        "summary": "20 failed attempts a minute per IP (`429` with `Retry-After`). After 5 failed attempts for one email within 15 minutes,\nfurther attempts for that email are answered with 429 until the window passes, whether or not the account exists.\nA successful sign-in clears them. `503` with `Retry-After` when the server is hashing as many passwords as it allows\nat once.",
         "operationId": "login",
         "requestBody": {
           "content": {
@@ -409,7 +418,24 @@
             }
           },
           "401": {},
-          "429": {}
+          "429": {
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -430,6 +456,7 @@
         "tags": [
           "crate::routes::auth"
         ],
+        "summary": "5 sign-ups a minute per IP (`429` with `Retry-After`). `503` with `Retry-After` when the server is hashing as many\npasswords as it allows at once.",
         "operationId": "signup",
         "requestBody": {
           "content": {
@@ -452,7 +479,80 @@
             }
           },
           "409": {},
-          "422": {}
+          "422": {},
+          "429": {
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/verify-email": {
+      "post": {
+        "tags": [
+          "crate::routes::auth"
+        ],
+        "summary": "Public. Confirms the email address of the account a verification link was sent for: `token` is from the link's\nfragment. No session is needed, so the link works in any browser. An unknown, expired or replaced link (each new\none replaces the last) is 410 \"This verification link is no longer valid\". 20 email verifications, invitation\npreviews and accepts a minute per IP, together (`429` with `Retry-After`).",
+        "operationId": "verify_email",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "410": {},
+          "429": {
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/verify-email/resend": {
+      "post": {
+        "tags": [
+          "crate::routes::auth"
+        ],
+        "summary": "Sends the signed-in user a new link to verify their email address; earlier links stop working. `409` when it is\nalready verified; `429` with `Retry-After` within a minute of the last email, or after 5 within a day.",
+        "operationId": "resend_verification",
+        "responses": {
+          "204": {},
+          "401": {},
+          "409": {},
+          "429": {
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -492,9 +592,21 @@
               }
             }
           },
-          "403": {},
+          "403": {
+            "description": "not allowed to give these grants, or `reason: email_unverified`: the inviter has not verified their email"
+          },
           "409": {},
-          "422": {}
+          "422": {},
+          "429": {
+            "description": "20 invitation emails a day per tenant, or 10 an hour per sender, were sent",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -503,7 +615,7 @@
         "tags": [
           "crate::routes::staff"
         ],
-        "summary": "Public. With a session, accepts as its user (whose email must be the invitation's) and switches the session to the\ntenant. Without one, creates the account with `password` (409 \"Sign in as <email> to accept\" if the email already\nhas one) and signs it in. Answers 410 and 429 as preview does.",
+        "summary": "Public. With a session, accepts as its user (whose email must be the invitation's) and switches the session to the\ntenant. Without one, creates the account with `password` (409 \"Sign in as <email> to accept\" if the email already\nhas one) and signs it in. Answers 410 and 429 as preview does, and 503 with `Retry-After` when the server is\nhashing as many passwords as it allows at once.",
         "operationId": "accept_invitation",
         "requestBody": {
           "content": {
@@ -529,7 +641,24 @@
           "409": {},
           "410": {},
           "422": {},
-          "429": {}
+          "429": {
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -538,7 +667,7 @@
         "tags": [
           "crate::routes::staff"
         ],
-        "summary": "Public. An unknown, used, expired or revoked token is 410 \"This invitation is no longer valid\". After 5 failed\nattempts with one token within 15 minutes, further ones are 429 until the window passes.",
+        "summary": "Public. An unknown, used, expired or revoked token is 410 \"This invitation is no longer valid\". After 5 failed\nattempts with one token within 15 minutes, further ones are 429 until the window passes. 20 previews, accepts and\nemail verifications a minute per IP, together (`429` with `Retry-After`).",
         "operationId": "preview_invitation",
         "requestBody": {
           "content": {
@@ -561,7 +690,15 @@
             }
           },
           "410": {},
-          "429": {}
+          "429": {
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -570,7 +707,7 @@
         "tags": [
           "crate::routes::staff"
         ],
-        "summary": "Sends a pending or expired invitation again with a new link, valid for 7 days from now. The old link stops working.",
+        "summary": "Sends a pending or expired invitation again with a new link, valid for 7 days from now. The old link stops working.\nAt most once a minute per invitation, within the tenant's and the sender's limits on invitation emails.",
         "operationId": "resend_invitation",
         "parameters": [
           {
@@ -593,9 +730,21 @@
               }
             }
           },
-          "403": {},
+          "403": {
+            "description": "not allowed to act on this invitation, or `reason: email_unverified`: the sender has not verified their email"
+          },
           "404": {},
-          "409": {}
+          "409": {},
+          "429": {
+            "description": "sent less than a minute ago, or the tenant's or the sender's limit was reached",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -2067,7 +2216,7 @@
         "tags": [
           "crate::routes::properties"
         ],
-        "summary": "Replaces the property's booking site settings. Needs `IbeManage`; send the version as `If-Match` (0 for the first\nsave). The accent must give white text a contrast of 4.5 or more, the logo must be a completed `ibe_logo` upload and\nthe hero a finished room type gallery photo of this property, and the custom host must be unused and not the booking\ndomain's own host (each 422).\nAudited as `ibe_site.updated` with the values before and after.",
+        "summary": "Replaces the property's booking site settings. Needs `IbeManage`; send the version as `If-Match` (0 for the first\nsave). The accent must give white text a contrast of 4.5 or more, the logo must be a completed `ibe_logo` upload and\nthe hero a finished room type gallery photo of this property, and the custom host must be unused and not the booking\ndomain's own host (each 422).\nTurning the site on needs the acting user's email verified (`403` with `reason: email_unverified`): a site's\nbookings send email from the platform, with the property's name, to any address a guest gives. A site already on\nstays on. Audited as `ibe_site.updated` with the values before and after.",
         "operationId": "update_ibe_site",
         "parameters": [
           {
@@ -2117,7 +2266,9 @@
               }
             }
           },
-          "403": {},
+          "403": {
+            "description": "no `IbeManage` here, or `reason: email_unverified`: turning the site on needs a verified email"
+          },
           "404": {},
           "412": {},
           "422": {},
@@ -10829,6 +10980,7 @@
         "required": [
           "user_id",
           "email",
+          "email_verified",
           "display_name",
           "tenants",
           "grants"
@@ -10846,6 +10998,10 @@
           },
           "email": {
             "type": "string"
+          },
+          "email_verified": {
+            "type": "boolean",
+            "description": "Whether the user has confirmed their email address; until then they cannot invite staff."
           },
           "grants": {
             "type": "array",
@@ -13957,6 +14113,18 @@
           "monthly",
           "quarterly"
         ]
+      },
+      "VerifyEmailRequest": {
+        "type": "object",
+        "description": "The token from a verification email's link.",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        }
       },
       "VideoSource": {
         "type": "object",

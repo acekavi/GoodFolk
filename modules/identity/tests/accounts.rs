@@ -1,9 +1,9 @@
 use db::testing::app_pool;
 use db::{Scope, begin};
 use identity::{
-    Grant, Permission, Role, SignupError, SignupInput, TenantAccess, allows, authenticate, create_session,
-    default_tenant, delete_session, load_grants, load_profile, resolve_session, resolve_tenant_access, signup,
-    switch_tenant,
+    Grant, Permission, Role, SignupError, SignupInput, TenantAccess, VerificationError, allows, authenticate,
+    create_session, default_tenant, delete_session, load_grants, load_profile, resolve_session, resolve_tenant_access,
+    signup, switch_tenant, verify_email,
 };
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -31,6 +31,36 @@ async fn signup_creates_an_owner_of_a_new_tenant(_: PgPoolOptions, opts: PgConne
     assert_eq!(profile.tenants.len(), 1);
     assert_eq!(profile.tenants[0].name, "Lagoon Hotels");
     assert!(allows(&profile.grants, Permission::PropertiesCreate, None));
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_new_owner_is_sent_a_link_that_verifies_their_email_once(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts.clone(), 1).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+
+    let (user, tenant) = signup(&pool, input("owner@example.com", "Lagoon Hotels")).await.unwrap();
+    let before = load_profile(&pool, user, Some(tenant)).await.unwrap();
+    let payload: serde_json::Value = sqlx::query_scalar("select payload from outbox where topic = $1")
+        .bind(mail::SEND_TOPIC)
+        .fetch_one(&superuser)
+        .await
+        .unwrap();
+    let mail::MailJob::EmailVerification { user_id, token } = serde_json::from_value(payload).unwrap() else {
+        panic!("not a verification job")
+    };
+    let stored: Vec<u8> =
+        sqlx::query_scalar("select token_hash from email_verification").fetch_one(&superuser).await.unwrap();
+    let unknown = verify_email(&pool, "not-a-token").await;
+    verify_email(&pool, &token).await.unwrap();
+    let after = load_profile(&pool, user, Some(tenant)).await.unwrap();
+    let again = verify_email(&pool, &token).await;
+
+    assert!(!before.email_verified);
+    assert_eq!(user_id, user.0);
+    assert_ne!(stored, token.as_bytes(), "only the token's hash is stored");
+    assert!(matches!(unknown, Err(VerificationError::Gone)));
+    assert!(after.email_verified);
+    assert!(matches!(again, Err(VerificationError::Gone)), "a link works once");
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
@@ -170,4 +200,18 @@ async fn a_grant_with_an_unknown_role_is_skipped_with_a_warning(_: PgPoolOptions
     assert_eq!(grants, vec![Grant { property_id: None, role: Role::Owner }]);
     let logged = logs.text();
     assert!(logged.contains("WARN") && logged.contains("night_auditor"), "logged: {logged}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_released_attempt_does_not_count_toward_the_lockout(_: PgPoolOptions, opts: PgConnectOptions) {
+    let pool = app_pool(opts, 1).await;
+    for _ in 0..identity::MAX_LOGIN_FAILURES {
+        let attempt = identity::reserve_login_attempt(&pool, "owner@example.com").await.unwrap().unwrap();
+        // As when every hashing slot was busy: the password was never checked.
+        identity::release_login_attempt(&pool, attempt).await.unwrap();
+    }
+
+    let next = identity::reserve_login_attempt(&pool, "owner@example.com").await.unwrap();
+
+    assert!(next.is_some(), "released attempts are not failures");
 }

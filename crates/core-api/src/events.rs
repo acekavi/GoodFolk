@@ -165,8 +165,11 @@ impl Watch {
     /// The `invalidate` event for `event`'s keys this stream may hear, if any.
     fn invalidation(&self, event: &Event) -> Option<SseEvent> {
         let grants = &self.grants;
+        // A property's events go only to those who may view the property, whatever the stream's `property` filter: an
+        // id or the timing of a change elsewhere is not theirs to see.
         let relevant = event.tenant_id == self.tenant
-            && (event.property_id.is_none() || self.property.is_none() || event.property_id == self.property);
+            && (event.property_id.is_none() || self.property.is_none() || event.property_id == self.property)
+            && (event.property_id.is_none() || allows(grants, Permission::PropertiesView, event.property_id));
         // Folio and exchange-rate keys name money: only those who may view the property's folios hear of them.
         // The night audit's keys go to those who run it and to those who may view the folios it closes.
         let folio_viewer = allows(grants, Permission::FolioView, event.property_id);

@@ -1,6 +1,6 @@
 #![allow(dead_code)] // each test binary uses a different subset
 
-use db::testing::app_pool;
+use db::testing::{app_pool, jobs_pool};
 use db::{Scope, TenantId, Tx, UserId, begin};
 use media::{Completed, DocumentKind, MediaError, NewUpload, Target, Verified, complete_upload, start_upload};
 use media_types::{Format, MediaResult, RenditionOut, Size};
@@ -12,6 +12,8 @@ use uuid::Uuid;
 /// A tenant with one user, one property, one room type and one room.
 pub struct Hotel {
     pub pool: PgPool,
+    /// Acts as jobs-svc's role, which alone runs the sweep (`app.media_sweep_due` lists every tenant's media).
+    pub jobs: PgPool,
     /// Connects as the test superuser, for what `goodfolk_app` may not touch (the outbox, locks).
     pub owner: PgPool,
     pub tenant: TenantId,
@@ -25,6 +27,7 @@ pub struct Hotel {
 impl Hotel {
     pub async fn new(opts: PgConnectOptions) -> Self {
         let pool = app_pool(opts.clone(), 4).await;
+        let jobs = jobs_pool(opts.clone(), 2).await;
         let owner = PgPoolOptions::new().max_connections(2).connect_with(opts).await.unwrap();
         let tenant = TenantId(Uuid::now_v7());
         let user = UserId(Uuid::now_v7());
@@ -46,6 +49,7 @@ impl Hotel {
         tx.commit().await.unwrap();
         let mut hotel = Self {
             pool,
+            jobs,
             owner,
             tenant,
             user,

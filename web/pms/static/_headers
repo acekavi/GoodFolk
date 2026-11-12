@@ -1,0 +1,11 @@
+# Security headers for every page of the staff app, in the static host's `_headers` format (Cloudflare Pages). Whatever
+# serves the app must send them (src/lib/headers.spec.ts checks this file).
+# - no other site may frame the app (frame-ancestors, and X-Frame-Options for browsers without CSP 3), so a staff
+#   action such as removing a member or cancelling a booking cannot be clickjacked;
+# - nothing is sniffed as another type; a link out sends only the origin, never a page's address.
+# A full Content-Security-Policy is a follow-up (docs/ROADMAP.md, "Security follow-ups").
+/*
+  Content-Security-Policy: frame-ancestors 'none'
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin

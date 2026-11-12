@@ -37,7 +37,8 @@ async fn serve() -> anyhow::Result<()> {
     let jobs = JobsServices::new(&config.jobs_svc_url, Arc::new(config.jobs_svc_auth))?;
     let state = AppState::with_media(pool.clone(), config.production, config.guest_id_keys, media)
         .with_jobs(jobs)
-        .with_ibe(config.ibe);
+        .with_ibe(config.ibe)
+        .with_auth_ip_limits(config.auth_ip_limits);
     // Pushes carry the same credentials as media-svc's gRPC calls. The push bus is for local runs only, where every
     // service takes the one shared secret, so jobs-svc's `mail-send` pushes pass too.
     let push_auth: ::events::HeaderProvider = Arc::new(move || {

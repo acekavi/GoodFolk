@@ -3,7 +3,7 @@
 mod common;
 
 use common::hotel::Hotel;
-use common::svc;
+use common::{jobs, svc};
 use jobs_svc::tick::tick_with;
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -38,7 +38,7 @@ async fn an_audit_time_inside_the_repeated_hour_is_due_once(_: PgPoolOptions, op
     .execute(&owner)
     .await
     .unwrap();
-    let svc = svc(hotel.pool.clone(), opts);
+    let svc = svc(jobs(&opts).await, opts);
     let key = hotel.property.to_string();
 
     let first_hour = [datetime!(2026-10-25 00:59), datetime!(2026-10-25 01:00), datetime!(2026-10-25 01:29)];
@@ -71,7 +71,7 @@ async fn an_audit_time_inside_the_repeated_hour_is_due_once(_: PgPoolOptions, op
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_property_created_today_is_due_at_tomorrows_audit_moment(_: PgPoolOptions, opts: PgConnectOptions) {
     let hotel = Hotel::new(opts.clone()).await;
-    let svc = svc(hotel.pool.clone(), opts);
+    let svc = svc(jobs(&opts).await, opts);
     let today = hotel.business_date;
     let at = |days: i64, hour: u8, minute: u8| {
         PrimitiveDateTime::new(today + Duration::days(days), time::Time::from_hms(hour, minute, 0).unwrap())
@@ -89,7 +89,7 @@ async fn a_property_created_today_is_due_at_tomorrows_audit_moment(_: PgPoolOpti
 async fn only_a_failed_auto_run_with_attempts_left_is_retried(_: PgPoolOptions, opts: PgConnectOptions) {
     let owner = PgPool::connect_with(opts.clone()).await.unwrap();
     let hotel = Hotel::new(opts.clone()).await;
-    let svc = svc(hotel.pool.clone(), opts);
+    let svc = svc(jobs(&opts).await, opts);
     let before_the_moment = PrimitiveDateTime::new(hotel.business_date, time::macros::time!(00:00));
     let cases = [(audit::Mode::Manual, 1, false), (audit::Mode::Auto, 3, false), (audit::Mode::Auto, 2, true)];
     for (mode, attempts, retried) in cases {

@@ -6,6 +6,10 @@ import { defineConfig, devices } from '@playwright/test';
 // E2E_DATABASE_URL is a migrated database, as the API role (see README "End-to-end tests").
 const database = process.env.E2E_DATABASE_URL;
 if (!database) throw new Error('set E2E_DATABASE_URL to a migrated database, as goodfolk_api');
+// jobs-svc connects to the same database as its own role, which alone runs the cross-tenant job functions.
+const jobsDatabase = process.env.E2E_JOBS_DATABASE_URL;
+if (!jobsDatabase)
+	throw new Error('set E2E_JOBS_DATABASE_URL to the same database, as goodfolk_jobs_svc');
 
 // Chromium's sandbox stays on, as in CI. PLAYWRIGHT_NO_SANDBOX=1 turns it off for local machines that
 // cannot start it (no unprivileged user namespaces); the suite only ever loads localhost pages.
@@ -68,6 +72,8 @@ export default defineConfig({
 				PUSH_ENDPOINT_REPORT_RENDER: `http://localhost:${MEDIA_PORT}/render-report`,
 				PUSH_ENDPOINT_MAIL_SEND: `http://localhost:${JOBS_PORT}/mail`,
 				JOBS_SVC_URL: `http://localhost:${JOBS_PORT}`,
+				// Every browser of the suite signs up and in from this one address, many times a minute.
+				AUTH_IP_LIMITS: 'off',
 				RUST_LOG: 'warn'
 			},
 			reuseExistingServer: !process.env.CI,
@@ -95,7 +101,7 @@ export default defineConfig({
 			url: `http://localhost:${JOBS_PORT}/healthz`,
 			env: {
 				PORT: String(JOBS_PORT),
-				DATABASE_URL: database,
+				DATABASE_URL: jobsDatabase,
 				...SERVICE_AUTH,
 				JOBS_TICK: 'off',
 				MAIL_OUTBOX_DIR: process.env.MAIL_OUTBOX_DIR,

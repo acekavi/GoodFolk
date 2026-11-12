@@ -1,6 +1,6 @@
 #![allow(dead_code)] // each test binary uses a different subset
 
-use db::testing::app_pool;
+use db::testing::jobs_pool;
 use db::{Scope, TenantId, Tx, UserId, begin};
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
@@ -20,8 +20,10 @@ pub struct Hotel {
 }
 
 impl Hotel {
+    /// On jobs-svc's role: the daily import, which these tests run, lists every tenant's properties
+    /// (`app.fx_import_targets`), which only that role may; it has the app role's rights besides.
     pub async fn new(opts: PgConnectOptions) -> Self {
-        let pool = app_pool(opts, 2).await;
+        let pool = jobs_pool(opts, 2).await;
         Self::in_pool(pool).await
     }
 

@@ -38,7 +38,9 @@ impl Hotel {
     /// custom host (see `host`).
     async fn new(app: &TestApp, opts: PgConnectOptions, code: &str, enabled: bool) -> Self {
         let superuser = PgPool::connect_with(opts).await.unwrap();
-        let owner = app.signup_owner(&format!("owner@{}.example", code.to_lowercase()), code).await;
+        let email = format!("owner@{}.example", code.to_lowercase());
+        let owner = app.signup_owner(&email, code).await;
+        app.verify_email(&email).await;
         let property = json!({"code": code, "name": code, "timezone": "Asia/Colombo", "base_currency": "LKR"});
         let created = post(app, &owner, "/api/v1/properties", property).await;
         let path = format!("/api/v1/properties/{}", uuid(&created["id"]));
@@ -269,6 +271,28 @@ async fn the_61st_search_in_a_minute_from_one_ip_is_429_with_retry_after(_: PgPo
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_61st_site_read_in_a_minute_from_one_ip_is_429_whatever_its_query(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let app = TestApp::new(opts.clone()).await;
+    Hotel::new(&app, opts.clone(), "GAL", true).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    seed_hits(&superuser, "site", "198.51.100.8", 59).await;
+
+    // A query the edge has not seen misses its cache, so each one reaches the API and counts.
+    let sixtieth = call(&app, Method::GET, "/api/public/v1/ibe/GAL/site?x=1", "198.51.100.8:40000", &[]).await;
+    let sixty_first = call(&app, Method::GET, "/api/public/v1/ibe/GAL/site?x=2", "198.51.100.8:40000", &[]).await;
+    let elsewhere = call(&app, Method::GET, "/api/public/v1/ibe/GAL/site", "198.51.100.7:40000", &[]).await;
+
+    assert_eq!(sixtieth.status, StatusCode::OK, "{:?}", sixtieth.body);
+    assert_eq!(sixty_first.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", sixty_first.body);
+    let retry_after: u64 = sixty_first.headers[header::RETRY_AFTER].to_str().unwrap().parse().unwrap();
+    assert!((1..=60).contains(&retry_after), "{retry_after}");
+    assert_eq!(elsewhere.status, StatusCode::OK, "another address has its own count");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn the_61st_host_lookup_in_a_minute_from_one_ip_is_429(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts, "GAL", true).await;
@@ -396,6 +420,35 @@ async fn cf_connecting_ip_counts_only_when_trusted(_: PgPoolOptions, opts: PgCon
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_site_read_rendered_for_a_guest_counts_against_the_guest(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let hotel = Hotel::new(&app, opts, "GAL", true).await;
+    let secret = "an-ssr-secret-of-at-least-32-characters";
+    let state = AppState::new(app.pool.clone(), false, db::testing::guest_id_keys())
+        .with_ibe(IbeConfig { ssr_secret: Some(secret.into()), ..IbeConfig::local() });
+    let site_server = TestApp { router: router(state.clone()), state, pool: app.pool.clone() };
+    // The site's server has spent its own address's minute on other guests' renders.
+    seed_hits(&hotel.superuser, "site", "192.0.2.10", 60).await;
+
+    let rendered = call(
+        &site_server,
+        Method::GET,
+        "/api/public/v1/ibe/GAL/site",
+        "192.0.2.10:1000",
+        &[("x-ibe-client-ip", "203.0.113.7"), ("x-ibe-ssr-secret", secret)],
+    )
+    .await;
+
+    assert_eq!(rendered.status, StatusCode::OK, "each guest has their own limit: {:?}", rendered.body);
+    let hits: i32 =
+        sqlx::query_scalar("select hits from ibe_rate_hit where scope = 'site' and host(ip) = '203.0.113.7'")
+            .fetch_one(&hotel.superuser)
+            .await
+            .unwrap();
+    assert_eq!(hits, 1);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn the_sites_server_names_the_guest_ip_only_with_the_ssr_secret(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts.clone()).await;
     let hotel = Hotel::new(&app, opts, "GAL", true).await;
@@ -451,10 +504,12 @@ async fn a_booking_is_201_and_writes_its_confirmation_mail_job(_: PgPoolOptions,
     .unwrap();
     assert_eq!(source, "ibe");
     assert_eq!(hash, ibe::token_hash(token));
-    let jobs: Vec<Value> = sqlx::query_scalar("select payload from outbox where topic = 'mail-send'")
-        .fetch_all(&hotel.superuser)
-        .await
-        .unwrap();
+    let jobs: Vec<Value> = sqlx::query_scalar(
+        "select payload from outbox where topic = 'mail-send' and not payload ? 'EmailVerification'",
+    )
+    .fetch_all(&hotel.superuser)
+    .await
+    .unwrap();
     assert_eq!(jobs.len(), 1);
     let job: mail::MailJob = serde_json::from_value(jobs[0].clone()).unwrap();
     let tenant: Uuid = sqlx::query_scalar("select tenant_id from reservation where id = $1")
@@ -727,7 +782,8 @@ async fn the_honeypot_gets_a_decoy_201_and_nothing_is_kept(_: PgPoolOptions, opt
     assert_eq!(token.len(), 43);
     assert_eq!(hotel.reservations().await, 0);
     let kept: (i64, i64, i64) = sqlx::query_as(
-        "select (select count(*) from guest), (select count(*) from outbox where topic = 'mail-send'),
+        "select (select count(*) from guest),
+                (select count(*) from outbox where topic = 'mail-send' and not payload ? 'EmailVerification'),
                 (select count(*) from idempotency_key where key like '%/booking-key-0001')",
     )
     .fetch_one(&hotel.superuser)
@@ -900,10 +956,12 @@ async fn a_guest_cancels_online_once(_: PgPoolOptions, opts: PgConnectOptions) {
     assert_eq!(again.status, StatusCode::CONFLICT);
     assert_eq!(again.body["reason"], "already_cancelled");
     assert_eq!(page.body["status"], "cancelled", "the page still shows it");
-    let jobs: Vec<Value> = sqlx::query_scalar("select payload from outbox where topic = 'mail-send' order by id")
-        .fetch_all(&hotel.superuser)
-        .await
-        .unwrap();
+    let jobs: Vec<Value> = sqlx::query_scalar(
+        "select payload from outbox where topic = 'mail-send' and not payload ? 'EmailVerification' order by id",
+    )
+    .fetch_all(&hotel.superuser)
+    .await
+    .unwrap();
     assert_eq!(jobs.len(), 2, "the confirmation and one cancellation");
     assert!(jobs[1].get("IbeCancellation").is_some(), "{:?}", jobs[1]);
     assert!(!jobs[1].to_string().contains(&token));

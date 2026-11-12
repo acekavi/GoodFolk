@@ -6,12 +6,23 @@ pub mod turnstile;
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
+use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use core_api::{AppState, router};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicU32, Ordering};
 use tower::ServiceExt;
+
+/// A new client address in 10.0.0.0/8 for each call: a request that names none comes from its own address, as the
+/// server is served with connect info, so tests that sign up many users stay under the per-IP limits.
+fn next_peer() -> SocketAddr {
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed) & 0x00ff_ffff;
+    SocketAddr::from((Ipv4Addr::from(0x0a00_0000 | n), 40000))
+}
 
 pub struct TestApp {
     pub router: Router,
@@ -82,8 +93,24 @@ impl TestApp {
         self.call(builder.body(Body::from(body.to_owned())).unwrap()).await
     }
 
-    /// A body that is not JSON comes back as a JSON string, so a test can show what it was.
-    async fn call(&self, request: Request<Body>) -> TestResponse {
+    /// Sends a request as the browser SPA would, from the client address `peer` (`ip:port`).
+    pub async fn send_from(&self, peer: &str, method: Method, path: &str, body: Option<Value>) -> TestResponse {
+        let mut builder = Request::builder().method(method).uri(path).header("x-goodfolk-csrf", "1");
+        builder = builder.extension(ConnectInfo(peer.parse::<SocketAddr>().expect("an ip:port peer")));
+        let request = match body {
+            Some(body) => builder.header(header::CONTENT_TYPE, "application/json").body(Body::from(body.to_string())),
+            None => builder.body(Body::empty()),
+        }
+        .unwrap();
+        self.call(request).await
+    }
+
+    /// A body that is not JSON comes back as a JSON string, so a test can show what it was. A request without a
+    /// client address gets a new one ([`next_peer`]).
+    async fn call(&self, mut request: Request<Body>) -> TestResponse {
+        if request.extensions().get::<ConnectInfo<SocketAddr>>().is_none() {
+            request.extensions_mut().insert(ConnectInfo(next_peer()));
+        }
         let response = self.router.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let headers = response.headers().clone();
@@ -94,6 +121,16 @@ impl TestApp {
             serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into()))
         };
         TestResponse { status, headers, body }
+    }
+
+    /// Marks `email`'s address verified, as following the link of the email sent at sign-up does: inviting staff and
+    /// turning a booking site on need it.
+    pub async fn verify_email(&self, email: &str) {
+        sqlx::query("update app_user set email_verified_at = now() where email = $1::citext")
+            .bind(email)
+            .execute(&self.pool)
+            .await
+            .unwrap();
     }
 
     /// Signs up a new owner and returns their session cookie (`name=value`).
@@ -117,14 +154,20 @@ impl TestApp {
 }
 
 impl TestApp {
-    /// Signs up `email` and makes them `role` in the tenant of `owner_cookie`, with their session switched to it.
-    /// Staff invitations arrive in Phase 8; until then the membership is written directly as `superuser`.
+    /// Signs up `email` and makes them `role` in the tenant of `owner_cookie`, with their session switched to it. The
+    /// membership is written directly as `superuser`, standing in for an accepted invitation, so their email counts as
+    /// verified as an invitee's does.
     pub async fn staff(&self, superuser: &PgPool, owner_cookie: &str, email: &str, role: &str) -> String {
         let cookie = self.signup_owner(email, "Own tenant").await;
         let user = self.send(Method::GET, "/api/v1/me", Some(&cookie), None).await.body["user_id"].clone();
         let tenant =
             self.send(Method::GET, "/api/v1/me", Some(owner_cookie), None).await.body["current_tenant"].clone();
         let (user, tenant) = (uuid(&user), uuid(&tenant));
+        sqlx::query("update app_user set email_verified_at = now() where id = $1")
+            .bind(user)
+            .execute(superuser)
+            .await
+            .unwrap();
         sqlx::query("insert into membership (tenant_id, user_id) values ($1, $2)")
             .bind(tenant)
             .bind(user)

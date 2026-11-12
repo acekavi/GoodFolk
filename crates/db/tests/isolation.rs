@@ -497,6 +497,7 @@ enum Seed {
     Staff,
     Reports,
     Ibe,
+    Audit,
 }
 
 impl Seed {
@@ -513,8 +514,24 @@ impl Seed {
             Seed::Staff => seed_staff(pool, tenant).await,
             Seed::Reports => seed_reports(pool, tenant).await,
             Seed::Ibe => seed_ibe(pool, tenant).await,
+            Seed::Audit => seed_audit(pool, tenant).await,
         }
     }
+}
+
+/// One audit row, of the kind the log keeps for a guest document's view.
+async fn seed_audit(pool: &PgPool, tenant: TenantId) {
+    let mut tx = begin(pool, Scope::tenant(tenant)).await.unwrap();
+    sqlx::query(
+        "insert into audit_log (id, tenant_id, action, entity, entity_id, data)
+         values ($1, $2, 'guest_document.viewed', 'guest_document', $1, '{\"variant\": \"original\"}')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(tenant.0)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
 }
 
 /// Tenant `b` sees none of `a`'s rows in `table`, only its own, and cannot insert a row owned by `a` (`insert`
@@ -532,6 +549,17 @@ async fn assert_table_isolated(opts: PgConnectOptions, table: &str, insert: &'st
 
     assert_eq!(seen, 1, "B sees only its own {table} row");
     assert!(err.contains("row-level security"), "unexpected error: {err}");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn audit_rows_are_isolated_by_tenant(_: PgPoolOptions, opts: PgConnectOptions) {
+    assert_table_isolated(
+        opts,
+        "audit_log",
+        "insert into audit_log (id, tenant_id, action, entity) values (gen_random_uuid(), $1, 'invitation.created', 'invitation')",
+        Seed::Audit,
+    )
+    .await;
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]

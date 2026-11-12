@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# The workflow only reads the repository; its token can write nothing.
+permissions:
+  contents: read
+
 jobs:
   rust:
     runs-on: ubuntu-latest
@@ -57,9 +61,13 @@ jobs:
 
   web:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [pms, ibe]
     defaults:
       run:
-        working-directory: web/pms
+        working-directory: web/${{ matrix.app }}
     steps:
       - uses: actions/checkout@v5
       - run: rustup show
@@ -80,6 +88,10 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [pms, ibe]
     services:
       postgres:
         image: postgres:17
@@ -95,11 +107,13 @@ jobs:
       DATABASE_OWNER_URL: postgres://goodfolk_owner:goodfolk_owner_dev@localhost:5432/goodfolk
       # Playwright starts the API as the API role against this database.
       E2E_DATABASE_URL: postgres://goodfolk_api:goodfolk_api_dev@localhost:5432/goodfolk
+      # And jobs-svc as its own role, which alone runs the cross-tenant job functions.
+      E2E_JOBS_DATABASE_URL: postgres://goodfolk_jobs_svc:goodfolk_jobs_svc_dev@localhost:5432/goodfolk
       # Tests seed and check what the API cannot as the schema owner.
       E2E_OWNER_URL: postgres://goodfolk_owner:goodfolk_owner_dev@localhost:5432/goodfolk
     defaults:
       run:
-        working-directory: web/pms
+        working-directory: web/${{ matrix.app }}
     steps:
       - uses: actions/checkout@v5
       - run: rustup show
@@ -130,8 +144,9 @@ jobs:
         run: |
           sh ../../deploy/dev/rustfs.sh install && sh ../../deploy/dev/rustfs.sh start
           cargo run -p storage --example ensure-buckets
-      - name: Build the API and media-svc that Playwright starts
-        run: cargo build -p core-api -p media-svc
+      # The booking site's suite also starts jobs-svc, for its confirmation and cancellation mail.
+      - name: Build the services that Playwright starts
+        run: cargo build -p core-api -p media-svc -p jobs-svc
       - run: bun install --frozen-lockfile
       # Ubuntu 24.04 blocks the unprivileged user namespaces Chromium's sandbox needs; allow them so the
       # sandbox stays on.
@@ -142,7 +157,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: playwright-traces
+          name: playwright-traces-${{ matrix.app }}
           path: |
-            web/pms/test-results
+            web/${{ matrix.app }}/test-results
             ~/.cache/goodfolk-rustfs/rustfs.log

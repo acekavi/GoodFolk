@@ -20,7 +20,8 @@ Related: [ARCHITECTURE.md](../ARCHITECTURE.md) (why), [api-conventions.md](api-c
 | Table | Key columns | Notes |
 |---|---|---|
 | `tenant` | `id`, `name` | Read policy also exposes tenants the current user belongs to (via `membership`) |
-| `app_user` | `id`, `email citext unique`, `password_hash`, `display_name` | Global identity; no RLS. Bind emails as `$1::citext` |
+| `app_user` | `id`, `email citext unique`, `password_hash`, `display_name`, `email_verified_at` | Global identity; no RLS. Bind emails as `$1::citext`. `email_verified_at` is null until the person follows a verification link or accepts an invitation; accounts from before migration 0049 count as verified |
+| `email_verification` | `id`, `user_id`, `token_hash bytea unique`, `created_at`, `expires_at` | One row per verification email sent (migration 0049): the link's token as its SHA-256, valid 24 hours; only a user's newest row verifies, and the last day's rows count the emails sent. Global like `app_user`, so no RLS. Deleted when the email is verified, and by jobs-svc's cleanup a day after expiry |
 | `membership` | `(tenant_id, user_id)`, `version integer not null default 1` | Users see their own memberships in any tenant; only the current tenant can write. `version` (8a, `0035`) is bumped by every change to a member's grants, and `PUT /members/{user}/grants` is `If-Match` on it |
 | `role_grant` | `id`, `tenant_id`, `user_id`, `property_id null`, `role` | `null` property = tenant-wide. Roles: `owner`, `manager`, `front_desk`, `housekeeping`, `hk_supervisor`, `accountant`, `pos` (the check constraint is replaced in `0035`) |
 | `session` | `id`, `token_hash bytea unique`, `user_id`, `active_tenant_id`, `expires_at` | SHA-256 of the cookie token; no RLS (looked up before a tenant is known) |
@@ -205,5 +206,5 @@ Membership revocation deletes the `membership` row, its `role_grant` rows (casca
 | `ibe_site` | `tenant_id`, `property_id` (pk), `enabled`, `custom_host` (unique, lowercase), `logo_asset_id`, `hero_asset_id`, `accent`, `description`, `contact_phone`, `contact_email`, `terms`, `privacy`, `version` | One row per property, created by its first save (migration 0047); `app.ibe_resolve(code, host)` maps a property code or custom host to an enabled site |
 | `room_type.description` | `text not null default ''`, at most 1000 characters | Shown on the booking site |
 | `reservation_access_token` | `tenant_id`, `reservation_id` (pk), `sha256` (unique), `expires_at`, `created_at` | The manage link of a booking: only the hash of the token is stored |
-| `ibe_rate_hit` | `scope`, `ip`, `window_start`, `hits` (pk on the first three) | The public API's per-IP limits; global, so no tenant and no row-level security |
+| `ibe_rate_hit` | `scope`, `ip`, `window_start`, `hits` (pk on the first three) | The per-IP limits of the public API and of the staff API's anonymous routes (scopes `login`, `signup`, `token`); global, so no tenant and no row-level security |
 | Holds | `reservation_room.status = 'tentative'` with `reservation.hold_expires_at` | A job releases expired holds (and their inventory) |

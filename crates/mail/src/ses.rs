@@ -106,7 +106,7 @@ impl Mailer for SesMailer {
             .map_err(|error| MailError::Retryable(format!("SES request failed: {}", error.without_url())))?;
         let status = response.status();
         if status.is_success() {
-            tracing::info!(to = %message.to, subject = %message.subject, "mail sent through SES");
+            tracing::info!(to_domain = crate::recipient_domain(&message.to), "mail sent through SES");
             return Ok(());
         }
         // `x-amzn-ErrorType` is `<Name>:<namespace>`; the name is enough to tell a throttle or a pause.

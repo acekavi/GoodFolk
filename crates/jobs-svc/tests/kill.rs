@@ -22,7 +22,7 @@ const STAYS: usize = 120;
 async fn start_jobs_svc(opts: &PgConnectOptions) -> (Child, std::net::SocketAddr) {
     let addr = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
     let database = format!(
-        "postgres://goodfolk_api:goodfolk_api_dev@{}:{}/{}",
+        "postgres://goodfolk_jobs_svc:goodfolk_jobs_svc_dev@{}:{}/{}",
         opts.get_host(),
         opts.get_port(),
         opts.get_database().expect("sqlx::test names the database")

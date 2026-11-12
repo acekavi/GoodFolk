@@ -13,7 +13,14 @@ import {
 } from './settings';
 
 function profile(grants: Profile['grants']): Profile {
-	return { user_id: 'u', email: 'a@b.lk', display_name: 'A', tenants: [], grants };
+	return {
+		user_id: 'u',
+		email: 'a@b.lk',
+		email_verified: true,
+		display_name: 'A',
+		tenants: [],
+		grants
+	};
 }
 
 describe('percentToBp', () => {

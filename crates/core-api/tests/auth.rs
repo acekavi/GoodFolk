@@ -109,6 +109,27 @@ async fn state_changing_requests_need_the_csrf_header(_: PgPoolOptions, opts: Pg
 }
 
 #[sqlx::test(migrator = "db::MIGRATOR")]
+async fn reads_that_audit_their_answer_need_the_csrf_header_too(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts).await;
+    let owner = app.signup_owner("owner@example.com", "A").await;
+    let (property, id) = (uuid::Uuid::now_v7(), uuid::Uuid::now_v7());
+
+    for path in [
+        format!("/api/v1/properties/{property}/guest-documents/{id}/link?variant=original"),
+        format!("/api/v1/properties/{property}/invoices/{id}/link"),
+        format!("/api/v1/properties/{property}/reports/{id}"),
+    ] {
+        // A cross-site navigation carries the cookie (SameSite=Lax) but cannot add the header.
+        let navigated = app.send_with(Method::GET, &path, Some(&owner), None, &[]).await;
+        let from_the_app = app.send(Method::GET, &path, Some(&owner), None).await;
+
+        assert_eq!(navigated.status, StatusCode::FORBIDDEN, "{path}: {:?}", navigated.body);
+        assert_eq!(navigated.body["detail"], "missing x-goodfolk-csrf header");
+        assert_ne!(from_the_app.status, StatusCode::FORBIDDEN, "{path}: {:?}", from_the_app.body);
+    }
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
 async fn a_user_cannot_switch_into_a_tenant_they_do_not_belong_to(_: PgPoolOptions, opts: PgConnectOptions) {
     let app = TestApp::new(opts).await;
     let alice = app.signup_owner("alice@example.com", "Alice Hotels").await;
@@ -245,4 +266,140 @@ async fn concurrent_failed_logins_cannot_exceed_the_limit(_: PgPoolOptions, opts
         .await
         .unwrap();
     assert_eq!(recorded, 5);
+}
+
+/// Sets `ip`'s count under `scope` to `hits` in the current minute's window and the next two, so the count stands
+/// whichever minute the next request lands in.
+async fn seed_hits(pool: &PgPool, scope: &str, ip: &str, hits: i32) {
+    for minutes in 0..3 {
+        sqlx::query(
+            "insert into ibe_rate_hit (scope, ip, window_start, hits)
+             values ($1, $2::inet, date_trunc('minute', now()) + make_interval(mins => $3), $4)",
+        )
+        .bind(scope)
+        .bind(ip)
+        .bind(minutes)
+        .bind(hits)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
+fn signup_body(email: &str) -> serde_json::Value {
+    json!({"email": email, "password": "a long enough password", "display_name": "Owner", "tenant_name": "Hotel"})
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_21st_failed_sign_in_in_a_minute_from_one_ip_is_429_and_successes_do_not_count(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    app.signup_owner("owner@example.com", "A").await;
+    app.signup_owner("other@example.com", "B").await;
+    seed_hits(&superuser, "login", "192.0.2.10", 19).await;
+    let login = |email: &str, password: &str| Some(json!({"email": email, "password": password}));
+    let from = |body| app.send_from("192.0.2.10:1000", Method::POST, "/api/v1/auth/login", body);
+
+    // Staff behind one address (a hotel's NAT) who sign in are not counted, only failures are.
+    let success = from(login("owner@example.com", "a long enough password")).await;
+    let twentieth_failure = from(login("other@example.com", "not the password")).await;
+    let refused = from(login("owner@example.com", "a long enough password")).await;
+    let elsewhere = app
+        .send_from(
+            "192.0.2.11:1000",
+            Method::POST,
+            "/api/v1/auth/login",
+            login("owner@example.com", "a long enough password"),
+        )
+        .await;
+
+    assert_eq!(success.status, StatusCode::OK, "{:?}", success.body);
+    assert_eq!(twentieth_failure.status, StatusCode::UNAUTHORIZED, "{:?}", twentieth_failure.body);
+    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", refused.body);
+    assert!(refused.headers.contains_key(header::RETRY_AFTER));
+    assert_eq!(elsewhere.status, StatusCode::OK, "{:?}", elsewhere.body);
+    let failures: Vec<String> =
+        sqlx::query_scalar("select email::text from login_failure").fetch_all(&superuser).await.unwrap();
+    assert_eq!(failures, ["other@example.com"], "an attempt refused by the IP limit is not an attempt on the email");
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_6th_sign_up_in_a_minute_from_one_ip_is_429_and_creates_nothing(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    seed_hits(&superuser, "signup", "2001:db8:1:2::/64", 4).await;
+
+    let fifth = app
+        .send_from("[2001:db8:1:2::1]:1000", Method::POST, "/api/v1/auth/signup", Some(signup_body("a@example.com")))
+        .await;
+    // The same /64: an IPv6 client counts by its network.
+    let sixth = app
+        .send_from("[2001:db8:1:2::99]:1000", Method::POST, "/api/v1/auth/signup", Some(signup_body("b@example.com")))
+        .await;
+
+    assert_eq!(fifth.status, StatusCode::CREATED, "{:?}", fifth.body);
+    assert_eq!(sixth.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", sixth.body);
+    assert!(sixth.headers.contains_key(header::RETRY_AFTER), "{:?}", sixth.headers);
+    let users: Vec<String> =
+        sqlx::query_scalar("select email::text from app_user").fetch_all(&superuser).await.unwrap();
+    assert_eq!(users, ["a@example.com"]);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn invitation_links_are_limited_per_ip(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    seed_hits(&superuser, "token", "192.0.2.10", 20).await;
+    let token = || Some(json!({"token": "not-a-token"}));
+
+    let preview = app.send_from("192.0.2.10:1000", Method::POST, "/api/v1/invitations/preview", token()).await;
+    let accept = app.send_from("192.0.2.10:1000", Method::POST, "/api/v1/invitations/accept", token()).await;
+    let elsewhere = app.send_from("192.0.2.11:1000", Method::POST, "/api/v1/invitations/preview", token()).await;
+
+    assert_eq!(preview.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", preview.body);
+    assert_eq!(accept.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", accept.body);
+    assert_eq!(elsewhere.status, StatusCode::GONE, "{:?}", elsewhere.body);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn auth_ip_limits_off_counts_nothing(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let state = app.state.clone().with_auth_ip_limits(false);
+    let off = TestApp { router: core_api::router(state.clone()), state, pool: app.pool.clone() };
+    seed_hits(&superuser, "signup", "192.0.2.10", 5).await;
+
+    let signup =
+        off.send_from("192.0.2.10:1000", Method::POST, "/api/v1/auth/signup", Some(signup_body("a@example.com"))).await;
+
+    assert_eq!(signup.status, StatusCode::CREATED, "{:?}", signup.body);
+    let hits: i32 = sqlx::query_scalar("select max(hits) from ibe_rate_hit where scope = 'signup'")
+        .fetch_one(&superuser)
+        .await
+        .unwrap();
+    assert_eq!(hits, 5);
+}
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn staff_api_answers_are_never_stored_and_public_ones_keep_their_own_caching(
+    _: PgPoolOptions,
+    opts: PgConnectOptions,
+) {
+    let app = TestApp::new(opts).await;
+    let owner = app.signup_owner("owner@example.com", "A").await;
+
+    let me = app.send(Method::GET, "/api/v1/me", Some(&owner), None).await;
+    let refused = app.send(Method::GET, "/api/v1/me", None, None).await;
+    let graphql =
+        app.send(Method::POST, "/graphql", Some(&owner), Some(json!({"query": "{ properties { code } }"}))).await;
+    let public = app.send(Method::GET, "/api/public/v1/ibe/NOPE/site", None, None).await;
+
+    for answer in [&me, &refused, &graphql] {
+        assert_eq!(answer.headers[header::CACHE_CONTROL], "no-store", "{:?}", answer.body);
+    }
+    assert_eq!(public.status, StatusCode::NOT_FOUND);
+    assert_ne!(public.headers.get(header::CACHE_CONTROL).map(|v| v.to_str().unwrap()), Some("no-store"));
 }

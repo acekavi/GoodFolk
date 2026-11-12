@@ -2,7 +2,8 @@
 	The tenant's staff (`StaffManage`): its members, with their roles and when they joined, and the invitations still
 	waiting. Invite, Change roles, Remove, Resend and Revoke show only where the manager rules let the user act (a
 	manager acts on members whose every grant is a junior role at a property they manage); the server enforces them
-	regardless. Live through the server's `staff:<tenant>` events.
+	regardless. Live through the server's `staff:<tenant>` events. Until the user has verified their email address the
+	server refuses to send invitations, so Invite is replaced by a note with a button that sends the link again.
 -->
 <script lang="ts">
 	import { createQuery, useQueryClient } from '@tanstack/svelte-query';
@@ -32,6 +33,7 @@
 	const me = createQuery(() => ({ queryKey: ['me'], queryFn: fetchMe }));
 	const tenantId = $derived(me.data?.current_tenant ?? '');
 	const manage = $derived(!!me.data && canAnywhere(me.data, 'staffManage'));
+	const verified = $derived(me.data?.email_verified ?? false);
 	const actor = $derived(me.data?.grants ?? []);
 	const properties = createQuery(() => ({
 		queryKey: propertiesKey,
@@ -125,6 +127,19 @@
 		}
 	}
 
+	async function sendVerification() {
+		error = '';
+		notice = '';
+		try {
+			await pending.run('verification', async () =>
+				unwrap(await rest.POST('/api/v1/auth/verify-email/resend'))
+			);
+			notice = `A new link was sent to ${me.data?.email}; the earlier one no longer works.`;
+		} catch (err) {
+			error = errorMessage(err);
+		}
+	}
+
 	async function revoke(invitation: InvitationRow) {
 		if (!confirm(`Revoke the invitation to ${invitation.email}? Its link will stop working.`))
 			return;
@@ -151,7 +166,17 @@
 {#if me.data && !manage}
 	<p class="hint">Only owners and managers manage staff.</p>
 {:else if me.data}
-	{#if mayInvite}
+	{#if !verified}
+		<div class="verify" role="note" aria-label="Verify your email">
+			<p>
+				Verify your email address to invite staff: open the link we sent to
+				<strong>{me.data.email}</strong>.
+			</p>
+			<button class="secondary" disabled={pending.has('verification')} onclick={sendVerification}
+				>Send the link again</button
+			>
+		</div>
+	{:else if mayInvite}
 		<div class="toolbar">
 			<button
 				onclick={() => {
@@ -311,6 +336,9 @@
 
 <style>
 	.toolbar {
+		margin-bottom: var(--space);
+	}
+	.verify {
 		margin-bottom: var(--space);
 	}
 	.scroll {

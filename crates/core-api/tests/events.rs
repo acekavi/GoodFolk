@@ -323,3 +323,51 @@ async fn an_open_stream_follows_its_members_new_grants(_: PgPoolOptions, opts: P
         assert_eq!(frame.into_data().unwrap(), format!("event: invalidate\ndata: {heard}\n\n"), "as {role}");
     }
 }
+
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_propertys_events_reach_only_those_who_may_view_it(_: PgPoolOptions, opts: PgConnectOptions) {
+    let app = TestApp::new(opts.clone()).await;
+    let superuser = PgPool::connect_with(opts).await.unwrap();
+    let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+    let mut properties = Vec::new();
+    for code in ["GAL", "KAN"] {
+        let created = app
+            .send_with(
+                Method::POST,
+                "/api/v1/properties",
+                Some(&owner),
+                Some(json!({"code": code, "name": code, "timezone": "Asia/Colombo", "base_currency": "LKR"})),
+                &[("x-goodfolk-csrf", "1"), ("idempotency-key", &format!("property-{code}"))],
+            )
+            .await;
+        assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+        properties.push(common::uuid(&created.body["id"]));
+    }
+    let (galle, kandy) = (properties[0], properties[1]);
+    let housekeeper = app.staff(&superuser, &owner, "kamala@example.com", "housekeeping").await;
+    let user = common::uuid(&app.send(Method::GET, "/api/v1/me", Some(&housekeeper), None).await.body["user_id"]);
+    sqlx::query("update role_grant set property_id = $2 where user_id = $1")
+        .bind(user)
+        .bind(galle)
+        .execute(&superuser)
+        .await
+        .unwrap();
+    let tenant =
+        TenantId(common::uuid(&app.send(Method::GET, "/api/v1/me", Some(&owner), None).await.body["current_tenant"]));
+    // No `property` filter: the stream is the housekeeper's whole tenant, as far as they may see it.
+    let mut housekeepers_stream = open_stream(&app, &housekeeper).await;
+    let mut owners_stream = open_stream(&app, &owner).await;
+
+    for property in [kandy, galle] {
+        let event = Event { tenant_id: tenant, property_id: Some(property), keys: vec![format!("hk:{property}")] };
+        app.state.events.send(LiveEvent::Invalidate(event)).unwrap();
+    }
+
+    let frame = |property: Uuid| format!("event: invalidate\ndata: [\"hk:{property}\"]\n\n");
+    let first = tokio::time::timeout(Duration::from_secs(1), housekeepers_stream.frame()).await.unwrap().unwrap();
+    assert_eq!(first.unwrap().into_data().unwrap(), frame(galle), "Kandy's event was skipped");
+    for property in [kandy, galle] {
+        let owners = tokio::time::timeout(Duration::from_secs(1), owners_stream.frame()).await.unwrap().unwrap();
+        assert_eq!(owners.unwrap().into_data().unwrap(), frame(property));
+    }
+}

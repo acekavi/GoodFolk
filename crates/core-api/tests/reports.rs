@@ -668,8 +668,12 @@ async fn mailed(superuser: &PgPool, report: Uuid) -> (Vec<Uuid>, Vec<Uuid>) {
         .await
         .unwrap();
     recorded.sort();
-    let payloads: Vec<Value> =
-        sqlx::query_scalar("select payload from outbox where topic = 'mail-send'").fetch_all(superuser).await.unwrap();
+    let payloads: Vec<Value> = sqlx::query_scalar(
+        "select payload from outbox where topic = 'mail-send' and not payload ? 'EmailVerification'",
+    )
+    .fetch_all(superuser)
+    .await
+    .unwrap();
     let mut jobs: Vec<Uuid> = payloads
         .into_iter()
         .filter_map(|payload| match serde_json::from_value(payload).unwrap() {
@@ -729,10 +733,12 @@ async fn ready_weekly_mails_owners_and_managers_once(_: PgPoolOptions, opts: PgC
     assert_eq!(mailed(&superuser, weekly).await, (expected.clone(), expected.clone()));
     assert_eq!(mailed(&superuser, monthly).await, (expected.clone(), expected));
     assert_eq!(mailed(&superuser, tdl).await, (vec![], vec![]));
-    let job: Value = sqlx::query_scalar("select payload from outbox where topic = 'mail-send' limit 1")
-        .fetch_one(&superuser)
-        .await
-        .unwrap();
+    let job: Value = sqlx::query_scalar(
+        "select payload from outbox where topic = 'mail-send' and not payload ? 'EmailVerification' limit 1",
+    )
+    .fetch_one(&superuser)
+    .await
+    .unwrap();
     assert_eq!(job["Report"]["tenant_id"], json!(hotel.tenant));
 }
 

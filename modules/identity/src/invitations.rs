@@ -5,6 +5,7 @@
 use crate::account::{hash_in_background, insert_user, password_is_valid};
 use crate::rbac::{Grant, Role, check_may_give, load_grants};
 use crate::session::{SessionInfo, new_token, token_hash};
+use crate::verification::{email_verified, mark_verified};
 use db::{Event, Scope, TenantId, Tx, UserId};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -17,6 +18,13 @@ pub const INVITATION_TTL: Duration = Duration::days(7);
 
 /// Most grants one invitation may give, or one member may hold.
 const MAX_GRANTS: usize = 50;
+
+/// Most invitation emails (new invitations and resends together) one tenant may send within a day.
+pub const INVITATION_EMAILS_PER_TENANT_PER_DAY: i64 = 20;
+/// Most invitation emails one person may send within an hour, in one tenant.
+pub const INVITATION_EMAILS_PER_ACTOR_PER_HOUR: i64 = 10;
+/// The shortest wait between two emails of one invitation, in seconds.
+pub const INVITATION_RESEND_SECS: i64 = 60;
 
 /// Cache key for a tenant's members and invitations.
 pub fn staff_key(tenant: TenantId) -> String {
@@ -112,6 +120,14 @@ pub enum StaffError {
     Invalid(String),
     #[error("the member was changed by someone else; reload and try again")]
     VersionMismatch,
+    /// The actor has not verified their email address, so they may not send invitations.
+    #[error("Verify your email address before inviting staff")]
+    Unverified,
+    /// Sending would exceed a limit on invitation emails; retry after `retry_after` seconds.
+    #[error("{message}")]
+    TooMany { message: String, retry_after: u64 },
+    #[error(transparent)]
+    Busy(#[from] crate::Busy),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
@@ -202,6 +218,48 @@ fn check_rules(actor_grants: &[Grant], grants: &[GrantSpec]) -> Result<(), Staff
     check_may_give(actor_grants, &given).map_err(StaffError::Forbidden)
 }
 
+/// Refuses an actor who has not verified their email address: invitations go out from the platform's own mail
+/// identity, so only someone proven to read their address may send them.
+async fn require_verified(tx: &mut Tx, actor: UserId) -> Result<(), StaffError> {
+    if email_verified(tx, actor).await? { Ok(()) } else { Err(StaffError::Unverified) }
+}
+
+/// Refuses another invitation email once the tenant sent [`INVITATION_EMAILS_PER_TENANT_PER_DAY`] within a day, or
+/// `actor` sent [`INVITATION_EMAILS_PER_ACTOR_PER_HOUR`] within an hour. Counted from the tenant's audit rows of
+/// created and resent invitations, under the staff lock ([`lock_staff`]), so concurrent sends cannot pass together.
+async fn check_send_limits(tx: &mut Tx, actor: UserId) -> Result<(), StaffError> {
+    let (tenant_sent, tenant_frees, actor_sent, actor_frees): (i64, Option<i32>, i64, Option<i32>) = sqlx::query_as(
+        "select count(*),
+                ceil(extract(epoch from min(at) + interval '1 day' - now()))::int,
+                count(*) filter (where actor_user_id = $1 and at > now() - interval '1 hour'),
+                ceil(extract(epoch from min(at) filter (where actor_user_id = $1 and at > now() - interval '1 hour')
+                                        + interval '1 hour' - now()))::int
+         from audit_log
+         where action in ('invitation.created', 'invitation.resent') and at > now() - interval '1 day'",
+    )
+    .bind(actor.0)
+    .fetch_one(&mut **tx)
+    .await?;
+    let wait = |seconds: Option<i32>| u64::try_from(seconds.unwrap_or(1).max(1)).unwrap_or(1);
+    if tenant_sent >= INVITATION_EMAILS_PER_TENANT_PER_DAY {
+        return Err(StaffError::TooMany {
+            message: format!(
+                "this team sent {INVITATION_EMAILS_PER_TENANT_PER_DAY} invitations in the last day; try again later"
+            ),
+            retry_after: wait(tenant_frees),
+        });
+    }
+    if actor_sent >= INVITATION_EMAILS_PER_ACTOR_PER_HOUR {
+        return Err(StaffError::TooMany {
+            message: format!(
+                "you sent {INVITATION_EMAILS_PER_ACTOR_PER_HOUR} invitations in the last hour; try again later"
+            ),
+            retry_after: wait(actor_frees),
+        });
+    }
+    Ok(())
+}
+
 /// Queues the invitation email. The token is carried only here.
 async fn enqueue_mail(tx: &mut Tx, tenant: TenantId, invitation: Uuid, token: String) -> Result<(), StaffError> {
     let job = mail::MailJob::Invitation { invitation_id: invitation, tenant_id: tenant.0, token };
@@ -270,6 +328,7 @@ pub async fn invite(
         return Err(StaffError::Invalid("the owner role cannot be given by invitation".into()));
     }
     let actor_grants = lock_staff(tx, tenant, actor).await?;
+    require_verified(tx, actor).await?;
     validate_grants(tx, grants).await?;
     check_rules(&actor_grants, grants)?;
     let member: bool = sqlx::query_scalar(
@@ -284,6 +343,7 @@ pub async fn invite(
         return Err(StaffError::Conflict(format!("{email} is already a member")));
     }
     expire_lapsed(tx, Some(&email)).await?;
+    check_send_limits(tx, actor).await?;
 
     let token = new_token();
     let id = Uuid::now_v7();
@@ -325,14 +385,26 @@ async fn lock(tx: &mut Tx, id: Uuid) -> Result<Invitation, StaffError> {
 }
 
 /// Issues a new token for a pending or expired invitation, moves its expiry to [`INVITATION_TTL`] from now and sends
-/// it again. The old link stops working.
+/// it again. The old link stops working. At most once every [`INVITATION_RESEND_SECS`], within the tenant's and the
+/// actor's limits.
 pub async fn resend(tx: &mut Tx, tenant: TenantId, actor: UserId, id: Uuid) -> Result<Invitation, StaffError> {
     let actor_grants = lock_staff(tx, tenant, actor).await?;
+    require_verified(tx, actor).await?;
     let current = lock(tx, id).await?;
     check_rules(&actor_grants, &current.grants)?;
     if !matches!(current.status, InvitationStatus::Pending | InvitationStatus::Expired) {
         return Err(StaffError::Conflict(format!("the invitation is {}", current.status.as_str())));
     }
+    // Every email of an invitation sets its expiry to INVITATION_TTL from then, so the last one went at this time.
+    let last_sent = current.expires_at - INVITATION_TTL;
+    let next_allowed = last_sent + Duration::seconds(INVITATION_RESEND_SECS) - OffsetDateTime::now_utc();
+    if next_allowed.is_positive() {
+        return Err(StaffError::TooMany {
+            message: "this invitation was sent less than a minute ago; try again shortly".into(),
+            retry_after: u64::try_from(next_allowed.whole_seconds().max(0) + 1).unwrap_or(1),
+        });
+    }
+    check_send_limits(tx, actor).await?;
     let token = new_token();
     let updated = sqlx::query_as::<_, InvitationRow>(with_columns!(
         "update invitation set token_hash = $2, expires_at = now() + $3, status = 'pending' where id = $1 returning",
@@ -471,7 +543,7 @@ pub async fn accept(pool: &PgPool, token: &str, acceptor: Acceptor) -> Result<(U
             }
             // An existing account is found by `insert_user` after the liveness re-check below, so a token used by a
             // racing accept is always Gone, never "Sign in as …".
-            (UserId(Uuid::now_v7()), Some(hash_in_background(password).await), None)
+            (UserId(Uuid::now_v7()), Some(hash_in_background(password).await?), None)
         }
         Acceptor::SignedIn(session) => {
             let user = session.user;
@@ -550,6 +622,8 @@ pub async fn accept(pool: &PgPool, token: &str, acceptor: Acceptor) -> Result<(U
     if accepted.rows_affected() != 1 {
         return Err(StaffError::Gone);
     }
+    // The invitation reached its email, so following it proves the address is theirs.
+    mark_verified(&mut tx, user).await?;
     if let Some(session) = session {
         // `session` has no row-level security; the app role updates it directly, as switching tenants does.
         sqlx::query("update session set active_tenant_id = $1 where id = $2")

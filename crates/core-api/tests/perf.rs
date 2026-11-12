@@ -429,12 +429,14 @@ async fn seed_reservation_rooms(
     sqlx::query(
         "insert into reservation_room (id, tenant_id, property_id, reservation_id, room_type_id, stay, adults,
                                         children, rate_plan_id, meal_plan, status, primary_guest_id, currency,
-                                        checked_in_at, checked_in_business_date, checked_out_at)
+                                        checked_in_at, checked_in_business_date, checked_out_at,
+                                        cancelled_business_date)
          select c.id, $1, $2, c.reservation_id, c.room_type_id, daterange(c.arrival, c.arrival + 2, '[)'), 2, 0,
                 $3, c.meal_plan, c.status, c.primary_guest_id, 'USD',
                 case when c.status in ('checked_in', 'checked_out') then now() end,
                 case when c.status in ('checked_in', 'checked_out') then c.arrival end,
-                case when c.status = 'checked_out' then now() end
+                case when c.status = 'checked_out' then now() end,
+                case when c.status = 'no_show' then c.arrival end
          from unnest($4::uuid[], $5::uuid[], $6::uuid[], $7::date[], $8::text[], $9::text[], $10::uuid[])
               as c (id, reservation_id, room_type_id, arrival, meal_plan, status, primary_guest_id)",
     )
@@ -2137,6 +2139,7 @@ impl IbeHotel {
         let superuser = PgPool::connect_with(opts.clone()).await.unwrap();
         let app = TestApp::new(opts).await;
         let owner = app.signup_owner("owner@example.com", "Lagoon Hotels").await;
+        app.verify_email("owner@example.com").await;
         let (path, day0, types) = property_with_room_types(&app, &owner).await;
         for (index, room_type) in types.iter().enumerate() {
             let first = (u32::try_from(index).unwrap() + 1) * 100 + 1;

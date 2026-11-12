@@ -137,7 +137,8 @@ export interface paths {
         };
         /**
          * The booking site of the property coded `code`: branding, contact, terms, and its active room types with their
-         *     photos and tour videos. `404` unless its site is enabled. Cached at the edge for 5 minutes.
+         *     photos and tour videos. `404` unless its site is enabled. Cached at the edge for 5 minutes. 60 reads a minute per
+         *     IP (`429` with `Retry-After`): each one that misses the edge asks the database.
          */
         get: operations["ibe_site"];
         put?: never;
@@ -794,6 +795,13 @@ export interface operations {
             };
             404: {
                 headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
+                headers: {
+                    "Retry-After"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;

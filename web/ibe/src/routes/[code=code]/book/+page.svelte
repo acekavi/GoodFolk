@@ -72,6 +72,8 @@
 	let busy = $state(false);
 	let message: string | null = $state(null);
 	const keys = attemptKeys();
+	/** While an attempt may still have been booked, the details stay as they were sent, so a retry replays it. */
+	let locked = $state(false);
 
 	/** The page paints before it hydrates; until then **Book** waits, so nothing is sent but by the booking code. */
 	let hydrated = $state(false);
@@ -129,7 +131,7 @@
 		}
 		busy = true;
 		const body = bookingPayload(stay, rooms, details, expected, token, website);
-		const key = keys.keyFor(body);
+		const key = keys.keyFor();
 		let outcome: Outcome;
 		try {
 			outcome = await sendBooking(key, async (sent) => {
@@ -151,12 +153,14 @@
 			// The same booking goes again with the same key: if this one got through, the retry gets its answer.
 			newCheck();
 			busy = false;
+			locked = keys.pending;
 			message = NETWORK_TROUBLE;
 			return;
 		}
 		keys.answered(outcome);
 		if (outcome.kind !== 'booked') newCheck();
 		busy = false;
+		locked = keys.pending;
 		switch (outcome.kind) {
 			case 'booked':
 				handOver({
@@ -251,95 +255,122 @@
 		<!-- `post` with no action: should the form ever be submitted natively, the guest's details stay out of the address
 		     (and the logs). The booking itself is always `book`, once hydrated. -->
 		<form class="details" method="post" onsubmit={book}>
-			<fieldset>
-				<legend>Who is booking</legend>
-				<div class="pair">
+			<fieldset class="sent" disabled={locked}>
+				<fieldset>
+					<legend>Who is booking</legend>
+					<div class="pair">
+						<label>
+							First name
+							<input
+								type="text"
+								bind:value={details.firstName}
+								autocomplete="given-name"
+								required
+							/>
+						</label>
+						<label>
+							Last name
+							<input
+								type="text"
+								bind:value={details.lastName}
+								autocomplete="family-name"
+								required
+							/>
+						</label>
+					</div>
 					<label>
-						First name
-						<input type="text" bind:value={details.firstName} autocomplete="given-name" required />
+						Email
+						<input type="email" bind:value={details.email} autocomplete="email" required />
 					</label>
 					<label>
-						Last name
-						<input type="text" bind:value={details.lastName} autocomplete="family-name" required />
+						Phone
+						<input type="tel" bind:value={details.phone} autocomplete="tel" required />
+					</label>
+					<label>
+						Country of residence
+						<select bind:value={details.country} autocomplete="country" required>
+							<option value="" disabled>Choose a country</option>
+							{#each COUNTRIES as country (country.code)}
+								<option value={country.code}>{country.name}</option>
+							{/each}
+						</select>
+					</label>
+					<p class="residency">
+						{RESIDENCY_QUESTION}
+						<strong>{stay.residency === 'resident' ? 'Yes' : 'No'}</strong>
+						<span class="muted">(from your search; the prices depend on it.)</span>
+						<a href="{data.base}/rooms?{stayQuery(stay)}" data-sveltekit-preload-data="off"
+							>Change</a
+						>
+					</p>
+					<label>
+						Arrival time <span class="muted">(optional)</span>
+						<input type="time" bind:value={details.arrivalTime} />
+					</label>
+				</fieldset>
+
+				<fieldset>
+					<legend>Guests in each room</legend>
+					{#each rooms as room, index (index)}
+						<label>
+							{rooms.length > 1 ? `Room ${index + 1}, ${roomName(room)}` : roomName(room)}: name of
+							the guest
+							<span class="muted">(optional; you, if left empty)</span>
+							<input type="text" bind:value={details.occupants[index]} autocomplete="off" />
+						</label>
+					{/each}
+				</fieldset>
+
+				<label>
+					Special requests <span class="muted">(optional)</span>
+					<textarea
+						bind:value={details.specialRequests}
+						maxlength={MAX_SPECIAL_REQUESTS}
+						aria-describedby="requests-count"></textarea>
+					<span id="requests-count" class="muted small"
+						>{details.specialRequests.length} of {MAX_SPECIAL_REQUESTS} characters</span
+					>
+				</label>
+
+				<div class="honeypot" aria-hidden="true">
+					<label>
+						Website
+						<input
+							type="text"
+							name="website"
+							bind:value={website}
+							tabindex="-1"
+							autocomplete="off"
+						/>
 					</label>
 				</div>
-				<label>
-					Email
-					<input type="email" bind:value={details.email} autocomplete="email" required />
-				</label>
-				<label>
-					Phone
-					<input type="tel" bind:value={details.phone} autocomplete="tel" required />
-				</label>
-				<label>
-					Country of residence
-					<select bind:value={details.country} autocomplete="country" required>
-						<option value="" disabled>Choose a country</option>
-						{#each COUNTRIES as country (country.code)}
-							<option value={country.code}>{country.name}</option>
-						{/each}
-					</select>
-				</label>
-				<p class="residency">
-					{RESIDENCY_QUESTION}
-					<strong>{stay.residency === 'resident' ? 'Yes' : 'No'}</strong>
-					<span class="muted">(from your search; the prices depend on it.)</span>
-					<a href="{data.base}/rooms?{stayQuery(stay)}" data-sveltekit-preload-data="off">Change</a>
-				</p>
-				<label>
-					Arrival time <span class="muted">(optional)</span>
-					<input type="time" bind:value={details.arrivalTime} />
-				</label>
-			</fieldset>
 
-			<fieldset>
-				<legend>Guests in each room</legend>
-				{#each rooms as room, index (index)}
-					<label>
-						{rooms.length > 1 ? `Room ${index + 1}, ${roomName(room)}` : roomName(room)}: name of
-						the guest
-						<span class="muted">(optional; you, if left empty)</span>
-						<input type="text" bind:value={details.occupants[index]} autocomplete="off" />
+				<div class="agree">
+					<label class="check">
+						<input type="checkbox" bind:checked={details.agreed} required />
+						I agree to the hotel’s booking terms and privacy notice
 					</label>
-				{/each}
+					{#if site.terms}
+						<details>
+							<summary>Booking terms</summary>
+							<p class="legal">{site.terms}</p>
+						</details>
+					{/if}
+					{#if site.privacy}
+						<details>
+							<summary>Privacy notice</summary>
+							<p class="legal">{site.privacy}</p>
+						</details>
+					{/if}
+				</div>
 			</fieldset>
 
-			<label>
-				Special requests <span class="muted">(optional)</span>
-				<textarea
-					bind:value={details.specialRequests}
-					maxlength={MAX_SPECIAL_REQUESTS}
-					aria-describedby="requests-count"></textarea>
-				<span id="requests-count" class="muted small"
-					>{details.specialRequests.length} of {MAX_SPECIAL_REQUESTS} characters</span
-				>
-			</label>
-
-			<div class="honeypot" aria-hidden="true">
-				<label>
-					Website
-					<input type="text" name="website" bind:value={website} tabindex="-1" autocomplete="off" />
-				</label>
-			</div>
-
-			<div class="agree">
-				<label class="check">
-					<input type="checkbox" bind:checked={details.agreed} required />
-					I agree to the hotel’s booking terms and privacy notice
-				</label>
-				{#if site.terms}
-					<details>
-						<summary>Booking terms</summary>
-						<p class="legal">{site.terms}</p>
-					</details>
-				{/if}
-				{#if site.privacy}
-					<details>
-						<summary>Privacy notice</summary>
-						<p class="legal">{site.privacy}</p>
-					</details>
-				{/if}
-			</div>
+			{#if locked}
+				<p class="notice">
+					Your details stay as you sent them until we know whether that booking went through, so
+					trying again can never book twice.
+				</p>
+			{/if}
 
 			<div class="check-widget" bind:this={widgetElement}></div>
 

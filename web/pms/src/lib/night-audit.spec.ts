@@ -238,6 +238,7 @@ describe('seesOpsAlerts', () => {
 	const profile = (role: Profile['grants'][number]['role']): Profile => ({
 		user_id: 'u',
 		email: 'a@b.lk',
+		email_verified: true,
 		display_name: 'A',
 		tenants: [],
 		grants: [{ role, property_id: null }]

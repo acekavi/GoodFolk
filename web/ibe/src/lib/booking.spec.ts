@@ -289,61 +289,50 @@ describe('the booking answer', () => {
 });
 
 describe('the idempotency key', () => {
-	const rooms = () => pricePicks(result, picks)!;
-	const attempt = (token: string, change: Partial<Details> = {}) =>
-		bookingPayload(stay, rooms(), { ...details, ...change }, totalsOf(rooms()), token, '');
-
-	it('is kept for a retry of the same booking after a network failure, even with a fresh token', () => {
+	it('is kept for a retry after a network failure, and pending until an answer settles it', () => {
 		let next = 0;
 		const keys = attemptKeys(() => `k${++next}`);
 
-		expect(keys.keyFor(attempt('token-1'))).toBe('k1');
-		// No answer came back: the guest tries again, with the token the widget renewed.
-		expect(keys.keyFor(attempt('token-2'))).toBe('k1');
+		expect(keys.pending).toBe(false);
+		expect(keys.keyFor()).toBe('k1');
+		// No answer came back: the attempt may have been booked, so the next one asks after it.
+		expect(keys.pending).toBe(true);
+		expect(keys.keyFor()).toBe('k1');
 	});
 
 	it('is kept after a 5xx, a booking still in progress or a 429, and ended by any other answer', () => {
 		let next = 0;
 		const keys = attemptKeys(() => `k${++next}`);
 
-		expect(keys.keyFor(attempt('t'))).toBe('k1');
+		expect(keys.keyFor()).toBe('k1');
 		keys.answered({ kind: 'failed' });
-		expect(keys.keyFor(attempt('t'))).toBe('k1');
+		expect(keys.pending).toBe(true);
+		expect(keys.keyFor()).toBe('k1');
 		keys.answered({ kind: 'in_progress' });
-		expect(keys.keyFor(attempt('t2'))).toBe('k1');
+		expect(keys.pending).toBe(true);
+		expect(keys.keyFor()).toBe('k1');
 		// A 429 is answered before the key is looked up: the attempt it may follow could still commit.
 		keys.answered({ kind: 'too_many', retryAfter: 30 });
-		expect(keys.keyFor(attempt('t2b'))).toBe('k1');
+		expect(keys.pending).toBe(true);
+		expect(keys.keyFor()).toBe('k1');
 		keys.answered({ kind: 'sold_out' });
-		expect(keys.keyFor(attempt('t3'))).toBe('k2');
+		expect(keys.pending).toBe(false);
+		expect(keys.keyFor()).toBe('k2');
+		keys.answered({ kind: 'invalid', message: 'Check the email address' });
+		expect(keys.pending).toBe(false);
+		expect(keys.keyFor()).toBe('k3');
 		keys.answered({ kind: 'booked', confirmationNo: 'GAL-000001', manageUrl: null });
-		expect(keys.keyFor(attempt('t4'))).toBe('k3');
-	});
-
-	it('is new for a booking with other details', () => {
-		let next = 0;
-		const keys = attemptKeys(() => `k${++next}`);
-
-		expect(keys.keyFor(attempt('t'))).toBe('k1');
-		expect(keys.keyFor(attempt('t', { specialRequests: 'A late arrival' }))).toBe('k2');
+		expect(keys.keyFor()).toBe('k4');
 	});
 
 	it('is new for the re-confirmed price after a price change', () => {
 		let next = 0;
 		const keys = attemptKeys(() => `k${++next}`);
-		keys.keyFor(attempt('t'));
+		keys.keyFor();
 		keys.answered({ kind: 'price_changed', totals: { USD: 37_000, LKR: 4_500_000 } });
 
-		const confirmed = bookingPayload(
-			stay,
-			rooms(),
-			details,
-			{ USD: 37_000, LKR: 4_500_000 },
-			't2',
-			''
-		);
-
-		expect(keys.keyFor(confirmed)).toBe('k2');
+		expect(keys.pending).toBe(false);
+		expect(keys.keyFor()).toBe('k2');
 	});
 });
 
@@ -386,15 +375,28 @@ describe('a booking still in progress', () => {
 	it('stays in progress after the last retry, and keeps its key for the next tap', async () => {
 		let next = 0;
 		const keys = attemptKeys(() => `k${++next}`);
-		const payload = bookingPayload(stay, pricePicks(result, picks)!, details, {}, 't', '');
 		const api = server([inProgress, inProgress, inProgress]);
 
-		const outcome = await sendBooking(keys.keyFor(payload), api.send, [100, 200], api.wait);
+		const outcome = await sendBooking(keys.keyFor(), api.send, [100, 200], api.wait);
 		keys.answered(outcome);
 
 		expect(outcome).toEqual({ kind: 'in_progress' });
 		expect(api.sent).toEqual(['k1', 'k1', 'k1']);
-		expect(keys.keyFor({ ...payload, turnstile_token: 't2' })).toBe('k1');
+		expect(keys.keyFor()).toBe('k1');
+	});
+
+	it('stops at a 429 mid-retry and keeps its key, since the limit answers before the key is looked up', async () => {
+		let next = 0;
+		const keys = attemptKeys(() => `k${++next}`);
+		const api = server([inProgress, answer(429, { title: 'Too Many Requests', status: 429 })]);
+
+		const outcome = await sendBooking(keys.keyFor(), api.send, [100, 200, 300], api.wait);
+		keys.answered(outcome);
+
+		expect(outcome.kind).toBe('too_many');
+		expect(api.sent).toEqual(['k1', 'k1']);
+		expect(keys.pending).toBe(true);
+		expect(keys.keyFor()).toBe('k1');
 	});
 
 	it('waits about 5 s in all by default', async () => {
@@ -411,16 +413,15 @@ describe('a booking still in progress', () => {
 	it('does not retry any other 4xx, which ends the key', async () => {
 		let next = 0;
 		const keys = attemptKeys(() => `k${++next}`);
-		const payload = bookingPayload(stay, pricePicks(result, picks)!, details, {}, 't', '');
 		const api = server([answer(409, { title: 'Conflict', status: 409, reason: 'sold_out' })]);
 
-		const outcome = await sendBooking(keys.keyFor(payload), api.send, [100, 200], api.wait);
+		const outcome = await sendBooking(keys.keyFor(), api.send, [100, 200], api.wait);
 		keys.answered(outcome);
 
 		expect(outcome).toEqual({ kind: 'sold_out' });
 		expect(api.sent).toEqual(['k1']);
 		expect(api.waited).toEqual([]);
-		expect(keys.keyFor(payload)).toBe('k2');
+		expect(keys.keyFor()).toBe('k2');
 	});
 });
 

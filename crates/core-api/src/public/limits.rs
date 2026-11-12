@@ -1,5 +1,6 @@
-//! Per-IP limits of the public API, counted in Postgres (`ibe_rate_hit`) in fixed one-minute windows, so every
-//! instance shares them.
+//! Per-IP limits of the public API, and of the staff API's anonymous routes (sign-in, sign-up and the emailed links,
+//! `routes::auth::limit_ip`), counted in Postgres (`ibe_rate_hit`) in fixed one-minute windows, so every instance
+//! shares them.
 
 use crate::error::ApiError;
 use sqlx::PgPool;
@@ -7,6 +8,8 @@ use std::net::{IpAddr, Ipv6Addr};
 
 /// Searches one IP may make a minute.
 pub const SEARCHES_PER_MINUTE: u32 = 60;
+/// Site reads one IP may make a minute: the edge serves most of them, but a query string it has not seen misses it.
+pub const SITES_PER_MINUTE: u32 = 60;
 /// Bookings one IP may send a minute.
 pub const BOOKINGS_PER_MINUTE: u32 = 5;
 /// Manage page views and cancellations one IP may send a minute, together.
@@ -30,7 +33,32 @@ fn limit_key(ip: IpAddr) -> String {
 /// Counts a request of `scope` from `ip` (by [`limit_key`]) in the current minute, and refuses it (`429` with `Retry-After`, the seconds
 /// to the minute's end) once it is over `per_minute`. Refused requests count too, so retrying early does not help.
 pub async fn check(pool: &PgPool, scope: &str, ip: IpAddr, per_minute: u32) -> Result<(), ApiError> {
-    let (hits, seconds_left): (i32, i32) = sqlx::query_as(
+    let (hits, seconds_left) = count(pool, scope, ip).await?;
+    if u32::try_from(hits).unwrap_or(u32::MAX) <= per_minute { Ok(()) } else { Err(refusal(seconds_left)) }
+}
+
+/// Refuses a request of `scope` from `ip` once `per_minute` were counted ([`count`]) in the current minute, counting
+/// nothing itself: for limits that count only some outcomes, such as failed sign-ins.
+pub async fn refuse_if_over(pool: &PgPool, scope: &str, ip: IpAddr, per_minute: u32) -> Result<(), ApiError> {
+    let counted: Option<(i32, i32)> = sqlx::query_as(
+        "select hits, ceil(extract(epoch from window_start + interval '1 minute' - now()))::int
+         from ibe_rate_hit where scope = $1 and ip = $2::inet and window_start = date_trunc('minute', now())",
+    )
+    .bind(scope)
+    .bind(limit_key(ip))
+    .fetch_optional(pool)
+    .await?;
+    match counted {
+        Some((hits, seconds_left)) if u32::try_from(hits).unwrap_or(u32::MAX) >= per_minute => {
+            Err(refusal(seconds_left))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Counts one of `scope` from `ip` in the current minute; returns the minute's count and the seconds left in it.
+pub async fn count(pool: &PgPool, scope: &str, ip: IpAddr) -> Result<(i32, i32), ApiError> {
+    Ok(sqlx::query_as(
         "insert into ibe_rate_hit (scope, ip, window_start, hits)
          values ($1, $2::inet, date_trunc('minute', now()), 1)
          on conflict (scope, ip, window_start) do update set hits = ibe_rate_hit.hits + 1
@@ -39,14 +67,13 @@ pub async fn check(pool: &PgPool, scope: &str, ip: IpAddr, per_minute: u32) -> R
     .bind(scope)
     .bind(limit_key(ip))
     .fetch_one(pool)
-    .await?;
-    if u32::try_from(hits).unwrap_or(u32::MAX) <= per_minute {
-        return Ok(());
-    }
-    // At least a second: a client told 0 would come straight back into the same window.
+    .await?)
+}
+
+/// `429` with `Retry-After`: at least a second, as a client told 0 would come straight back into the same window.
+fn refusal(seconds_left: i32) -> ApiError {
     let retry_after = u64::try_from(seconds_left.max(1)).unwrap_or(1);
-    Err(ApiError::too_many_requests("Too many requests from this address; try again in a minute")
-        .retry_after(retry_after))
+    ApiError::too_many_requests("Too many requests from this address; try again in a minute").retry_after(retry_after)
 }
 
 #[cfg(test)]

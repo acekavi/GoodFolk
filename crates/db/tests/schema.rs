@@ -28,6 +28,70 @@ async fn every_tenant_table_has_forced_row_level_security(pool: PgPool) {
     assert!(unprotected.is_empty(), "tables without forced RLS: {unprotected:?}");
 }
 
+/// Every table without forced row-level security, so a new one is a deliberate choice: the identity tables and the
+/// throttles are global (no tenant column), and the outbox, the receivers' dedupe, the guest search index and the
+/// jobs' state are reached only through security definer functions. `_sqlx_migrations` is the migrator's own.
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_tables_without_row_level_security_are_these(pool: PgPool) {
+    let open: Vec<String> = sqlx::query_scalar(
+        "select c.relname::text
+         from pg_class c
+         join pg_namespace n on n.oid = c.relnamespace
+         where n.nspname = 'public' and c.relkind in ('r', 'p')
+           and not (c.relrowsecurity and c.relforcerowsecurity)
+         order by 1",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        open,
+        [
+            "_sqlx_migrations",
+            "app_user",
+            "email_verification",
+            "guest_search",
+            "ibe_rate_hit",
+            "job_state",
+            "login_failure",
+            "outbox",
+            "processed_event",
+            "session",
+        ]
+    );
+}
+
+/// The definers that read or purge across every tenant are jobs-svc's (`goodfolk_jobs`) alone: core-api's role
+/// cannot run them (migration 0050).
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn only_the_jobs_role_runs_the_cross_tenant_definers(pool: PgPool) {
+    for function in [
+        "app.jobs_properties()",
+        "app.jobs_open_runs()",
+        "app.jobs_unrendered_runs()",
+        "app.purge_expired(integer, integer)",
+        "app.fx_import_targets()",
+        "app.media_sweep_due()",
+        "app.purge_events()",
+    ] {
+        let (app, jobs): (bool, bool) = sqlx::query_as(
+            "select has_function_privilege('goodfolk_app', $1, 'execute'),
+                    has_function_privilege('goodfolk_jobs', $1, 'execute')",
+        )
+        .bind(function)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((app, jobs), (false, true), "{function}");
+    }
+    let jobs_is_an_app: bool = sqlx::query_scalar("select pg_has_role('goodfolk_jobs', 'goodfolk_app', 'member')")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(jobs_is_an_app, "jobs-svc keeps every right of the app role");
+}
+
 /// The API role must never own tables (owners bypass RLS) or bypass RLS itself.
 #[sqlx::test(migrator = "db::MIGRATOR")]
 async fn the_app_role_cannot_bypass_row_level_security(pool: PgPool) {
